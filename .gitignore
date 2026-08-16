@@ -1,0 +1,5 @@
+app/build/
+*.bak.*
+.DS_Store
+dist/
+vendor/
