@@ -40,7 +40,7 @@ API Error: Unable to connect to API (UnsupportedProxyProtocol)
 ## Установка
 
 ```bash
-git clone <repo> proxy-pilot && cd proxy-pilot && ./install.sh
+git clone https://github.com/jamber751/proxy-pilot.git && cd proxy-pilot && ./install.sh
 ```
 
 Установщик поставит `gost`, найдёт прокси в текущей сети, пропишет блок в
