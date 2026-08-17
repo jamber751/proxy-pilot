@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    name: Build and publish DMG
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version matches the tag
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
+          echo "  тег: $TAG   PP_VERSION: $VERSION"
+          # расхождение здесь = релиз с чужим номером внутри; лучше упасть сейчас
+          [[ "$TAG" == "v$VERSION" ]] || {
+            echo "::error::тег $TAG не совпадает с PP_VERSION=$VERSION в bin/proxypilot"
+            exit 1
+          }
+
+      - name: Build DMG
+        run: ./make-dmg.sh
+
+      - name: Verify DMG
+        run: |
+          VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
+          DMG="dist/ProxyPilot-$VERSION.dmg"
+          hdiutil verify "$DMG"
+          hdiutil attach "$DMG" -quiet -mountpoint /tmp/ppdmg
+          test -x /tmp/ppdmg/Install.command        || { echo "нет установщика"; exit 1; }
+          test -f /tmp/ppdmg/READ_ME_FIRST.txt      || { echo "нет памятки"; exit 1; }
+          BIN=/tmp/ppdmg/ProxyPilot.app/Contents/Resources/bin
+          test -x "$BIN/proxypilot" && test -x "$BIN/gost" || { echo "бандл не самодостаточен"; exit 1; }
+          echo "  gost: $(lipo -archs $BIN/gost)"
+          lipo -archs "$BIN/gost" | grep -q x86_64 || { echo "gost не universal"; exit 1; }
+          hdiutil detach /tmp/ppdmg -quiet
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
+          DMG="dist/ProxyPilot-$VERSION.dmg"
+          # релиз мог быть создан заранее (или руками) — тогда просто докладываем ассет
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG" --clobber
+          else
+            gh release create "$TAG" "$DMG" \
+              --title "ProxyPilot $VERSION" \
+              --notes-file .github/release-notes.md
+          fi

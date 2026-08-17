@@ -196,44 +196,68 @@ struct ProbeDot: View {
     }
 }
 
+// TextField с подсказкой: параметр prompt появился только в macOS 12,
+// на Big Sur подставляем placeholder заголовком — визуально то же самое.
+struct HintField: View {
+    let title: String
+    @Binding var text: String
+    let hint: String
+
+    var body: some View {
+        if #available(macOS 12.0, *) {
+            TextField(title, text: $text, prompt: Text(hint))
+        } else {
+            TextField(hint, text: $text)
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var store: ConfigStore
     let currentMode: () -> String
     let onApplied: () -> Void
 
+    // содержимое формы отдельно: обёртку выбираем по версии системы
+    @ViewBuilder private var fields: some View {
+        Section {
+            HStack {
+                HintField(title: "SOCKS5 (быстрый)", text: $store.socks,
+                          hint: "192.168.1.2:9999")
+                ProbeDot(state: store.socksProbe)
+            }
+            HStack {
+                HintField(title: "HTTP (запасной)", text: $store.http,
+                          hint: "192.168.1.2:3128")
+                ProbeDot(state: store.httpProbe)
+            }
+        } header: {
+            Text("Реальные прокси (апстримы)")
+        } footer: {
+            Text("host:port. Пустое поле выключает режим. Хотя бы один должен быть задан.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+
+        Section {
+            TextField("Порт моста", text: $store.port)
+            HintField(title: "Шлюзы офиса (префиксы)", text: $store.gateways,
+                      hint: "192.168.1.")
+        } header: {
+            Text("Мост и авторежим")
+        } footer: {
+            Text("Клиенты всегда ходят на http://127.0.0.1:\(store.port). Если менять порт — обнови системный прокси и shellenv. «Авто» включает прокси, когда шлюз сети начинается с одного из префиксов (через запятую).")
+                .font(.caption).foregroundColor(.secondary)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            Form {
-                Section {
-                    HStack {
-                        TextField("SOCKS5 (быстрый)", text: $store.socks,
-                                  prompt: Text("192.168.1.2:9999"))
-                        ProbeDot(state: store.socksProbe)
-                    }
-                    HStack {
-                        TextField("HTTP (запасной)", text: $store.http,
-                                  prompt: Text("192.168.1.2:3128"))
-                        ProbeDot(state: store.httpProbe)
-                    }
-                } header: {
-                    Text("Реальные прокси (апстримы)")
-                } footer: {
-                    Text("host:port. Пустое поле выключает режим. Хотя бы один должен быть задан.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-
-                Section {
-                    TextField("Порт моста", text: $store.port)
-                    TextField("Шлюзы офиса (префиксы)", text: $store.gateways,
-                              prompt: Text("192.168.1."))
-                } header: {
-                    Text("Мост и авторежим")
-                } footer: {
-                    Text("Клиенты всегда ходят на http://127.0.0.1:\(store.port). Если менять порт — обнови системный прокси и shellenv. «Авто» включает прокси, когда шлюз сети начинается с одного из префиксов (через запятую).")
-                        .font(.caption).foregroundColor(.secondary)
-                }
+            // .formStyle(.grouped) — macOS 13+; на 11–12 Form и так рисуется
+            // сгруппированной, отличий по виду почти нет
+            if #available(macOS 13.0, *) {
+                Form { fields }.formStyle(.grouped)
+            } else {
+                Form { fields }
             }
-            .formStyle(.grouped)
 
             Divider()
             HStack {
@@ -254,11 +278,16 @@ struct SettingsView: View {
             .padding(12)
 
             if !store.message.isEmpty {
-                Text(store.message)
+                let msg = Text(store.message)
                     .font(.caption).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.bottom, 8)
-                    .textSelection(.enabled)
+                // выделение текста мышью — macOS 12+; на Big Sur просто без него
+                if #available(macOS 12.0, *) {
+                    msg.textSelection(.enabled)
+                } else {
+                    msg
+                }
             }
         }
         .frame(width: 470, height: 420)

@@ -16,9 +16,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # файл называется main.swift, поэтому код верхнего уровня компилируется как есть.
 # Universal (Intel + Apple Silicon): две компиляции + lipo — DMG должен
 # запускаться и на x86_64-маках.
-swiftc -O -target "arm64-apple-macosx13.0" \
+swiftc -O -target "arm64-apple-macosx11.0" \
   -o "$APP/Contents/MacOS/ProxyPilot-arm64" "$HERE/main.swift"
-swiftc -O -target "x86_64-apple-macosx13.0" \
+swiftc -O -target "x86_64-apple-macosx11.0" \
   -o "$APP/Contents/MacOS/ProxyPilot-x86_64" "$HERE/main.swift"
 lipo -create "$APP/Contents/MacOS/ProxyPilot-arm64" "$APP/Contents/MacOS/ProxyPilot-x86_64" \
   -output "$APP/Contents/MacOS/ProxyPilot"
@@ -39,7 +39,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>1.0.0</string>
   <key>CFBundleVersion</key>         <string>1</string>
-  <key>LSMinimumSystemVersion</key>  <string>13.0</string>
+  <key>LSMinimumSystemVersion</key>  <string>11.0</string>
 
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
 

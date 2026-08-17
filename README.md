@@ -1,224 +1,121 @@
-# proxypilot
+<div align="center">
 
-Один локальный адрес прокси — переключаемый путь наружу.
+<img src=".github/assets/logo.png" width="120" alt="ProxyPilot">
 
-Корпоративный HTTP-прокси часто шейпит трафик, а рядом в той же сети стоит
-быстрый SOCKS5. Разница бывает разительная — в нашем офисе замер такой:
+# ProxyPilot
 
-```
-  путь                      скорость    время
-  ──────────────────────────────────────────────
-  напрямую                  —           недоступен
-  http   192.168.1.2:3128   630 КБ/с    7.9с
-  socks5 192.168.1.2:9999   2552 КБ/с   2.0с      ← в 4 раза быстрее
-```
+**One local proxy address. Switchable route out.**
 
-Проблема в том, что **многие инструменты SOCKS не умеют**. Claude Code
-(на undici) отвечает прямо:
+[![Build](https://github.com/jamber751/proxy-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/jamber751/proxy-pilot/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jamber751/proxy-pilot)](https://github.com/jamber751/proxy-pilot/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-11%2B-black?logo=apple)](https://github.com/jamber751/proxy-pilot/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-```
-API Error: Unable to connect to API (UnsupportedProxyProtocol)
-```
+</div>
 
-`proxypilot` поднимает локальный HTTP-CONNECT мост на `127.0.0.1:3129` и уводит
-его наружу через SOCKS5, корпоративный HTTP-прокси или напрямую. Клиенты видят
-обычный HTTP-прокси и работают без изменений.
+Corporate HTTP proxies often shape traffic while a fast SOCKS5 endpoint sits on
+the same network. In our office the gap was fourfold — 630 KB/s vs 2552 KB/s.
+
+The catch: **plenty of tools don't speak SOCKS.** Claude Code (undici) says so
+outright — `UnsupportedProxyProtocol`.
+
+ProxyPilot runs an HTTP-CONNECT bridge on `127.0.0.1:3129` and routes it out
+through SOCKS5, an HTTP proxy, or straight out:
 
 ```
-   Claude Code ─┐
-   curl / git  ─┤                                   ┌─ SOCKS5  192.168.1.2:9999   ⚡ быстро
-   npm / pip   ─┼─→  127.0.0.1:3129  ──режим──→     ├─ HTTP    192.168.1.2:3128   🐢 запасной
-   браузер     ─┘      (не меняется)                └─ напрямую                   ⇢ вне офиса
+   Claude Code ─┐                                  ┌─ SOCKS5   ⚡ fast
+   curl / git  ─┼─→  127.0.0.1:3129  ──mode──→     ├─ HTTP     🐢 fallback
+   browser     ─┘      (never changes)             └─ direct   ⇢ off-site
 ```
 
-**Главное следствие:** адрес прокси у клиентов не меняется никогда, поэтому
-смена пути не требует их перезапуска. Переключил режим — Claude, git и браузер
-продолжают работать, уже по другому каналу.
+**Why it matters:** the address your clients use never changes, so switching
+routes doesn't restart them. `auto` mode picks the route from the network —
+take the laptop home and the proxy switches itself off.
 
----
+## Install
 
-## Установка
+Grab the DMG from [Releases](https://github.com/jamber751/proxy-pilot/releases/latest)
+→ right-click **`Install.command`** → Open. It copies the app to Applications,
+clears quarantine, offers Login Items and launches.
 
-```bash
-git clone https://github.com/jamber751/proxy-pilot.git && cd proxy-pilot && ./install.sh
-```
+Self-contained (CLI and gost ship inside), universal, macOS 11+. No Homebrew,
+no terminal.
 
-Установщик поставит `gost`, найдёт прокси в текущей сети, пропишет блок в
-`~/.zshrc` и соберёт приложение для меню-бара. Идемпотентен.
+> Ad-hoc signed, not Developer ID — the first launch needs right-click → Open.
 
-Требуется: macOS 13+, Homebrew. Для приложения — Xcode Command Line Tools
-(`xcode-select --install`); без них работает CLI.
+<sub>From source: `git clone https://github.com/jamber751/proxy-pilot.git && cd proxy-pilot && ./install.sh`</sub>
 
-### DMG для раздачи коллегам
+## Use it
 
-```bash
-./make-dmg.sh        # → dist/ProxyPilot-<версия>.dmg (~14 МБ)
-```
+Everything lives in the menu bar icon, which shows the active route (⚡ SOCKS5 ·
+🐢 HTTP · ⇢ direct). Click to switch routes, benchmark, run diagnostics or open
+**Settings (⌘,)** — proxy addresses with live reachability dots, bridge port,
+office gateway prefixes, all with a "Find on network" button that discovers
+proxies for you. On first launch it does that automatically.
 
-В DMG-варианте приложение самодостаточно: CLI и gost вложены в бандл
-(`Contents/Resources/bin`) — получателю не нужны ни brew, ни репозиторий,
-ни терминал. Образ **universal** (Intel + Apple Silicon): приложение
-собирается lipo из двух компиляций, gost берётся из `vendor/gost-universal`
-(склеен из официальных релизов go-gost; нет файла — фолбэк на brew-бинарь
-текущей архитектуры с предупреждением).
+For GUI apps set the system proxy once — **System Settings → Network → Wi-Fi →
+Details → Proxies** → HTTP and HTTPS to `127.0.0.1:3129`, SOCKS **off**. After
+that you never touch it again; the address is constant.
 
-Путь получателя: правый клик по **«Установить.command»** в образе → Open.
-Скрипт копирует приложение в Applications, снимает quarantine, предлагает
-автозапуск и запускает. Ручной путь и объяснения — в `ПРОЧТИ_МЕНЯ.txt` там же.
+<details>
+<summary><b>CLI</b> — same thing from the terminal</summary>
 
-Честное ограничение — **подпись ad-hoc, не Developer ID**: первый запуск
-установщика требует правый клик → Open (Gatekeeper). Убрать и это трение
-может только платная подпись Apple Developer ($99/год) + notarytool —
-техническая часть готова к подключению, нужен лишь сертификат.
-Терминальную интеграцию (`shellenv`) в DMG-сценарии ставит строка из
-памятки; полноценно — `install.sh` из репозитория.
-
----
-
-## Команды
-
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `proxypilot detect` | найти прокси в сети и создать конфиг |
-| `proxypilot bench` | сравнить скорость: напрямую / http / socks5 |
-| `proxypilot status` | что происходит сейчас |
-| `proxypilot doctor` | диагностика, если не работает |
-| `proxypilot socks` | гнать через SOCKS5 (быстро) |
-| `proxypilot http` | гнать через HTTP-прокси (запасной) |
-| `proxypilot direct` | без прокси |
-| `proxypilot auto` | выбрать по текущей сети |
-| `proxypilot ensure` | поднять мост, если не поднят (идемпотентно) |
-| `proxypilot set KEY VALUE` | записать ключ конфига (с валидацией) |
-| `proxypilot probe host:port` | доступен ли адрес (up/down) |
-| `proxypilot json` | состояние машиночитаемо |
+| `proxypilot detect` | find proxies on this network, write a config |
+| `proxypilot bench` | compare routes: direct / http / socks5 |
+| `proxypilot status` · `doctor` | current state · diagnose problems |
+| `proxypilot socks` · `http` · `direct` · `auto` | switch route |
+| `proxypilot set KEY VALUE` | write a config key (validated) |
+| `proxypilot json` | machine-readable state |
+| `proxypilot shellenv` | `eval "$(proxypilot shellenv)"` in `.zshrc` |
 
-Режим `auto` смотрит на шлюз по умолчанию: если он подходит под
-`OFFICE_GATEWAYS` и апстрим отвечает — включается прокси, иначе прямой выход.
-Ноутбук уехал домой — прокси выключается сам.
+Config lives in `~/.config/proxypilot/config` (`KEY=VALUE`) and is what the
+Settings window edits — through `proxypilot set`, so only the CLI knows the
+format.
 
-## Приложение в меню-баре
+`bench` uses one stream and a short file on purpose: it compares routes against
+each other, not your bandwidth. Measure the line with fast.com.
 
-Значок (молния в круге) показывает текущий канал: молния —
-SOCKS5, черепаха — HTTP-прокси, стрелка — напрямую, треугольник — мост не
-поднят. В меню: переключение каналов (с индикаторами доступности апстримов
-●), замер скорости, диагностика, автопоиск прокси и «Настройки…».
+</details>
 
-**Настройки (⌘,)** — адреса реальных прокси правятся прямо в UI: поля
-SOCKS5/HTTP host:port с живой проверкой досягаемости, порт моста, префиксы
-офисных шлюзов для авторежима. Кнопка «Найти в сети»
-запускает автопоиск (системные настройки macOS + скан типовых SOCKS-портов)
-и заполняет поля; «Сохранить и применить» пишет конфиг и перезапускает мост.
+<details>
+<summary><b>Gotchas</b> — two things that cost real debugging time</summary>
 
-**Первый запуск без конфига**: приложение само ищет прокси в сети,
-прописывает найденное и открывает Настройки на подтверждение.
-
-Правки из UI идут через `proxypilot set` — формат конфига знает только CLI.
-
-Чтобы запускалось само: System Settings → General → Login Items → `+`.
-
-**Не видно значка?** Меню-бар на макбуках с «чёлкой» вмещает ограниченное
-число элементов, лишние просто не рисуются. Что помогает:
-
-- Приложение само не плодит дубли: второй экземпляр (например, запущенный
-  прямо из DMG при уже установленном) молча выходит.
-- ⌘-перетаскивание значков в баре меняет порядок — утащи ProxyPilot левее,
-  вытеснив что-то менее нужное.
-- Хроническая теснота лечится менеджером меню-бара:
-  [Ice](https://github.com/jordanbaird/Ice) (бесплатный, open source)
-  или Bartender.
-
-Проверить, где именно AppKit разместил кнопку, можно по логу:
-
-```bash
-tail -3 ~/Library/Logs/proxypilot-app.log
-```
-
-Строка `render:` содержит фактические координаты кнопки и размер экрана —
-если `кнопка=x=… w=…` есть и координата в пределах экрана, значок отрисован.
-
----
-
-## Конфиг
-
-`~/.config/proxypilot/config`, обычный `KEY=VALUE`:
+**CIDR in `no_proxy` is not enough.** `curl` and `git` understand
+`192.168.0.0/16`; **Node/Bun and python-requests don't** — they match an exact
+hostname or a dot-suffix. Claude Code is Bun/undici, i.e. the second group. List
+important local hosts explicitly:
 
 ```sh
-BRIDGE_PORT=3129
-SOCKS_UPSTREAM=192.168.1.2:9999     # быстрый путь; пусто — режим socks недоступен
-HTTP_UPSTREAM=192.168.1.2:3128      # запасной
-OFFICE_GATEWAYS=192.168.1.          # префиксы шлюзов «я в офисе», через запятую
-NO_PROXY_LIST=localhost,127.0.0.1,…
-BENCH_URL=https://speed.cloudflare.com/__down?bytes=5000000
-BENCH_BYTES=5000000
+NO_PROXY_LIST=localhost,127.0.0.1,::1,.local,192.168.0.0/16,192.168.1.4,my-server.internal
 ```
 
-`NO_PROXY_LIST` используется дважды: экспортируется клиентам через `shellenv`
-**и** превращается в правило `bypass` на форвардере моста. Второе важнее:
-мост сам соединяется напрямую с локальными адресами, поэтому кривой `no_proxy`
-у клиента уже ничего не ломает. В логе это видно как прямое
-`127.0.0.1 >-< 192.168.1.4:5555` без обращения к апстриму.
+Also: `curl` ignores `HTTP_PROXY` for `http://` URLs (lowercase `http_proxy`
+only) — `shellenv` exports both.
 
-Тонкость gost: `bypass` на **слушателе** (`-L`) означает «отказать в
-обслуживании», а нужное «иди напрямую» — это `bypass` на **форвардере** (`-F`).
+**`no route to host` while the network is fine.** On macOS 15+ that's the Local
+Network privacy gate. The permission belongs to whichever process opens the
+connection, so the bridge runs as a child of `ProxyPilot.app` and inherits it —
+which is exactly why it is *not* a LaunchAgent. Check System Settings →
+Privacy & Security → Local Network.
 
-### NO_PROXY: CIDR недостаточно
+Logs: `~/Library/Logs/proxypilot.log` (bridge), `proxypilot-app.log` (app).
 
-`curl` (7.86+) и `git` понимают в `no_proxy` диапазоны вроде `192.168.0.0/16`,
-а **Node/Bun и python-requests — нет**: они сверяют строго имя хоста или
-суффикс с точкой. Claude Code — Bun-бинарь на undici, то есть из второй группы.
-Поэтому важные локальные хосты перечисляй явно, а не только диапазоном:
+</details>
 
-```sh
-NO_PROXY_LIST=localhost,127.0.0.1,::1,.local,host.docker.internal,192.168.0.0/16,192.168.1.4,my-server.internal
-```
+## How it works
 
-Ещё одна деталь: `curl` намеренно игнорирует переменную `HTTP_PROXY` для
-`http://`-адресов (читает только строчную `http_proxy`) — `shellenv` экспортирует
-обе формы.
+`bin/proxypilot` (zsh) holds the logic; `app/main.swift` is a menu bar front end
+over `proxypilot json`; the bridge itself is [gost](https://github.com/go-gost/gost).
+ProxyPilot proxies nothing and stores no secrets — it picks the upstream and
+keeps the bridge in the right mode.
 
----
+`./make-dmg.sh` builds a release. The gost binary isn't committed (git would
+keep 25 MB forever) — the script downloads the official release for both
+architectures, verifies pinned SHA-256 and merges with `lipo`. CI builds every
+push and attaches a DMG to every `v*` tag.
 
-## GUI-приложения
+## License
 
-Терминал настраивает `shellenv`. Для браузера и десктопных приложений укажи
-системный прокси:
-
-**System Settings → Network → Wi-Fi → Details → Proxies**
-- Web Proxy (HTTP) → `127.0.0.1 : 3129`
-- Secure Web Proxy (HTTPS) → `127.0.0.1 : 3129`
-- **SOCKS Proxy — выключить.** Иначе приложения раздадут `socks5://` своим
-  дочерним процессам, и те из них, кто SOCKS не понимает, отвалятся.
-
-Дальше переключение делается через `proxypilot` — системные настройки трогать
-больше не нужно, адрес там постоянный.
-
----
-
-## Если не работает
-
-`proxypilot doctor` проверит основное. Две типовые засады:
-
-**1. `no route to host` в логе, хотя сеть в порядке.**
-На macOS 15+ это почти всегда запрет Local Network, а не сеть. Разрешение
-выдаётся процессу, который открывает соединение. Поэтому мост запускается как
-дочерний процесс `ProxyPilot.app` — он это разрешение наследует.
-У launchd-агента такого разрешения нет, и именно поэтому мост в launchd
-не вынесен. Проверить: System Settings → Privacy & Security → Local Network.
-
-**2. Клиент не видит прокси.** Проверь, что он читает переменные окружения
-(`env | grep -i proxy`) — GUI-приложения переменные из `.zshrc` не наследуют,
-им нужен системный прокси.
-
-Лог моста: `~/Library/Logs/proxypilot.log`
-
----
-
-## Как устроено
-
-- `bin/proxypilot` — CLI на zsh, вся логика здесь.
-- `app/main.swift` — приложение меню-бара, обёртка над CLI (`proxypilot json`).
-- Мост — [gost](https://github.com/go-gost/gost), `-L http://127.0.0.1:PORT -F <апстрим>`.
-- Состояние: `~/.config/proxypilot/{config,mode}`.
-
-`proxypilot` не проксирует сам и не хранит секретов: он выбирает апстрим
-и следит, чтобы мост был поднят в нужном режиме.
+MIT — see [LICENSE](LICENSE).

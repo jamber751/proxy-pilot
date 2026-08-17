@@ -82,69 +82,72 @@ codesign --force --deep --sign - --identifier kz.documentolog.proxypilot \
 
 ln -s /Applications "$STAGE/Applications"
 
-# скрипт-установщик: правый клик → Open — и дальше всё сам (копия в
-# /Applications, снятие quarantine, автозапуск по желанию, первый запуск)
-cat > "$STAGE/Установить.command" <<'INSTALLER'
+# installer script: right-click → Open and it does the rest (copy to
+# /Applications, clear quarantine, optional login item, first launch)
+cat > "$STAGE/Install.command" <<'INSTALLER'
 #!/bin/zsh
-# Установщик ProxyPilot. Запуск: правый клик → Open (обычный даблклик
-# macOS заблокирует — приложение без подписи Apple).
+# ProxyPilot installer. Run it with right-click → Open (a plain double-click
+# is blocked by macOS — the app is not signed with an Apple certificate).
 set -e
 SRC="${0:A:h}/ProxyPilot.app"
 DST="/Applications/ProxyPilot.app"
 
-echo "ProxyPilot: установка…"
-[[ -d "$SRC" ]] || { echo "рядом со скриптом нет ProxyPilot.app"; exit 1 }
+echo "ProxyPilot: installing…"
+[[ -d "$SRC" ]] || { echo "ProxyPilot.app is not next to this script"; exit 1 }
 
 pkill -f "ProxyPilot.app/Contents/MacOS/ProxyPilot" 2>/dev/null || true
 rm -rf "$DST"
 ditto "$SRC" "$DST"
-# снять карантин: без подписи Apple это единственный способ запускаться без предупреждений
+# clearing quarantine is the only way to launch without warnings when unsigned
 xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
-echo "✓ установлено в $DST"
+echo "✓ installed to $DST"
 
-echo -n "Добавить в автозапуск (Login Items)? [y/N] "
+echo -n "Add to Login Items (start at login)? [y/N] "
 read -k1 ans; echo
 if [[ "$ans" == [yY] ]]; then
   osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/ProxyPilot.app", hidden:true}' >/dev/null \
-    && echo "✓ в автозапуске" \
-    || echo "не вышло — добавь руками: System Settings → General → Login Items"
+    && echo "✓ added to Login Items" \
+    || echo "failed — add it manually: System Settings → General → Login Items"
 fi
 
 open "$DST"
 echo
-echo "Дальше:"
-echo "  1. Разреши доступ к локальной сети, когда macOS спросит."
-echo "  2. В открывшихся Настройках проверь адреса прокси и нажми «Сохранить»."
+echo "Next:"
+echo "  1. Allow local network access when macOS asks."
+echo "  2. In the Settings window that opens, check the proxy addresses and save."
 echo "  3. System Settings → Network → Wi-Fi → Details → Proxies:"
-echo "     HTTP и HTTPS → 127.0.0.1:3129, SOCKS — выключить."
+echo "     HTTP and HTTPS → 127.0.0.1:3129, SOCKS → off."
 echo
-echo "Терминальная интеграция (по желанию):"
+echo "Shell integration (optional):"
 echo '  echo '\''eval "$(/Applications/ProxyPilot.app/Contents/Resources/bin/proxypilot shellenv)"'\'' >> ~/.zshrc'
 INSTALLER
-chmod +x "$STAGE/Установить.command"
+chmod +x "$STAGE/Install.command"
 
-# короткая памятка получателю — прямо в образе
-cat > "$STAGE/ПРОЧТИ_МЕНЯ.txt" <<EOF
-ProxyPilot $VERSION  (Intel + Apple Silicon)
+# short note for the recipient, right inside the image
+cat > "$STAGE/READ_ME_FIRST.txt" <<EOF
+ProxyPilot $VERSION  (Intel + Apple Silicon, macOS 11+)
 
-БЫСТРЫЙ ПУТЬ:
-  правый клик по «Установить.command» → Open → Open.
-  Скрипт скопирует приложение в Applications, снимет карантин,
-  предложит автозапуск и запустит ProxyPilot.
+QUICK PATH:
+  right-click "Install.command" → Open → Open.
+  The script copies the app to Applications, clears quarantine,
+  offers to start it at login and launches ProxyPilot.
 
-  (Обычный даблклик macOS заблокирует — приложение без подписи Apple.
-   Альтернатива: перетащи «Установить.command» в окно Терминала и нажми Enter.)
+  (A plain double-click is blocked by macOS — the app is not signed with an
+   Apple certificate. Alternative: drag "Install.command" into a Terminal
+   window and press Enter.)
 
-ВРУЧНУЮ (если скрипту не доверяешь — справедливо, читай его текст):
-  1. Перетащи ProxyPilot.app в Applications.
-  2. Правый клик по ProxyPilot.app → Open (или Privacy & Security → Open Anyway).
-  3. Разреши доступ к локальной сети, когда macOS спросит.
+MANUALLY (if you don't trust the script — fair enough, read it first):
+  1. Drag ProxyPilot.app into Applications.
+  2. Right-click ProxyPilot.app → Open (or Privacy & Security → Open Anyway).
+  3. Allow local network access when macOS asks.
   4. System Settings → Network → Wi-Fi → Details → Proxies:
-     HTTP и HTTPS → 127.0.0.1:3129, SOCKS — выключить.
-  5. Автозапуск: System Settings → General → Login Items → «+» → ProxyPilot.
+     HTTP and HTTPS → 127.0.0.1:3129, SOCKS → off.
+  5. Start at login: System Settings → General → Login Items → "+" → ProxyPilot.
 
-При первом запуске приложение само ищет прокси в сети и открывает
-Настройки — проверь адреса и нажми «Сохранить и применить».
+On first launch the app discovers proxies on the network by itself and opens
+Settings — check the addresses and hit "Save and apply".
+
+https://github.com/jamber751/proxy-pilot
 EOF
 
 # 3) образ

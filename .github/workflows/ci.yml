@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shell:
+    name: Shell scripts
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: |
+          for f in bin/proxypilot install.sh make-dmg.sh; do
+            zsh -n "$f" && echo "  ok  $f"
+          done
+
+      - name: CLI smoke test
+        run: |
+          # без конфига CLI обязан не падать, а объяснять, что делать
+          ./bin/proxypilot version
+          ./bin/proxypilot help >/dev/null
+          ./bin/proxypilot doctor || true          # doctor выходит != 0, когда нечего настраивать
+          ./bin/proxypilot probe 127.0.0.1:1 && exit 1 || echo "  ok  probe корректно сообщает down"
+          # set валидирует ввод
+          ./bin/proxypilot set BRIDGE_PORT 99 && exit 1 || echo "  ok  set отвергает битый порт"
+          ./bin/proxypilot set BRIDGE_PORT 3129
+          ./bin/proxypilot json | python3 -c 'import json,sys; json.load(sys.stdin)' && echo "  ok  json валиден"
+
+  app:
+    name: App (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: ./app/build.sh
+
+      - name: Verify bundle
+        run: |
+          APP=app/build/ProxyPilot.app
+          BIN=$APP/Contents/MacOS/ProxyPilot
+          archs=$(lipo -archs "$BIN")
+          echo "  архитектуры: $archs"
+          [[ "$archs" == *x86_64* && "$archs" == *arm64* ]] || { echo "не universal"; exit 1; }
+          minos=$(otool -l "$BIN" | awk '/minos/{print $2; exit}')
+          echo "  minos: $minos"
+          [[ "$minos" == "11.0" ]] || { echo "ожидалась планка macOS 11.0"; exit 1; }
+          test -f "$APP/Contents/Resources/AppIcon.icns" || { echo "нет иконки"; exit 1; }
+          codesign --verify --verbose=1 "$APP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProxyPilot.app
+          path: app/build/ProxyPilot.app
+          retention-days: 14
