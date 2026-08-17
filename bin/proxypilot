@@ -190,7 +190,13 @@ start_bridge() {  # mode
     nohup "$GOST" "${args[@]}" >>"$LOG" 2>&1 &!
   local i
   for i in {1..30}; do
-    tcp_open 127.0.0.1 $BRIDGE_PORT && return 0
+    if tcp_open 127.0.0.1 $BRIDGE_PORT; then
+      # запоминаем сеть, на которой мост поднят: пережив смену сети, gost
+      # остаётся с DNS-кэшем от старой и отвечает "no such host" на живые
+      # домены. Ловится только сравнением шлюза — режим при этом не меняется.
+      mkdir -p "$CFG_DIR"; print -- "$(gateway)" > "$CFG_DIR/bridge-gateway"
+      return 0
+    fi
     sleep 0.1
   done
   return 1
@@ -200,7 +206,12 @@ start_bridge() {  # mode
 cmd_ensure() {
   need_config
   local want=$(effective_mode) run=$(running_mode)
-  [[ "$run" == "$want" ]] && return 0
+  local gw_now=$(gateway) gw_boot=""
+  [[ -r "$CFG_DIR/bridge-gateway" ]] && gw_boot=$(< "$CFG_DIR/bridge-gateway")
+
+  # режим совпал И сеть та же — всё в порядке
+  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" ]] && return 0
+
   [[ "$run" != none ]] && stop_bridge
   start_bridge "$want" || { warn "мост не поднялся, см. $LOG"; return 1 }
   return 0

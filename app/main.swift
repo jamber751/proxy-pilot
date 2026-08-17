@@ -369,8 +369,10 @@ final class App: NSObject, NSApplicationDelegate {
         guard !busy else { return }
         DispatchQueue.global().async {
             let s = CLI.state()
-            // сеть сменилась и auto разошёлся с фактическим — подровнять
-            if let s = s, s.configured, s.running != s.effective {
+            // ensure идемпотентен и сам решает, надо ли перезапускать мост:
+            // и когда auto разошёлся с фактическим режимом, и когда сменилась
+            // сеть (режим тот же, но у gost остаётся DNS-кэш от старой сети)
+            if s?.configured == true {
                 CLI.run(["ensure"])
             }
             let fresh = CLI.state() ?? s
