@@ -20,7 +20,7 @@ setopt pipe_fail multibyte
 # Без UTF-8 локали ${#строка} считает байты, и таблицы с кириллицей разъезжаются.
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
-readonly PP_VERSION="1.0.0"
+readonly PP_VERSION="1.1.0"
 readonly CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot"
 readonly CFG="$CFG_DIR/config"
 readonly MODE_FILE="$CFG_DIR/mode"
