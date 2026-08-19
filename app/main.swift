@@ -444,8 +444,15 @@ final class App: NSObject, NSApplicationDelegate {
 
         // шапка: адрес моста + текущий канал
         let head = NSMenuItem()
+        // Когда выбранный режим недоступен, мы молча работаем в обход —
+        // без этой строки пользователь не понял бы, почему галочка на socks,
+        // а трафик идёт напрямую.
+        var headLine = s.running == "none" ? "не запущен" : human(s.running)
+        if s.mode != "auto", s.effective != s.mode {
+            headLine = "\(human(s.mode)) недоступен → \(human(s.effective))"
+        }
         head.attributedTitle = NSAttributedString(
-            string: "Мост 127.0.0.1:\(s.port)\n\(s.running == "none" ? "не запущен" : human(s.running))",
+            string: "Мост 127.0.0.1:\(s.port)\n\(headLine)",
             attributes: [
                 .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.secondaryLabelColor,

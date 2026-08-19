@@ -20,7 +20,7 @@ setopt pipe_fail multibyte
 # Без UTF-8 локали ${#строка} считает байты, и таблицы с кириллицей разъезжаются.
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
-readonly PP_VERSION="1.1.1"
+readonly PP_VERSION="1.1.2"
 readonly CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot"
 readonly CFG="$CFG_DIR/config"
 readonly MODE_FILE="$CFG_DIR/mode"
@@ -86,12 +86,39 @@ need_config() {
 
 # ── режимы ───────────────────────────────────────────────────────────────────
 # socks | http | direct | auto
+# Проба апстрима с кэшем. Нужна, потому что json зовётся приложением раз в
+# 5 секунд, а каждая проба недоступного адреса стоит секунду. TTL держим
+# коротким: залипнуть на мёртвом апстриме дороже лишней пробы.
+probe_cached() {  # host:port [ttl]
+  local hp="$1" ttl="${2:-30}" now=$(date +%s) res=down
+  local f="$CFG_DIR/probe-${${hp//:/_}//./_}" c_res="" c_ts=0
+  if [[ -r "$f" ]]; then
+    read -r c_res c_ts < "$f"
+    if (( now - ${c_ts:-0} < ttl )); then
+      [[ "$c_res" == up ]]; return
+    fi
+  fi
+  tcp_open "${hp%:*}" "${hp##*:}" && res=up
+  # Переход «был жив → стал мёртв» подтверждаем второй пробой: одиночный
+  # сетевой сбой не должен уводить маршрут. Устойчивое «мёртв» уже лежит
+  # в кэше и повторной пробы не стоит.
+  if [[ "$res" == down && "$c_res" == up ]]; then
+    sleep 0.3
+    tcp_open "${hp%:*}" "${hp##*:}" && res=up
+  fi
+  mkdir -p "$CFG_DIR"; print -- "$res $now" > "$f"
+  [[ "$res" == up ]]
+}
+
+upstream_dead() {  # host:port — пусто считаем мёртвым
+  [[ -z "$1" ]] && return 0
+  probe_cached "$1" && return 1 || return 0
+}
+
 # Что выбрать прямо сейчас — по одной пробе на апстрим.
 _auto_decide() {
-  [[ -n "$SOCKS_UPSTREAM" ]] && tcp_open $(host_of $SOCKS_UPSTREAM) $(port_of $SOCKS_UPSTREAM) \
-    && { print -- socks; return }
-  [[ -n "$HTTP_UPSTREAM" ]] && tcp_open $(host_of $HTTP_UPSTREAM) $(port_of $HTTP_UPSTREAM) \
-    && { print -- http; return }
+  [[ -n "$SOCKS_UPSTREAM" ]] && probe_cached "$SOCKS_UPSTREAM" && { print -- socks; return }
+  [[ -n "$HTTP_UPSTREAM"  ]] && probe_cached "$HTTP_UPSTREAM"  && { print -- http;  return }
   print -- direct
 }
 
@@ -108,10 +135,13 @@ resolve_auto() {
   local c_gw="" c_res="" c_ts=0
   [[ -r "$cache" ]] && read -r c_gw c_res c_ts < "$cache"
 
-  # вне офисных подсетей держим ответ дольше: незачем долбиться в офисные
-  # адреса каждые 5 минут, сидя дома
-  local ttl=300 p
-  if [[ -n "$OFFICE_GATEWAYS" ]]; then
+  # Асимметрия намеренная: ошибиться в пользу socks дорого (15с таймаута
+  # gost на каждый запрос), ошибиться в пользу direct дёшево (просто медленнее).
+  # Поэтому «прокси» перепроверяем часто, «напрямую» — редко.
+  local ttl p
+  if [[ "$c_res" == (socks|http) ]]; then
+    ttl=60
+  else
     ttl=1800
     for p in ${(s:,:)OFFICE_GATEWAYS}; do
       [[ -n "$p" && "$gw" == ${p}* ]] && { ttl=300; break }
@@ -137,9 +167,19 @@ resolve_auto() {
 
 saved_mode() { [[ -r "$MODE_FILE" ]] && < "$MODE_FILE" || print -- auto }
 
+# ВАЖНО: у gost таймаут набора зашит в 15 секунд и не настраивается ни
+# флагом, ни конфигом. Поэтому мост НИКОГДА не должен смотреть в мёртвый
+# апстрим: иначе каждый запрос браузера висит эти 15 секунд и отдаёт 503.
+# Закреплённый режим при недоступном апстриме временно понижаем до direct —
+# сохранённое предпочтение при этом не трогаем, вернётся само.
 effective_mode() {
   local m=$(saved_mode)
-  [[ "$m" == auto ]] && resolve_auto || print -- "$m"
+  [[ "$m" == auto ]] && { resolve_auto; return }
+  case "$m" in
+    (socks) upstream_dead "$SOCKS_UPSTREAM" && m=direct ;;
+    (http)  upstream_dead "$HTTP_UPSTREAM"  && m=direct ;;
+  esac
+  print -- "$m"
 }
 
 bridge_pid() { pgrep -f "gost -L http://127.0.0.1:$BRIDGE_PORT" 2>/dev/null | head -1 }
@@ -234,7 +274,7 @@ cmd_switch() {  # mode
   local want="$1" eff
   mkdir -p "$CFG_DIR"; print -- "$want" > "$MODE_FILE"
   # явное действие пользователя — решаем заново, а не отдаём кэш
-  rm -f "$CFG_DIR/auto-cache"
+  rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)
   eff="$want"; [[ "$want" == auto ]] && eff=$(resolve_auto)
   stop_bridge
   start_bridge "$eff" || die "мост не поднялся, см. $LOG"
@@ -253,7 +293,12 @@ cmd_status() {
   else
     print -- "  мост               : $(c_grn работает) (pid $(bridge_pid), апстрим=$run)"
   fi
-  local shown="$saved"; [[ "$saved" == auto ]] && shown="auto → $eff"
+  local shown="$saved"
+  if [[ "$saved" == auto ]]; then
+    shown="auto → $eff"
+  elif [[ "$eff" != "$saved" ]]; then
+    shown="$saved $(c_yel "недоступен") → работаем $eff"
+  fi
   print -- "  режим              : $shown"
   print -- "  шлюз               : ${gw:-нет маршрута}"
   print -- ""
@@ -475,7 +520,7 @@ NO_PROXY_LIST=$NO_PROXY_LIST
 BENCH_URL=$BENCH_URL
 BENCH_BYTES=$BENCH_BYTES
 EOF
-  rm -f "$CFG_DIR/auto-cache"   # апстримы сменились — решение auto пересчитать
+  rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)   # апстримы сменились — решение auto пересчитать
   print -- ""
   ok "конфиг записан: $CFG"
   print -- "$(c_dim 'дальше: proxypilot bench   — сравнить пути')"
@@ -521,7 +566,7 @@ cmd_set() {  # KEY VALUE
   else
     print -- "${key}=${value}" >> "$CFG"
   fi
-  [[ "$key" == (SOCKS_UPSTREAM|HTTP_UPSTREAM|OFFICE_GATEWAYS) ]] && rm -f "$CFG_DIR/auto-cache"
+  [[ "$key" == (SOCKS_UPSTREAM|HTTP_UPSTREAM|OFFICE_GATEWAYS) ]] && rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)
   ok "$key=${value:-<пусто>}"
 }
 
@@ -536,8 +581,8 @@ cmd_probe() {  # host:port
 cmd_json() {
   local saved=$(saved_mode) eff=$(effective_mode) run=$(running_mode) gw=$(gateway)
   local su=false hu=false
-  [[ -n "$SOCKS_UPSTREAM" ]] && tcp_open $(host_of $SOCKS_UPSTREAM) $(port_of $SOCKS_UPSTREAM) && su=true
-  [[ -n "$HTTP_UPSTREAM"  ]] && tcp_open $(host_of $HTTP_UPSTREAM)  $(port_of $HTTP_UPSTREAM)  && hu=true
+  [[ -n "$SOCKS_UPSTREAM" ]] && probe_cached "$SOCKS_UPSTREAM" && su=true
+  [[ -n "$HTTP_UPSTREAM"  ]] && probe_cached "$HTTP_UPSTREAM"  && hu=true
   print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false)}"
 }
 
