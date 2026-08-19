@@ -20,7 +20,7 @@ setopt pipe_fail multibyte
 # Без UTF-8 локали ${#строка} считает байты, и таблицы с кириллицей разъезжаются.
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
-readonly PP_VERSION="1.1.0"
+readonly PP_VERSION="1.1.1"
 readonly CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot"
 readonly CFG="$CFG_DIR/config"
 readonly MODE_FILE="$CFG_DIR/mode"
@@ -86,38 +86,50 @@ need_config() {
 
 # ── режимы ───────────────────────────────────────────────────────────────────
 # socks | http | direct | auto
+# Что выбрать прямо сейчас — по одной пробе на апстрим.
+_auto_decide() {
+  [[ -n "$SOCKS_UPSTREAM" ]] && tcp_open $(host_of $SOCKS_UPSTREAM) $(port_of $SOCKS_UPSTREAM) \
+    && { print -- socks; return }
+  [[ -n "$HTTP_UPSTREAM" ]] && tcp_open $(host_of $HTTP_UPSTREAM) $(port_of $HTTP_UPSTREAM) \
+    && { print -- http; return }
+  print -- direct
+}
+
+# Решение кэшируется по шлюзу. Это не оптимизация, а защита от флаппинга:
+# приложение зовёт resolve_auto раз в 5 секунд, и раньше на офисном шлюзе
+# проба шла каждый раз мимо кэша. Одна потерянная проба меняла режим, смена
+# режима перезапускает мост — и рвёт все живые соединения. Отсюда были
+# «иногда вообще не коннектится».
 resolve_auto() {
-  local gw p
-  gw=$(gateway)
+  local gw=$(gateway)
   [[ -z "$gw" ]] && { print -- direct; return }
 
-  # быстрый путь: шлюз из известных офисных префиксов
+  local cache="$CFG_DIR/auto-cache" now=$(date +%s)
+  local c_gw="" c_res="" c_ts=0
+  [[ -r "$cache" ]] && read -r c_gw c_res c_ts < "$cache"
+
+  # вне офисных подсетей держим ответ дольше: незачем долбиться в офисные
+  # адреса каждые 5 минут, сидя дома
+  local ttl=300 p
   if [[ -n "$OFFICE_GATEWAYS" ]]; then
+    ttl=1800
     for p in ${(s:,:)OFFICE_GATEWAYS}; do
-      [[ -n "$p" && "$gw" == ${p}* ]] || continue
-      [[ -n "$SOCKS_UPSTREAM" ]] && tcp_open $(host_of $SOCKS_UPSTREAM) $(port_of $SOCKS_UPSTREAM) && { print -- socks; return }
-      [[ -n "$HTTP_UPSTREAM"  ]] && tcp_open $(host_of $HTTP_UPSTREAM)  $(port_of $HTTP_UPSTREAM)  && { print -- http;  return }
+      [[ -n "$p" && "$gw" == ${p}* ]] && { ttl=300; break }
     done
   fi
 
-  # Незнакомый шлюз (офис бывает на нескольких подсетях): если прокси
-  # досягаем — мы в офисе, включаем его. Результат кэшируем по шлюзу на
-  # 10 минут: иначе дома каждая новая вкладка терминала ждала бы 1-2с
-  # таймаута пробы (shellenv зовёт resolve_auto при старте шелла).
-  local cache="$CFG_DIR/auto-cache" now=$(date +%s)
-  if [[ -r "$cache" ]]; then
-    local c_gw c_res c_ts
-    read -r c_gw c_res c_ts < "$cache"
-    if [[ "$c_gw" == "$gw" ]] && (( now - ${c_ts:-0} < 600 )); then
-      print -- "$c_res"; return
-    fi
+  if [[ "$c_gw" == "$gw" && -n "$c_res" ]] && (( now - ${c_ts:-0} < ttl )); then
+    print -- "$c_res"; return
   fi
-  local res=direct
-  if [[ -n "$SOCKS_UPSTREAM" ]] && tcp_open $(host_of $SOCKS_UPSTREAM) $(port_of $SOCKS_UPSTREAM); then
-    res=socks
-  elif [[ -n "$HTTP_UPSTREAM" ]] && tcp_open $(host_of $HTTP_UPSTREAM) $(port_of $HTTP_UPSTREAM); then
-    res=http
+
+  local res=$(_auto_decide)
+  # Смена решения в той же сети — перепроверяем. Одиночный сетевой сбой
+  # не должен дёргать мост; менять маршрут только на устойчивом сигнале.
+  if [[ "$c_gw" == "$gw" && -n "$c_res" && "$res" != "$c_res" ]]; then
+    sleep 0.4
+    [[ "$(_auto_decide)" == "$res" ]] || res="$c_res"
   fi
+
   mkdir -p "$CFG_DIR"
   print -- "$gw $res $now" > "$cache"
   print -- "$res"
@@ -221,6 +233,8 @@ cmd_switch() {  # mode
   need_config
   local want="$1" eff
   mkdir -p "$CFG_DIR"; print -- "$want" > "$MODE_FILE"
+  # явное действие пользователя — решаем заново, а не отдаём кэш
+  rm -f "$CFG_DIR/auto-cache"
   eff="$want"; [[ "$want" == auto ]] && eff=$(resolve_auto)
   stop_bridge
   start_bridge "$eff" || die "мост не поднялся, см. $LOG"
@@ -461,6 +475,7 @@ NO_PROXY_LIST=$NO_PROXY_LIST
 BENCH_URL=$BENCH_URL
 BENCH_BYTES=$BENCH_BYTES
 EOF
+  rm -f "$CFG_DIR/auto-cache"   # апстримы сменились — решение auto пересчитать
   print -- ""
   ok "конфиг записан: $CFG"
   print -- "$(c_dim 'дальше: proxypilot bench   — сравнить пути')"
@@ -506,6 +521,7 @@ cmd_set() {  # KEY VALUE
   else
     print -- "${key}=${value}" >> "$CFG"
   fi
+  [[ "$key" == (SOCKS_UPSTREAM|HTTP_UPSTREAM|OFFICE_GATEWAYS) ]] && rm -f "$CFG_DIR/auto-cache"
   ok "$key=${value:-<пусто>}"
 }
 
