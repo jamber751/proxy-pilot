@@ -219,6 +219,18 @@ final class ConfigStore: ObservableObject {
             && Self.validDNSList(officeDNS)
     }
 
+    // Адрес не из офисной подсети — почти всегда скопированный пример: в офисе
+    // он не поднимется, сработает откат в DHCP, и профиль будет дёргаться.
+    var officeIPMismatch: Bool {
+        guard !officeIP.isEmpty, !gateways.isEmpty else { return false }
+        let prefixes = gateways.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return !prefixes.contains { officeIP.hasPrefix($0) }
+    }
+    // При статике DNS от DHCP не приедут — пустое поле оставит резолвер как был.
+    var officeDNSMissing: Bool { !officeIP.isEmpty && officeDNS.isEmpty }
+
     func probeAll() {
         probe(\.socksProbe, socks)
         probe(\.httpProbe, http)
@@ -354,10 +366,18 @@ struct SettingsView: View {
         Section {
             HintField(title: "Сетевой сервис", text: $store.netService, hint: "Wi-Fi")
             HintField(title: "Адрес в офисе", text: $store.officeIP,
-                      hint: "192.168.1.246 — пусто, чтобы адрес не менять")
+                      hint: "из офисной подсети; пусто — адрес не менять")
+            if store.officeIPMismatch {
+                Text("Этот адрес не из офисной подсети (\(store.gateways)) — в офисе он не поднимется.")
+                    .font(.caption).foregroundColor(.orange)
+            }
             HintField(title: "Маска", text: $store.officeMask, hint: "255.255.255.0")
             HintField(title: "DNS в офисе", text: $store.officeDNS,
-                      hint: "192.168.1.1 8.8.8.8")
+                      hint: "офисный первым, потом запасной")
+            if store.officeDNSMissing {
+                Text("Без DNS резолвер в офисе останется прежним: при статике адреса от DHCP не приходят.")
+                    .font(.caption).foregroundColor(.orange)
+            }
             HStack {
                 Button("Применить сейчас") {
                     store.admin(["net", "apply"], note: "Применяю профиль…") { onApplied() }

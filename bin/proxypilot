@@ -743,7 +743,17 @@ cmd_set() {  # KEY VALUE
       [[ -z "$value" || "$value" == *:<1-65535> ]] || die "формат: host:port (или пусто)" ;;
     (OFFICE_IP|OFFICE_MASK)
       [[ -z "$value" || "$value" == <0-255>.<0-255>.<0-255>.<0-255> ]] \
-        || die "формат: четыре числа через точку (или пусто)" ;;
+        || die "формат: четыре числа через точку (или пусто)"
+      # Адрес не из офисной подсети — почти всегда опечатка (например, взяли
+      # пример из подсказки). В офисе такой адрес не поднимется, сработает
+      # откат в DHCP, и профиль будет дёргаться на каждом подключении.
+      if [[ "$key" == OFFICE_IP && -n "$value" && -n "$OFFICE_GATEWAYS" ]]; then
+        local _p _fits=0
+        for _p in ${(s:,:)OFFICE_GATEWAYS}; do
+          [[ -n "$_p" && "$value" == ${_p}* ]] && { _fits=1; break }
+        done
+        (( _fits )) || warn "$value не из офисной подсети (OFFICE_GATEWAYS=$OFFICE_GATEWAYS) — проверь адрес"
+      fi ;;
     (OFFICE_DNS)
       local a
       for a in ${=value}; do
@@ -1137,6 +1147,14 @@ net_status() {
 
   if net_managed; then
     print -- "  адрес в офисе     : $OFFICE_IP/$OFFICE_MASK${OFFICE_DNS:+, dns $OFFICE_DNS}"
+    if [[ -n "$OFFICE_GATEWAYS" ]]; then
+      local p fits=0
+      for p in ${(s:,:)OFFICE_GATEWAYS}; do
+        [[ -n "$p" && "$OFFICE_IP" == ${p}* ]] && { fits=1; break }
+      done
+      (( fits )) || print -- "  $(c_yel '⚠ адрес')           : не из офисной подсети — в офисе не поднимется"
+    fi
+    [[ -z "$OFFICE_DNS" ]] && print -- "  $(c_yel '⚠ DNS')             : не задан — при статике от DHCP они не приедут"
   else
     print -- "  адрес в офисе     : $(c_dim 'не управляется') (OFFICE_IP пуст)"
   fi
