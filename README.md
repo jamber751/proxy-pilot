@@ -32,6 +32,13 @@ through SOCKS5, an HTTP proxy, or straight out:
 routes doesn't restart them. `auto` mode picks the route from the network —
 take the laptop home and the proxy switches itself off.
 
+“From the network” means the address and gateway of the **physical** interface,
+matched against `OFFICE_GATEWAYS`. Not upstream reachability: on a VPN from home
+the office proxy answers too, and routing every request through it would be a
+detour through the office — office hosts already travel the tunnel by route and
+skip the bridge by `NO_PROXY_LIST`. Leave `OFFICE_GATEWAYS` empty and `auto`
+falls back to the old “first upstream that answers” behaviour.
+
 ## Install
 
 Grab the DMG from [Releases](https://github.com/jamber751/proxy-pilot/releases/latest)
