@@ -21,7 +21,16 @@ setopt pipe_fail multibyte
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
 readonly PP_VERSION="1.1.3"
-readonly CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot"
+
+# Под sudo $HOME указывает на /var/root, а конфиг лежит у пользователя. Команды
+# net/vpn без root работать не могут, поэтому ищем конфиг вызвавшего — иначе
+# каждый запуск требовал бы `sudo -E` и молча терял настройки.
+_cfg_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+if (( EUID == 0 )) && [[ -n "${SUDO_USER:-}" && ! -r "$_cfg_home/proxypilot/config" ]]; then
+  _u_home=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+  [[ -r "$_u_home/.config/proxypilot/config" ]] && _cfg_home="$_u_home/.config"
+fi
+readonly CFG_DIR="$_cfg_home/proxypilot"
 readonly CFG="$CFG_DIR/config"
 readonly MODE_FILE="$CFG_DIR/mode"
 readonly LOG="$HOME/Library/Logs/proxypilot.log"
@@ -35,6 +44,18 @@ NO_PROXY_LIST="localhost,127.0.0.1,::1,.local,host.docker.internal,169.254.0.0/1
 BENCH_URL="https://speed.cloudflare.com/__down?bytes=5000000"
 BENCH_BYTES=5000000
 GOST=""
+
+# ── сетевой профиль (пусто — ничего не трогаем) ──────────────────────────────
+# Тот же вопрос «я в офисе?» решает не только маршрут прокси: в офисе доступы
+# часто выданы на фиксированный IP, а VPN нужен ровно наоборот — вне офиса.
+NET_SERVICE="Wi-Fi"        # сетевой сервис, как в System Settings → Network
+OFFICE_IP=""               # статический адрес в офисе; пусто — адрес не менять
+OFFICE_MASK="255.255.255.0"
+OFFICE_DNS=""              # DNS для статики через пробел: от DHCP они не приедут
+VPN_PROFILE=""             # путь к .ovpn; пусто — туннель не трогать
+VPN_ROUTES=""              # что заворачивать в туннель; пусто — /16 вокруг шлюза
+VPN_AUTO="off"             # on — поднимать вне офиса и гасить в офисе автоматом;
+                           # off — только руками (proxypilot vpn up|down)
 
 [[ -r "$CFG" ]] && source "$CFG"
 
@@ -117,25 +138,32 @@ upstream_dead() {  # host:port — пусто считаем мёртвым
 
 # Адрес и шлюз ФИЗИЧЕСКОГО интерфейса. Дефолтный маршрут для вопроса «я в офисе?»
 # не годится: с поднятым VPN он уходит в utun, и офис перестаёт узнаваться.
-physical_endpoint() {  # печатает: "<ipv4> <шлюз>", пустые поля как "-"
+physical_endpoint() {  # печатает: "<ipv4> <шлюз> <интерфейс>", пустые поля как "-"
   local dev ip gw
   for dev in ${(f)"$(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep -E '^(en|bridge)[0-9]')"}; do
     ip=$(ipconfig getifaddr "$dev" 2>/dev/null)
     [[ -z "$ip" ]] && continue
     gw=$(ipconfig getoption "$dev" router 2>/dev/null)
-    [[ -z "$gw" || "$gw" == 0.0.0.0 ]] && gw=$(gateway)   # статика: аренды нет
-    print -- "$ip ${gw:--}"
+    if [[ -z "$gw" || "$gw" == 0.0.0.0 ]]; then
+      # Статика: аренды DHCP нет, но шлюз прописан в настройках сервиса.
+      # Брать вместо него дефолтный маршрут нельзя — с поднятым VPN он уходит
+      # в туннель, и офис перестаёт узнаваться прямо на рабочем месте.
+      gw=$(networksetup -getinfo "$NET_SERVICE" 2>/dev/null | awk '/^Router:/{print $2; exit}')
+      [[ "$gw" == none ]] && gw=""
+    fi
+    [[ -z "$gw" ]] && gw=$(gateway)
+    print -- "$ip ${gw:--} $dev"
     return
   done
-  print -- "- $(gateway)"
+  print -- "- $(gateway) -"
 }
 
 # Мы в офисной сети? Сверяем префиксы OFFICE_GATEWAYS и с адресом, и со шлюзом:
 # при статическом IP аренды DHCP нет, зато адрес сам выдаёт подсеть.
 in_office() {
   [[ -z "$OFFICE_GATEWAYS" ]] && return 0      # не настроено — не сужаем поведение
-  local ip gw p
-  read -r ip gw <<< "$(physical_endpoint)"
+  local ip gw dev p
+  read -r ip gw dev <<< "$(physical_endpoint)"
   for p in ${(s:,:)OFFICE_GATEWAYS}; do
     [[ -z "$p" ]] && continue
     [[ "$gw" == ${p}* || "$ip" == ${p}* ]] && return 0
@@ -661,19 +689,47 @@ cmd_shellenv() {
 cmd_set() {  # KEY VALUE
   local key="$1" value="${2:-}"
   local -a allowed=(BRIDGE_PORT SOCKS_UPSTREAM HTTP_UPSTREAM OFFICE_GATEWAYS
-                    NO_PROXY_LIST BENCH_URL BENCH_BYTES)
+                    NO_PROXY_LIST BENCH_URL BENCH_BYTES
+                    NET_SERVICE OFFICE_IP OFFICE_MASK OFFICE_DNS
+                    VPN_PROFILE VPN_ROUTES VPN_AUTO)
   (( ${allowed[(Ie)$key]} )) || die "ключ $key не настраивается (можно: ${allowed})"
   case "$key" in
     (BRIDGE_PORT) [[ "$value" == <1024-65535> ]] || die "порт: число 1024–65535" ;;
     (SOCKS_UPSTREAM|HTTP_UPSTREAM)
       [[ -z "$value" || "$value" == *:<1-65535> ]] || die "формат: host:port (или пусто)" ;;
+    (OFFICE_IP|OFFICE_MASK)
+      [[ -z "$value" || "$value" == <0-255>.<0-255>.<0-255>.<0-255> ]] \
+        || die "формат: четыре числа через точку (или пусто)" ;;
+    (OFFICE_DNS)
+      local a
+      for a in ${=value}; do
+        [[ "$a" == <0-255>.<0-255>.<0-255>.<0-255> ]] || die "DNS через пробел, адресами: $a" ;
+      done ;;
+    (VPN_PROFILE)
+      [[ -z "$value" || -r "$value" ]] || die "файл не читается: $value" ;;
+    (VPN_AUTO)
+      [[ "$value" == (on|off) ]] || die "VPN_AUTO: on или off" ;;
+    (VPN_ROUTES)
+      local n
+      for n in ${=value}; do
+        [[ "$n" == <0-255>.<0-255>.<0-255>.<0-255>/<1-32> ]] || die "маршруты как СЕТЬ/БИТЫ: $n" ;
+      done ;;
+    (NET_SERVICE)
+      [[ -z "$value" ]] || networksetup -getinfo "$value" >/dev/null 2>&1 \
+        || die "нет сетевого сервиса '$value' (см. networksetup -listallnetworkservices)" ;;
   esac
+  # Конфиг читается через `source`, поэтому значение с пробелами (список DNS,
+  # несколько маршрутов) обязано быть в кавычках — иначе шелл присвоит первое
+  # слово, а остальные попытается выполнить как команду.
+  local stored="$value"
+  [[ "$value" == *[[:space:]]* ]] && stored="\"$value\""
+
   mkdir -p "$CFG_DIR"; [[ -f "$CFG" ]] || : > "$CFG"
   if grep -q "^${key}=" "$CFG" 2>/dev/null; then
     # sed -i с разделителем |, потому что в BENCH_URL есть / и ?
-    sed -i '' "s|^${key}=.*|${key}=${value}|" "$CFG"
+    sed -i '' "s|^${key}=.*|${key}=${stored}|" "$CFG"
   else
-    print -- "${key}=${value}" >> "$CFG"
+    print -- "${key}=${stored}" >> "$CFG"
   fi
   [[ "$key" == (SOCKS_UPSTREAM|HTTP_UPSTREAM|OFFICE_GATEWAYS) ]] && rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)
   ok "$key=${value:-<пусто>}"
@@ -692,7 +748,16 @@ cmd_json() {
   local su=false hu=false
   [[ -n "$SOCKS_UPSTREAM" ]] && probe_cached "$SOCKS_UPSTREAM" && su=true
   [[ -n "$HTTP_UPSTREAM"  ]] && probe_cached "$HTTP_UPSTREAM"  && hu=true
-  print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false)}"
+  # Сетевой профиль: приложению нужно знать, где мы и что с туннелем, чтобы
+  # рисовать это в меню без второго вызова CLI.
+  local office=false netd=false vpnd=false vpnup=false vpnauto=false vpnforeign=false
+  [[ -n "$OFFICE_GATEWAYS" ]] && net_where >/dev/null 2>&1 && office=true
+  [[ -r "$NET_PLIST" ]] && netd=true
+  [[ -r "$VPN_PLIST" ]] && vpnd=true
+  vpn_loaded 2>/dev/null && vpnup=true
+  vpn_auto_on && vpnauto=true
+  vpn_foreign_up 2>/dev/null && vpnforeign=true
+  print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false),\"in_office\":$office,\"net_service\":\"$NET_SERVICE\",\"office_ip\":\"$OFFICE_IP\",\"net_daemon\":$netd,\"vpn_profile\":\"$VPN_PROFILE\",\"vpn_installed\":$vpnd,\"vpn_up\":$vpnup,\"vpn_auto\":$vpnauto,\"vpn_foreign\":$vpnforeign}"
 }
 
 cmd_doctor() {
@@ -762,6 +827,430 @@ cmd_doctor() {
   print -- "$(c_dim "лог: $LOG")"
 }
 
+# ═══ сетевой профиль: статический IP и туннель ════════════════════════════════
+#
+# Тот же вопрос «я в офисе?», по которому выбирается маршрут прокси, отвечает и
+# на два других. В офисе доступы часто выданы на фиксированный адрес — значит
+# там нужна статика. В любой другой сети статика из чужой подсети означает
+# «интернета нет». А VPN нужен ровно наоборот: вне офиса.
+#
+#   офис    → статический IP + офисные DNS,  туннель опущен (мы уже внутри)
+#   не офис → DHCP,                          туннель поднят
+#
+# Обе половины включаются независимо и по умолчанию выключены: пустой OFFICE_IP
+# — адресом не управляем, VPN_AUTO=off — туннель только руками.
+#
+# Смена IPv4 в macOS доступна только root (правило is-root у
+# system.services.systemconfiguration.network), поэтому применяет профиль
+# LaunchDaemon, который ставится `proxypilot net install`.
+
+readonly NET_LABEL="pro.proxypilot.netprofile"
+readonly NET_PLIST="/Library/LaunchDaemons/$NET_LABEL.plist"
+readonly NET_BIN="/usr/local/sbin/proxypilot-net"
+readonly NET_LOG="/var/log/proxypilot-net.log"
+
+readonly VPN_LABEL="pro.proxypilot.vpn"
+readonly VPN_PLIST="/Library/LaunchDaemons/$VPN_LABEL.plist"
+readonly VPN_DIR="/usr/local/etc/proxypilot-vpn"
+readonly VPN_CONF="$VPN_DIR/office.conf"
+readonly VPN_LOG="/var/log/proxypilot-vpn.log"
+
+NET_DRY=0
+
+net_log() {
+  local line="$(date '+%Y-%m-%d %H:%M:%S') $*"
+  # На экран — при dry-run и из терминала. У демона stdout уже направлен в этот
+  # же файл, и печать в него давала бы каждую строку дважды.
+  if (( NET_DRY )) || [[ -t 1 ]]; then print -- "$line"; fi
+  (( NET_DRY )) || print -- "$line" >> "$NET_LOG" 2>/dev/null
+}
+
+net_run() {
+  if (( NET_DRY )); then
+    net_log "  [dry-run] $*"
+  else
+    "$@" 2>&1 | while read -r l; do [[ -n "$l" ]] && net_log "  ! $l"; done
+  fi
+}
+
+need_root() { (( EUID == 0 )) || die "нужен root: sudo proxypilot $*" }
+
+net_managed() { [[ -n "$OFFICE_IP" ]] }
+vpn_managed() { [[ -n "$VPN_PROFILE" || -r "$VPN_CONF" ]] }
+vpn_auto_on() { [[ "$VPN_AUTO" == (on|yes|1|true) ]] }
+
+net_device() {
+  networksetup -listallhardwareports 2>/dev/null \
+    | awk -v s="$NET_SERVICE" '/^Hardware Port:/{p=substr($0,16)} /^Device:/{if(p==s){print $2; exit}}'
+}
+
+net_config_kind() {
+  case "$(networksetup -getinfo "$NET_SERVICE" 2>/dev/null)" in
+    (*"Manual Configuration"*) print -- manual ;;
+    (*"DHCP Configuration"*)   print -- dhcp   ;;
+    (*)                        print -- unknown ;;
+  esac
+}
+net_ip() { networksetup -getinfo "$NET_SERVICE" 2>/dev/null | awk '/^IP address:/{print $3; exit}' }
+
+# Офис для профиля — строже, чем для прокси: мало того что сеть подпадает под
+# OFFICE_GATEWAYS, шлюз обязан отвечать за физическим интерфейсом. Иначе
+# офисная статика, забытая в домашней сети, сошла бы за офис (адрес-то
+# офисный), и профиль никогда бы не сбросился в DHCP.
+net_where() {
+  local ip gw dev iface
+  read -r ip gw dev <<< "$(physical_endpoint)"
+  [[ "$dev" != - ]] || { print -- "нет активного интерфейса"; return 1 }
+  in_office || { print -- "адрес $ip / шлюз $gw мимо OFFICE_GATEWAYS"; return 1 }
+  [[ "$gw" != - && -n "$gw" ]] || { print -- "нет шлюза"; return 1 }
+
+  iface=$(route -n get "$gw" 2>/dev/null | awk '/interface:/{print $2; exit}')
+  [[ "$iface" == "$dev" ]] || { print -- "шлюз $gw за '${iface:-—}', а не за $dev"; return 1 }
+
+  ping -c 1 -t 2 -o "$gw" >/dev/null 2>&1 && { print -- "шлюз $gw отвечает через $dev"; return 0 }
+  # Шлюз может молчать на ICMP — тогда верим ARP-таблице.
+  arp -n "$gw" 2>/dev/null | grep -qv 'no entry' && { print -- "шлюз $gw в ARP через $dev"; return 0 }
+  print -- "шлюз $gw не отвечает и не в ARP"
+  return 1
+}
+
+net_apply_office() {
+  local gw ip dev
+  read -r ip gw dev <<< "$(physical_endpoint)"
+  net_log "→ офис: $OFFICE_IP/$OFFICE_MASK gw $gw${OFFICE_DNS:+ dns $OFFICE_DNS}"
+  net_run networksetup -setmanual "$NET_SERVICE" "$OFFICE_IP" "$OFFICE_MASK" "$gw"
+  [[ -n "$OFFICE_DNS" ]] && net_run networksetup -setdnsservers "$NET_SERVICE" ${=OFFICE_DNS}
+  (( NET_DRY )) && return 0
+  sleep 3
+  # Страховка: статика могла оказаться неверной — тогда шлюз пропадёт.
+  if ! ping -c 1 -t 2 -o "$gw" >/dev/null 2>&1; then
+    net_log "!! после статики шлюз $gw не отвечает — откат в DHCP"
+    net_apply_dhcp "откат"
+    return 1
+  fi
+  net_log "✓ статика применена, шлюз отвечает"
+}
+
+net_apply_dhcp() {
+  net_log "→ ${1:-вне офиса}: DHCP, DNS от роутера"
+  net_run networksetup -setdhcp "$NET_SERVICE"
+  [[ -n "$OFFICE_DNS" ]] && net_run networksetup -setdnsservers "$NET_SERVICE" Empty
+  (( NET_DRY )) && return 0
+  sleep 3
+  net_log "✓ DHCP: ip=$(net_ip)"
+}
+
+# ── туннель ──────────────────────────────────────────────────────────────────
+
+vpn_loaded()       { launchctl print "system/$VPN_LABEL" >/dev/null 2>&1 }
+vpn_ours_running() { pgrep -f "openvpn --config $VPN_CONF" >/dev/null 2>&1 }
+
+# Туннель, поднятый другим клиентом (OpenVPN Connect, Tunnelblick). Лезть в него
+# нельзя: два туннеля разом дерутся за маршруты.
+vpn_foreign_up() {
+  vpn_ours_running && return 1
+  local dev
+  for dev in ${(f)"$(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep '^utun')"}; do
+    [[ -n "$(ifconfig $dev 2>/dev/null | awk '/inet [0-9]/{print $2; exit}')" ]] && return 0
+  done
+  return 1
+}
+
+vpn_up() {
+  [[ -r "$VPN_PLIST" ]] || { net_log "  VPN: не установлен (proxypilot vpn install)"; return 0 }
+  vpn_foreign_up && { net_log "  VPN: поднят другим клиентом — не трогаю"; return 0 }
+  vpn_loaded && { net_log "  VPN: уже поднят"; return 0 }
+  net_log "  VPN: поднимаю"
+  net_run launchctl bootstrap system "$VPN_PLIST"
+}
+
+vpn_down() {
+  vpn_foreign_up && { net_log "  VPN: поднят другим клиентом — не трогаю"; return 0 }
+  vpn_loaded || { net_log "  VPN: уже опущен"; return 0 }
+  net_log "  VPN: опускаю"
+  net_run launchctl bootout "system/$VPN_LABEL"
+}
+
+# Собирает рабочий конфиг из профиля клиента, добавляя split-tunnel. Сервер
+# обычно пушит redirect-gateway и НЕ пушит маршруты в офисные подсети — то есть
+# без правок в туннель уходит весь трафик, кругом через офис.
+vpn_build_conf() {
+  local src="$1" routes="$2" tmp net addr bits mask
+  [[ -r "$src" ]] || die "не читается профиль: $src"
+  mkdir -p "$VPN_DIR"; chown root:wheel "$VPN_DIR" 2>/dev/null; chmod 700 "$VPN_DIR"
+  tmp=$(mktemp)
+  # setenv opt block-outside-dns — директива только для Windows, macOS-сборка
+  # ругается «Unrecognized option» на каждом старте.
+  sed 's|^setenv opt block-outside-dns.*|# setenv opt block-outside-dns — Windows-only, macOS не понимает|' \
+    "$src" > "$tmp"
+  {
+    print -- ""
+    print -- "# ─── split-tunnel, добавлено proxypilot vpn install ─────────────────────────"
+    print -- "pull-filter ignore \"redirect-gateway\""
+    print -- ""
+    print -- "# В туннель — только офисные сети. Подсеть, где ноут стоит физически, от"
+    print -- "# этого не страдает: её собственная запись в таблице маршрутов точнее."
+    for net in ${=routes}; do
+      addr="${net%%/*}"; bits="${net##*/}"
+      case "$bits" in
+        (8) mask=255.0.0.0 ;; (12) mask=255.240.0.0 ;;
+        (16) mask=255.255.0.0 ;; (*) mask=255.255.255.0 ;;
+      esac
+      print -- "route $addr $mask"
+    done
+    print -- ""
+    print -- "# Системный резолвер оставляем домашним. Если внутренние имена перестанут"
+    print -- "# открываться — убери строку или добавь зону в /etc/resolver/<домен>."
+    print -- "pull-filter ignore \"dhcp-option DNS\""
+  } >> "$tmp"
+  # 600 и root-владение обязательны: внутри приватный ключ.
+  install -m 600 -o root -g wheel "$tmp" "$VPN_CONF"
+  rm -f "$tmp"
+}
+
+vpn_write_plist() {
+  need_gost_free_openvpn
+  cat > "$VPN_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$VPN_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$OPENVPN_BIN</string>
+		<string>--config</string>
+		<string>$VPN_CONF</string>
+	</array>
+	<key>WorkingDirectory</key><string>$VPN_DIR</string>
+	<!-- Обрыв канала или сон ноутбука не должны оставлять без офисных доступов -->
+	<key>KeepAlive</key><true/>
+	<key>RunAtLoad</key><true/>
+	<key>ThrottleInterval</key><integer>15</integer>
+	<key>StandardOutPath</key><string>$VPN_LOG</string>
+	<key>StandardErrorPath</key><string>$VPN_LOG</string>
+</dict>
+</plist>
+PLIST
+  chmod 644 "$VPN_PLIST"; chown root:wheel "$VPN_PLIST"
+}
+
+OPENVPN_BIN=""
+need_gost_free_openvpn() {
+  local c
+  for c in /opt/homebrew/opt/openvpn/sbin/openvpn /usr/local/opt/openvpn/sbin/openvpn \
+           /opt/homebrew/sbin/openvpn /usr/local/sbin/openvpn $(command -v openvpn 2>/dev/null); do
+    [[ -x "$c" ]] && { OPENVPN_BIN="$c"; return }
+  done
+  die "не найден openvpn. Установи: brew install openvpn"
+}
+
+# ── применение профиля ───────────────────────────────────────────────────────
+
+net_apply() {
+  local reason kind ip rc
+  kind=$(net_config_kind); ip=$(net_ip)
+  net_log "старт: сервис=$NET_SERVICE конфиг=$kind ip=${ip:-—} управляем-адресом=$(net_managed && print да || print нет) vpn-авто=$VPN_AUTO"
+
+  reason=$(net_where); rc=$?
+  if (( rc == 0 )); then
+    net_log "офис: $reason"
+    if net_managed; then
+      if [[ "$kind" == manual && "$ip" == "$OFFICE_IP" ]]; then
+        net_log "= статика уже стоит"
+      else
+        net_apply_office || return $?
+      fi
+    fi
+    vpn_auto_on && vpn_down
+    return 0
+  fi
+
+  net_log "не офис: $reason"
+  # Статику сбрасываем только свою: если адрес прописан не нами, это чужая
+  # настройка и трогать её нельзя.
+  if net_managed && [[ "$kind" == manual ]]; then
+    net_apply_dhcp || return $?
+  fi
+  vpn_auto_on && vpn_up
+  return 0
+}
+
+net_status() {
+  local reason rc kind ip gw dev pip
+  kind=$(net_config_kind); ip=$(net_ip)
+  read -r pip gw dev <<< "$(physical_endpoint)"
+
+  print -- "  сервис            : $NET_SERVICE (${dev:-—})"
+  print -- "  сейчас            : $kind, ip=${ip:-—} gw=${gw:-—}"
+  if [[ -n "$OFFICE_GATEWAYS" ]]; then
+    reason=$(net_where); rc=$?
+    (( rc == 0 )) && print -- "  где мы            : $(c_grn ОФИС) — $reason" \
+                  || print -- "  где мы            : не офис — $reason"
+  else
+    print -- "  где мы            : $(c_yel 'не знаю') — задай OFFICE_GATEWAYS"
+  fi
+
+  if net_managed; then
+    print -- "  адрес в офисе     : $OFFICE_IP/$OFFICE_MASK${OFFICE_DNS:+, dns $OFFICE_DNS}"
+  else
+    print -- "  адрес в офисе     : $(c_dim 'не управляется') (OFFICE_IP пуст)"
+  fi
+  [[ -r "$NET_PLIST" ]] && print -- "  демон профиля     : $(c_grn установлен)" \
+                        || print -- "  демон профиля     : не установлен (proxypilot net install)"
+  return 0
+}
+
+net_install() {
+  local user home
+  user="${SUDO_USER:-$USER}"
+  home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+  [[ -d "$home" ]] || die "не нашёл домашний каталог пользователя $user"
+
+  # Демон крутит СВОЮ root-копию скрипта. Запускать из-под root файл, который
+  # правится обычным пользователем, нельзя: подмена файла = подмена root-кода.
+  install -m 755 -o root -g wheel "${0:A}" "$NET_BIN"
+
+  cat > "$NET_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$NET_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$NET_BIN</string>
+		<string>net</string>
+		<string>apply</string>
+	</array>
+	<!-- Конфиг лежит у пользователя; у root свой \$HOME (/var/root), поэтому
+	     путь передаём явно — скрипт уважает XDG_CONFIG_HOME. -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>XDG_CONFIG_HOME</key><string>$home/.config</string>
+	</dict>
+	<key>RunAtLoad</key><true/>
+	<!-- Главный триггер: системное уведомление о смене сетевой конфигурации -->
+	<key>LaunchEvents</key>
+	<dict>
+		<key>com.apple.notifyd.matching</key>
+		<dict>
+			<key>network-change</key>
+			<dict>
+				<key>Notification</key>
+				<string>com.apple.system.config.network_change</string>
+			</dict>
+		</dict>
+	</dict>
+	<!-- Смена сети сыпет пачкой событий -->
+	<key>ThrottleInterval</key><integer>10</integer>
+	<key>StandardOutPath</key><string>$NET_LOG</string>
+	<key>StandardErrorPath</key><string>$NET_LOG</string>
+</dict>
+</plist>
+PLIST
+  chmod 644 "$NET_PLIST"; chown root:wheel "$NET_PLIST"
+  launchctl bootout "system/$NET_LABEL" 2>/dev/null || true
+  launchctl bootstrap system "$NET_PLIST" || die "launchctl не смог загрузить $NET_LABEL"
+  ok "профиль будет применяться при смене сети (лог: $NET_LOG)"
+}
+
+net_uninstall() {
+  launchctl bootout "system/$NET_LABEL" 2>/dev/null || true
+  rm -f "$NET_PLIST" "$NET_BIN"
+  ok "демон профиля снят (сеть оставлена как есть)"
+}
+
+# ── туннель: установка и статус ──────────────────────────────────────────────
+
+# Что заворачивать в туннель, если не задано явно: /16 вокруг офисной сети.
+# Офисные хосты почти всегда разбросаны по соседним подсетям — 192.168.8.x,
+# 192.168.140.x и т.п. — а подсеть, где ноут стоит физически, не страдает:
+# её собственная запись в таблице маршрутов точнее любого /16.
+vpn_default_routes() {
+  local p="${${(s:,:)OFFICE_GATEWAYS}[1]}"
+  [[ -n "$p" ]] || return 1
+  local -a o=(${(s:.:)p})
+  (( ${#o} >= 2 )) || return 1
+  print -- "${o[1]}.${o[2]}.0.0/16"
+}
+
+vpn_install() {
+  local profile="${1:-$VPN_PROFILE}" routes="$VPN_ROUTES"
+  [[ -n "$profile" ]] || die "укажи профиль: proxypilot vpn install ~/путь.ovpn (или set VPN_PROFILE)"
+  [[ -r "$profile" ]] || die "не читается профиль: $profile"
+  if [[ -z "$routes" ]]; then
+    routes=$(vpn_default_routes) \
+      || die "не могу вывести маршруты: задай VPN_ROUTES или OFFICE_GATEWAYS"
+  fi
+
+  vpn_build_conf "$profile" "$routes"
+  vpn_write_plist
+  launchctl bootout "system/$VPN_LABEL" 2>/dev/null || true
+  ok "туннель готов: профиль ${profile:t}, в туннель $routes"
+  if vpn_auto_on; then
+    print -- "  поднимется сам, когда окажешься вне офиса"
+  else
+    print -- "  автоматика выключена: поднимать руками (sudo proxypilot vpn up)"
+    print -- "  включить:  proxypilot vpn auto on"
+  fi
+}
+
+vpn_uninstall() {
+  launchctl bootout "system/$VPN_LABEL" 2>/dev/null || true
+  rm -f "$VPN_PLIST"
+  # В конфиге лежит приватный ключ — сносим вместе с каталогом.
+  rm -rf "$VPN_DIR"
+  ok "туннель снят, профиль с ключом удалён"
+}
+
+vpn_status() {
+  print -- "  профиль           : ${VPN_PROFILE:-$(c_dim 'не задан')}"
+  print -- "  собранный конфиг  : $([[ -r $VPN_CONF ]] && print "$VPN_CONF" || print "$(c_dim нет) (proxypilot vpn install)")"
+  print -- "  автоматика        : $(vpn_auto_on && c_grn on || c_dim off)"
+  if [[ -r "$VPN_PLIST" ]]; then
+    local up=$(vpn_loaded && print да || print нет)
+    print -- "  туннель           : $([[ $up == да ]] && c_grn поднят || print опущен)$(vpn_ours_running && print ' (процесс жив)')"
+  else
+    print -- "  туннель           : не установлен"
+  fi
+  vpn_foreign_up && print -- "  $(c_yel '⚠ чужой туннель')   : поднят другим клиентом — proxypilot его не трогает"
+  [[ -r "$VPN_CONF" ]] && print -- "  в туннель         : $(awk '/^route /{printf "%s ", $2}' "$VPN_CONF" 2>/dev/null)"
+  return 0   # статус не должен возвращать ошибку из-за последней проверки
+}
+
+vpn_auto_set() {
+  case "$1" in
+    (on|off) cmd_set VPN_AUTO "$1" ;;
+    (*)      die "proxypilot vpn auto on|off" ;;
+  esac
+}
+
+# ── диспетчер подкоманд ──────────────────────────────────────────────────────
+
+cmd_net() {
+  case "${1:-status}" in
+    (status)        net_status ;;
+    (apply)         need_root net apply; net_apply ;;
+    (--dry-run|-n)  NET_DRY=1; net_apply ;;
+    (install)       need_root net install; net_install ;;
+    (uninstall)     need_root net uninstall; net_uninstall ;;
+    (*) die "proxypilot net [status|apply|--dry-run|install|uninstall]" ;;
+  esac
+}
+
+cmd_vpn() {
+  case "${1:-status}" in
+    (status)     vpn_status ;;
+    (up)         need_root vpn up;   NET_DRY=0; vpn_up ;;
+    (down)       need_root vpn down; NET_DRY=0; vpn_down ;;
+    (install)    need_root vpn install; vpn_install "${2:-}" ;;
+    (uninstall)  need_root vpn uninstall; vpn_uninstall ;;
+    (auto)       vpn_auto_set "${2:?on|off}" ;;
+    (*) die "proxypilot vpn [status|up|down|install <файл.ovpn>|uninstall|auto on|off]" ;;
+  esac
+}
+
 usage() {
   cat <<EOF
 proxypilot $PP_VERSION — один локальный прокси, переключаемый апстрим
@@ -780,6 +1269,13 @@ proxypilot $PP_VERSION — один локальный прокси, перек�
   proxypilot stop        остановить мост
   proxypilot shellenv    exports для шелла:  eval "\$(proxypilot shellenv)"
 
+  proxypilot net         где мы и что с профилем сети
+  proxypilot net install поставить демон: профиль сам применяется при смене сети
+  proxypilot vpn         состояние туннеля
+  proxypilot vpn install <файл.ovpn>   собрать split-tunnel из профиля
+  proxypilot vpn auto on поднимать туннель вне офиса и гасить в офисе
+  proxypilot vpn up/down поднять/опустить руками
+
 Клиенты всегда смотрят на http://127.0.0.1:$BRIDGE_PORT — при смене режима
 их перезапускать не нужно.
 EOF
@@ -796,6 +1292,8 @@ case "${1:-status}" in
   (doctor)   cmd_doctor ;;
   (ensure)   cmd_ensure ;;
   (shellenv) cmd_shellenv ;;
+  (net)      cmd_net "${2:-status}" ;;
+  (vpn)      cmd_vpn "${2:-status}" "${3:-}" ;;
   (stop)     stop_bridge; ok "мост остановлен" ;;
   (version|--version|-v) print -- "proxypilot $PP_VERSION" ;;
   (help|--help|-h) usage ;;
