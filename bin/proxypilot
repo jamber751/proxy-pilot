@@ -115,8 +115,41 @@ upstream_dead() {  # host:port — пусто считаем мёртвым
   probe_cached "$1" && return 1 || return 0
 }
 
+# Адрес и шлюз ФИЗИЧЕСКОГО интерфейса. Дефолтный маршрут для вопроса «я в офисе?»
+# не годится: с поднятым VPN он уходит в utun, и офис перестаёт узнаваться.
+physical_endpoint() {  # печатает: "<ipv4> <шлюз>", пустые поля как "-"
+  local dev ip gw
+  for dev in ${(f)"$(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep -E '^(en|bridge)[0-9]')"}; do
+    ip=$(ipconfig getifaddr "$dev" 2>/dev/null)
+    [[ -z "$ip" ]] && continue
+    gw=$(ipconfig getoption "$dev" router 2>/dev/null)
+    [[ -z "$gw" || "$gw" == 0.0.0.0 ]] && gw=$(gateway)   # статика: аренды нет
+    print -- "$ip ${gw:--}"
+    return
+  done
+  print -- "- $(gateway)"
+}
+
+# Мы в офисной сети? Сверяем префиксы OFFICE_GATEWAYS и с адресом, и со шлюзом:
+# при статическом IP аренды DHCP нет, зато адрес сам выдаёт подсеть.
+in_office() {
+  [[ -z "$OFFICE_GATEWAYS" ]] && return 0      # не настроено — не сужаем поведение
+  local ip gw p
+  read -r ip gw <<< "$(physical_endpoint)"
+  for p in ${(s:,:)OFFICE_GATEWAYS}; do
+    [[ -z "$p" ]] && continue
+    [[ "$gw" == ${p}* || "$ip" == ${p}* ]] && return 0
+  done
+  return 1
+}
+
 # Что выбрать прямо сейчас — по одной пробе на апстрим.
 _auto_decide() {
+  # Прокси имеет смысл там, где он стоит на пути — в офисе. Из дома по VPN
+  # апстрим тоже отвечает, но гонять через него весь веб значит делать круг
+  # через офис: до офисных адресов трафик и так идёт в туннель по маршрутам
+  # и мимо моста по bypass-списку.
+  in_office || { print -- direct; return }
   [[ -n "$SOCKS_UPSTREAM" ]] && probe_cached "$SOCKS_UPSTREAM" && { print -- socks; return }
   [[ -n "$HTTP_UPSTREAM"  ]] && probe_cached "$HTTP_UPSTREAM"  && { print -- http;  return }
   print -- direct
