@@ -25,6 +25,18 @@ struct State: Decodable {
     let http_up: Bool
     let gateway: String
     let configured: Bool
+
+    // Сетевой профиль. Опциональные: приложение может стоять рядом с CLI,
+    // который этих полей ещё не отдаёт — тогда секция просто не показывается.
+    let in_office: Bool?
+    let net_service: String?
+    let office_ip: String?
+    let net_daemon: Bool?
+    let vpn_profile: String?
+    let vpn_installed: Bool?
+    let vpn_up: Bool?
+    let vpn_auto: Bool?
+    let vpn_foreign: Bool?
 }
 
 enum CLI {
@@ -65,6 +77,44 @@ enum CLI {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
+    // Профиль сети и туннель — это root (смена IPv4 в macOS доступна только ему).
+    // Пароль спрашивает система своим диалогом; сами мы его не видим и не храним.
+    // XDG_CONFIG_HOME передаём явно: у root свой $HOME, а конфиг лежит у
+    // пользователя.
+    static func runAdmin(_ args: [String]) -> String {
+        guard let exe = path else { return "CLI не найден" }
+        let home = "\(NSHomeDirectory())/.config"
+        let parts = ["/usr/bin/env", "XDG_CONFIG_HOME=\(home)", exe] + args
+        let cmd = parts.map(shQuote).joined(separator: " ")
+        let script = "do shell script \(asQuote(cmd)) with administrator privileges"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out; proc.standardError = err
+        do { try proc.run() } catch { return "не удалось запустить osascript" }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let edata = err.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        let stdout = String(data: data, encoding: .utf8) ?? ""
+        if proc.terminationStatus != 0 {
+            let e = String(data: edata, encoding: .utf8) ?? ""
+            // -128 — пользователь нажал «Отмена» в диалоге пароля
+            if e.contains("-128") { return "отменено" }
+            return e.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return stdout
+    }
+
+    private static func shQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+    private static func asQuote(_ s: String) -> String {
+        "\"" + s.replacingOccurrences(of: "\\", with: "\\\\")
+                 .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
     static func state() -> State? {
         let out = run(["json"])
         guard let data = out.data(using: .utf8) else { return nil }
@@ -98,6 +148,16 @@ final class ConfigStore: ObservableObject {
     @Published var http = ""
     @Published var port = "3129"
     @Published var gateways = ""
+
+    // сетевой профиль
+    @Published var netService = "Wi-Fi"
+    @Published var officeIP = ""
+    @Published var officeMask = "255.255.255.0"
+    @Published var officeDNS = ""
+    @Published var vpnProfile = ""
+    @Published var vpnRoutes = ""
+    @Published var vpnAuto = false
+
     @Published var socksProbe: Probe = .unknown
     @Published var httpProbe: Probe = .unknown
     @Published var busy = false
@@ -114,18 +174,40 @@ final class ConfigStore: ObservableObject {
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
             let key = String(line[..<eq])
-            let value = String(line[line.index(after: eq)...])
+            // Значения с пробелами (список DNS, несколько маршрутов) лежат в
+            // кавычках — конфиг читается шеллом через source.
+            let value = Self.unquote(String(line[line.index(after: eq)...]))
             switch key {
             case "SOCKS_UPSTREAM":  socks = value
             case "HTTP_UPSTREAM":   http = value
             case "BRIDGE_PORT":     port = value
             case "OFFICE_GATEWAYS": gateways = value
+            case "NET_SERVICE":     netService = value
+            case "OFFICE_IP":       officeIP = value
+            case "OFFICE_MASK":     officeMask = value
+            case "OFFICE_DNS":      officeDNS = value
+            case "VPN_PROFILE":     vpnProfile = value
+            case "VPN_ROUTES":      vpnRoutes = value
+            case "VPN_AUTO":        vpnAuto = (value == "on")
             default: break
             }
         }
     }
 
+    static func unquote(_ s: String) -> String {
+        guard s.count >= 2, s.hasPrefix("\""), s.hasSuffix("\"") else { return s }
+        return String(s.dropFirst().dropLast())
+    }
+
     private static let hostPort = try! NSRegularExpression(pattern: "^[A-Za-z0-9_.-]+:[0-9]{1,5}$")
+    private static let ipv4 = try! NSRegularExpression(pattern: "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
+    static func validIPv4(_ s: String, allowEmpty: Bool = true) -> Bool {
+        if s.isEmpty { return allowEmpty }
+        return ipv4.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
+    static func validDNSList(_ s: String) -> Bool {
+        s.split(separator: " ").allSatisfy { validIPv4(String($0), allowEmpty: false) }
+    }
     static func validUpstream(_ s: String) -> Bool {
         s.isEmpty || hostPort.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
@@ -133,6 +215,8 @@ final class ConfigStore: ObservableObject {
         Self.validUpstream(socks) && Self.validUpstream(http)
             && Int(port).map { (1024...65535).contains($0) } == true
             && !(socks.isEmpty && http.isEmpty)
+            && Self.validIPv4(officeIP) && Self.validIPv4(officeMask)
+            && Self.validDNSList(officeDNS)
     }
 
     func probeAll() {
@@ -165,11 +249,30 @@ final class ConfigStore: ObservableObject {
         }
     }
 
+    // Действия, требующие root: установка демонов, сборка туннеля, ручной
+    // подъём/останов. Диалог пароля показывает система.
+    func admin(_ args: [String], note: String, completion: @escaping () -> Void) {
+        busy = true; message = note
+        DispatchQueue.global().async {
+            let out = stripANSI(CLI.runAdmin(args)).trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.busy = false
+                self.message = out.isEmpty ? "Готово." : out
+                self.load()
+                completion()
+            }
+        }
+    }
+
     // сохранить через CLI set + перезапустить мост в сохранённом режиме
     func save(mode: String, completion: @escaping () -> Void) {
         busy = true; message = "Сохраняю и перезапускаю мост…"
         let fields = [("SOCKS_UPSTREAM", socks), ("HTTP_UPSTREAM", http),
-                      ("BRIDGE_PORT", port), ("OFFICE_GATEWAYS", gateways)]
+                      ("BRIDGE_PORT", port), ("OFFICE_GATEWAYS", gateways),
+                      ("NET_SERVICE", netService), ("OFFICE_IP", officeIP),
+                      ("OFFICE_MASK", officeMask), ("OFFICE_DNS", officeDNS),
+                      ("VPN_PROFILE", vpnProfile), ("VPN_ROUTES", vpnRoutes),
+                      ("VPN_AUTO", vpnAuto ? "on" : "off")]
         DispatchQueue.global().async {
             for (k, v) in fields { CLI.run(["set", k, v]) }
             CLI.run([mode])   // switch: остановит и поднимет мост с новыми апстримами
@@ -247,6 +350,56 @@ struct SettingsView: View {
             Text("Клиенты всегда ходят на http://127.0.0.1:\(store.port). Если менять порт — обнови системный прокси и shellenv. «Авто» включает прокси, когда шлюз сети начинается с одного из префиксов (через запятую).")
                 .font(.caption).foregroundColor(.secondary)
         }
+
+        Section {
+            HintField(title: "Сетевой сервис", text: $store.netService, hint: "Wi-Fi")
+            HintField(title: "Адрес в офисе", text: $store.officeIP,
+                      hint: "192.168.1.246 — пусто, чтобы адрес не менять")
+            HintField(title: "Маска", text: $store.officeMask, hint: "255.255.255.0")
+            HintField(title: "DNS в офисе", text: $store.officeDNS,
+                      hint: "192.168.1.1 8.8.8.8")
+            HStack {
+                Button("Применить сейчас") {
+                    store.admin(["net", "apply"], note: "Применяю профиль…") { onApplied() }
+                }
+                Button("Ставить автоматически") {
+                    store.admin(["net", "install"], note: "Ставлю демон профиля…") { onApplied() }
+                }
+                .help("Профиль будет применяться сам при каждой смене сети")
+                Spacer()
+            }
+        } header: {
+            Text("Профиль сети (офис / не офис)")
+        } footer: {
+            Text("В офисе выставляется этот адрес и эти DNS, в любой другой сети — DHCP. Офис определяется по префиксам выше, но строго: шлюз должен отвечать за физическим интерфейсом, иначе поднятый VPN сошёл бы за офис. Пустой адрес — сетью не управляем. Требует пароль администратора: смена IP в macOS доступна только root.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+
+        Section {
+            HintField(title: "Профиль .ovpn", text: $store.vpnProfile,
+                      hint: "~/Library/…/OpenVPN Connect/profiles/office.ovpn")
+            HintField(title: "В туннель", text: $store.vpnRoutes,
+                      hint: "192.168.0.0/16 — пусто: /16 вокруг офиса")
+            Toggle("Поднимать вне офиса, гасить в офисе", isOn: $store.vpnAuto)
+            HStack {
+                Button("Собрать туннель") {
+                    store.admin(["vpn", "install"], note: "Собираю split-tunnel…") { onApplied() }
+                }
+                .disabled(store.vpnProfile.isEmpty)
+                Button("Поднять") {
+                    store.admin(["vpn", "up"], note: "Поднимаю туннель…") { onApplied() }
+                }
+                Button("Опустить") {
+                    store.admin(["vpn", "down"], note: "Опускаю туннель…") { onApplied() }
+                }
+                Spacer()
+            }
+        } header: {
+            Text("Туннель (VPN) — по желанию")
+        } footer: {
+            Text("Из профиля собирается конфиг со split-tunnel: сервер обычно пушит redirect-gateway, и тогда через офис идёт весь трафик, включая видео. Мы от его маршрута отказываемся и заворачиваем только офисные сети. Профиль копируется под root с правами 600 — внутри приватный ключ. Тумблер можно держать выключенным и поднимать туннель вручную.")
+                .font(.caption).foregroundColor(.secondary)
+        }
     }
 
     var body: some View {
@@ -290,7 +443,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(width: 470, height: 420)
+        .frame(width: 470, height: 560)
         .onAppear { store.load(); store.probeAll() }
     }
 }
@@ -478,6 +631,50 @@ final class App: NSObject, NSApplicationDelegate {
                     note: nil, enabled: true)
         }
 
+        // ── сеть и туннель ───────────────────────────────────────────────────
+        // Показываем, только когда это кем-то настроено: иначе меню разрастается
+        // без пользы у тех, кому нужен один прокси.
+        let netConfigured = (s.office_ip?.isEmpty == false) || s.vpn_installed == true
+        if let inOffice = s.in_office, netConfigured {
+            menu.addItem(.separator())
+            var lines = [inOffice ? "Сеть: офис" : "Сеть: вне офиса"]
+            if let ip = s.office_ip, !ip.isEmpty {
+                lines.append(inOffice ? "адрес \(ip)" : "адрес по DHCP")
+            }
+            if s.net_daemon != true, s.office_ip?.isEmpty == false {
+                lines.append("применяется только вручную")
+            }
+            let head = NSMenuItem()
+            head.attributedTitle = NSAttributedString(
+                string: lines.joined(separator: "\n"),
+                attributes: [
+                    .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ])
+            head.isEnabled = false
+            menu.addItem(head)
+
+            if s.vpn_installed == true {
+                let up = s.vpn_up == true
+                let foreign = s.vpn_foreign == true
+                let mi = NSMenuItem(
+                    title: foreign ? "Туннель поднят другим клиентом"
+                                   : (up ? "Опустить туннель" : "Поднять туннель"),
+                    action: foreign ? nil : #selector(toggleVPN), keyEquivalent: "")
+                mi.target = self
+                mi.isEnabled = !foreign
+                mi.image = NSImage(systemSymbolName: up ? "bolt.horizontal.fill" : "bolt.horizontal",
+                                   accessibilityDescription: nil)
+                menu.addItem(mi)
+
+                let auto = NSMenuItem(title: "Поднимать вне офиса",
+                                      action: #selector(toggleVPNAuto), keyEquivalent: "")
+                auto.target = self
+                auto.state = (s.vpn_auto == true) ? .on : .off
+                menu.addItem(auto)
+            }
+        }
+
         menu.addItem(.separator())
         menu.addItem(menuItem("Замерить скорость…", symbol: "speedometer", action: #selector(bench), key: "b"))
         menu.addItem(menuItem("Диагностика…", symbol: "stethoscope", action: #selector(doctor), key: "d"))
@@ -522,6 +719,29 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     // ── действия ─────────────────────────────────────────────────────────────
+
+    // Подъём и останов туннеля — root, поэтому через диалог пароля системы.
+    @objc private func toggleVPN() {
+        guard let s = state else { return }
+        let up = s.vpn_up == true
+        busy = true; render()
+        DispatchQueue.global().async {
+            let out = stripANSI(CLI.runAdmin(["vpn", up ? "down" : "up"]))
+            log("vpn \(up ? "down" : "up"): \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+            DispatchQueue.main.async { self.busy = false; self.refresh() }
+        }
+    }
+
+    // Тумблер автоматики пишет в пользовательский конфиг — root не нужен.
+    @objc private func toggleVPNAuto() {
+        guard let s = state else { return }
+        let on = s.vpn_auto == true
+        DispatchQueue.global().async {
+            CLI.run(["vpn", "auto", on ? "off" : "on"])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
     @objc private func switchMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? String else { return }
         busy = true; render()
