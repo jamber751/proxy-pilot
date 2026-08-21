@@ -32,6 +32,11 @@ jobs:
           ./bin/proxypilot json | python3 -c 'import json,sys; json.load(sys.stdin)' && echo "  ok  json валиден"
           # сетевой профиль: статусы обязаны работать без root и без настроек
           ./bin/proxypilot net status >/dev/null && echo "  ok  net status"
+          # маршруты для туннеля выводятся из офисной сети — считаются без root,
+          # поэтому проверяемы: раньше здесь молча получалось «1» вместо префикса
+          ./bin/proxypilot set OFFICE_GATEWAYS 192.168.8.
+          ./bin/proxypilot vpn status | grep -q '192.168.0.0/16' \
+            && echo "  ok  маршруты в туннель выведены из офисной сети"
           ./bin/proxypilot vpn status >/dev/null && echo "  ok  vpn status"
           ./bin/proxypilot net apply && exit 1 || echo "  ok  net apply требует root"
           ./bin/proxypilot set OFFICE_IP 999.1.1.1 && exit 1 || echo "  ok  set отвергает битый адрес"

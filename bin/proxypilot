@@ -1234,7 +1234,10 @@ net_uninstall() {
 # 192.168.140.x и т.п. — а подсеть, где ноут стоит физически, не страдает:
 # её собственная запись в таблице маршрутов точнее любого /16.
 vpn_default_routes() {
-  local p="${${(s:,:)OFFICE_GATEWAYS}[1]}"
+  # Через промежуточный массив: ${${(s:,:)VAR}[1]} индексирует СТРОКУ и вернуло
+  # бы первый символ («1» вместо «192.168.8.»).
+  local -a gws=(${(s:,:)OFFICE_GATEWAYS})
+  local p="${gws[1]}"
   [[ -n "$p" ]] || return 1
   local -a o=(${(s:.:)p})
   (( ${#o} >= 2 )) || return 1
@@ -1281,7 +1284,13 @@ vpn_status() {
     print -- "  туннель           : не установлен"
   fi
   vpn_foreign_up && print -- "  $(c_yel '⚠ чужой туннель')   : поднят другим клиентом — proxypilot его не трогает"
-  [[ -r "$VPN_CONF" ]] && print -- "  в туннель         : $(awk '/^route /{printf "%s ", $2}' "$VPN_CONF" 2>/dev/null)"
+  if [[ -r "$VPN_CONF" ]]; then
+    print -- "  в туннель         : $(awk '/^route /{printf "%s ", $2}' "$VPN_CONF" 2>/dev/null)"
+  else
+    local r="$VPN_ROUTES"
+    [[ -z "$r" ]] && r=$(vpn_default_routes)
+    print -- "  в туннель пойдёт  : ${r:-$(c_yel 'не могу вывести — задай VPN_ROUTES или OFFICE_GATEWAYS')}"
+  fi
   return 0   # статус не должен возвращать ошибку из-за последней проверки
 }
 
