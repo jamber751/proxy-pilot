@@ -30,6 +30,16 @@ jobs:
           ./bin/proxypilot set BRIDGE_PORT 99 && exit 1 || echo "  ok  set отвергает битый порт"
           ./bin/proxypilot set BRIDGE_PORT 3129
           ./bin/proxypilot json | python3 -c 'import json,sys; json.load(sys.stdin)' && echo "  ok  json валиден"
+          # сетевой профиль: статусы обязаны работать без root и без настроек
+          ./bin/proxypilot net status >/dev/null && echo "  ok  net status"
+          ./bin/proxypilot vpn status >/dev/null && echo "  ok  vpn status"
+          ./bin/proxypilot net apply && exit 1 || echo "  ok  net apply требует root"
+          ./bin/proxypilot set OFFICE_IP 999.1.1.1 && exit 1 || echo "  ok  set отвергает битый адрес"
+          ./bin/proxypilot set VPN_AUTO maybe && exit 1 || echo "  ok  set отвергает битый VPN_AUTO"
+          # значения с пробелами должны сохраняться в кавычках: конфиг читает source
+          ./bin/proxypilot set OFFICE_DNS "1.1.1.1 8.8.8.8"
+          grep -q 'OFFICE_DNS="1.1.1.1 8.8.8.8"' "${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config" \
+            && echo "  ok  список DNS сохранён в кавычках"
 
   app:
     name: App (universal)
