@@ -1015,8 +1015,13 @@ vpn_foreign_up() {
 
 vpn_up() {
   [[ -r "$VPN_PLIST" ]] || { net_log "  VPN: не установлен (proxypilot vpn install)"; return 0 }
-  vpn_foreign_up && { net_log "  VPN: поднят другим клиентом — не трогаю"; return 0 }
   vpn_loaded && { net_log "  VPN: уже поднят"; return 0 }
+  if vpn_foreign_up; then
+    # Чужой туннель мог секунду назад получить bootout и ещё не исчезнуть —
+    # иначе на переезде с другого клиента мы отказываемся поднимать свой.
+    sleep 2
+    vpn_foreign_up && { net_log "  VPN: поднят другим клиентом — не трогаю"; return 0 }
+  fi
   net_log "  VPN: поднимаю"
   net_run launchctl bootstrap system "$VPN_PLIST"
 }
@@ -1275,22 +1280,30 @@ vpn_uninstall() {
 
 vpn_status() {
   print -- "  профиль           : ${VPN_PROFILE:-$(c_dim 'не задан')}"
-  print -- "  собранный конфиг  : $([[ -r $VPN_CONF ]] && print "$VPN_CONF" || print "$(c_dim нет) (proxypilot vpn install)")"
   print -- "  автоматика        : $(vpn_auto_on && c_grn on || c_dim off)"
   if [[ -r "$VPN_PLIST" ]]; then
     local up=$(vpn_loaded && print да || print нет)
     print -- "  туннель           : $([[ $up == да ]] && c_grn поднят || print опущен)$(vpn_ours_running && print ' (процесс жив)')"
+    # Сам конфиг лежит под root с правами 600 — внутри приватный ключ, и из-под
+    # пользователя его не видно. Проверять его читаемость нельзя: получалось
+    # «конфиг: нет» при работающем туннеле.
+    print -- "  конфиг            : $VPN_CONF $(c_dim '(виден только root)')"
   else
-    print -- "  туннель           : не установлен"
+    print -- "  туннель           : не установлен (proxypilot vpn install)"
   fi
   vpn_foreign_up && print -- "  $(c_yel '⚠ чужой туннель')   : поднят другим клиентом — proxypilot его не трогает"
+  # Фактические маршруты берём из конфига, если он читается (то есть под root);
+  # иначе показываем те же, что туда попадут — их видно и без прав.
+  local routes label
   if [[ -r "$VPN_CONF" ]]; then
-    print -- "  в туннель         : $(awk '/^route /{printf "%s ", $2}' "$VPN_CONF" 2>/dev/null)"
+    routes=$(awk '/^route /{printf "%s ", $2}' "$VPN_CONF" 2>/dev/null)
+    label="в туннель        "
   else
-    local r="$VPN_ROUTES"
-    [[ -z "$r" ]] && r=$(vpn_default_routes)
-    print -- "  в туннель пойдёт  : ${r:-$(c_yel 'не могу вывести — задай VPN_ROUTES или OFFICE_GATEWAYS')}"
+    routes="$VPN_ROUTES"
+    [[ -z "$routes" ]] && routes=$(vpn_default_routes)
+    [[ -r "$VPN_PLIST" ]] && label="в туннель        " || label="в туннель пойдёт "
   fi
+  print -- "  $label : ${routes:-$(c_yel 'не могу вывести — задай VPN_ROUTES или OFFICE_GATEWAYS')}"
   return 0   # статус не должен возвращать ошибку из-за последней проверки
 }
 
