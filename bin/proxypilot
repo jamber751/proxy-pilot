@@ -57,7 +57,51 @@ VPN_ROUTES=""              # что заворачивать в туннель; 
 VPN_AUTO="off"             # on — поднимать вне офиса и гасить в офисе автоматом;
                            # off — только руками (proxypilot vpn up|down)
 
-[[ -r "$CFG" ]] && source "$CFG"
+# Конфиг НЕ читается через `source`. Команды net/vpn работают из-под root, а
+# файл лежит у пользователя и правится им же — значит любая строка в нём
+# исполнялась бы как root, то есть давала бы локальную эскалацию. Разбираем
+# строго KEY=VALUE, только известные ключи, ничего не исполняя.
+load_config() {
+  [[ -r "$CFG" ]] || return 0
+
+  if (( EUID == 0 )); then
+    local perms fown down
+    perms=$(stat -f %Lp "$CFG" 2>/dev/null)
+    # Файл, доступный на запись группе или всем, root читать не должен.
+    if [[ -n "$perms" ]] && (( (8#$perms & 8#22) != 0 )); then
+      print -u2 -- "proxypilot: $CFG доступен на запись посторонним — не читаю"
+      return 1
+    fi
+    # И принадлежать он должен root или владельцу каталога, а не третьему лицу.
+    fown=$(stat -f %u "$CFG" 2>/dev/null)
+    down=$(stat -f %u "${CFG:h:h}" 2>/dev/null)
+    if [[ -n "$fown" && "$fown" != 0 && -n "$down" && "$fown" != "$down" ]]; then
+      print -u2 -- "proxypilot: $CFG принадлежит посторонему пользователю — не читаю"
+      return 1
+    fi
+  fi
+
+  local line key val
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[! 	]*}"}"          # срезать ведущие пробелы и табы
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"; val="${line#*=}"
+    [[ "$key" =~ '^[A-Z][A-Z0-9_]*$' ]] || continue
+    # значение бывает в кавычках: список DNS, несколько маршрутов
+    [[ "$val" == \"*\" ]] && val="${val[2,-2]}"
+    val="${val//[$'\n\r']/}"
+    case "$key" in
+      (BRIDGE_PORT|SOCKS_UPSTREAM|HTTP_UPSTREAM|OFFICE_GATEWAYS|NO_PROXY_LIST\
+      |BENCH_URL|BENCH_BYTES|GOST|NET_SERVICE|OFFICE_IP|OFFICE_MASK|OFFICE_DNS\
+      |VPN_PROFILE|VPN_ROUTES|VPN_AUTO)
+        typeset -g "$key"="$val" ;;
+      (*) ;;   # незнакомый ключ игнорируем: конфиг мог прийти от версии новее
+    esac
+  done < "$CFG"
+  return 0
+}
+load_config
 
 # gost ищем по явным кандидатам, а не только по PATH: GUI-приложения на macOS
 # живут с PATH=/usr/bin:/bin:... без /opt/homebrew/bin — из-под ProxyPilot.app
