@@ -21,6 +21,9 @@ setopt pipe_fail multibyte
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
 readonly PP_VERSION="1.1.3"
+# Путь до самого скрипта. Обязательно на верхнем уровне: внутри функции zsh
+# подставляет в $0 имя функции, и ${0:A} даёт несуществующий путь.
+readonly PP_SELF="${0:A}"
 
 # Под sudo $HOME указывает на /var/root, а конфиг лежит у пользователя. Команды
 # net/vpn без root работать не могут, поэтому ищем конфиг вызвавшего — иначе
@@ -1171,7 +1174,8 @@ net_install() {
 
   # Демон крутит СВОЮ root-копию скрипта. Запускать из-под root файл, который
   # правится обычным пользователем, нельзя: подмена файла = подмена root-кода.
-  install -m 755 -o root -g wheel "${0:A}" "$NET_BIN"
+  install -m 755 -o root -g wheel "$PP_SELF" "$NET_BIN" \
+    || die "не смог поставить $NET_BIN из $PP_SELF"
 
   cat > "$NET_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
