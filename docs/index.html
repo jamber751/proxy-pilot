@@ -516,7 +516,16 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
             <span class="term-dots"><i></i><i></i><i></i></span>
             <span class="term-title">zsh — proxypilot</span>
           </div>
-          <div class="term-body"><pre class="term-out" id="termOut" aria-live="polite"></pre></div>
+          <div class="term-body"><pre class="term-out" id="termOut" aria-live="polite"><span class="pr">$</span> proxypilot status
+proxypilot 1.1.3
+
+  proxy address    http://127.0.0.1:3129
+  bridge           <span class="ok">running</span> (pid 11599, upstream=socks)
+  mode             auto → socks
+  gateway          192.168.8.1
+
+  socks5  192.168.8.2:9999 <span class="ok">reachable</span>
+  http    192.168.8.2:3128 <span class="ok">reachable</span></pre></div>
           <div class="term-cmds">
             <button class="chip" type="button" data-cmd="status" aria-pressed="true">status</button>
             <button class="chip" type="button" data-cmd="bench" aria-pressed="false">bench</button>
@@ -637,7 +646,7 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
     status: [
       'proxypilot 1.1.3',
       '',
-      '  proxy address    <b>http://127.0.0.1:3129</b>',
+      '  proxy address    http://127.0.0.1:3129',
       '  bridge           <span class="ok">running</span> (pid 11599, upstream=socks)',
       '  mode             auto → socks',
       '  gateway          192.168.8.1',
@@ -709,7 +718,6 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
 
   if (out){
     chips.forEach(function(c){ c.addEventListener('click', function(){ run(c.dataset.cmd); }); });
-    run('status');
   }
 
   // ── бенч: гонка. Полосы едут со скоростью, пропорциональной реальному
