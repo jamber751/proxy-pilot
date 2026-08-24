@@ -11,6 +11,8 @@
 [![macOS](https://img.shields.io/badge/macOS-11%2B-black?logo=apple)](https://github.com/jamber751/proxy-pilot/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+**[jamber751.github.io/proxy-pilot](https://jamber751.github.io/proxy-pilot/)**
+
 </div>
 
 Corporate HTTP proxies often shape traffic while a fast SOCKS5 endpoint sits on
