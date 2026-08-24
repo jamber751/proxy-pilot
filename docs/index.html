@@ -723,8 +723,9 @@ proxypilot 1.1.3
   // ── бенч: гонка. Полосы едут со скоростью, пропорциональной реальному
   //    времени замера, поэтому медленный маршрут ползёт дольше и не доезжает.
   var runBtn = document.getElementById('benchRun');
-  if (runBtn && !still){
-    runBtn.addEventListener('click', function(){
+  function race(){
+    if (still || !runBtn || runBtn.disabled) return;
+    {
       var rows = Array.prototype.slice.call(document.querySelectorAll('.bar-row'));
       var slowest = Math.max.apply(null, rows.map(function(r){ return +r.dataset.secs; }));
       runBtn.disabled = true;
@@ -757,8 +758,36 @@ proxypilot 1.1.3
         runBtn.disabled = false;
         runBtn.textContent = 'Race them again';
       }, (slowest / 2.4) * 1000 + 120);
+    }
+  }
+  if (runBtn) runBtn.addEventListener('click', race);
+
+  // ── автозапуск, когда блок появляется на экране ─────────────────────────
+  // В скрытой вкладке setTimeout душится до одного вызова в секунду, поэтому
+  // ждём, пока вкладка станет видимой — иначе читатель вернётся к
+  // наполовину набранной строке и застывшим полосам.
+  function whenVisible(fn){
+    if (document.visibilityState === 'visible') return fn();
+    document.addEventListener('visibilitychange', function once(){
+      if (document.visibilityState !== 'visible') return;
+      document.removeEventListener('visibilitychange', once);
+      fn();
     });
   }
+  function onFirstView(el, fn){
+    if (!el || still || !('IntersectionObserver' in window)) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (!e.isIntersecting) return;
+        io.disconnect();
+        whenVisible(fn);
+      });
+    }, { threshold: .45 });
+    io.observe(el);
+  }
+
+  onFirstView(document.querySelector('.bench'), race);
+  onFirstView(document.querySelector('.term'), function(){ run('status'); });
 
   // ── мок меню: живой, как настоящее меню в баре ──────────────────────────
   var mockRows = Array.prototype.slice.call(document.querySelectorAll('.mock-row'));
