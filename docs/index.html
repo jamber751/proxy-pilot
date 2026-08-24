@@ -222,6 +222,55 @@ p code{background:var(--code-bg); border:1px solid var(--border); border-radius:
 .bar-val{font-family:"JetBrains Mono",monospace; font-size:15px; font-weight:500; font-variant-numeric:tabular-nums}
 .bench-note{font-size:14px; color:var(--muted); border-top:1px solid var(--rule); padding-top:16px; margin:0}
 
+/* ── terminal (тёмный в обеих темах — так выглядит терминал) ───────────── */
+.term{border:1px solid var(--border); border-radius:var(--r-card); overflow:hidden; background:#0b0d0e}
+.term-bar{display:flex; align-items:center; gap:10px; padding:9px 12px; background:#111415; border-bottom:1px solid #23282a}
+.term-dots{display:flex; gap:5px}
+.term-dots i{width:9px; height:9px; border-radius:50%; background:#2f3538}
+.term-title{font-family:"JetBrains Mono",monospace; font-size:12px; color:#8b948f}
+.term-body{padding:14px 16px; min-height:232px}
+.term-out{
+  margin:0; padding:0; background:none; border:0; overflow-x:auto;
+  color:#e6eae8; font-size:12.5px; line-height:1.65; white-space:pre-wrap;
+}
+.term-out .pr{color:#17b077}
+.term-out .ok{color:#4ade80}
+.term-out .dim{color:#8b948f}
+.caret{display:inline-block; width:7px; height:1em; vertical-align:-2px; background:#17b077; animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.term-cmds{display:flex; flex-wrap:wrap; gap:8px; padding:12px; border-top:1px solid #23282a; background:#0d0f10}
+.chip{
+  font-family:"JetBrains Mono",monospace; font-size:12px; color:#8b948f;
+  background:rgba(255,255,255,.03); border:1px solid #23282a; border-radius:var(--r-btn);
+  padding:7px 11px; cursor:pointer; transition:color .15s, border-color .15s, background .15s;
+}
+.chip:hover{color:#f2f4f3; border-color:#3a4046}
+.chip[aria-pressed="true"]{color:#f2f4f3; border-color:#17b077; background:rgba(23,176,119,.1)}
+
+/* ── bench: гонка ──────────────────────────────────────────────────────── */
+.bench-top{display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap}
+.bench-cap{font-size:13px; font-weight:500; letter-spacing:.65px; text-transform:uppercase; color:var(--muted)}
+.btn-run{
+  font:inherit; font-size:14px; font-weight:600; letter-spacing:-.1px;
+  color:var(--accent); background:var(--accent-tint); border:1px solid transparent;
+  border-radius:var(--r-btn); padding:8px 14px; cursor:pointer;
+  transition:background .15s, color .15s;
+}
+.btn-run:hover{background:var(--accent); color:var(--on-accent)}
+.btn-run[disabled]{opacity:.55; cursor:default; background:var(--accent-tint); color:var(--accent)}
+.bar-row.blocked .fill{background:var(--muted); opacity:.28}
+
+/* ── кнопка «скопировать» на блоках кода ───────────────────────────────── */
+.pre-wrap{position:relative}
+.copy{
+  position:absolute; top:8px; right:8px; font:inherit; font-size:12px; font-weight:500;
+  color:var(--muted); background:var(--surface); border:1px solid var(--border);
+  border-radius:4px; padding:4px 9px; cursor:pointer; opacity:0;
+  transition:opacity .15s, color .15s, border-color .15s;
+}
+.pre-wrap:hover .copy, .copy:focus-visible{opacity:1}
+.copy.done{color:var(--accent); border-color:var(--accent); opacity:1}
+
 /* ── menu mock ─────────────────────────────────────────────────────────── */
 .mock{
   background:var(--ink); border:1px solid var(--hero-line); border-radius:12px;
@@ -230,8 +279,14 @@ p code{background:var(--code-bg); border:1px solid var(--border); border-radius:
 .mock-head{padding:8px 10px 10px; border-bottom:1px solid var(--hero-line); margin-bottom:6px}
 .mock-head .t{font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--hero-muted)}
 .mock-head .s{font-size:13px; font-weight:500; color:var(--hero-text)}
-.mock-row{display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px; font-size:13px; color:var(--hero-text)}
-.mock-row.on{background:rgba(255,255,255,.07)}
+.mock-row{
+  display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  padding:7px 10px; border-radius:5px; font:inherit; font-size:13px;
+  color:var(--hero-text); background:none; border:0; cursor:pointer;
+  transition:background .15s;
+}
+.mock-row:hover{background:rgba(255,255,255,.05)}
+.mock-row.on{background:rgba(255,255,255,.09)}
 .mock-row .m-tag{margin-left:auto; font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--hero-muted)}
 .mock-row .ok{width:7px; height:7px; border-radius:50%; background:#2ecc71; flex:none}
 .mock-row .check{width:12px; color:var(--hero-accent); font-size:11px}
@@ -389,17 +444,21 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
       <p class="lede">Same 5 MB file, same minutes, one stream each. The bridge adds a loopback hop of well under a millisecond — run-to-run noise moves the number more than the hop does.</p>
     </div>
     <div class="bench">
-      <div class="bar-row">
+      <div class="bench-top">
+        <span class="bench-cap">5 MB &middot; one stream each</span>
+        <button class="btn-run" id="benchRun" type="button">Watch them race</button>
+      </div>
+      <div class="bar-row blocked" data-kb="630" data-secs="7.9">
         <div class="bar-label">HTTP proxy<small>corporate, shaped</small></div>
         <div class="track"><div class="fill slow" style="--pct:22%"></div></div>
         <div class="bar-val">630 KB/s</div>
       </div>
-      <div class="bar-row">
+      <div class="bar-row" data-kb="2552" data-secs="2.0">
         <div class="bar-label">SOCKS5<small>direct to the endpoint</small></div>
         <div class="track"><div class="fill" style="--pct:88%"></div></div>
         <div class="bar-val">2552 KB/s</div>
       </div>
-      <div class="bar-row">
+      <div class="bar-row" data-kb="2912" data-secs="1.7">
         <div class="bar-label">SOCKS5 via the bridge<small>what your clients get</small></div>
         <div class="track"><div class="fill" style="--pct:100%"></div></div>
         <div class="bar-val">2912 KB/s</div>
@@ -438,29 +497,33 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
       <div class="card">
         <h3 class="h-card">A menu bar app that shows the truth</h3>
         <p>The icon carries the active route. The menu carries live reachability dots for each upstream, so you know a route is dead before you pick it — and a Find on network button that discovers proxies for you. Settings (⌘,) edits addresses, bridge port and office prefixes.</p>
-        <div class="mock" role="img" aria-label="ProxyPilot menu bar dropdown showing SOCKS5 selected and both upstreams reachable">
+        <div class="mock" aria-label="ProxyPilot menu bar dropdown">
           <div class="mock-head">
             <div class="t">Bridge 127.0.0.1:3129</div>
-            <div class="s">SOCKS5 &middot; fast</div>
+            <div class="s" id="mockState">SOCKS5 &middot; fast</div>
           </div>
-          <div class="mock-row"><span class="check"></span> Auto (by network)</div>
-          <div class="mock-row on"><span class="check">&#10003;</span> SOCKS5 — fast <span class="m-tag">192.168.8.2:9999</span> <span class="ok"></span></div>
-          <div class="mock-row"><span class="check"></span> HTTP — fallback <span class="m-tag">192.168.8.2:3128</span> <span class="ok"></span></div>
-          <div class="mock-row"><span class="check"></span> Direct</div>
+          <button class="mock-row" type="button" data-mock="auto"><span class="check"></span> Auto (by network)</button>
+          <button class="mock-row on" type="button" data-mock="socks"><span class="check">&#10003;</span> SOCKS5 — fast <span class="m-tag">192.168.8.2:9999</span> <span class="ok"></span></button>
+          <button class="mock-row" type="button" data-mock="http"><span class="check"></span> HTTP — fallback <span class="m-tag">192.168.8.2:3128</span> <span class="ok"></span></button>
+          <button class="mock-row" type="button" data-mock="direct"><span class="check"></span> Direct</button>
         </div>
       </div>
       <div class="card">
         <h3 class="h-card">The CLI is the engine, not an afterthought</h3>
         <p>Everything the app does, the terminal does too — the Settings window writes config through <code>proxypilot set</code>, so exactly one component knows the file format.</p>
-        <pre>$ proxypilot bench
-  route                   speed      time
-  ──────────────────────────────────────
-  direct                  —          blocked
-  http   192.168.8.2:3128 630 KB/s   7.9s
-  socks5 192.168.8.2:9999 2552 KB/s  2.0s
-
-$ proxypilot auto
-  ✓ route: auto → socks</pre>
+        <div class="term">
+          <div class="term-bar">
+            <span class="term-dots"><i></i><i></i><i></i></span>
+            <span class="term-title">zsh — proxypilot</span>
+          </div>
+          <div class="term-body"><pre class="term-out" id="termOut" aria-live="polite"></pre></div>
+          <div class="term-cmds">
+            <button class="chip" type="button" data-cmd="status" aria-pressed="true">status</button>
+            <button class="chip" type="button" data-cmd="bench" aria-pressed="false">bench</button>
+            <button class="chip" type="button" data-cmd="doctor" aria-pressed="false">doctor</button>
+            <button class="chip" type="button" data-cmd="auto" aria-pressed="false">auto</button>
+          </div>
+        </div>
         <p>Add <code>eval "$(proxypilot shellenv)"</code> to your <code>.zshrc</code> and every new shell picks up the right variables — including the lowercase <code>http_proxy</code> that curl insists on.</p>
       </div>
     </div>
@@ -566,6 +629,161 @@ $ proxypilot auto
     b.addEventListener('click', function(){ select(b.dataset.route); });
   });
   select('socks');
+
+  var still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ── терминал: вывод настоящих команд CLI ────────────────────────────────
+  var OUT = {
+    status: [
+      'proxypilot 1.1.3',
+      '',
+      '  proxy address    <b>http://127.0.0.1:3129</b>',
+      '  bridge           <span class="ok">running</span> (pid 11599, upstream=socks)',
+      '  mode             auto → socks',
+      '  gateway          192.168.8.1',
+      '',
+      '  socks5  192.168.8.2:9999 <span class="ok">reachable</span>',
+      '  http    192.168.8.2:3128 <span class="ok">reachable</span>'
+    ],
+    bench: [
+      'Measuring 5 MB (speed.cloudflare.com/__down)',
+      '',
+      '  route                     speed       time',
+      '  <span class="dim">──────────────────────────────────────────</span>',
+      '  direct                    <span class="dim">—           blocked</span>',
+      '  http   192.168.8.2:3128   630 KB/s    7.9s',
+      '  socks5 192.168.8.2:9999   2552 KB/s   2.0s',
+      '  via the bridge (:3129)    2912 KB/s   1.7s',
+      '',
+      '<span class="ok">✓</span> fastest: socks5 192.168.8.2:9999 (2552 KB/s)',
+      '  <span class="dim">socks5 beats the corporate HTTP proxy by 4.1x</span>'
+    ],
+    doctor: [
+      'Diagnostics',
+      '',
+      '<span class="ok">✓</span> gost: /opt/homebrew/bin/gost',
+      '<span class="ok">✓</span> config: ~/.config/proxypilot/config',
+      '<span class="ok">✓</span> bridge running (upstream=socks)',
+      '<span class="ok">✓</span> out through the bridge: HTTP 405',
+      '<span class="ok">✓</span> system proxy: HTTP and HTTPS on 127.0.0.1:3129',
+      '',
+      '  <span class="dim">log: ~/Library/Logs/proxypilot.log</span>'
+    ],
+    auto: [
+      '<span class="ok">✓</span> route: auto → socks   <span class="dim">(127.0.0.1:3129, no need to restart clients)</span>'
+    ]
+  };
+
+  var out = document.getElementById('termOut');
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+  var runToken = 0;
+
+  function render(typed, lines, caret){
+    out.innerHTML = '<span class="pr">$</span> ' + typed + (caret ? '<span class="caret"></span>' : '')
+      + (lines.length ? '\n' + lines.join('\n') : '');
+  }
+
+  function run(cmd){
+    var token = ++runToken;
+    chips.forEach(function(c){ c.setAttribute('aria-pressed', String(c.dataset.cmd === cmd)); });
+    var full = 'proxypilot ' + cmd;
+    var lines = OUT[cmd] || [];
+
+    if (still){ render(full, lines, false); return; }
+
+    var i = 0;
+    (function type(){
+      if (token !== runToken) return;              // пришла новая команда — эта отменяется
+      render(full.slice(0, i), [], true);
+      if (i++ < full.length) return setTimeout(type, 22);
+      var shown = [];
+      (function print(){
+        if (token !== runToken) return;
+        if (shown.length >= lines.length){ render(full, lines, false); return; }
+        shown.push(lines[shown.length]);
+        render(full, shown, true);
+        setTimeout(print, 45);
+      })();
+    })();
+  }
+
+  if (out){
+    chips.forEach(function(c){ c.addEventListener('click', function(){ run(c.dataset.cmd); }); });
+    run('status');
+  }
+
+  // ── бенч: гонка. Полосы едут со скоростью, пропорциональной реальному
+  //    времени замера, поэтому медленный маршрут ползёт дольше и не доезжает.
+  var runBtn = document.getElementById('benchRun');
+  if (runBtn && !still){
+    runBtn.addEventListener('click', function(){
+      var rows = Array.prototype.slice.call(document.querySelectorAll('.bar-row'));
+      var slowest = Math.max.apply(null, rows.map(function(r){ return +r.dataset.secs; }));
+      runBtn.disabled = true;
+      runBtn.textContent = 'Measuring…';
+
+      rows.forEach(function(row){
+        var fill = row.querySelector('.fill');
+        var val  = row.querySelector('.bar-val');
+        var kb   = +row.dataset.kb;
+        var ms   = (+row.dataset.secs / 2.4) * 1000;   // сжимаем, но пропорции держим
+        fill.style.transition = 'none';
+        fill.style.width = '0';
+        val.textContent = '0 KB/s';
+        void fill.offsetWidth;                          // форсируем reflow
+        fill.style.transition = 'width ' + ms + 'ms linear';
+        fill.style.width = '';                          // возврат к --pct из CSS
+        var t0 = performance.now();
+        (function tick(now){
+          var k = Math.min(1, ((now || performance.now()) - t0) / ms);
+          val.textContent = Math.round(kb * k).toLocaleString('en-US') + ' KB/s';
+          if (k < 1) requestAnimationFrame(tick);
+        })();
+      });
+
+      setTimeout(function(){
+        rows.forEach(function(row){
+          row.querySelector('.fill').style.transition = '';
+          row.querySelector('.bar-val').textContent = (+row.dataset.kb).toLocaleString('en-US') + ' KB/s';
+        });
+        runBtn.disabled = false;
+        runBtn.textContent = 'Race them again';
+      }, (slowest / 2.4) * 1000 + 120);
+    });
+  }
+
+  // ── мок меню: живой, как настоящее меню в баре ──────────────────────────
+  var mockRows = Array.prototype.slice.call(document.querySelectorAll('.mock-row'));
+  var mockState = document.getElementById('mockState');
+  var MOCK = { auto: 'Auto → SOCKS5 · fast', socks: 'SOCKS5 · fast',
+               http: 'HTTP proxy · fallback', direct: 'Direct · no proxy' };
+  mockRows.forEach(function(row){
+    row.addEventListener('click', function(){
+      mockRows.forEach(function(r){
+        var on = r === row;
+        r.classList.toggle('on', on);
+        r.querySelector('.check').innerHTML = on ? '&#10003;' : '';
+      });
+      if (mockState) mockState.textContent = MOCK[row.dataset.mock];
+    });
+  });
+
+  // ── копирование блоков кода ─────────────────────────────────────────────
+  Array.prototype.slice.call(document.querySelectorAll('pre:not(.term-out)')).forEach(function(pre){
+    var wrap = document.createElement('div');
+    wrap.className = 'pre-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'copy'; btn.textContent = 'Copy';
+    btn.addEventListener('click', function(){
+      navigator.clipboard.writeText(pre.textContent).then(function(){
+        btn.textContent = 'Copied'; btn.classList.add('done');
+        setTimeout(function(){ btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+      });
+    });
+    wrap.appendChild(btn);
+  });
 
 })();
 </script>
