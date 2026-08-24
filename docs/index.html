@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProxyPilot</title>
+<meta name="description" content="One local proxy address, switchable route out. A macOS menu bar bridge that lets tools which can't speak SOCKS use a fast SOCKS5 route.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* ── tokens ────────────────────────────────────────────────────────────── */
+:root{
+  /* palette (Mintlify system) */
+  --mint:#0c8c5e; --mint-deep:#0a7350; --mint-tint:#e8f4ef;
+  --ink:#08090a; --paper:#ffffff; --mist:#f2f2f2; --cloud:#dddddd;
+
+  /* semantic — light */
+  --bg:var(--paper);
+  --surface:var(--paper);
+  --surface-2:#fafbfa;
+  --text:#000000;
+  --muted:#55605b;              /* grey biased toward the mint, not neutral */
+  --border:var(--cloud);
+  --rule:var(--mist);
+  --accent:var(--mint);
+  --accent-hover:var(--mint-deep);
+  --accent-tint:var(--mint-tint);
+  --on-accent:var(--paper);
+  --code-bg:#f6f8f7;
+
+  /* dark hero band is constant in both themes */
+  --hero-bg:var(--ink);
+  --hero-text:#f4f6f5;
+  --hero-muted:#98a29d;
+  --hero-line:#22262a;
+  --hero-accent:#17b077;
+
+  --shadow-sm:0 2px 4px rgba(8,9,10,.05);
+  --shadow-card:0 2px 4px rgba(8,9,10,.04), 0 1px 2px rgba(8,9,10,.03);
+
+  --r-btn:4px; --r-card:16px; --r-lg:24px;
+  --maxw:1200px; --gap-section:80px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0b0c0d;
+    --surface:#111314;
+    --surface-2:#0f1112;
+    --text:#f2f4f3;
+    --muted:#98a29d;
+    --border:#23282a;
+    --rule:#1a1e1f;
+    --accent:#17b077;
+    --accent-hover:#25c489;
+    --accent-tint:#12251d;
+    --on-accent:#04140d;
+    --code-bg:#111414;
+    --shadow-sm:0 2px 4px rgba(0,0,0,.4);
+    --shadow-card:0 2px 4px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0b0c0d; --surface:#111314; --surface-2:#0f1112;
+  --text:#f2f4f3; --muted:#98a29d; --border:#23282a; --rule:#1a1e1f;
+  --accent:#17b077; --accent-hover:#25c489; --accent-tint:#12251d;
+  --on-accent:#04140d; --code-bg:#111414;
+  --shadow-sm:0 2px 4px rgba(0,0,0,.4);
+  --shadow-card:0 2px 4px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.3);
+}
+
+/* ── base ──────────────────────────────────────────────────────────────── */
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:16px; line-height:1.5; letter-spacing:-.16px;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{margin:0; text-wrap:balance}
+p{margin:0}
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+code,kbd,pre{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:2px}
+svg{display:block}
+
+.wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px}
+.eyebrow{
+  font-size:13px; font-weight:500; line-height:1.5; letter-spacing:.65px;
+  text-transform:uppercase; color:var(--muted);
+}
+.h-display{font-size:clamp(38px,5.6vw,57px); font-weight:600; line-height:1.1; letter-spacing:-1.14px}
+.h-section{font-size:clamp(29px,3.6vw,40px); font-weight:600; line-height:1.15; letter-spacing:-.4px}
+.h-card{font-size:20px; font-weight:600; line-height:1.3; letter-spacing:-.2px}
+.lede{font-size:18px; line-height:1.5; letter-spacing:-.18px; color:var(--muted); max-width:62ch}
+
+section{padding-block:var(--gap-section)}
+.rule{border:0; border-top:1px solid var(--rule); margin:0}
+
+/* ── nav ───────────────────────────────────────────────────────────────── */
+.nav{background:var(--hero-bg); border-bottom:1px solid var(--hero-line)}
+.nav .wrap{display:flex; align-items:center; gap:12px; height:64px}
+.brand{display:flex; align-items:center; gap:10px; color:var(--hero-text); font-weight:600; letter-spacing:-.2px}
+.brand:hover{text-decoration:none}
+.brand .mark{width:26px; height:26px; color:var(--hero-accent)}
+.nav-links{margin-left:auto; display:flex; align-items:center; gap:8px}
+.nav-links a{color:var(--hero-muted); font-size:14px; font-weight:500; padding:8px 10px; border-radius:var(--r-btn)}
+.nav-links a:hover{color:var(--hero-text); background:rgba(255,255,255,.06); text-decoration:none}
+.nav-links .btn-sm{
+  background:var(--hero-accent); color:#04140d; padding:8px 14px; font-weight:600;
+}
+.nav-links .btn-sm:hover{background:#25c489; color:#04140d}
+
+/* ── hero ──────────────────────────────────────────────────────────────── */
+.hero{background:var(--hero-bg); color:var(--hero-text); padding-block:72px 96px}
+.hero .eyebrow{color:var(--hero-muted)}
+.hero-grid{display:grid; gap:48px}
+.hero-copy{max-width:64ch}
+.hero h1{margin-top:16px; color:var(--hero-text)}
+.hero .lede{color:var(--hero-muted); margin-top:20px}
+.cta-row{display:flex; flex-wrap:wrap; gap:12px; margin-top:32px}
+.btn{
+  display:inline-flex; align-items:center; gap:8px; padding:12px 20px;
+  border-radius:var(--r-btn); font-size:15px; font-weight:600; letter-spacing:-.1px;
+  border:1px solid transparent; cursor:pointer; transition:background .15s, border-color .15s, color .15s;
+}
+.btn-primary{background:var(--hero-accent); color:#04140d}
+.btn-primary:hover{background:#25c489; text-decoration:none}
+.btn-ghost{border-color:var(--hero-line); color:var(--hero-text); background:transparent}
+.btn-ghost:hover{background:rgba(255,255,255,.06); text-decoration:none}
+.hero-meta{margin-top:20px; font-size:14px; font-weight:500; color:var(--hero-muted)}
+.hero-meta .dot{color:var(--hero-line); margin:0 8px}
+
+/* ── route diagram ─────────────────────────────────────────────────────── */
+.diagram{
+  background:#0e1011; border:1px solid var(--hero-line); border-radius:var(--r-lg);
+  padding:28px 24px 24px;
+}
+.diagram-head{
+  display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+  font-size:13px; font-weight:500; letter-spacing:.65px; text-transform:uppercase;
+  color:var(--hero-muted); margin-bottom:24px;
+}
+.flow{
+  display:grid; align-items:center; gap:12px;
+  grid-template-columns:minmax(140px,auto) minmax(48px,1fr) auto minmax(48px,1fr) minmax(196px,auto);
+}
+@media (max-width:899px){ .flow{grid-template-columns:1fr; gap:16px} .fan{display:none} }
+.clients{list-style:none; margin:0; padding:0; display:grid; gap:7px}
+.clients li{
+  font-family:"JetBrains Mono",monospace; font-size:13px; color:var(--hero-muted);
+  border:1px solid var(--hero-line); border-radius:var(--r-btn); padding:9px 12px;
+  background:rgba(255,255,255,.02);
+}
+.fan{width:100%; height:134px; color:var(--hero-line)}
+.fan path{fill:none; stroke:currentColor; stroke-width:1.5; transition:stroke .25s, opacity .25s}
+.fan path.on{stroke:var(--hero-accent); stroke-width:2}
+.bridge{
+  display:grid; gap:6px; justify-items:center; text-align:center;
+  border:1px solid var(--hero-accent); border-radius:var(--r-card);
+  background:rgba(23,176,119,.07); padding:16px 18px; min-width:172px;
+}
+.bridge .addr{font-family:"JetBrains Mono",monospace; font-size:15px; font-weight:500; color:var(--hero-text)}
+.bridge .note{font-size:13px; font-weight:500; letter-spacing:.4px; color:var(--hero-accent); text-transform:uppercase}
+.routes{list-style:none; margin:0; padding:0; display:grid; gap:7px}
+.route{
+  width:100%; display:flex; align-items:center; gap:10px; text-align:left;
+  font-family:inherit; font-size:14px; font-weight:500; color:var(--hero-muted);
+  background:rgba(255,255,255,.02); border:1px solid var(--hero-line);
+  border-radius:var(--r-btn); padding:9px 12px; cursor:pointer;
+  transition:border-color .15s, color .15s, background .15s;
+}
+.route:hover{color:var(--hero-text); border-color:#3a4046}
+.route[aria-pressed="true"]{border-color:var(--hero-accent); color:var(--hero-text); background:rgba(23,176,119,.1)}
+.route .glyph{width:18px; text-align:center; color:var(--hero-accent); font-size:13px}
+.route .tag{margin-left:auto; font-size:13px; color:var(--hero-muted); font-family:"JetBrains Mono",monospace}
+.diagram-foot{
+  margin-top:20px; padding-top:16px; border-top:1px solid var(--hero-line);
+  font-size:14px; color:var(--hero-muted); display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+}
+.diagram-foot b{color:var(--hero-text); font-weight:600}
+.live-dot{width:7px; height:7px; border-radius:50%; background:var(--hero-accent); flex:none}
+
+/* ── generic blocks ────────────────────────────────────────────────────── */
+.section-head{display:grid; gap:16px; margin-bottom:48px; max-width:70ch}
+.grid-2{display:grid; gap:24px}
+@media (min-width:800px){ .grid-2{grid-template-columns:1fr 1fr} }
+.grid-3{display:grid; gap:24px}
+@media (min-width:800px){ .grid-3{grid-template-columns:repeat(3,1fr)} }
+
+.card{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--r-card);
+  padding:24px; display:grid; gap:12px; align-content:start; box-shadow:var(--shadow-card);
+}
+.card p{color:var(--muted)}
+.card .icon{width:22px; height:22px; color:var(--accent)}
+
+pre{
+  margin:0; background:var(--code-bg); border:1px solid var(--border);
+  border-radius:var(--r-btn); padding:14px 16px; overflow-x:auto;
+  font-size:13px; line-height:1.6; color:var(--text);
+}
+pre .err{color:#c0392b}
+:root[data-theme="dark"] pre .err{color:#ff8a80}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) pre .err{color:#ff8a80} }
+p code{background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:1px 5px; font-size:14px}
+
+/* ── bench ─────────────────────────────────────────────────────────────── */
+.bench{display:grid; gap:20px; background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:32px}
+.bar-row{display:grid; grid-template-columns:minmax(150px,190px) 1fr auto; gap:16px; align-items:center}
+@media (max-width:639px){ .bar-row{grid-template-columns:1fr auto; } .bar-row .track{grid-column:1/-1} }
+.bar-label{font-size:15px; font-weight:500}
+.bar-label small{display:block; font-weight:400; font-size:13px; color:var(--muted); letter-spacing:0}
+.track{background:var(--rule); border-radius:999px; height:12px; overflow:hidden}
+.fill{height:100%; border-radius:999px; background:var(--accent); width:var(--pct)}
+.fill.slow{background:var(--muted); opacity:.45}
+.bar-val{font-family:"JetBrains Mono",monospace; font-size:15px; font-weight:500; font-variant-numeric:tabular-nums}
+.bench-note{font-size:14px; color:var(--muted); border-top:1px solid var(--rule); padding-top:16px; margin:0}
+
+/* ── menu mock ─────────────────────────────────────────────────────────── */
+.mock{
+  background:var(--ink); border:1px solid var(--hero-line); border-radius:12px;
+  padding:10px; width:100%; max-width:320px; color:var(--hero-text); box-shadow:var(--shadow-card);
+}
+.mock-head{padding:8px 10px 10px; border-bottom:1px solid var(--hero-line); margin-bottom:6px}
+.mock-head .t{font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--hero-muted)}
+.mock-head .s{font-size:13px; font-weight:500; color:var(--hero-text)}
+.mock-row{display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px; font-size:13px; color:var(--hero-text)}
+.mock-row.on{background:rgba(255,255,255,.07)}
+.mock-row .m-tag{margin-left:auto; font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--hero-muted)}
+.mock-row .ok{width:7px; height:7px; border-radius:50%; background:#2ecc71; flex:none}
+.mock-row .check{width:12px; color:var(--hero-accent); font-size:11px}
+
+/* ── steps ─────────────────────────────────────────────────────────────── */
+.steps{list-style:none; margin:0; padding:0; display:grid; gap:16px; counter-reset:s}
+.steps li{
+  counter-increment:s; display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:start;
+  border:1px solid var(--border); border-radius:var(--r-card); padding:20px 24px; background:var(--surface);
+}
+.steps li::before{
+  content:counter(s); width:26px; height:26px; border-radius:50%;
+  background:var(--accent-tint); color:var(--accent);
+  font-size:13px; font-weight:600; display:grid; place-items:center; font-variant-numeric:tabular-nums;
+}
+.steps h3{font-size:16px; font-weight:600; letter-spacing:-.16px; margin-bottom:4px}
+.steps p{color:var(--muted); font-size:15px}
+.callout{
+  border:1px solid var(--border); border-left:3px solid var(--accent);
+  background:var(--surface-2); border-radius:var(--r-btn);
+  padding:16px 20px; font-size:15px; color:var(--muted); margin-top:24px;
+}
+.callout b{color:var(--text); font-weight:600}
+
+/* ── cli table ─────────────────────────────────────────────────────────── */
+.table-wrap{border:1px solid var(--border); border-radius:var(--r-lg); overflow:hidden; background:var(--surface)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse; width:100%; min-width:560px}
+th,td{text-align:left; padding:14px 24px; border-bottom:1px solid var(--rule); vertical-align:top}
+th{font-size:13px; font-weight:500; letter-spacing:.65px; text-transform:uppercase; color:var(--muted); background:var(--surface-2)}
+tr:last-child td{border-bottom:0}
+td:first-child{white-space:nowrap; font-family:"JetBrains Mono",monospace; font-size:13px; color:var(--accent)}
+td:last-child{color:var(--muted); font-size:15px}
+
+/* ── footer ────────────────────────────────────────────────────────────── */
+footer{background:var(--hero-bg); color:var(--hero-muted); padding-block:48px; font-size:14px}
+footer .wrap{display:flex; flex-wrap:wrap; gap:16px; align-items:center}
+footer a{color:var(--hero-text)}
+footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation:none !important; transition:none !important}
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 100 100">
+    <circle cx="50" cy="50" r="33" fill="none" stroke="currentColor" stroke-width="7"/>
+    <path d="M50 22v9M50 69v9M22 50h9M69 50h9" stroke="currentColor" stroke-width="6.5" stroke-linecap="round"/>
+    <path d="M62 14 32 58h14l-8 30 30-44H54z" fill="none" stroke="var(--knock,#08090a)" stroke-width="11" stroke-linejoin="round"/>
+    <path d="M62 14 32 58h14l-8 30 30-44H54z" fill="currentColor"/>
+  </symbol>
+</svg>
+
+<nav class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top"><svg class="mark" aria-hidden="true"><use href="#mark"/></svg> ProxyPilot</a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/jamber751/proxy-pilot">GitHub</a>
+      <a class="btn-sm" href="https://github.com/jamber751/proxy-pilot/releases/latest">Download</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">macOS 11+ &middot; v1.1.3 &middot; MIT</p>
+      <h1 class="h-display">One local proxy address. Switchable route out.</h1>
+      <p class="lede">Corporate HTTP proxies shape traffic while a fast SOCKS5 endpoint sits on the same network — and plenty of tools can't speak SOCKS at all. ProxyPilot bridges that gap and keeps the address your clients use constant.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/jamber751/proxy-pilot/releases/latest">Download the DMG</a>
+        <a class="btn btn-ghost" href="https://github.com/jamber751/proxy-pilot">View source</a>
+      </div>
+      <p class="hero-meta">Universal binary<span class="dot">/</span>self-contained<span class="dot">/</span>no Homebrew, no terminal</p>
+    </div>
+
+    <div class="diagram">
+      <div class="diagram-head"><span>Live route</span><span>Pick one &rarr;</span></div>
+      <div class="flow">
+        <ul class="clients">
+          <li>Claude Code</li>
+          <li>curl / git</li>
+          <li>browser</li>
+        </ul>
+
+        <svg class="fan" viewBox="0 0 100 134" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 20 C50 20 50 67 100 67"/>
+          <path d="M0 67 H100"/>
+          <path d="M0 114 C50 114 50 67 100 67"/>
+        </svg>
+
+        <div class="bridge">
+          <span class="addr">127.0.0.1:3129</span>
+          <span class="note">never changes</span>
+        </div>
+
+        <svg class="fan" viewBox="0 0 100 134" preserveAspectRatio="none" aria-hidden="true">
+          <path id="w-socks"  d="M0 67 C50 67 50 20 100 20"/>
+          <path id="w-http"   d="M0 67 H100"/>
+          <path id="w-direct" d="M0 67 C50 67 50 114 100 114"/>
+        </svg>
+
+        <ul class="routes">
+        <li><button class="route" type="button" data-route="socks" aria-pressed="true"><span class="glyph">&#9889;</span> SOCKS5 <span class="tag">fast</span></button></li>
+        <li><button class="route" type="button" data-route="http" aria-pressed="false"><span class="glyph">&#8901;</span> HTTP proxy <span class="tag">fallback</span></button></li>
+          <li><button class="route" type="button" data-route="direct" aria-pressed="false"><span class="glyph">&#8594;</span> Direct <span class="tag">off-site</span></button></li>
+        </ul>
+      </div>
+
+      <p class="diagram-foot"><span class="live-dot"></span> <span id="routeMsg">Route switched to <b>SOCKS5</b> — clients keep running.</span></p>
+    </div>
+  </div>
+</header>
+
+<section id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">The problem</p>
+      <h2 class="h-section">The fast route is right there. Your tools just can't reach it.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3 class="h-card">The corporate proxy shapes traffic</h3>
+        <p>In our office the HTTP proxy sat pinned near 630 KB/s while a SOCKS5 endpoint on the very same host moved 2552 KB/s. Same network, same moment, fourfold difference.</p>
+      </div>
+      <div class="card">
+        <h3 class="h-card">Half the toolchain can't speak SOCKS</h3>
+        <p>Point Claude Code at a <code>socks5://</code> address and undici answers plainly:</p>
+        <pre><span class="err">API Error: Unable to connect to API
+(UnsupportedProxyProtocol)</span></pre>
+        <p>So the fast route stays unused, and everything crawls through the slow one.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="proof">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Measured, not claimed</p>
+      <h2 class="h-section">A local hop costs nothing</h2>
+      <p class="lede">Same 5 MB file, same minutes, one stream each. The bridge adds a loopback hop of well under a millisecond — run-to-run noise moves the number more than the hop does.</p>
+    </div>
+    <div class="bench">
+      <div class="bar-row">
+        <div class="bar-label">HTTP proxy<small>corporate, shaped</small></div>
+        <div class="track"><div class="fill slow" style="--pct:22%"></div></div>
+        <div class="bar-val">630 KB/s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">SOCKS5<small>direct to the endpoint</small></div>
+        <div class="track"><div class="fill" style="--pct:88%"></div></div>
+        <div class="bar-val">2552 KB/s</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">SOCKS5 via the bridge<small>what your clients get</small></div>
+        <div class="track"><div class="fill" style="--pct:100%"></div></div>
+        <div class="bar-val">2912 KB/s</div>
+      </div>
+      <p class="bench-note">Numbers from one office network, not a promise about yours — run <code>proxypilot bench</code> and get your own. It uses a single stream and a short file on purpose: it compares routes against each other, not your bandwidth. Measure the line itself with fast.com.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">How it works</p>
+      <h2 class="h-section">An HTTP-CONNECT bridge with a swappable exit</h2>
+      <p class="lede">Clients see an ordinary HTTP proxy on <code>127.0.0.1:3129</code>. Behind it, the route out is yours to change — and changing it never touches the clients.</p>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <h3 class="h-card">The address never changes</h3>
+        <p>Set the system proxy once. Switch between SOCKS5, the corporate proxy and direct as often as you like — Claude Code, git and the browser carry on without a restart, because nothing they hold onto moved.</p>
+      </div>
+      <div class="card">
+        <h3 class="h-card"><code>auto</code> reads the network</h3>
+        <p>The route follows the physical interface's gateway, matched against your office prefixes — not "whichever upstream answers", which on a VPN from home would route you back through the office. Take the laptop home and the proxy switches itself off.</p>
+      </div>
+      <div class="card">
+        <h3 class="h-card">Install is one drag</h3>
+        <p>The DMG carries the CLI and the bridge binary inside, universal for Intel and Apple Silicon. No Homebrew, no terminal, no cloning a repo to get a working menu bar icon.</p>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:24px">
+      <div class="card">
+        <h3 class="h-card">A menu bar app that shows the truth</h3>
+        <p>The icon carries the active route. The menu carries live reachability dots for each upstream, so you know a route is dead before you pick it — and a Find on network button that discovers proxies for you. Settings (⌘,) edits addresses, bridge port and office prefixes.</p>
+        <div class="mock" role="img" aria-label="ProxyPilot menu bar dropdown showing SOCKS5 selected and both upstreams reachable">
+          <div class="mock-head">
+            <div class="t">Bridge 127.0.0.1:3129</div>
+            <div class="s">SOCKS5 &middot; fast</div>
+          </div>
+          <div class="mock-row"><span class="check"></span> Auto (by network)</div>
+          <div class="mock-row on"><span class="check">&#10003;</span> SOCKS5 — fast <span class="m-tag">192.168.8.2:9999</span> <span class="ok"></span></div>
+          <div class="mock-row"><span class="check"></span> HTTP — fallback <span class="m-tag">192.168.8.2:3128</span> <span class="ok"></span></div>
+          <div class="mock-row"><span class="check"></span> Direct</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="h-card">The CLI is the engine, not an afterthought</h3>
+        <p>Everything the app does, the terminal does too — the Settings window writes config through <code>proxypilot set</code>, so exactly one component knows the file format.</p>
+        <pre>$ proxypilot bench
+  route                   speed      time
+  ──────────────────────────────────────
+  direct                  —          blocked
+  http   192.168.8.2:3128 630 KB/s   7.9s
+  socks5 192.168.8.2:9999 2552 KB/s  2.0s
+
+$ proxypilot auto
+  ✓ route: auto → socks</pre>
+        <p>Add <code>eval "$(proxypilot shellenv)"</code> to your <code>.zshrc</code> and every new shell picks up the right variables — including the lowercase <code>http_proxy</code> that curl insists on.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="install">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Install</p>
+      <h2 class="h-section">Three steps, then never again</h2>
+    </div>
+    <ol class="steps">
+      <li>
+        <div>
+          <h3>Download the DMG</h3>
+          <p>Grab the latest release. It is universal and self-contained — the CLI and the bridge ship inside the app.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Right-click <code>Install.command</code> → Open</h3>
+          <p>It copies the app to Applications, clears quarantine, offers to add it to Login Items and launches it. On first run the app finds the proxies on your network by itself and opens Settings so you can confirm them.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Point the system proxy at the bridge</h3>
+          <p>System Settings → Network → Wi-Fi → Details → Proxies. Set HTTP and HTTPS to <code>127.0.0.1:3129</code> and leave SOCKS off. That address is constant, so this is the last time you open this panel.</p>
+        </div>
+      </li>
+    </ol>
+    <p class="callout"><b>Ad-hoc signed, not Developer ID.</b> The first launch needs right-click → Open — macOS blocks a plain double-click on apps without a paid Apple signature. Everything after that opens normally.</p>
+    <p style="margin-top:24px; color:var(--muted); font-size:15px">Prefer the source? <code>git clone https://github.com/jamber751/proxy-pilot.git &amp;&amp; cd proxy-pilot &amp;&amp; ./install.sh</code></p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="cli">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Command line</p>
+      <h2 class="h-section">The whole surface</h2>
+    </div>
+    <div class="table-wrap"><div class="scroll">
+      <table>
+        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>proxypilot detect</td><td>Find proxies on this network and write a config</td></tr>
+          <tr><td>proxypilot bench</td><td>Compare the routes: direct, http, socks5</td></tr>
+          <tr><td>proxypilot status · doctor</td><td>Current state · diagnose what's wrong</td></tr>
+          <tr><td>proxypilot socks · http · direct · auto</td><td>Switch the route out</td></tr>
+          <tr><td>proxypilot set KEY VALUE</td><td>Write a config key, validated</td></tr>
+          <tr><td>proxypilot json</td><td>Machine-readable state, for scripts and the app</td></tr>
+          <tr><td>proxypilot shellenv</td><td>Proxy variables for your shell</td></tr>
+          <tr><td>proxypilot net · vpn</td><td>Optional: network profile and split-tunnel VPN</td></tr>
+        </tbody>
+      </table>
+    </div></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a class="brand" href="#top" style="color:var(--hero-text)"><svg class="mark" aria-hidden="true" style="color:var(--hero-accent)"><use href="#mark"/></svg> ProxyPilot</a>
+    <div class="right">
+      <a href="https://github.com/jamber751/proxy-pilot">GitHub</a>
+      <a href="https://github.com/jamber751/proxy-pilot/releases/latest">Releases</a>
+      <span>MIT licensed</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var copy = {
+    socks:  'Route switched to <b>SOCKS5</b> — clients keep running.',
+    http:   'Route switched to <b>HTTP proxy</b> — clients keep running.',
+    direct: 'Route switched to <b>direct</b> — clients keep running.'
+  };
+  var wires = {
+    socks:  document.getElementById('w-socks'),
+    http:   document.getElementById('w-http'),
+    direct: document.getElementById('w-direct')
+  };
+  var msg = document.getElementById('routeMsg');
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.route'));
+
+  function select(route){
+    buttons.forEach(function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.route === route));
+    });
+    Object.keys(wires).forEach(function(k){
+      if (wires[k]) wires[k].classList.toggle('on', k === route);
+    });
+    if (msg) msg.innerHTML = copy[route];
+  }
+  buttons.forEach(function(b){
+    b.addEventListener('click', function(){ select(b.dataset.route); });
+  });
+  select('socks');
+
+})();
+</script>
+</body>
+</html>
