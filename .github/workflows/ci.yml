@@ -37,6 +37,16 @@ jobs:
           ./bin/proxypilot set OFFICE_GATEWAYS 192.168.8.
           ./bin/proxypilot vpn status | grep -q '192.168.0.0/16' \
             && echo "  ok  маршруты в туннель выведены из офисной сети"
+          # маска считается из битов, а не таблицей: /14 и /32 не должны стать /24
+          ./bin/proxypilot set VPN_ROUTES "10.20.0.0/14"
+          ./bin/proxypilot vpn status | grep -q '10.20.0.0/14' \
+            && echo "  ok  нестандартный префикс сохранён"
+          ./bin/proxypilot set VPN_ROUTES ""
+          # без OFFICE_GATEWAYS профиль не должен трогать ни адрес, ни туннель
+          ./bin/proxypilot set OFFICE_GATEWAYS ""
+          ./bin/proxypilot net --dry-run | grep -q 'ничего не трогаю' \
+            && echo "  ok  без OFFICE_GATEWAYS профиль не вмешивается"
+          ./bin/proxypilot set OFFICE_GATEWAYS 192.168.8.
           ./bin/proxypilot vpn status >/dev/null && echo "  ok  vpn status"
           ./bin/proxypilot net apply && exit 1 || echo "  ok  net apply требует root"
           ./bin/proxypilot set OFFICE_IP 999.1.1.1 && exit 1 || echo "  ok  set отвергает битый адрес"

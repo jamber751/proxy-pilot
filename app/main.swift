@@ -175,7 +175,7 @@ final class ConfigStore: ObservableObject {
             guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
             let key = String(line[..<eq])
             // Значения с пробелами (список DNS, несколько маршрутов) лежат в
-            // кавычках — конфиг читается шеллом через source.
+            // кавычках — так их пишет `proxypilot set` и разбирает CLI.
             let value = Self.unquote(String(line[line.index(after: eq)...]))
             switch key {
             case "SOCKS_UPSTREAM":  socks = value

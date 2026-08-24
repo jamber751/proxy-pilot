@@ -169,7 +169,10 @@ LaunchDaemon and the password prompt. Logs: `/var/log/proxypilot-net.log`,
 `/var/log/proxypilot-vpn.log`.
 
 Two tunnels at once fight over routes, so a tunnel raised by another client
-(OpenVPN Connect, Tunnelblick) is detected and left alone.
+(OpenVPN Connect, Tunnelblick) is detected and left alone. “Another client”
+means a tunnel that already carries a route into your office subnets — not any
+`utun` with an address, so a permanently-up Tailscale or WireGuard link doesn't
+block the office tunnel from coming up.
 
 </details>
 
