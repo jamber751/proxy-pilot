@@ -79,7 +79,7 @@ load_config() {
     fown=$(stat -f %u "$CFG" 2>/dev/null)
     down=$(stat -f %u "${CFG:h:h}" 2>/dev/null)
     if [[ -n "$fown" && "$fown" != 0 && -n "$down" && "$fown" != "$down" ]]; then
-      print -u2 -- "proxypilot: $CFG принадлежит посторонему пользователю — не читаю"
+      print -u2 -- "proxypilot: $CFG принадлежит постороннему пользователю — не читаю"
       return 1
     fi
   fi
@@ -735,6 +735,11 @@ cmd_shellenv() {
 # настройки (чтобы знание о формате файла жило в одном месте)
 cmd_set() {  # KEY VALUE
   local key="$1" value="${2:-}"
+  # Из окна настроек путь приходит literal-строкой: `~` шелл не раскрывает,
+  # проверка читаемости ниже падает, а save() в приложении ошибок не смотрит —
+  # и пользователь видит «Готово.», хотя значение не сохранилось. Раскрываем
+  # до валидации.
+  [[ "$value" == "~/"* ]] && value="${HOME}${value#\~}"
   local -a allowed=(BRIDGE_PORT SOCKS_UPSTREAM HTTP_UPSTREAM OFFICE_GATEWAYS
                     NO_PROXY_LIST BENCH_URL BENCH_BYTES
                     NET_SERVICE OFFICE_IP OFFICE_MASK OFFICE_DNS
@@ -775,9 +780,10 @@ cmd_set() {  # KEY VALUE
       [[ -z "$value" ]] || networksetup -getinfo "$value" >/dev/null 2>&1 \
         || die "нет сетевого сервиса '$value' (см. networksetup -listallnetworkservices)" ;;
   esac
-  # Конфиг читается через `source`, поэтому значение с пробелами (список DNS,
-  # несколько маршрутов) обязано быть в кавычках — иначе шелл присвоит первое
-  # слово, а остальные попытается выполнить как команду.
+  # Значение с пробелами (список DNS, несколько маршрутов) храним в кавычках:
+  # так его забирает разбор KEY=VALUE в load_config и парсер в приложении.
+  # Исторически это защищало ещё и от выполнения — конфиг читался через
+  # `source`, — но с 7b4b13a он не исполняется вовсе.
   local stored="$value"
   [[ "$value" == *[[:space:]]* ]] && stored="\"$value\""
 
@@ -808,10 +814,10 @@ cmd_json() {
   # Сетевой профиль: приложению нужно знать, где мы и что с туннелем, чтобы
   # рисовать это в меню без второго вызова CLI.
   local office=false netd=false vpnd=false vpnup=false vpnauto=false vpnforeign=false
-  [[ -n "$OFFICE_GATEWAYS" ]] && net_where >/dev/null 2>&1 && office=true
+  [[ -n "$OFFICE_GATEWAYS" ]] && net_where --fast >/dev/null 2>&1 && office=true
   [[ -r "$NET_PLIST" ]] && netd=true
   [[ -r "$VPN_PLIST" ]] && vpnd=true
-  vpn_loaded 2>/dev/null && vpnup=true
+  vpn_up_now 2>/dev/null && vpnup=true
   vpn_auto_on && vpnauto=true
   vpn_foreign_up 2>/dev/null && vpnforeign=true
   print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false),\"in_office\":$office,\"net_service\":\"$NET_SERVICE\",\"office_ip\":\"$OFFICE_IP\",\"net_daemon\":$netd,\"vpn_profile\":\"$VPN_PROFILE\",\"vpn_installed\":$vpnd,\"vpn_up\":$vpnup,\"vpn_auto\":$vpnauto,\"vpn_foreign\":$vpnforeign}"
@@ -954,8 +960,12 @@ net_ip() { networksetup -getinfo "$NET_SERVICE" 2>/dev/null | awk '/^IP address:
 # OFFICE_GATEWAYS, шлюз обязан отвечать за физическим интерфейсом. Иначе
 # офисная статика, забытая в домашней сети, сошла бы за офис (адрес-то
 # офисный), и профиль никогда бы не сбросился в DHCP.
-net_where() {
-  local ip gw dev iface
+# --fast пропускает проверку живости шлюза: `json` приложение дёргает раз в
+# 5 секунд, а ping ждёт до 2с — в офисе, где шлюз молчит на ICMP и ARP-запись
+# протухла, меню на каждое обновление подвисало бы на эти секунды.
+net_where() {  # [--fast]
+  local ip gw dev iface fast=0
+  [[ "${1:-}" == --fast ]] && fast=1
   read -r ip gw dev <<< "$(physical_endpoint)"
   [[ "$dev" != - ]] || { print -- "нет активного интерфейса"; return 1 }
   in_office || { print -- "адрес $ip / шлюз $gw мимо OFFICE_GATEWAYS"; return 1 }
@@ -964,6 +974,7 @@ net_where() {
   iface=$(route -n get "$gw" 2>/dev/null | awk '/interface:/{print $2; exit}')
   [[ "$iface" == "$dev" ]] || { print -- "шлюз $gw за '${iface:-—}', а не за $dev"; return 1 }
 
+  (( fast )) && { print -- "шлюз $gw за $dev"; return 0 }
   ping -c 1 -t 2 -o "$gw" >/dev/null 2>&1 && { print -- "шлюз $gw отвечает через $dev"; return 0 }
   # Шлюз может молчать на ICMP — тогда верим ARP-таблице.
   arp -n "$gw" 2>/dev/null | grep -qv 'no entry' && { print -- "шлюз $gw в ARP через $dev"; return 0 }
@@ -999,23 +1010,35 @@ net_apply_dhcp() {
 
 # ── туннель ──────────────────────────────────────────────────────────────────
 
+# launchctl видит system-домен только из-под root (иначе rc=113), поэтому для
+# вопроса «туннель поднят?» первичен живой процесс: pgrep находит root-процессы
+# и от обычного пользователя. Иначе меню всегда предлагало бы «Поднять».
 vpn_loaded()       { launchctl print "system/$VPN_LABEL" >/dev/null 2>&1 }
 vpn_ours_running() { pgrep -f "openvpn --config $VPN_CONF" >/dev/null 2>&1 }
+vpn_up_now()       { vpn_ours_running || vpn_loaded }
 
 # Туннель, поднятый другим клиентом (OpenVPN Connect, Tunnelblick). Лезть в него
 # нельзя: два туннеля разом дерутся за маршруты.
+#
+# Считать чужим любой utun с адресом нельзя: у пользователей Tailscale или
+# WireGuard он поднят постоянно, и наш автоподъём не сработал бы никогда.
+# Конфликтует только туннель, через который УЖЕ лежит маршрут в наши офисные
+# сети — его и ищем.
 vpn_foreign_up() {
   vpn_ours_running && return 1
-  local dev
-  for dev in ${(f)"$(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep '^utun')"}; do
-    [[ -n "$(ifconfig $dev 2>/dev/null | awk '/inet [0-9]/{print $2; exit}')" ]] && return 0
+  local routes="$VPN_ROUTES" net iface
+  [[ -z "$routes" ]] && routes=$(vpn_default_routes 2>/dev/null)
+  [[ -z "$routes" ]] && return 1
+  for net in ${=routes}; do
+    iface=$(route -n get "${net%%/*}" 2>/dev/null | awk '/interface:/{print $2; exit}')
+    [[ "$iface" == (utun|ipsec|ppp)* ]] && return 0
   done
   return 1
 }
 
 vpn_up() {
   [[ -r "$VPN_PLIST" ]] || { net_log "  VPN: не установлен (proxypilot vpn install)"; return 0 }
-  vpn_loaded && { net_log "  VPN: уже поднят"; return 0 }
+  vpn_up_now && { net_log "  VPN: уже поднят"; return 0 }
   if vpn_foreign_up; then
     # Чужой туннель мог секунду назад получить bootout и ещё не исчезнуть —
     # иначе на переезде с другого клиента мы отказываемся поднимать свой.
@@ -1028,9 +1051,17 @@ vpn_up() {
 
 vpn_down() {
   vpn_foreign_up && { net_log "  VPN: поднят другим клиентом — не трогаю"; return 0 }
-  vpn_loaded || { net_log "  VPN: уже опущен"; return 0 }
+  vpn_up_now || { net_log "  VPN: уже опущен"; return 0 }
   net_log "  VPN: опускаю"
   net_run launchctl bootout "system/$VPN_LABEL"
+}
+
+# Точечная маска из длины префикса. Таблицей на пару популярных значений это
+# делать нельзя: `set VPN_ROUTES` принимает /1–/32, и легальный /14 молча
+# превратился бы в /24, а /32 — расширился.
+mask_of() {  # биты → a.b.c.d
+  local -i b=$1 v=$(( b ? (0xffffffff << (32 - b)) & 0xffffffff : 0 ))
+  print -- "$(( v >> 24 & 255 )).$(( v >> 16 & 255 )).$(( v >> 8 & 255 )).$(( v & 255 ))"
 }
 
 # Собирает рабочий конфиг из профиля клиента, добавляя split-tunnel. Сервер
@@ -1054,11 +1085,7 @@ vpn_build_conf() {
     print -- "# этого не страдает: её собственная запись в таблице маршрутов точнее."
     for net in ${=routes}; do
       addr="${net%%/*}"; bits="${net##*/}"
-      case "$bits" in
-        (8) mask=255.0.0.0 ;; (12) mask=255.240.0.0 ;;
-        (16) mask=255.255.0.0 ;; (*) mask=255.255.255.0 ;;
-      esac
-      print -- "route $addr $mask"
+      print -- "route $addr $(mask_of "$bits")"
     done
     print -- ""
     print -- "# Системный резолвер оставляем домашним. Если внутренние имена перестанут"
@@ -1111,6 +1138,14 @@ need_gost_free_openvpn() {
 
 net_apply() {
   local reason kind ip rc
+  # Без OFFICE_GATEWAYS мы не знаем, где находимся. Для прокси пустой список —
+  # осознанная совместимость («не сужаем»), но здесь тот же ответ означал бы
+  # «всегда офис»: статика не ставилась бы никогда, а туннель гасился бы на
+  # каждой смене сети, то есть VPN_AUTO молча не работал бы вообще.
+  if [[ -z "$OFFICE_GATEWAYS" ]]; then
+    net_log "OFFICE_GATEWAYS не задан — где мы, неизвестно; ничего не трогаю"
+    return 0
+  fi
   kind=$(net_config_kind); ip=$(net_ip)
   net_log "старт: сервис=$NET_SERVICE конфиг=$kind ip=${ip:-—} управляем-адресом=$(net_managed && print да || print нет) vpn-авто=$VPN_AUTO"
 
@@ -1282,7 +1317,7 @@ vpn_status() {
   print -- "  профиль           : ${VPN_PROFILE:-$(c_dim 'не задан')}"
   print -- "  автоматика        : $(vpn_auto_on && c_grn on || c_dim off)"
   if [[ -r "$VPN_PLIST" ]]; then
-    local up=$(vpn_loaded && print да || print нет)
+    local up=$(vpn_up_now && print да || print нет)
     print -- "  туннель           : $([[ $up == да ]] && c_grn поднят || print опущен)$(vpn_ours_running && print ' (процесс жив)')"
     # Сам конфиг лежит под root с правами 600 — внутри приватный ключ, и из-под
     # пользователя его не видно. Проверять его читаемость нельзя: получалось
