@@ -157,6 +157,9 @@ section{padding-block:var(--gap-section)}
 .fan{width:100%; height:134px; color:var(--hero-line)}
 .fan path{fill:none; stroke:currentColor; stroke-width:1.5; transition:stroke .25s, opacity .25s}
 .fan path.on{stroke:var(--hero-accent); stroke-width:2}
+.fan .pulse{stroke:var(--hero-accent); stroke-linecap:round; stroke-dasharray:2 98; opacity:0}
+.fan .pulse.on{opacity:.9; stroke-width:3; animation:flow 1.8s linear infinite; animation-delay:var(--d,0s)}
+@keyframes flow{from{stroke-dashoffset:100} to{stroke-dashoffset:0}}
 .bridge{
   display:grid; gap:6px; justify-items:center; text-align:center;
   border:1px solid var(--hero-accent); border-radius:var(--r-card);
@@ -323,6 +326,9 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
           <path d="M0 20 C50 20 50 67 100 67"/>
           <path d="M0 67 H100"/>
           <path d="M0 114 C50 114 50 67 100 67"/>
+          <path class="pulse on" pathLength="100" style="--d:0s"   d="M0 20 C50 20 50 67 100 67"/>
+          <path class="pulse on" pathLength="100" style="--d:.6s"  d="M0 67 H100"/>
+          <path class="pulse on" pathLength="100" style="--d:1.2s" d="M0 114 C50 114 50 67 100 67"/>
         </svg>
 
         <div class="bridge">
@@ -334,6 +340,9 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
           <path id="w-socks"  d="M0 67 C50 67 50 20 100 20"/>
           <path id="w-http"   d="M0 67 H100"/>
           <path id="w-direct" d="M0 67 C50 67 50 114 100 114"/>
+          <path id="p-socks"  class="pulse" pathLength="100" d="M0 67 C50 67 50 20 100 20"/>
+          <path id="p-http"   class="pulse" pathLength="100" d="M0 67 H100"/>
+          <path id="p-direct" class="pulse" pathLength="100" d="M0 67 C50 67 50 114 100 114"/>
         </svg>
 
         <ul class="routes">
@@ -537,9 +546,9 @@ $ proxypilot auto
     direct: 'Route switched to <b>direct</b> — clients keep running.'
   };
   var wires = {
-    socks:  document.getElementById('w-socks'),
-    http:   document.getElementById('w-http'),
-    direct: document.getElementById('w-direct')
+    socks:  [document.getElementById('w-socks'),  document.getElementById('p-socks')],
+    http:   [document.getElementById('w-http'),   document.getElementById('p-http')],
+    direct: [document.getElementById('w-direct'), document.getElementById('p-direct')]
   };
   var msg = document.getElementById('routeMsg');
   var buttons = Array.prototype.slice.call(document.querySelectorAll('.route'));
@@ -549,7 +558,7 @@ $ proxypilot auto
       b.setAttribute('aria-pressed', String(b.dataset.route === route));
     });
     Object.keys(wires).forEach(function(k){
-      if (wires[k]) wires[k].classList.toggle('on', k === route);
+      wires[k].forEach(function(el){ if (el) el.classList.toggle('on', k === route); });
     });
     if (msg) msg.innerHTML = copy[route];
   }
