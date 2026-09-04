@@ -5,7 +5,10 @@ emulate -L zsh
 
 HERE="${0:A:h}"
 BIN_DIR="$HOME/.local/bin"
-APP_DIR="$HOME/Applications"
+# То же место, куда ставит Install.command из DMG. Раньше здесь был
+# ~/Applications, и у сделавшего оба способа оказывалось два бандла:
+# один запускался, второй тихо протухал.
+APP_DIR="/Applications"
 SHELL_RC="$HOME/.zshrc"
 MARK_BEGIN="# >>> proxypilot >>>"
 MARK_END="# <<< proxypilot <<<"
@@ -46,10 +49,9 @@ if [[ -r "$CFG" ]]; then
   grn "конфиг уже есть: $CFG"
   print -- "  (пересоздать: proxypilot detect)"
 else
-  "$BIN_DIR/proxypilot" detect || {
-    red "автопоиск не нашёл прокси. Заполни $CFG вручную по образцу из README."
-    exit 1
-  }
+  # Прокси может не быть видно прямо сейчас (ставимся из дома) — это не повод
+  # обрывать установку на середине: CLI уже стоит, шелл и приложение впереди.
+  "$BIN_DIR/proxypilot" detect || DETECT_FAILED=1
 fi
 
 # ── 4. интеграция с шеллом ───────────────────────────────────────────────────
@@ -73,10 +75,15 @@ fi
 step "5/5  Собираю приложение"
 if [[ -x "$HERE/app/build.sh" ]] && command -v swiftc >/dev/null; then
   "$HERE/app/build.sh" >/dev/null
+  [[ -w "$APP_DIR" ]] || { yel "$APP_DIR недоступен на запись — ставлю в ~/Applications"; APP_DIR="$HOME/Applications" }
   mkdir -p "$APP_DIR"
   rm -rf "$APP_DIR/ProxyPilot.app"
   cp -R "$HERE/app/build/ProxyPilot.app" "$APP_DIR/"
   grn "$APP_DIR/ProxyPilot.app"
+  # Мост живёт дочерним процессом приложения, поэтому без автозапуска после
+  # перезагрузки прокси просто нет. Ставим сами; выключается тумблером в меню.
+  osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$APP_DIR/ProxyPilot.app\", hidden:true}" >/dev/null 2>&1 \
+    && grn "добавлен в автозапуск (выключается в меню-баре)"
 else
   yel "swiftc не найден — приложение пропущено (CLI работает и без него)."
   yel "Поставить: xcode-select --install"
@@ -93,12 +100,11 @@ print -- "  1. Открой новый таб терминала — прокс�
 print -- "  2. Запусти ProxyPilot.app (значок появится в меню-баре)."
 print -- "     При первом запуске macOS спросит доступ к локальной сети — разреши,"
 print -- "     иначе мост не достучится до корпоративного прокси."
-print -- "  3. Чтобы стартовал сам: System Settings → General → Login Items → +"
+if [[ -n "${DETECT_FAILED:-}" ]]; then
+  print -- ""
+  yel "Прокси в этой сети не нашлись. В офисе выполни: proxypilot detect"
+fi
 print -- ""
-print -- "  proxypilot bench    — сравнить скорость каналов"
-print -- "  proxypilot doctor   — если что-то не работает"
-print -- ""
-print -- "Для GUI-приложений (браузер, Claude.app) укажи системный прокси:"
-print -- "  System Settings → Network → Wi-Fi → Details → Proxies"
-print -- "  Web Proxy (HTTP) и Secure Web Proxy (HTTPS) → 127.0.0.1 : $(awk -F= '/^BRIDGE_PORT/{print $2}' "$CFG" 2>/dev/null || print 3129)"
-print -- "  SOCKS-прокси там ВЫКЛЮЧИ: часть инструментов (Claude Code) SOCKS не понимает."
+print -- "  proxypilot bench          — сравнить скорость каналов"
+print -- "  proxypilot doctor         — если что-то не работает"
+print -- "  proxypilot system status  — системный прокси (браузер, GUI)"
