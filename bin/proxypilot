@@ -20,7 +20,7 @@ setopt pipe_fail multibyte
 # Без UTF-8 локали ${#строка} считает байты, и таблицы с кириллицей разъезжаются.
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
-readonly PP_VERSION="1.2.0"
+readonly PP_VERSION="1.2.1"
 # Путь до самого скрипта. Обязательно на верхнем уровне: внутри функции zsh
 # подставляет в $0 имя функции, и ${0:A} даёт несуществующий путь.
 readonly PP_SELF="${0:A}"
