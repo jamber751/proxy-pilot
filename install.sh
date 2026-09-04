@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Установщик proxypilot. Идемпотентен — можно запускать повторно.
-set -euo pipefail
 emulate -L zsh
+set -euo pipefail
 
 HERE="${0:A:h}"
 BIN_DIR="$HOME/.local/bin"

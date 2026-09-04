@@ -5,8 +5,8 @@
 # (Contents/Resources/bin), получателю не нужны ни brew, ни репозиторий.
 # На машине разработчика приложение по-прежнему берёт CLI из ~/.local/bin
 # (см. порядок кандидатов в app/main.swift).
-set -euo pipefail
 emulate -L zsh
+set -euo pipefail
 
 HERE="${0:A:h}"
 DIST="$HERE/dist"
@@ -158,7 +158,7 @@ MANUALLY (if you don't trust the script — fair enough, read it first):
 On first launch the app discovers the proxies, points the macOS system proxy
 at its own bridge (every network service at once) and switches itself on. It
 shows you what it found; there is nothing to fill in. To undo the system part:
-"System proxy" in the menu, or `proxypilot system off`.
+"System proxy" in the menu, or run: proxypilot system off
 
 https://github.com/jamber751/proxy-pilot
 EOF
@@ -168,5 +168,6 @@ mkdir -p "$DIST"
 OUT="$DIST/ProxyPilot-$VERSION.dmg"
 rm -f "$OUT"
 hdiutil create -volname "ProxyPilot" -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null
+[[ -s "$OUT" ]] || { print -u2 "hdiutil не создал $OUT"; exit 1 }
 
 print -- "готово: $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' '))"

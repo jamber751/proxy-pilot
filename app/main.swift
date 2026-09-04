@@ -181,9 +181,12 @@ final class ConfigStore: ObservableObject {
     @Published var gateways = ""
 
     // сетевой профиль
-    @Published var netService = "Wi-Fi"
+    // Пусто — и CLI выведет сам: сервис по дефолтному маршруту, маску с
+    // интерфейса. Прежние значения "Wi-Fi" и "255.255.255.0" сохранение
+    // записывало в конфиг, заново прибивая то, что должно определяться.
+    @Published var netService = ""
     @Published var officeIP = ""
-    @Published var officeMask = "255.255.255.0"
+    @Published var officeMask = ""
     @Published var officeDNS = ""
     @Published var vpnProfile = ""
     @Published var vpnRoutes = ""
