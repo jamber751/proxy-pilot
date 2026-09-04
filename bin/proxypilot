@@ -722,12 +722,10 @@ cmd_shellenv() {
     print -- "# proxypilot: нет конфига, запусти 'proxypilot detect'"
     return 0
   fi
-  local eff=$(effective_mode)
-  if [[ "$eff" == direct ]]; then
-    # вне офиса прокси не нужен вовсе — не занимаем переменные
-    print -- "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY"
-    return 0
-  fi
+  # Адрес моста один во всех режимах, включая direct (там gost просто
+  # форвардит) — поэтому переменные ставим всегда. Раньше в direct они
+  # снимались, и шелл, стартовавший дома, оставался без прокси после
+  # переезда в офис: переключение режима переменные уже не трогает.
   cmd_ensure >/dev/null 2>&1
   local p="http://127.0.0.1:$BRIDGE_PORT"
   # lower- И upper-case: curl намеренно игнорирует HTTP_PROXY для http://-URL
