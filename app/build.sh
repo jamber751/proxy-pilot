@@ -6,6 +6,12 @@ HERE="${0:A:h}"
 OUT="${1:-$HERE/build}"
 APP="$OUT/ProxyPilot.app"
 
+# версия — из CLI, единственного источника правды: make-dmg.sh берёт её оттуда же,
+# а релиз падает, если PP_VERSION разошёлся с тегом. Раньше здесь был хардкод,
+# и бандл с 1.1.0 представлялся системе версией 1.0.0
+VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' "${HERE:h}/bin/proxypilot")
+[[ -n "$VERSION" ]] || { print -u2 "не нашёл PP_VERSION в bin/proxypilot"; exit 1; }
+
 command -v swiftc >/dev/null || {
   print -u2 "нет swiftc. Установи: xcode-select --install"; exit 1
 }
@@ -27,7 +33,7 @@ rm -f "$APP/Contents/MacOS/ProxyPilot-arm64" "$APP/Contents/MacOS/ProxyPilot-x86
 # иконка (генерится из icon-master.png, см. README)
 [ -f "$HERE/AppIcon.icns" ] && cp "$HERE/AppIcon.icns" "$APP/Contents/Resources/"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -37,7 +43,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key>      <string>kz.documentolog.proxypilot</string>
   <key>CFBundleExecutable</key>      <string>ProxyPilot</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
-  <key>CFBundleShortVersionString</key> <string>1.0.0</string>
+  <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>         <string>1</string>
   <key>LSMinimumSystemVersion</key>  <string>11.0</string>
 
