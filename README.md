@@ -58,9 +58,13 @@ no terminal.
 
 Everything lives in the menu bar icon, which shows the active route (⚡ SOCKS5 ·
 🐢 HTTP · ⇢ direct). Click to switch routes, benchmark, run diagnostics or open
-**Settings (⌘,)** — proxy addresses with live reachability dots and the bridge
-port. The network profile and the VPN tunnel sit behind a disclosure; almost
-nobody needs them.
+**Settings (⌘,)** — deliberately small. The proxies it found are shown, not
+asked for. Two switches act immediately (system proxy, start at login). Then
+the only two things nobody can derive for you: the fixed **office address**, if
+your workplace hands one out, and the **.ovpn profile** — dropped onto the
+window, which builds the split-tunnel on the spot. Everything else — bridge
+port, gateway prefixes, network service, netmask, office DNS, tunnel routes —
+is worked out for you and lives under "Дополнительно" for the rare override.
 
 There is nothing to fill in on the first launch. The app finds the proxies,
 points the macOS system proxy at its own bridge — every network service at
