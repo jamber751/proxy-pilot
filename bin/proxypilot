@@ -426,8 +426,12 @@ start_bridge() {  # mode
   for i in {1..30}; do
     if tcp_open 127.0.0.1 $BRIDGE_PORT; then
       # запоминаем сеть, на которой мост поднят: пережив смену сети, gost
-      # остаётся с DNS-состоянием от старой. Ловится сравнением шлюза.
+      # остаётся с DNS-состоянием от старой. Ловится сравнением шлюза И списка
+      # DNS: Tailscale/VPN подменяют резолверы, не трогая шлюз, и после их
+      # выключения gost упирался в мёртвый 100.100.100.100 — по 10 с
+      # (A+AAAA × 5 с таймаут) на каждый новый домен, пока не дойдёт до живого.
       mkdir -p "$CFG_DIR"; print -- "$(gateway)" > "$CFG_DIR/bridge-gateway"
+      gost_nameservers > "$CFG_DIR/bridge-dns"
       return 0
     fi
     sleep 0.1
@@ -439,11 +443,12 @@ start_bridge() {  # mode
 cmd_ensure() {
   need_config
   local want=$(effective_mode) run=$(running_mode)
-  local gw_now=$(gateway) gw_boot=""
+  local gw_now=$(gateway) gw_boot="" dns_now=$(gost_nameservers) dns_boot=""
   [[ -r "$CFG_DIR/bridge-gateway" ]] && gw_boot=$(< "$CFG_DIR/bridge-gateway")
+  [[ -r "$CFG_DIR/bridge-dns" ]] && dns_boot=$(< "$CFG_DIR/bridge-dns")
 
-  # режим совпал И сеть та же — всё в порядке
-  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" ]] && return 0
+  # режим совпал И сеть та же (шлюз и DNS) — всё в порядке
+  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" ]] && return 0
 
   # Останавливаем по наличию процесса, а не по running_mode: у старого
   # формата запуска режим читается как none, и мост-предшественник остался
