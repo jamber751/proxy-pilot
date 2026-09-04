@@ -15,7 +15,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          for f in bin/proxypilot install.sh make-dmg.sh; do
+          for f in bin/proxypilot install.sh make-dmg.sh app/build.sh; do
             zsh -n "$f" && echo "  ok  $f"
           done
 
@@ -61,6 +61,12 @@ jobs:
           ./bin/proxypilot set OFFICE_DNS "1.1.1.1 8.8.8.8"
           grep -q 'OFFICE_DNS="1.1.1.1 8.8.8.8"' "${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config" \
             && echo "  ok  список DNS сохранён в кавычках"
+          # системный прокси: status обязан отработать без root и без настроек,
+          # а неизвестный подкоманд — не проходить молча
+          ./bin/proxypilot system status >/dev/null && echo "  ok  system status"
+          ./bin/proxypilot system wat && exit 1 || echo "  ok  system отвергает мусор"
+          ./bin/proxypilot json | grep -q '"system_proxy"' \
+            && echo "  ok  json отдаёт состояние системного прокси"
 
   app:
     name: App (universal)

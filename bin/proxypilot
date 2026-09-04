@@ -43,7 +43,7 @@ BRIDGE_PORT=3129
 SOCKS_UPSTREAM=""          # host:port, например 192.168.1.2:9999
 HTTP_UPSTREAM=""           # host:port, например 192.168.1.2:3128
 OFFICE_GATEWAYS=""         # префиксы шлюзов через запятую: "192.168.1.,10.20."
-NO_PROXY_LIST="localhost,127.0.0.1,::1,.local,host.docker.internal,169.254.0.0/16,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+NO_PROXY_LIST="localhost,127.0.0.1,::1,.local,host.docker.internal,169.254.0.0/16,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10"
 BENCH_URL="https://speed.cloudflare.com/__down?bytes=5000000"
 BENCH_BYTES=5000000
 GOST=""
@@ -51,9 +51,9 @@ GOST=""
 # ── сетевой профиль (пусто — ничего не трогаем) ──────────────────────────────
 # Тот же вопрос «я в офисе?» решает не только маршрут прокси: в офисе доступы
 # часто выданы на фиксированный IP, а VPN нужен ровно наоборот — вне офиса.
-NET_SERVICE="Wi-Fi"        # сетевой сервис, как в System Settings → Network
+NET_SERVICE=""             # сетевой сервис; пусто — тот, за которым дефолтный маршрут
 OFFICE_IP=""               # статический адрес в офисе; пусто — адрес не менять
-OFFICE_MASK="255.255.255.0"
+OFFICE_MASK=""             # пусто — берём маску, которая сейчас на интерфейсе
 OFFICE_DNS=""              # DNS для статики через пробел: от DHCP они не приедут
 VPN_PROFILE=""             # путь к .ovpn; пусто — туннель не трогать
 VPN_ROUTES=""              # что заворачивать в туннель; пусто — /16 вокруг шлюза
@@ -116,6 +116,23 @@ if [[ -z "$GOST" || ! -x "$GOST" ]]; then
             /usr/local/bin/gost "${0:A:h}/gost"; do
     [[ -n "$_g" && -x "$_g" ]] && { GOST="$_g"; break }
   done
+fi
+
+# Сервис, за которым сейчас дефолтный маршрут. Раньше NET_SERVICE был прибит
+# к "Wi-Fi": на доке с Ethernet или на раздаче с телефона профиль применялся
+# не к тому интерфейсу, и выяснялось это только в момент `net apply`.
+active_service() {
+  local dev
+  dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')
+  [[ -n "$dev" ]] || return 1
+  # пары строк: "(1) Wi-Fi" и "(Hardware Port: Wi-Fi, Device: en0)"
+  networksetup -listnetworkserviceorder 2>/dev/null | awk -v d="$dev" '
+    /^\([0-9]+\)/ { svc = substr($0, index($0, " ") + 1) }
+    index($0, "Device: " d ")") { print svc; exit }'
+}
+if [[ -z "$NET_SERVICE" ]]; then
+  NET_SERVICE=$(active_service) || NET_SERVICE=""
+  [[ -n "$NET_SERVICE" ]] || NET_SERVICE="Wi-Fi"
 fi
 
 # ── утилиты ──────────────────────────────────────────────────────────────────
@@ -712,6 +729,10 @@ EOF
   rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)   # апстримы сменились — решение auto пересчитать
   print -- ""
   ok "конфиг записан: $CFG"
+  # Системный прокси — раньше единственный ручной шаг. Ставим сразу: адрес
+  # моста постоянный, так что настроить его один раз и есть правильный итог
+  # автопоиска.
+  cmd_system on
   print -- "$(c_dim 'дальше: proxypilot bench   — сравнить пути')"
   print -- "$(c_dim '        proxypilot auto    — включить')"
 }
@@ -808,6 +829,75 @@ cmd_probe() {  # host:port
   if tcp_open "${hp%:*}" "${hp##*:}" 2; then print -- up; else print -- down; return 1; fi
 }
 
+# ── системный прокси macOS ───────────────────────────────────────────────────
+# Раньше это был единственный шаг, который пользователь делал руками:
+# System Settings → Network → <сервис> → Details → Proxies. networksetup
+# делает ровно то же и, в отличие от смены IP, root не просит.
+#
+# Ставим на ВСЕ включённые сервисы сразу: ноутбук ездит между Wi-Fi, докой и
+# раздачей с телефона, а мост слушает один и тот же 127.0.0.1 — настроить
+# один интерфейс значит терять прокси при каждой смене способа подключения.
+system_services() {
+  # Только сервисы с реальным устройством. У Tailscale и прочих туннелей
+  # Device пуст — заворачивать VPN в HTTP-прокси неверно, да и мост до его
+  # пиров всё равно не достучится.
+  local -a devful
+  devful=(${(f)"$(networksetup -listnetworkserviceorder 2>/dev/null | awk '
+    /^\([0-9]+\)/ { svc = substr($0, index($0, " ") + 1) }
+    /Device: [^)]/  { print svc }')"})
+  # первая строка — заголовок; звёздочка помечает выключенный сервис
+  local svc
+  networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*' \
+    | while IFS= read -r svc; do
+        (( ${devful[(Ie)$svc]} )) && print -- "$svc"
+      done
+}
+
+cmd_system() {  # on|off|status
+  local svc st srv port
+  case "${1:-status}" in
+    (on)
+      need_config
+      local -a bypass=(${(s:,:)"$(build_bypass)"})
+      while IFS= read -r svc; do
+        [[ -n "$svc" ]] || continue
+        networksetup -setwebproxy "$svc" 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null || continue
+        networksetup -setsecurewebproxy "$svc" 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null
+        # SOCKS в системе выключаем намеренно: часть клиентов (Claude Code)
+        # SOCKS не понимает, а в SOCKS трафик уводит сам мост
+        networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null
+        (( ${#bypass} )) && networksetup -setproxybypassdomains "$svc" $bypass 2>/dev/null
+        ok "$svc → 127.0.0.1:$BRIDGE_PORT"
+      done < <(system_services)
+      ;;
+    (off)
+      while IFS= read -r svc; do
+        [[ -n "$svc" ]] || continue
+        networksetup -setwebproxystate "$svc" off 2>/dev/null
+        networksetup -setsecurewebproxystate "$svc" off 2>/dev/null
+        ok "$svc → без прокси"
+      done < <(system_services)
+      ;;
+    (status)
+      local any=0
+      while IFS= read -r svc; do
+        [[ -n "$svc" ]] || continue
+        st=$(networksetup -getwebproxy "$svc" 2>/dev/null)
+        if [[ "$st" == *"Enabled: Yes"* ]]; then
+          any=1
+          srv=$(print -r -- "$st" | awk '/^Server:/{print $2; exit}')
+          port=$(print -r -- "$st" | awk '/^Port:/{print $2; exit}')
+          print -- "  $svc: $srv:$port"
+        else
+          print -- "  $svc: $(c_dim выключен)"
+        fi
+      done < <(system_services)
+      (( any )) || return 1
+      ;;
+    (*) die "proxypilot system [on|off|status]" ;;
+  esac
+}
+
 # машиночитаемое состояние — на нём работает приложение в меню-баре
 cmd_json() {
   local saved=$(saved_mode) eff=$(effective_mode) run=$(running_mode) gw=$(gateway)
@@ -823,7 +913,12 @@ cmd_json() {
   vpn_up_now 2>/dev/null && vpnup=true
   vpn_auto_on && vpnauto=true
   vpn_foreign_up 2>/dev/null && vpnforeign=true
-  print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false),\"in_office\":$office,\"net_service\":\"$NET_SERVICE\",\"office_ip\":\"$OFFICE_IP\",\"net_daemon\":$netd,\"vpn_profile\":\"$VPN_PROFILE\",\"vpn_installed\":$vpnd,\"vpn_up\":$vpnup,\"vpn_auto\":$vpnauto,\"vpn_foreign\":$vpnforeign}"
+  # Системный прокси активного сервиса — одним вызовом scutil, а не опросом
+  # каждого сервиса: json приложение дёргает раз в 5 секунд.
+  local sysprox=false _sp
+  _sp=$(scutil --proxy 2>/dev/null | awk '/HTTPEnable/{e=$3} /HTTPPort/{p=$3} /HTTPProxy/{h=$3} END{print e"|"p"|"h}')
+  [[ "$_sp" == "1|$BRIDGE_PORT|127.0.0.1" ]] && sysprox=true
+  print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false),\"in_office\":$office,\"net_service\":\"$NET_SERVICE\",\"office_ip\":\"$OFFICE_IP\",\"net_daemon\":$netd,\"vpn_profile\":\"$VPN_PROFILE\",\"vpn_installed\":$vpnd,\"vpn_up\":$vpnup,\"vpn_auto\":$vpnauto,\"vpn_foreign\":$vpnforeign,\"system_proxy\":$sysprox}"
 }
 
 cmd_doctor() {
@@ -958,6 +1053,12 @@ net_config_kind() {
   esac
 }
 net_ip() { networksetup -getinfo "$NET_SERVICE" 2>/dev/null | awk '/^IP address:/{print $3; exit}' }
+# Маску спрашивать незачем — она уже стоит на интерфейсе. Пустой OFFICE_MASK
+# означает «как сейчас», и только если узнать не вышло — обычная /24.
+net_mask() {
+  local m=$(networksetup -getinfo "$NET_SERVICE" 2>/dev/null | awk '/^Subnet mask:/{print $3; exit}')
+  print -- "${m:-255.255.255.0}"
+}
 
 # Офис для профиля — строже, чем для прокси: мало того что сеть подпадает под
 # OFFICE_GATEWAYS, шлюз обязан отвечать за физическим интерфейсом. Иначе
@@ -988,8 +1089,8 @@ net_where() {  # [--fast]
 net_apply_office() {
   local gw ip dev
   read -r ip gw dev <<< "$(physical_endpoint)"
-  net_log "→ офис: $OFFICE_IP/$OFFICE_MASK gw $gw${OFFICE_DNS:+ dns $OFFICE_DNS}"
-  net_run networksetup -setmanual "$NET_SERVICE" "$OFFICE_IP" "$OFFICE_MASK" "$gw"
+  net_log "→ офис: $OFFICE_IP/${OFFICE_MASK:-$(net_mask)} gw $gw${OFFICE_DNS:+ dns $OFFICE_DNS}"
+  net_run networksetup -setmanual "$NET_SERVICE" "$OFFICE_IP" "${OFFICE_MASK:-$(net_mask)}" "$gw"
   [[ -n "$OFFICE_DNS" ]] && net_run networksetup -setdnsservers "$NET_SERVICE" ${=OFFICE_DNS}
   (( NET_DRY )) && return 0
   sleep 3
@@ -1381,26 +1482,24 @@ usage() {
   cat <<EOF
 proxypilot $PP_VERSION — один локальный прокси, переключаемый апстрим
 
-  proxypilot detect      найти прокси в сети и создать конфиг
-  proxypilot bench       сравнить скорость: напрямую / http / socks5
+  proxypilot detect      найти прокси в сети, настроить всё и включить
   proxypilot status      что сейчас происходит
+  proxypilot bench       сравнить скорость: напрямую / http / socks5
   proxypilot doctor      диагностика проблем
 
+  proxypilot auto        выбрать путь по текущей сети
   proxypilot socks       гнать через SOCKS5   (быстро)
   proxypilot http        гнать через HTTP-прокси (запасной)
   proxypilot direct      без прокси
-  proxypilot auto        выбрать по текущей сети
 
-  proxypilot ensure      поднять мост, если не поднят (идемпотентно)
-  proxypilot stop        остановить мост
-  proxypilot shellenv    exports для шелла:  eval "\$(proxypilot shellenv)"
+  proxypilot system      системный прокси macOS: on | off | status
 
-  proxypilot net         где мы и что с профилем сети
-  proxypilot net install поставить демон: профиль сам применяется при смене сети
-  proxypilot vpn         состояние туннеля
-  proxypilot vpn install <файл.ovpn>   собрать split-tunnel из профиля
-  proxypilot vpn auto on поднимать туннель вне офиса и гасить в офисе
-  proxypilot vpn up/down поднять/опустить руками
+Реже:
+  proxypilot net         где мы и что с профилем сети (+ install)
+  proxypilot vpn         туннель со split-tunnel (+ install <файл.ovpn>, up, down, auto on|off)
+
+Служебное — вызывается приложением и .zshrc, руками обычно не нужно:
+  ensure · stop · shellenv · probe <host:port> · json · set <КЛЮЧ> <значение>
 
 Клиенты всегда смотрят на http://127.0.0.1:$BRIDGE_PORT — при смене режима
 их перезапускать не нужно.
@@ -1418,6 +1517,7 @@ case "${1:-status}" in
   (doctor)   cmd_doctor ;;
   (ensure)   cmd_ensure ;;
   (shellenv) cmd_shellenv ;;
+  (system)   cmd_system "${2:-status}" ;;
   (net)      cmd_net "${2:-status}" ;;
   (vpn)      cmd_vpn "${2:-status}" "${3:-}" ;;
   (stop)     stop_bridge; ok "мост остановлен" ;;
