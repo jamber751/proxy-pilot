@@ -81,7 +81,7 @@ after a reboot). From the terminal: `proxypilot system on|off|status`.
 
 | Command | What it does |
 |---|---|
-| `proxypilot detect` | find proxies, write a config, set the system proxy, turn on |
+| `proxypilot detect` | find proxies, write a config (network-profile and VPN keys are carried over), set the system proxy, turn on |
 | `proxypilot system on\|off\|status` | macOS system proxy on every network service |
 | `proxypilot bench` | compare routes: direct / http / socks5 |
 | `proxypilot status` · `doctor` | current state · diagnose problems |

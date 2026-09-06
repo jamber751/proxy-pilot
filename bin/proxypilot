@@ -709,6 +709,19 @@ cmd_detect() {
   (( ${#office_dns} > 2 )) && office_dns=(${office_dns[1,2]})
 
   pfx="${gw%.*}."   # 192.168.1.1 -> 192.168.1.
+  # OFFICE_GATEWAYS — это определение офиса, а не находка detect: раз он задан,
+  # не трогаем. Иначе detect дома (порт 8080 на роутере сойдёт за прокси) объявил
+  # бы дом офисом, и демон ставил бы здесь офисную статику. Пустой — берём текущую сеть.
+  local gateways="$OFFICE_GATEWAYS"
+  if [[ -z "$gateways" ]]; then
+    gateways="$pfx"
+  else
+    local _p _fits=0
+    for _p in ${(s:,:)gateways}; do
+      [[ -n "$_p" && "$gw" == ${_p}* ]] && { _fits=1; break }
+    done
+    (( _fits )) || warn "эта сеть ($pfx) не входит в OFFICE_GATEWAYS=$gateways — если это новый офис: proxypilot set OFFICE_GATEWAYS \"$gateways,$pfx\""
+  fi
   mkdir -p "$CFG_DIR"
   if [[ -e "$CFG" ]]; then
     cp "$CFG" "$CFG.bak.$(date +%Y%m%d-%H%M%S)"
@@ -728,7 +741,7 @@ SOCKS_UPSTREAM=$found_socks
 HTTP_UPSTREAM=$found_http
 
 # Префиксы шлюзов, по которым режим auto понимает «я в офисе».
-OFFICE_GATEWAYS=$pfx
+OFFICE_GATEWAYS=$gateways
 
 # Что мимо прокси. CIDR понимают curl и git; Node/Bun и python-requests —
 # только точное имя хоста или суффикс с точкой, поэтому важные хосты
@@ -742,6 +755,17 @@ OFFICE_DNS="${office_dns}"
 BENCH_URL=$BENCH_URL
 BENCH_BYTES=$BENCH_BYTES
 EOF
+  # Сетевой профиль и туннель к поиску прокси отношения не имеют — переносим
+  # из прежнего конфига как есть. Раньше detect их молча терял: демон переставал
+  # управлять адресом, и офисная статика оставалась на ноуте дома — без сети.
+  {
+    print -- ""
+    print -- "# Сетевой профиль и туннель — правятся через proxypilot set или Настройки."
+    local k
+    for k in NET_SERVICE OFFICE_IP OFFICE_MASK OFFICE_DNS VPN_PROFILE VPN_ROUTES VPN_AUTO; do
+      print -r -- "${k}=$(cfg_stored "${(P)k}")"
+    done
+  } >> "$CFG"
   rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)   # апстримы сменились — решение auto пересчитать
   print -- ""
   ok "конфиг записан: $CFG"
@@ -769,6 +793,12 @@ cmd_shellenv() {
   # (читает только http_proxy), Node/Bun и Claude Code читают обе формы.
   print -- "export http_proxy='$p' https_proxy='$p' HTTP_PROXY='$p' HTTPS_PROXY='$p'"
   print -- "export no_proxy='$NO_PROXY_LIST' NO_PROXY='$NO_PROXY_LIST'"
+}
+
+# Значение с пробелами (список DNS, несколько маршрутов) храним в кавычках:
+# так его забирает разбор KEY=VALUE в load_config и парсер в приложении.
+cfg_stored() {  # value -> как записать в конфиг
+  if [[ "$1" == *[[:space:]]* ]]; then print -r -- "\"$1\""; else print -r -- "$1"; fi
 }
 
 # точечная запись ключа конфига — единственный способ, которым UI меняет
@@ -820,12 +850,9 @@ cmd_set() {  # KEY VALUE
       [[ -z "$value" ]] || networksetup -getinfo "$value" >/dev/null 2>&1 \
         || die "нет сетевого сервиса '$value' (см. networksetup -listallnetworkservices)" ;;
   esac
-  # Значение с пробелами (список DNS, несколько маршрутов) храним в кавычках:
-  # так его забирает разбор KEY=VALUE в load_config и парсер в приложении.
-  # Исторически это защищало ещё и от выполнения — конфиг читался через
+  # Исторически кавычки защищали ещё и от выполнения — конфиг читался через
   # `source`, — но с 7b4b13a он не исполняется вовсе.
-  local stored="$value"
-  [[ "$value" == *[[:space:]]* ]] && stored="\"$value\""
+  local stored=$(cfg_stored "$value")
 
   mkdir -p "$CFG_DIR"; [[ -f "$CFG" ]] || : > "$CFG"
   if grep -q "^${key}=" "$CFG" 2>/dev/null; then
@@ -1052,6 +1079,14 @@ net_run() {
 
 need_root() { (( EUID == 0 )) || die "нужен root: sudo proxypilot $*" }
 
+# Есть ли у соседа запись в ARP с MAC-адресом. «(incomplete)» — это наша же
+# неудачная попытка достучаться, а не сосед: на ней забытая офисная статика
+# дома сходила бы за офис, и профиль никогда не сбросился бы в DHCP.
+arp_resolved() { arp_line_resolved "$(arp -n "$1" 2>/dev/null)" }
+arp_line_resolved() {  # строка вывода arp -n
+  [[ "$1" =~ " at ([0-9a-fA-F]{1,2}:){5}[0-9a-fA-F]{1,2} on " ]]
+}
+
 net_managed() { [[ -n "$OFFICE_IP" ]] }
 vpn_managed() { [[ -n "$VPN_PROFILE" || -r "$VPN_CONF" ]] }
 vpn_auto_on() { [[ "$VPN_AUTO" == (on|yes|1|true) ]] }
@@ -1096,8 +1131,8 @@ net_where() {  # [--fast]
 
   (( fast )) && { print -- "шлюз $gw за $dev"; return 0 }
   ping -c 1 -t 2 -o "$gw" >/dev/null 2>&1 && { print -- "шлюз $gw отвечает через $dev"; return 0 }
-  # Шлюз может молчать на ICMP — тогда верим ARP-таблице.
-  arp -n "$gw" 2>/dev/null | grep -qv 'no entry' && { print -- "шлюз $gw в ARP через $dev"; return 0 }
+  # Шлюз может молчать на ICMP — тогда верим ARP-таблице (только записям с MAC).
+  arp_resolved "$gw" && { print -- "шлюз $gw в ARP через $dev"; return 0 }
   print -- "шлюз $gw не отвечает и не в ARP"
   return 1
 }
@@ -1494,6 +1529,25 @@ cmd_vpn() {
   esac
 }
 
+# Проверки чистых функций — для CI и чтобы парсеры вывода системы не расходились
+# с реальностью молча.
+_expect() {  # что, ожидаемый код (0/1), команда...
+  local what="$1" want="$2" rc=0; shift 2
+  "$@" >/dev/null 2>&1 || rc=1
+  if (( rc == want )); then ok "$what"; else print -- "$(c_red ✗) $what"; return 1; fi
+}
+cmd_selftest() {
+  local -i fails=0
+  _expect "ARP: запись с MAC — сосед есть"       0 arp_line_resolved "? (192.168.8.1) at 4:25:e0:d:56:50 on en0 ifscope [ethernet]" || fails+=1
+  _expect "ARP: (incomplete) — соседа нет"       1 arp_line_resolved "? (192.168.8.1) at (incomplete) on en0 ifscope [ethernet]" || fails+=1
+  _expect "ARP: no entry — соседа нет"           1 arp_line_resolved "192.168.8.1 (192.168.8.1) -- no entry" || fails+=1
+  _expect "ARP: пустой вывод — соседа нет"       1 arp_line_resolved "" || fails+=1
+  _expect "конфиг: значение с пробелом в кавычках" 0 test "$(cfg_stored "1.1.1.1 8.8.8.8")" = "\"1.1.1.1 8.8.8.8\"" || fails+=1
+  _expect "конфиг: значение без пробела как есть"  0 test "$(cfg_stored on)" = on || fails+=1
+  (( fails )) && die "selftest: не прошли проверок: $fails"
+  ok "selftest: всё сходится"
+}
+
 usage() {
   cat <<EOF
 proxypilot $PP_VERSION — один локальный прокси, переключаемый апстрим
@@ -1502,6 +1556,7 @@ proxypilot $PP_VERSION — один локальный прокси, перек�
   proxypilot status      что сейчас происходит
   proxypilot bench       сравнить скорость: напрямую / http / socks5
   proxypilot doctor      диагностика проблем
+  proxypilot selftest    самопроверка парсеров (для CI)
 
   proxypilot auto        выбрать путь по текущей сети
   proxypilot socks       гнать через SOCKS5   (быстро)
@@ -1530,6 +1585,7 @@ case "${1:-status}" in
   (probe)    cmd_probe "${2:?host:port}" ;;
   (bench)    cmd_bench ;;
   (detect)   cmd_detect ;;
+  (selftest) cmd_selftest ;;
   (doctor)   cmd_doctor ;;
   (ensure)   cmd_ensure ;;
   (shellenv) cmd_shellenv ;;
