@@ -651,48 +651,61 @@ final class App: NSObject, NSApplicationDelegate {
                     note: nil, enabled: true)
         }
 
-        // ── сеть и туннель ───────────────────────────────────────────────────
+        // ── сеть ─────────────────────────────────────────────────────────────
         // Показываем, только когда это кем-то настроено: иначе меню разрастается
         // без пользы у тех, кому нужен один прокси.
-        let netConfigured = (s.office_ip?.isEmpty == false) || s.vpn_installed == true
-        if let inOffice = s.in_office, netConfigured {
+        if let inOffice = s.in_office, s.office_ip?.isEmpty == false {
             menu.addItem(.separator())
             var lines = [inOffice ? "Сеть: офис" : "Сеть: вне офиса"]
             if let ip = s.office_ip, !ip.isEmpty {
                 lines.append(inOffice ? "адрес \(ip)" : "адрес по DHCP")
             }
-            if s.net_daemon != true, s.office_ip?.isEmpty == false {
+            if s.net_daemon != true {
                 lines.append("применяется только вручную")
             }
-            let head = NSMenuItem()
-            head.attributedTitle = NSAttributedString(
-                string: lines.joined(separator: "\n"),
-                attributes: [
-                    .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ])
-            head.isEnabled = false
-            menu.addItem(head)
+            menu.addItem(noteItem(lines.joined(separator: "\n")))
+        }
 
-            if s.vpn_installed == true {
-                let up = s.vpn_up == true
-                let foreign = s.vpn_foreign == true
-                let mi = NSMenuItem(
-                    title: foreign ? "Туннель поднят другим клиентом"
-                                   : (up ? "Опустить туннель" : "Поднять туннель"),
-                    action: foreign ? nil : #selector(toggleVPN), keyEquivalent: "")
+        // ── туннель ──────────────────────────────────────────────────────────
+        // Отдельный пункт, не привязанный к офисному адресу: VPN настраивают и без
+        // статики, а его состояние должно читаться с одного взгляда на меню.
+        let vpnConfigured = s.vpn_installed == true || (s.vpn_profile?.isEmpty == false)
+        if vpnConfigured {
+            menu.addItem(.separator())
+            let installed = s.vpn_installed == true
+            let up = s.vpn_up == true
+            let foreign = s.vpn_foreign == true
+            var lines = [foreign ? "VPN: туннель поднят другим клиентом"
+                                 : (up ? "VPN: туннель поднят" : "VPN: туннель опущен")]
+            if !installed {
+                lines.append("не установлен — собрать из профиля: «Установить туннель…»")
+            }
+            menu.addItem(noteItem(lines.joined(separator: "\n")))
+
+            if installed {
+                let mi = NSMenuItem(title: up ? "Опустить туннель" : "Поднять туннель",
+                                    action: foreign ? nil : #selector(toggleVPN), keyEquivalent: "")
                 mi.target = self
                 mi.isEnabled = !foreign
                 mi.image = NSImage(systemSymbolName: up ? "bolt.horizontal.fill" : "bolt.horizontal",
                                    accessibilityDescription: nil)
                 menu.addItem(mi)
-
-                let auto = NSMenuItem(title: "Поднимать вне офиса",
-                                      action: #selector(toggleVPNAuto), keyEquivalent: "")
-                auto.target = self
-                auto.state = (s.vpn_auto == true) ? .on : .off
-                menu.addItem(auto)
+            } else {
+                // `vpn up` без установленного туннеля молча ничего не делает — предлагать
+                // его нельзя: пользователь введёт пароль и не получит ни туннеля, ни ошибки.
+                let mi = NSMenuItem(title: "Установить туннель…",
+                                    action: #selector(installVPN), keyEquivalent: "")
+                mi.target = self
+                mi.image = NSImage(systemSymbolName: "bolt.horizontal.circle", accessibilityDescription: nil)
+                menu.addItem(mi)
             }
+
+            let auto = NSMenuItem(title: "Поднимать вне офиса",
+                                  action: #selector(toggleVPNAuto), keyEquivalent: "")
+            auto.target = self
+            auto.state = (s.vpn_auto == true) ? .on : .off
+            auto.isEnabled = installed
+            menu.addItem(auto)
         }
 
         menu.addItem(.separator())
@@ -704,6 +717,19 @@ final class App: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Настройки…", symbol: "gearshape", action: #selector(openSettingsAction), key: ","))
         menu.addItem(.separator())
         menu.addItem(menuItem("Выйти", symbol: "power", action: #selector(quit), key: "q"))
+    }
+
+    // Серая подпись-состояние в меню (не кликается).
+    private func noteItem(_ text: String) -> NSMenuItem {
+        let item = NSMenuItem()
+        item.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+        item.isEnabled = false
+        return item
     }
 
     private func addMode(_ menu: NSMenu, _ title: String, symbol: String, mode: String,
@@ -749,6 +775,19 @@ final class App: NSObject, NSApplicationDelegate {
             let out = stripANSI(CLI.runAdmin(["vpn", up ? "down" : "up"]))
             log("vpn \(up ? "down" : "up"): \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
             DispatchQueue.main.async { self.busy = false; self.refresh() }
+        }
+    }
+
+    // Собрать split-tunnel из профиля (VPN_PROFILE) и поставить демон — нужен root.
+    @objc private func installVPN() {
+        busy = true; render()
+        DispatchQueue.global().async {
+            let out = stripANSI(CLI.runAdmin(["vpn", "install"]))
+            log("vpn install: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+            DispatchQueue.main.async {
+                self.busy = false; self.refresh()
+                self.show("Туннель", out.isEmpty ? "Готово." : out)
+            }
         }
     }
 
