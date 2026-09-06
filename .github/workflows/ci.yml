@@ -82,9 +82,13 @@ jobs:
           touch /tmp/pp-fake.ovpn
           ./bin/proxypilot set VPN_PROFILE /tmp/pp-fake.ovpn
           ./bin/proxypilot set VPN_AUTO on
-          # detect в конце включает системный прокси (cmd_system on) — на раннере это может
-          # не пройти, поэтому код возврата не важен: ниже проверяем сам конфиг.
-          ./bin/proxypilot detect >/dev/null 2>&1 || true
+          # detect в конце делает `system on`. На раннере это заворачивает его же трафик
+          # к GitHub в 127.0.0.1:3129, где никого нет — раннер теряет связь и джоба висит
+          # 45 минут («The hosted runner lost communication»). Поэтому networksetup на
+          # время detect — заглушка, а сам detect под лимитом времени; код возврата не
+          # важен, ниже проверяется сам конфиг.
+          STUB=$(mktemp -d); printf '#!/bin/sh\nexit 0\n' > "$STUB/networksetup"; chmod +x "$STUB/networksetup"
+          PATH="$STUB:$PATH" perl -e 'alarm 180; exec @ARGV' ./bin/proxypilot detect >/dev/null 2>&1 || true
           kill "$HTTPD" 2>/dev/null || true
           CFG="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config"
           grep -qF "Создан 'proxypilot detect'" "$CFG" || { echo "FAIL: detect не переписал конфиг"; exit 1; }
