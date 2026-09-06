@@ -5,7 +5,7 @@
 # Зачем: корпоративные HTTP-прокси часто шейпят трафик, а рядом стоит быстрый
 # SOCKS5. Но многие инструменты SOCKS не умеют — Claude Code (undici) прямо
 # отвечает UnsupportedProxyProtocol. proxypilot поднимает локальный
-# HTTP-CONNECT мост на 127.0.0.1:<port> и уводит его наружу через SOCKS5,
+# HTTP-CONNECT / SOCKS5 мост на 127.0.0.1:<port> и уводит его наружу через SOCKS5,
 # корпоративный HTTP-прокси или напрямую.
 #
 # Клиенты (Claude, curl, git, npm, браузер) всегда смотрят на один и тот же
@@ -20,7 +20,7 @@ setopt pipe_fail multibyte
 # Без UTF-8 локали ${#строка} считает байты, и таблицы с кириллицей разъезжаются.
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
-readonly PP_VERSION="1.3.0"
+readonly PP_VERSION="1.4.0"
 # Путь до самого скрипта. Обязательно на верхнем уровне: внутри функции zsh
 # подставляет в $0 имя функции, и ${0:A} даёт несуществующий путь.
 readonly PP_SELF="${0:A}"
@@ -36,6 +36,7 @@ fi
 readonly CFG_DIR="$_cfg_home/proxypilot"
 readonly CFG="$CFG_DIR/config"
 readonly MODE_FILE="$CFG_DIR/mode"
+readonly ENABLED_FILE="$CFG_DIR/enabled"
 readonly LOG="$HOME/Library/Logs/proxypilot.log"
 
 # ── дефолты (перекрываются конфигом) ─────────────────────────────────────────
@@ -152,11 +153,11 @@ tcp_open() {  # host port [timeout_s]
   nc -z -G "${3:-1}" -w "${3:-1}" "$1" "$2" 2>/dev/null
 }
 
-# SOCKS5 отвечает 0x05 0x00 (без авторизации) или 0x05 0x02 (логин/пароль)
+# Accept only SOCKS5 without authentication: the app has no credential fields.
 is_socks5() {  # host port
   local out
   out=$(printf '\x05\x01\x00' | nc -G2 -w2 "$1" "$2" 2>/dev/null | xxd -p 2>/dev/null | head -1)
-  [[ "$out" == 05* ]]
+  [[ "$out" == 0500* ]]
 }
 
 gateway() { route -n get default 2>/dev/null | awk '/gateway/{print $2}' }
@@ -292,6 +293,10 @@ resolve_auto() {
 
 saved_mode() { [[ -r "$MODE_FILE" ]] && < "$MODE_FILE" || print -- auto }
 
+# Off removes the system proxy; an existing local bridge forwards directly.
+# Missing flag preserves the on state of installations from older versions.
+is_enabled() { [[ ! -r "$ENABLED_FILE" || "$(< "$ENABLED_FILE")" != "off" ]] }
+
 # ВАЖНО: у gost таймаут набора зашит в 15 секунд и не настраивается ни
 # флагом, ни конфигом. Поэтому мост НИКОГДА не должен смотреть в мёртвый
 # апстрим: иначе каждый запрос браузера висит эти 15 секунд и отдаёт 503.
@@ -388,7 +393,9 @@ write_gost_config() {  # mode -> путь к конфигу
     print -- "  - name: bridge"
     print -- "    addr: 127.0.0.1:$BRIDGE_PORT"
     print -- "    handler:"
-    print -- "      type: http"
+    # Auto detects HTTP CONNECT / SOCKS5 on the same loopback-only port.
+    # Both protocols use the same chain, resolver and local-address bypass.
+    print -- "      type: auto"
     [[ -n "$upstream" ]] && print -- "      chain: c0"
     print -- "    listener:"
     print -- "      type: tcp"
@@ -449,6 +456,7 @@ start_bridge() {  # mode
       # (A+AAAA × 5 с таймаут) на каждый новый домен, пока не дойдёт до живого.
       mkdir -p "$CFG_DIR"; print -- "$(gateway)" > "$CFG_DIR/bridge-gateway"
       gost_nameservers > "$CFG_DIR/bridge-dns"
+      print -- "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"
       return 0
     fi
     sleep 0.1
@@ -459,13 +467,24 @@ start_bridge() {  # mode
 # идемпотентно: мост поднят и в нужном режиме
 cmd_ensure() {
   need_config
-  local want=$(effective_mode) run=$(running_mode)
+  local want run=$(running_mode)
+  # Existing terminal processes retain their proxy variables. When off, keep
+  # an already-running listener in direct mode; never resurrect a stopped one.
+  if ! is_enabled; then
+    [[ "$run" == none ]] && return 0
+    want=direct
+  else
+    want=$(effective_mode)
+  fi
   local gw_now=$(gateway) gw_boot="" dns_now=$(gost_nameservers) dns_boot=""
   [[ -r "$CFG_DIR/bridge-gateway" ]] && gw_boot=$(< "$CFG_DIR/bridge-gateway")
   [[ -r "$CFG_DIR/bridge-dns" ]] && dns_boot=$(< "$CFG_DIR/bridge-dns")
 
   # режим совпал И сеть та же (шлюз и DNS) — всё в порядке
-  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" ]] && return 0
+  # Upgrade an existing HTTP-only bridge once, even if the network is unchanged.
+  local format=""
+  [[ -r "$CFG_DIR/bridge-format" ]] && format=$(< "$CFG_DIR/bridge-format")
+  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" && "$format" == "auto-v1:$BRIDGE_PORT" ]] && return 0
 
   # Останавливаем по наличию процесса, а не по running_mode: у старого
   # формата запуска режим читается как none, и мост-предшественник остался
@@ -477,15 +496,93 @@ cmd_ensure() {
 
 cmd_switch() {  # mode
   need_config
+  need_gost
   local want="$1" eff
-  mkdir -p "$CFG_DIR"; print -- "$want" > "$MODE_FILE"
+  mkdir -p "$CFG_DIR"; print -- "$want" > "$MODE_FILE"; print -- on > "$ENABLED_FILE"
   # явное действие пользователя — решаем заново, а не отдаём кэш
   rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)
   eff="$want"; [[ "$want" == auto ]] && eff=$(resolve_auto)
   stop_bridge
-  start_bridge "$eff" || die "мост не поднялся, см. $LOG"
+  start_bridge "$eff" || { print -- off > "$ENABLED_FILE"; warn "мост не поднялся, см. $LOG"; return 1 }
   local suffix=""; [[ "$want" == auto ]] && suffix=" → $eff"
   ok "режим: $want$suffix   (127.0.0.1:$BRIDGE_PORT, клиенты перезапускать не нужно)"
+}
+
+# Power-on applies the route and system proxy; power-off removes system routing.
+cmd_enable() {  # optional explicit route; setup/detect retain auto by default
+  need_config
+  if ! cmd_switch "${1:-auto}"; then
+    cmd_system off >/dev/null 2>&1
+    return 1
+  fi
+  if ! cmd_system on; then
+    print -- off > "$ENABLED_FILE"
+    cmd_system off >/dev/null 2>&1
+    # Even partial system writes must have a usable direct listener.
+    cmd_ensure >/dev/null 2>&1
+    warn "не удалось настроить системный прокси"
+    return 1
+  fi
+  ok "ProxyPilot включён"
+}
+
+cmd_route() {  # Select an upstream without silently enabling an off app.
+  need_config
+  local mode="$1" upstream="" previous=$(saved_mode) activate="${2:-}" was_on=false
+  is_enabled && was_on=true
+  case "$mode" in
+    (auto|direct) ;;
+    (socks) upstream="$SOCKS_UPSTREAM" ;;
+    (http) upstream="$HTTP_UPSTREAM" ;;
+    (*) warn "неизвестный маршрут"; return 1 ;;
+  esac
+  if [[ "$mode" == (socks|http) ]]; then
+    [[ -n "$upstream" ]] || { warn "маршрут не настроен"; return 1; }
+    if [[ "$was_on" == true || "$activate" == enable ]]; then
+      tcp_open "${upstream%:*}" "${upstream##*:}" 2 || { warn "маршрут недоступен"; return 1; }
+    fi
+  fi
+  if [[ "$was_on" == false && "$activate" != enable ]]; then
+    mkdir -p "$CFG_DIR"; print -- "$mode" > "$MODE_FILE"
+    return 0
+  fi
+  if ! cmd_enable "$mode"; then
+    # Restore the previous preference and connection after a failed switch.
+    if [[ "$was_on" == true ]]; then
+      cmd_enable "$previous" >/dev/null 2>&1
+    else
+      cmd_disable >/dev/null 2>&1
+    fi
+    print -- "$previous" > "$MODE_FILE"
+    return 1
+  fi
+}
+
+cmd_disable() {
+  # First remove system routing. If it fails, leave the working bridge alive
+  # and report the failure so the app does not close or claim to be off.
+  cmd_system off || return 1
+  mkdir -p "$CFG_DIR"; print -- off > "$ENABLED_FILE"
+  if [[ -r "$CFG" ]]; then cmd_ensure || return 1; fi
+  ok "ProxyPilot выключен"
+}
+
+# One-field fallback when the office proxy cannot be discovered. Keep all
+# unrelated config (including existing network profiles) intact.
+cmd_setup() {
+  local url="$1" scheme="${1%%://*}" hp="${1#*://}" host="${${1#*://}%:*}"
+  [[ "$scheme" == (http|socks5) && "$url" == *://* ]] || die "формат: socks5://host:port или http://host:port"
+  [[ "$hp" =~ '^[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}$' && "${hp##*:}" == <1-65535> ]] || die "неверный адрес прокси"
+  [[ "${(L)host}" != (localhost|127.*|0.0.0.0) ]] || die "локальный адрес не может быть апстримом"
+  tcp_open "$host" "${hp##*:}" 2 || die "прокси недоступен"
+  if [[ "$scheme" == socks5 ]]; then
+    is_socks5 "$host" "${hp##*:}" || die "сервер не отвечает как SOCKS5"
+    cmd_set SOCKS_UPSTREAM "$hp" || return 1
+  else
+    cmd_set HTTP_UPSTREAM "$hp" || return 1
+  fi
+  load_config
+  cmd_enable "$([[ "$scheme" == socks5 ]] && print socks || print http)"
 }
 
 # ── команды ──────────────────────────────────────────────────────────────────
@@ -494,6 +591,7 @@ cmd_status() {
   print -- "proxypilot $PP_VERSION"
   print -- ""
   print -- "  адрес для клиентов : http://127.0.0.1:$BRIDGE_PORT"
+  print -- "  SOCKS5 / Telegram  : 127.0.0.1:$BRIDGE_PORT (без логина и пароля)"
   if [[ "$run" == none ]]; then
     print -- "  мост               : $(c_red 'не запущен')"
   else
@@ -714,43 +812,20 @@ cmd_detect() {
     cp "$CFG" "$CFG.bak.$(date +%Y%m%d-%H%M%S)"
     warn "старый конфиг сохранён рядом как $CFG.bak.*"
   fi
-  cat > "$CFG" <<EOF
-# proxypilot — конфиг. Создан 'proxypilot detect' $(date +%Y-%m-%d\ %H:%M).
-# Формат: KEY=VALUE (файл читается и zsh-шеллом, и приложением в меню-баре).
-
-# Локальный порт моста. На него смотрят все клиенты — менять незачем.
-BRIDGE_PORT=$BRIDGE_PORT
-
-# Быстрый путь: SOCKS5. Пусто — режим socks недоступен.
-SOCKS_UPSTREAM=$found_socks
-
-# Запасной путь: корпоративный HTTP-прокси.
-HTTP_UPSTREAM=$found_http
-
-# Префиксы шлюзов, по которым режим auto понимает «я в офисе».
-OFFICE_GATEWAYS=$pfx
-
-# Что мимо прокси. CIDR понимают curl и git; Node/Bun и python-requests —
-# только точное имя хоста или суффикс с точкой, поэтому важные хосты
-# перечисляй явно, а не только диапазоном.
-NO_PROXY_LIST=$NO_PROXY_LIST
-
-# DNS этой сети — пригодятся, если для офиса задать статический адрес.
-OFFICE_DNS="${office_dns}"
-
-# Файл для 'proxypilot bench'.
-BENCH_URL=$BENCH_URL
-BENCH_BYTES=$BENCH_BYTES
-EOF
+  cmd_set BRIDGE_PORT "$BRIDGE_PORT" || return 1
+  cmd_set SOCKS_UPSTREAM "$found_socks" || return 1
+  cmd_set HTTP_UPSTREAM "$found_http" || return 1
+  [[ "$gw" != <0-255>.<0-255>.<0-255>.<0-255> ]] && pfx=""
+  cmd_set OFFICE_GATEWAYS "$pfx" || return 1
+  cmd_set NO_PROXY_LIST "$NO_PROXY_LIST" || return 1
+  # Preserve user overrides and unrelated profile keys on repeat setup.
+  load_config
   rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)   # апстримы сменились — решение auto пересчитать
   print -- ""
   ok "конфиг записан: $CFG"
-  # Системный прокси — раньше единственный ручной шаг. Ставим сразу: адрес
-  # моста постоянный, так что настроить его один раз и есть правильный итог
-  # автопоиска.
-  cmd_system on
-  print -- "$(c_dim 'дальше: proxypilot bench   — сравнить пути')"
-  print -- "$(c_dim '        proxypilot auto    — включить')"
+  # Настройка завершается рабочим состоянием: мост поднят, системный прокси
+  # направлен на него, маршрут выбирается автоматически.
+  cmd_enable
 }
 
 # eval "$(proxypilot shellenv)" в .zshrc
@@ -759,11 +834,18 @@ cmd_shellenv() {
     print -- "# proxypilot: нет конфига, запусти 'proxypilot detect'"
     return 0
   fi
+  if ! is_enabled; then
+    # Remove only our own variables, never another tool's proxy settings.
+    print -r -- "for pp_var in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; do"
+    print -r -- "  [[ \"\${(P)pp_var}\" == 'http://127.0.0.1:$BRIDGE_PORT' ]] && unset \"\$pp_var\""
+    print -r -- "done; unset pp_var"
+    return 0
+  fi
   # Адрес моста один во всех режимах, включая direct (там gost просто
   # форвардит) — поэтому переменные ставим всегда. Раньше в direct они
   # снимались, и шелл, стартовавший дома, оставался без прокси после
   # переезда в офис: переключение режима переменные уже не трогает.
-  cmd_ensure >/dev/null 2>&1
+  cmd_ensure >/dev/null 2>&1 || return 1
   local p="http://127.0.0.1:$BRIDGE_PORT"
   # lower- И upper-case: curl намеренно игнорирует HTTP_PROXY для http://-URL
   # (читает только http_proxy), Node/Bun и Claude Code читают обе формы.
@@ -869,30 +951,54 @@ system_services() {
       done
 }
 
+system_points_here() {
+  print -r -- "$1" | awk -v port="$BRIDGE_PORT" '
+    $1=="Server:" {h=$2} $1=="Port:" {p=$2}
+    END {exit !(h=="127.0.0.1" && p==port)}'
+}
+
 cmd_system() {  # on|off|status
   local svc st srv port
   case "${1:-status}" in
     (on)
       need_config
+      local failed=0 count=0 secure
       local -a bypass=(${(s:,:)"$(build_bypass)"})
       while IFS= read -r svc; do
         [[ -n "$svc" ]] || continue
-        networksetup -setwebproxy "$svc" 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null || continue
-        networksetup -setsecurewebproxy "$svc" 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null
+        (( count++ ))
+        networksetup -setwebproxy "$svc" 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null || { failed=1; continue }
+        networksetup -setsecurewebproxy "$svc" 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null || { failed=1; continue }
+        networksetup -setwebproxystate "$svc" on 2>/dev/null || failed=1
+        networksetup -setsecurewebproxystate "$svc" on 2>/dev/null || failed=1
         # SOCKS в системе выключаем намеренно: часть клиентов (Claude Code)
         # SOCKS не понимает, а в SOCKS трафик уводит сам мост
-        networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null
-        (( ${#bypass} )) && networksetup -setproxybypassdomains "$svc" $bypass 2>/dev/null
+        networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null || failed=1
+        if (( ${#bypass} )); then networksetup -setproxybypassdomains "$svc" $bypass 2>/dev/null || failed=1; fi
+        st=$(networksetup -getwebproxy "$svc" 2>/dev/null) || failed=1
+        secure=$(networksetup -getsecurewebproxy "$svc" 2>/dev/null) || failed=1
+        if ! system_points_here "$st" || ! system_points_here "$secure" || [[ "$st" != *"Enabled: Yes"* || "$secure" != *"Enabled: Yes"* ]]; then
+          failed=1; continue
+        fi
         ok "$svc → 127.0.0.1:$BRIDGE_PORT"
       done < <(system_services)
+      (( count > 0 && failed == 0 )) || { warn "не удалось применить системный прокси"; return 1 }
       ;;
     (off)
+      local failed=0 kind
       while IFS= read -r svc; do
         [[ -n "$svc" ]] || continue
-        networksetup -setwebproxystate "$svc" off 2>/dev/null
-        networksetup -setsecurewebproxystate "$svc" off 2>/dev/null
+        for kind in web secureweb; do
+          st=$(networksetup "-get${kind}proxy" "$svc" 2>/dev/null) || { failed=1; continue }
+          # Do not disable proxy settings belonging to another application.
+          system_points_here "$st" || continue
+          networksetup "-set${kind}proxystate" "$svc" off 2>/dev/null || { failed=1; continue }
+          st=$(networksetup "-get${kind}proxy" "$svc" 2>/dev/null) || { failed=1; continue }
+          [[ "$st" == *"Enabled: No"* ]] || failed=1
+        done
         ok "$svc → без прокси"
       done < <(system_services)
+      (( failed == 0 )) || { warn "не удалось выключить системный прокси"; return 1 }
       ;;
     (status)
       local any=0
@@ -912,6 +1018,37 @@ cmd_system() {  # on|off|status
       ;;
     (*) die "proxypilot system [on|off|status]" ;;
   esac
+}
+
+# JSON strings for GUI config display, including legacy configuration values.
+json_string() {
+  local value="$1" i char escape
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  for i in {1..31}; do
+    printf -v escape '\\%03o' "$i"
+    printf -v char '%b' "$escape"
+    printf -v escape '\\u%04x' "$i"
+    value="${value//$char/$escape}"
+  done
+  print -r -- "\"$value\""
+}
+
+# Fast, bounded GUI state: no VPN queries and no unescaped user strings.
+cmd_app_state() {
+  local configured=false enabled=false sysprox=false owns=false running=$(running_mode)
+  local selected=$(saved_mode) has_socks=false has_http=false
+  [[ "$selected" == (auto|direct|socks|http) ]] || selected=auto
+  [[ -n "$SOCKS_UPSTREAM" ]] && has_socks=true
+  [[ -n "$HTTP_UPSTREAM" ]] && has_http=true
+  [[ -r "$CFG" && -n "$SOCKS_UPSTREAM$HTTP_UPSTREAM" ]] && configured=true
+  is_enabled && [[ "$configured" == true ]] && enabled=true
+  local proxy=$(scutil --proxy 2>/dev/null)
+  local http=$(print -r -- "$proxy" | awk '$1=="HTTPEnable"{e=$3} $1=="HTTPPort"{p=$3} $1=="HTTPProxy"{h=$3} END{print e"|"p"|"h}')
+  local https=$(print -r -- "$proxy" | awk '$1=="HTTPSEnable"{e=$3} $1=="HTTPSPort"{p=$3} $1=="HTTPSProxy"{h=$3} END{print e"|"p"|"h}')
+  [[ "$http" == "1|$BRIDGE_PORT|127.0.0.1" && "$https" == "1|$BRIDGE_PORT|127.0.0.1" ]] && sysprox=true
+  [[ "$http" == "1|$BRIDGE_PORT|127.0.0.1" || "$https" == "1|$BRIDGE_PORT|127.0.0.1" ]] && owns=true
+  print -r -- "{\"configured\":$configured,\"enabled\":$enabled,\"running\":\"$running\",\"system_proxy\":$sysprox,\"owns_system_proxy\":$owns,\"selected\":\"$selected\",\"has_socks\":$has_socks,\"has_http\":$has_http,\"socks_endpoint\":$(json_string "$SOCKS_UPSTREAM"),\"http_endpoint\":$(json_string "$HTTP_UPSTREAM")}"
 }
 
 # машиночитаемое состояние — на нём работает приложение в меню-баре
@@ -934,7 +1071,9 @@ cmd_json() {
   local sysprox=false _sp
   _sp=$(scutil --proxy 2>/dev/null | awk '/HTTPEnable/{e=$3} /HTTPPort/{p=$3} /HTTPProxy/{h=$3} END{print e"|"p"|"h}')
   [[ "$_sp" == "1|$BRIDGE_PORT|127.0.0.1" ]] && sysprox=true
-  print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false),\"in_office\":$office,\"net_service\":\"$NET_SERVICE\",\"office_ip\":\"$OFFICE_IP\",\"net_daemon\":$netd,\"vpn_profile\":\"$VPN_PROFILE\",\"vpn_installed\":$vpnd,\"vpn_up\":$vpnup,\"vpn_auto\":$vpnauto,\"vpn_foreign\":$vpnforeign,\"system_proxy\":$sysprox}"
+  local enabled=false
+  is_enabled && enabled=true
+  print -r -- "{\"mode\":\"$saved\",\"effective\":\"$eff\",\"running\":\"$run\",\"port\":$BRIDGE_PORT,\"socks\":\"$SOCKS_UPSTREAM\",\"socks_up\":$su,\"http\":\"$HTTP_UPSTREAM\",\"http_up\":$hu,\"gateway\":\"$gw\",\"configured\":$([[ -r $CFG ]] && print true || print false),\"enabled\":$enabled,\"in_office\":$office,\"net_service\":\"$NET_SERVICE\",\"office_ip\":\"$OFFICE_IP\",\"net_daemon\":$netd,\"vpn_profile\":\"$VPN_PROFILE\",\"vpn_installed\":$vpnd,\"vpn_up\":$vpnup,\"vpn_auto\":$vpnauto,\"vpn_foreign\":$vpnforeign,\"system_proxy\":$sysprox}"
 }
 
 cmd_doctor() {
@@ -1499,6 +1638,8 @@ usage() {
 proxypilot $PP_VERSION — один локальный прокси, переключаемый апстрим
 
   proxypilot detect      найти прокси в сети, настроить всё и включить
+  proxypilot enable|disable  включить прокси / снять системный прокси
+  proxypilot route auto|direct|socks|http  выбрать маршрут
   proxypilot status      что сейчас происходит
   proxypilot bench       сравнить скорость: напрямую / http / socks5
   proxypilot doctor      диагностика проблем
@@ -1524,6 +1665,11 @@ EOF
 
 case "${1:-status}" in
   (socks|http|direct|auto) cmd_switch "$1" ;;
+  (enable)   cmd_enable ;;
+  (disable)  cmd_disable ;;
+  (setup)    cmd_setup "${2:-}" ;;
+  (app-state) cmd_app_state ;;
+  (route) cmd_route "${2:-auto}" "${3:-}" ;;
   (status)   cmd_status ;;
   (json)     cmd_json ;;
   (set)      cmd_set "${2:?ключ}" "${3:-}" ;;

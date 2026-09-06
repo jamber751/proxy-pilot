@@ -3,8 +3,7 @@
 #
 # В DMG-варианте приложение самодостаточно: CLI и gost вложены в бандл
 # (Contents/Resources/bin), получателю не нужны ни brew, ни репозиторий.
-# На машине разработчика приложение по-прежнему берёт CLI из ~/.local/bin
-# (см. порядок кандидатов в app/main.swift).
+# Source builds also bundle their matching CLI; the DMG adds universal gost.
 emulate -L zsh
 set -euo pipefail
 
@@ -105,9 +104,9 @@ echo "✓ installed to $DST"
 # The bridge runs as a CHILD of the app (it inherits the Local Network
 # permission), so without autostart there is simply no proxy after a reboot.
 # This is not an option worth asking about — it is the only working setup.
-# The menu bar has a toggle to turn it off.
+# Login Items can be managed in macOS System Settings.
 osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/ProxyPilot.app", hidden:true}' >/dev/null 2>&1 \
-  && echo "✓ starts at login (toggle it off in the menu bar)"
+  && echo "✓ starts at login (manage in macOS System Settings)"
 
 # Shell integration, idempotent — the same block install.sh writes.
 RC="$HOME/.zshrc"
@@ -129,7 +128,7 @@ fi
 open "$DST"
 echo
 echo "Next: allow local network access when macOS asks — that is all."
-echo "The app finds the proxies, sets the system proxy for GUI apps and turns itself on."
+echo "Press Find automatically in the app, then use the power button to turn the proxy on or off."
 INSTALLER
 chmod +x "$STAGE/Install.command"
 
@@ -140,9 +139,9 @@ ProxyPilot $VERSION  (Intel + Apple Silicon, macOS 11+)
 QUICK PATH:
   right-click "Install.command" → Open → Open. That is the whole install.
   The script copies the app to Applications, clears quarantine, sets it to
-  start at login, wires up the terminal and launches ProxyPilot. The app
-  then finds the proxies on your network, points the system proxy at its
-  own bridge and switches itself on. Nothing else to fill in.
+  start at login, wires up the terminal and launches ProxyPilot.
+  Press Find automatically (Найти автоматически) in the app. If needed,
+  open Settings (gear), press +, enter the host/IP and port, and choose SOCKS5 or HTTP.
 
   (A plain double-click is blocked by macOS — the app is not signed with an
    Apple certificate. Alternative: drag "Install.command" into a Terminal
@@ -152,13 +151,12 @@ MANUALLY (if you don't trust the script — fair enough, read it first):
   1. Drag ProxyPilot.app into Applications.
   2. Right-click ProxyPilot.app → Open (or Privacy & Security → Open Anyway).
   3. Allow local network access when macOS asks.
-  4. Turn on "Start at login" in the menu bar — the bridge is a child process
-     of the app, so without it there is no proxy after a reboot.
+  4. Add ProxyPilot to Login Items in macOS System Settings if you want
+     the app to start after a reboot.
 
-On first launch the app discovers the proxies, points the macOS system proxy
-at its own bridge (every network service at once) and switches itself on. It
-shows you what it found; there is nothing to fill in. To undo the system part:
-"System proxy" in the menu, or run: proxypilot system off
+The power button switches the proxy on or off. The gear icon (Настройки)
+opens setup again. Turn off (Выключить) removes the app's system proxy;
+an existing local bridge forwards directly for already-open terminal clients.
 
 https://github.com/jamber751/proxy-pilot
 EOF

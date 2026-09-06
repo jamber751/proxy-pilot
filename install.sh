@@ -43,15 +43,13 @@ grn "$BIN_DIR/proxypilot"
 [[ ":$PATH:" == *":$BIN_DIR:"* ]] || yel "$BIN_DIR не в PATH — добавь: export PATH=\"\$HOME/.local/bin:\$PATH\""
 
 # ── 3. конфиг ────────────────────────────────────────────────────────────────
-step "3/5  Настраиваю сеть"
+step "3/5  Проверяю настройки"
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config"
 if [[ -r "$CFG" ]]; then
   grn "конфиг уже есть: $CFG"
   print -- "  (пересоздать: proxypilot detect)"
 else
-  # Прокси может не быть видно прямо сейчас (ставимся из дома) — это не повод
-  # обрывать установку на середине: CLI уже стоит, шелл и приложение впереди.
-  "$BIN_DIR/proxypilot" detect || DETECT_FAILED=1
+  print -- "  Настройка появится в приложении: нажми «Найти автоматически»."
 fi
 
 # ── 4. интеграция с шеллом ───────────────────────────────────────────────────
@@ -83,7 +81,7 @@ if [[ -x "$HERE/app/build.sh" ]] && command -v swiftc >/dev/null; then
   # Мост живёт дочерним процессом приложения, поэтому без автозапуска после
   # перезагрузки прокси просто нет. Ставим сами; выключается тумблером в меню.
   osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$APP_DIR/ProxyPilot.app\", hidden:true}" >/dev/null 2>&1 \
-    && grn "добавлен в автозапуск (выключается в меню-баре)"
+    && grn "добавлен в автозапуск (управление — в настройках macOS)"
 else
   yel "swiftc не найден — приложение пропущено (CLI работает и без него)."
   yel "Поставить: xcode-select --install"
@@ -96,8 +94,8 @@ print -- ""
 "$BIN_DIR/proxypilot" status || true
 print -- ""
 print -- "Дальше:"
-print -- "  1. Открой новый таб терминала — прокси подхватится сам."
-print -- "  2. Запусти ProxyPilot.app (значок появится в меню-баре)."
+print -- "  1. Запусти ProxyPilot.app и нажми «Найти автоматически»."
+print -- "  2. Используй кнопку питания для включения и выключения."
 print -- "     При первом запуске macOS спросит доступ к локальной сети — разреши,"
 print -- "     иначе мост не достучится до корпоративного прокси."
 if [[ -n "${DETECT_FAILED:-}" ]]; then

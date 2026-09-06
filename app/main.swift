@@ -1,1101 +1,597 @@
-// ProxyPilot — переключатель апстрима прокси в меню-баре macOS.
-//
-// Приложение НЕ реализует прокси само: оно управляет CLI `proxypilot`
-// и показывает его состояние. Мост (gost) запускается как дочерний процесс
-// ЭТОГО приложения и наследует его разрешение Local Network (macOS 15+);
-// у launchd-агента такого разрешения нет ("no route to host") — поэтому
-// мост сознательно не вынесен в LaunchAgent.
-//
-// Всё редактирование конфига идёт через `proxypilot set` — знание о формате
-// файла живёт в CLI, приложение конфиг только читает.
-
+// A menu-bar popover; gost inherits this app's Local Network permission.
 import AppKit
 import SwiftUI
-import Combine
 
-// ── состояние от CLI ─────────────────────────────────────────────────────────
-struct State: Decodable {
-    let mode: String          // сохранённый режим: auto|socks|http|direct
-    let effective: String     // во что разворачивается auto
-    let running: String       // фактический апстрим моста, либо "none"
-    let port: Int
-    let socks: String
-    let socks_up: Bool
-    let http: String
-    let http_up: Bool
-    let gateway: String
-    let configured: Bool
-
-    // Сетевой профиль. Опциональные: приложение может стоять рядом с CLI,
-    // который этих полей ещё не отдаёт — тогда секция просто не показывается.
-    let in_office: Bool?
-    let net_service: String?
-    let office_ip: String?
-    let net_daemon: Bool?
-    let vpn_profile: String?
-    let vpn_installed: Bool?
-    let vpn_up: Bool?
-    let vpn_auto: Bool?
-    let vpn_foreign: Bool?
-    let system_proxy: Bool?
-}
-
-// Автозапуск. SMAppService появился только в macOS 13, а планка у нас 11 —
-// поэтому через System Events, тем же способом, что и установщик из DMG.
-// Без автозапуска после перезагрузки нет моста: gost живёт дочерним процессом
-// этого приложения (см. шапку файла), так что «выключено» = сломанная машина.
-enum LoginItem {
-    private static func osa(_ script: String) -> String {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        let pipe = Pipe()
-        proc.standardOutput = pipe; proc.standardError = Pipe()
-        do { try proc.run() } catch { return "" }
-        let d = pipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return String(data: d, encoding: .utf8) ?? ""
+struct ProxyState: Decodable {
+    var configured: Bool
+    var enabled: Bool
+    var running: String
+    var system_proxy: Bool
+    var owns_system_proxy: Bool? = nil
+    var selected: String? = nil
+    var has_socks: Bool? = nil
+    var has_http: Bool? = nil
+    var socks_endpoint: String? = nil
+    var http_endpoint: String? = nil
+    func endpoint(for scheme: String) -> String {
+        (scheme == "socks5" ? socks_endpoint : http_endpoint) ?? ""
     }
-    static func enabled() -> Bool {
-        osa("tell application \"System Events\" to get the name of every login item")
-            .contains("ProxyPilot")
-    }
-    static func set(_ on: Bool) {
-        if on {
-            let path = Bundle.main.bundlePath
-            _ = osa("tell application \"System Events\" to make login item at end with properties {path:\"\(path)\", hidden:true}")
-        } else {
-            _ = osa("tell application \"System Events\" to delete login item \"ProxyPilot\"")
+    static func routeName(_ mode: String) -> String {
+        switch mode {
+        case "socks": return "SOCKS5"
+        case "http": return "HTTP"
+        case "direct": return "Напрямую"
+        default: return "Авто"
         }
     }
+    var connected: Bool { enabled && running != "none" && system_proxy }
+    var route: String {
+        if !enabled && !system_proxy && owns_system_proxy != true { return "Напрямую" }
+        guard connected else { return "Не определён" }
+        switch running {
+        case "direct": return "Напрямую"
+        case "socks": return "SOCKS5"
+        case "http": return "HTTP"
+        default: return "Не определён"
+        }
+    }
+}
+
+struct CommandResult {
+    let output: String
+    let code: Int32
+    var succeeded: Bool { code == 0 }
 }
 
 enum CLI {
-    // Установленный CLI ищем раньше вложенного: у разработчика ~/.local/bin —
-    // симлинк на репо (всегда свежий), а копия в бандле отстаёт от правок.
-    // Вложенный (Contents/Resources/bin, кладёт make-dmg.sh) — для машин,
-    // куда приложение попало через DMG без install.sh.
-    static var candidates: [String] {
-        var list = [
-            "\(NSHomeDirectory())/.local/bin/proxypilot",
-            "/opt/homebrew/bin/proxypilot",
-            "/usr/local/bin/proxypilot",
-        ]
-        if let res = Bundle.main.resourcePath {
-            list.append("\(res)/bin/proxypilot")
-        }
-        return list
-    }
+    // Bundle and UI are versioned together, including source builds.
     static var path: String? {
-        candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        let bundled = Bundle.main.resourcePath.map { "\($0)/bin/proxypilot" }
+        return ([bundled].compactMap { $0 } + [
+            "\(NSHomeDirectory())/.local/bin/proxypilot",
+            "/opt/homebrew/bin/proxypilot", "/usr/local/bin/proxypilot"
+        ]).first { FileManager.default.isExecutableFile(atPath: $0) }
     }
-
-    @discardableResult
-    static func run(_ args: [String]) -> String {
-        guard let exe = path else { return "" }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: exe)
-        proc.arguments = args
-        var env = ProcessInfo.processInfo.environment
-        env["TERM"] = "dumb"   // без ANSI-раскраски в выводе для GUI
-        proc.environment = env
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return "" }
+    static func run(_ args: [String]) -> CommandResult {
+        guard let path = path else { return CommandResult(output: "CLI not found", code: 127) }
+        let process = Process(), pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        environment["TERM"] = "dumb"
+        process.environment = environment
+        // Drain both streams together; errors must not disappear or fill a pipe.
+        process.standardOutput = pipe; process.standardError = pipe
+        do { try process.run() }
+        catch { return CommandResult(output: error.localizedDescription, code: 126) }
+        let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 90, execute: deadline)
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return String(data: data, encoding: .utf8) ?? ""
+        process.waitUntilExit(); deadline.cancel()
+        return CommandResult(output: String(data: data, encoding: .utf8) ?? "", code: process.terminationStatus)
     }
-
-    // Профиль сети и туннель — это root (смена IPv4 в macOS доступна только ему).
-    // Пароль спрашивает система своим диалогом; сами мы его не видим и не храним.
-    // XDG_CONFIG_HOME передаём явно: у root свой $HOME, а конфиг лежит у
-    // пользователя.
-    static func runAdmin(_ args: [String]) -> String {
-        guard let exe = path else { return "CLI не найден" }
-        let home = "\(NSHomeDirectory())/.config"
-        let parts = ["/usr/bin/env", "XDG_CONFIG_HOME=\(home)", exe] + args
-        let cmd = parts.map(shQuote).joined(separator: " ")
-        let script = "do shell script \(asQuote(cmd)) with administrator privileges"
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out; proc.standardError = err
-        do { try proc.run() } catch { return "не удалось запустить osascript" }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        let edata = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        let stdout = String(data: data, encoding: .utf8) ?? ""
-        if proc.terminationStatus != 0 {
-            let e = String(data: edata, encoding: .utf8) ?? ""
-            // -128 — пользователь нажал «Отмена» в диалоге пароля
-            if e.contains("-128") { return "отменено" }
-            return e.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return stdout
-    }
-
-    private static func shQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-    private static func asQuote(_ s: String) -> String {
-        "\"" + s.replacingOccurrences(of: "\\", with: "\\\\")
-                 .replacingOccurrences(of: "\"", with: "\\\"") + "\""
-    }
-
-    static func state() -> State? {
-        let out = run(["json"])
-        guard let data = out.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(State.self, from: data)
+    static func state() -> ProxyState? {
+        let result = run(["app-state"])
+        guard result.succeeded, let data = result.output.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ProxyState.self, from: data)
     }
 }
 
-func stripANSI(_ s: String) -> String {
-    s.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]",
-                           with: "", options: .regularExpression)
-}
-
-let appLog = URL(fileURLWithPath: "\(NSHomeDirectory())/Library/Logs/proxypilot-app.log")
-func log(_ s: String) {
-    let line = "\(ISO8601DateFormatter().string(from: Date()))  \(s)\n"
-    guard let d = line.data(using: .utf8) else { return }
-    if let fh = try? FileHandle(forWritingTo: appLog) {
-        defer { try? fh.close() }
-        _ = try? fh.seekToEnd()
-        try? fh.write(contentsOf: d)
-    } else {
-        try? d.write(to: appLog)
-    }
-}
-
-// ── модель настроек (для окна Settings) ──────────────────────────────────────
-enum Probe { case unknown, checking, up, down }
-
-final class ConfigStore: ObservableObject {
-    @Published var socks = ""
-    @Published var http = ""
-    @Published var port = "3129"
-    @Published var gateways = ""
-
-    // сетевой профиль
-    // Пусто — и CLI выведет сам: сервис по дефолтному маршруту, маску с
-    // интерфейса. Прежние значения "Wi-Fi" и "255.255.255.0" сохранение
-    // записывало в конфиг, заново прибивая то, что должно определяться.
-    @Published var netService = ""
-    @Published var officeIP = ""
-    @Published var officeMask = ""
-    @Published var officeDNS = ""
-    @Published var vpnProfile = ""
-    @Published var vpnRoutes = ""
-    @Published var vpnAuto = false
-
-    // Тумблеры не ждут «Сохранить»: это не поля конфига, а состояние системы.
-    @Published var systemProxyOn = false
-    @Published var loginItemOn = false
-
-    @Published var socksProbe: Probe = .unknown
-    @Published var httpProbe: Probe = .unknown
+final class ProxyModel: ObservableObject {
+    @Published var state: ProxyState?
     @Published var busy = false
-    @Published var message = ""
+    @Published var loading = true
+    @Published var operation = ""
+    @Published var error = ""
+    @Published var editing = false
+    @Published var choosingRoute = false
+    @Published var manual = false
+    @Published var address = ""
+    @Published var proxyHost = ""
+    @Published var proxyPort = ""
+    @Published var proxyScheme = "socks5"
+    @Published var addingProxy = false
+    let preview: Bool
+    private let queue = DispatchQueue(label: "proxypilot.commands")
+    private var refreshing = false
+    var onChange: (() -> Void)?
 
-    var configPath: String {
-        "\(NSHomeDirectory())/.config/proxypilot/config"
+    init(preview: Bool = false) {
+        self.preview = preview
+        if preview {
+            loading = false
+            state = ProxyState(configured: false, enabled: false, running: "none", system_proxy: false)
+        }
     }
-
-    // читаем конфиг напрямую (KEY=VALUE); пишем — только через `proxypilot set`
-    func load() {
-        guard let text = try? String(contentsOfFile: configPath, encoding: .utf8) else { return }
-        for raw in text.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
-            let key = String(line[..<eq])
-            // Значения с пробелами (список DNS, несколько маршрутов) лежат в
-            // кавычках — так их пишет `proxypilot set` и разбирает CLI.
-            let value = Self.unquote(String(line[line.index(after: eq)...]))
-            switch key {
-            case "SOCKS_UPSTREAM":  socks = value
-            case "HTTP_UPSTREAM":   http = value
-            case "BRIDGE_PORT":     port = value
-            case "OFFICE_GATEWAYS": gateways = value
-            case "NET_SERVICE":     netService = value
-            case "OFFICE_IP":       officeIP = value
-            case "OFFICE_MASK":     officeMask = value
-            case "OFFICE_DNS":      officeDNS = value
-            case "VPN_PROFILE":     vpnProfile = value
-            case "VPN_ROUTES":      vpnRoutes = value
-            case "VPN_AUTO":        vpnAuto = (value == "on")
-            default: break
+    var connected: Bool { state?.connected == true }
+    var configured: Bool { state?.configured == true }
+    var wantsOn: Bool { state?.enabled == true || state?.system_proxy == true || state?.owns_system_proxy == true }
+    var setup: Bool { editing || (!configured && !loading) }
+    var title: String {
+        if loading { return "Проверяем подключение" }
+        if busy { return operation }
+        if !error.isEmpty { return wantsOn && !setup ? "Нужна проверка" : "Не удалось подключиться" }
+        if setup { return manual ? "Укажите адрес прокси" : "Начнём с подключения" }
+        return connected ? "Прокси включён" : "Прокси выключен"
+    }
+    var detail: String {
+        if busy || loading { return "Это займёт несколько секунд" }
+        if !error.isEmpty { return error }
+        if setup { return manual ? "Вставьте адрес, который выдал\nадминистратор вашей сети." : "Найдём прокси в вашей сети\nи настроим всё автоматически." }
+        if !connected { return "При включении: \(ProxyState.routeName(state?.selected ?? "auto"))." }
+        if state?.running == "direct", let selected = state?.selected, ["socks", "http"].contains(selected) {
+            return "\(ProxyState.routeName(selected)) недоступен — временно напрямую."
+        }
+        switch state?.running {
+        case "socks": return "Через SOCKS5-прокси вашей сети."
+        case "http": return "Через HTTP-прокси вашей сети."
+        case "direct": return "Через локальный мост, без внешнего прокси."
+        default: return "Не удалось определить маршрут."
+        }
+    }
+    var actionTitle: String {
+        if setup { return manual ? "Сохранить и включить" : "Найти автоматически" }
+        if wantsOn { return "Выключить" }
+        return error.isEmpty ? "Включить" : "Повторить"
+    }
+    static func endpoint(_ input: String) -> String? {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URLComponents(string: value),
+              ["http", "socks5"].contains(url.scheme ?? ""),
+              let host = url.host, !host.isEmpty,
+              let port = url.port, (1...65535).contains(port),
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty,
+              host.range(of: "^[A-Za-z0-9][A-Za-z0-9.-]*$", options: .regularExpression) != nil,
+              !["localhost", "0.0.0.0"].contains(host.lowercased()), !host.hasPrefix("127.")
+        else { return nil }
+        return value
+    }
+    func refresh() {
+        guard !preview, !busy, !refreshing else { return }
+        refreshing = true
+        queue.async {
+            var result = CLI.state()
+            if result?.configured == true {
+                _ = CLI.run(["ensure"])
+                result = CLI.state()
             }
-        }
-        savedFields = fields
-    }
-
-    static func unquote(_ s: String) -> String {
-        guard s.count >= 2, s.hasPrefix("\""), s.hasSuffix("\"") else { return s }
-        return String(s.dropFirst().dropLast())
-    }
-
-    private static let hostPort = try! NSRegularExpression(pattern: "^[A-Za-z0-9_.-]+:[0-9]{1,5}$")
-    private static let ipv4 = try! NSRegularExpression(pattern: "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
-    static func validIPv4(_ s: String, allowEmpty: Bool = true) -> Bool {
-        if s.isEmpty { return allowEmpty }
-        return ipv4.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
-    }
-    static func validDNSList(_ s: String) -> Bool {
-        s.split(separator: " ").allSatisfy { validIPv4(String($0), allowEmpty: false) }
-    }
-    static func validUpstream(_ s: String) -> Bool {
-        s.isEmpty || hostPort.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
-    }
-    var valid: Bool {
-        Self.validUpstream(socks) && Self.validUpstream(http)
-            && Int(port).map { (1024...65535).contains($0) } == true
-            && !(socks.isEmpty && http.isEmpty)
-            && Self.validIPv4(officeIP) && Self.validIPv4(officeMask)
-            && Self.validDNSList(officeDNS)
-    }
-
-    // Адрес не из офисной подсети — почти всегда скопированный пример: в офисе
-    // он не поднимется, сработает откат в DHCP, и профиль будет дёргаться.
-    var officeIPMismatch: Bool {
-        guard !officeIP.isEmpty, !gateways.isEmpty else { return false }
-        let prefixes = gateways.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return !prefixes.contains { officeIP.hasPrefix($0) }
-    }
-    // При статике DNS от DHCP не приедут — пустое поле оставит резолвер как был.
-    var officeDNSMissing: Bool { !officeIP.isEmpty && officeDNS.isEmpty }
-
-    func refreshSwitches() {
-        DispatchQueue.global().async {
-            let sp = CLI.state()?.system_proxy == true
-            let li = LoginItem.enabled()
-            DispatchQueue.main.async { self.systemProxyOn = sp; self.loginItemOn = li }
-        }
-    }
-    func setSystemProxy(_ on: Bool) {
-        systemProxyOn = on
-        DispatchQueue.global().async {
-            CLI.run(["system", on ? "on" : "off"])
-            let now = CLI.state()?.system_proxy == true
-            DispatchQueue.main.async { self.systemProxyOn = now }
-        }
-    }
-    func setLoginItem(_ on: Bool) {
-        loginItemOn = on
-        DispatchQueue.global().async {
-            LoginItem.set(on)
-            let now = LoginItem.enabled()
-            DispatchQueue.main.async { self.loginItemOn = now }
-        }
-    }
-    func setVpnAuto(_ on: Bool) {
-        vpnAuto = on
-        DispatchQueue.global().async { CLI.run(["vpn", "auto", on ? "on" : "off"]) }
-    }
-
-    // Профиль кладут перетаскиванием: путь к .ovpn руками не набирают.
-    // Сразу за приёмом собираем split-tunnel — иначе файл лежал бы без дела.
-    func adoptOVPN(_ path: String, completion: @escaping () -> Void) {
-        vpnProfile = path
-        busy = true; message = "Принимаю профиль и собираю туннель…"
-        DispatchQueue.global().async {
-            CLI.run(["set", "VPN_PROFILE", path])
-            let out = stripANSI(CLI.runAdmin(["vpn", "install"]))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let fresh = result
             DispatchQueue.main.async {
-                self.busy = false
-                self.message = out.isEmpty ? "Туннель собран." : out
-                self.load()
-                completion()
+                self.refreshing = false
+                guard !self.busy else { return }
+                self.loading = false; self.state = fresh
+                if self.error == "Не удалось прочитать состояние. Попробуйте открыть приложение заново." || self.error == "Подключение прервалось. Выключите прокси и попробуйте снова." {
+                    self.error = ""
+                }
+                if fresh == nil { self.error = "Не удалось прочитать состояние. Попробуйте открыть приложение заново." }
+                else if fresh!.enabled && !fresh!.connected {
+                    self.error = "Подключение прервалось. Выключите прокси и попробуйте снова."
+                }
+                self.onChange?()
             }
         }
     }
-
-    func probeAll() {
-        probe(\.socksProbe, socks)
-        probe(\.httpProbe, http)
+    func perform() {
+        guard !busy, !loading else { return }
+        let args: [String]
+        if setup {
+            if manual {
+                guard let endpoint = Self.endpoint(address) else { return }
+                args = ["setup", endpoint]
+            } else { args = ["detect"] }
+        } else { args = wantsOn ? ["disable"] : ["route", state?.selected ?? "auto", "enable"] }
+        execute(args)
     }
-    private func probe(_ key: ReferenceWritableKeyPath<ConfigStore, Probe>, _ upstream: String) {
-        guard !upstream.isEmpty else { self[keyPath: key] = .unknown; return }
-        self[keyPath: key] = .checking
-        DispatchQueue.global().async {
-            let ok = CLI.run(["probe", upstream]).contains("up")
-            DispatchQueue.main.async { self[keyPath: key] = ok ? .up : .down }
-        }
+    func configure(manually: Bool) {
+        manual = manually
+        perform()
     }
-
-    // detect пишет конфиг сам — потом просто перечитываем
-    func detect(completion: @escaping () -> Void) {
-        busy = true; message = "Ищу прокси в текущей сети…"
-        DispatchQueue.global().async {
-            let out = stripANSI(CLI.run(["detect"]))
-            DispatchQueue.main.async {
-                self.load()
-                self.probeAll()
-                self.busy = false
-                self.message = out.contains("конфиг записан")
-                    ? "Найдено и записано. Проверь поля и нажми «Сохранить»."
-                    : out.trimmingCharacters(in: .whitespacesAndNewlines)
-                completion()
+    var formEndpoint: String? {
+        let host = proxyHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = proxyPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty, !port.isEmpty, port.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return Self.endpoint("\(proxyScheme)://\(host):\(port)")
+    }
+    var replacesProxy: Bool { !(state?.endpoint(for: proxyScheme) ?? "").isEmpty }
+    func openProxy(_ scheme: String? = nil) {
+        proxyScheme = scheme ?? (state?.has_socks == true && state?.has_http != true ? "http" : "socks5")
+        let value = scheme == nil ? "" : state?.endpoint(for: proxyScheme) ?? ""
+        let pieces = value.split(separator: ":", omittingEmptySubsequences: false)
+        proxyHost = pieces.count == 2 ? String(pieces[0]) : ""
+        proxyPort = pieces.count == 2 ? String(pieces[1]) : ""
+        error = ""; addingProxy = true
+    }
+    func saveProxy() {
+        guard let endpoint = formEndpoint, !busy else { return }
+        execute(["setup", endpoint])
+    }
+    func selectRoute(_ route: String) {
+        guard !busy, !loading, configured else { return }
+        execute(["route", route])
+    }
+    private func execute(_ args: [String], completion: (() -> Void)? = nil) {
+        guard !busy else { return }
+        busy = true; error = ""
+        let off = args.first == "disable"
+        operation = off ? "Выключаем прокси" : (args.first == "detect" ? "Ищем прокси" : "Подключаемся")
+        onChange?()
+        if preview {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let choosing = args.first == "route"
+                let enabled = choosing && args.count == 2 ? self.wantsOn : !off
+                let previous = self.state
+                let selected = args.first == "setup" ? (args[1].hasPrefix("socks5:") ? "socks" : "http") : choosing ? args[1] : self.state?.selected ?? "auto"
+                self.state = ProxyState(configured: true, enabled: enabled, running: enabled ? (selected == "auto" ? "socks" : selected) : "direct", system_proxy: enabled, selected: selected, has_socks: true, has_http: true, socks_endpoint: previous?.socks_endpoint, http_endpoint: previous?.http_endpoint)
+                if args.first == "setup", let url = URLComponents(string: args[1]), let host = url.host, let port = url.port {
+                    if url.scheme == "socks5" { self.state?.socks_endpoint = "\(host):\(port)" }
+                    else { self.state?.http_endpoint = "\(host):\(port)" }
+                }
+                self.busy = false; self.editing = args.first == "setup"; self.addingProxy = false; self.manual = false; self.choosingRoute = false
+                self.onChange?(); completion?()
             }
-        }
-    }
-
-    // Действия, требующие root: установка демонов, сборка туннеля, ручной
-    // подъём/останов. Диалог пароля показывает система.
-    func admin(_ args: [String], note: String, completion: @escaping () -> Void) {
-        busy = true; message = note
-        DispatchQueue.global().async {
-            let out = stripANSI(CLI.runAdmin(args)).trimmingCharacters(in: .whitespacesAndNewlines)
-            DispatchQueue.main.async {
-                self.busy = false
-                self.message = out.isEmpty ? "Готово." : out
-                self.load()
-                completion()
-            }
-        }
-    }
-
-    // Снимок значений, прочитанных из файла: с ним сравниваем при сохранении.
-    private var savedFields: [String: String] = [:]
-    private var fields: [String: String] {
-        ["SOCKS_UPSTREAM": socks, "HTTP_UPSTREAM": http,
-         "BRIDGE_PORT": port, "OFFICE_GATEWAYS": gateways,
-         "NET_SERVICE": netService, "OFFICE_IP": officeIP,
-         "OFFICE_MASK": officeMask, "OFFICE_DNS": officeDNS,
-         "VPN_PROFILE": vpnProfile, "VPN_ROUTES": vpnRoutes,
-         "VPN_AUTO": vpnAuto ? "on" : "off"]
-    }
-
-    // сохранить через CLI set; мост трогаем, только если поменялось то, что на него влияет
-    func save(mode: String, completion: @escaping () -> Void) {
-        let now = fields
-        let changed = now.filter { savedFields[$0.key] != $0.value }
-        guard !changed.isEmpty else {
-            message = "Ничего не изменилось."
-            completion()
             return
         }
-        // Раньше «Сохранить» всегда звал switch, а это stop_bridge + start_bridge:
-        // открыл настройки посмотреть, нажал кнопку — и живые соединения оборваны.
-        let restartKeys: Set<String> = ["SOCKS_UPSTREAM", "HTTP_UPSTREAM", "BRIDGE_PORT"]
-        let needsRestart = !restartKeys.isDisjoint(with: changed.keys)
-        busy = true
-        message = needsRestart ? "Сохраняю и перезапускаю мост…" : "Сохраняю…"
-        DispatchQueue.global().async {
-            // состояние системного прокси снимаем ДО правок: после смены порта
-            // json сравнивал бы старый порт в системе с новым в конфиге
-            let sysWasOn = CLI.state()?.system_proxy == true
-            for (k, v) in changed { CLI.run(["set", k, v]) }
-            if needsRestart {
-                CLI.run([mode])
-                // порт мог смениться — системный прокси должен смотреть на новый
-                if sysWasOn { CLI.run(["system", "on"]) }
-            }
+        queue.async {
+            let result = CLI.run(args)
+            let fresh = CLI.state()
+            let choosing = args.first == "route"
+            let selectedOK = !choosing || fresh?.selected == args[1]
+            let routeOK = !choosing || args[1] == "auto" || fresh?.enabled == false || fresh?.running == args[1]
+            let offChoice = choosing && args.count == 2 && fresh?.enabled == false
+            let verified = selectedOK && routeOK && (off ? (fresh?.enabled == false && fresh?.system_proxy == false && fresh?.owns_system_proxy != true) : (offChoice || fresh?.connected == true))
             DispatchQueue.main.async {
-                self.savedFields = now
-                self.busy = false
-                self.message = needsRestart ? "Готово — мост перезапущен." : "Готово."
-                self.probeAll()
-                completion()
+                self.busy = false; self.loading = false; self.state = fresh
+                if result.succeeded && verified {
+                    self.editing = args.first == "setup"; self.addingProxy = false; self.manual = false; self.choosingRoute = false; completion?()
+                } else if args.first == "detect" && result.output.contains("прокси не найдены") {
+                    self.error = "Прокси не найден. Подключитесь к рабочей сети или укажите адрес вручную."
+                } else if choosing {
+                    self.error = "Не удалось переключить маршрут. Проверьте адрес прокси и его доступность."
+                } else if args.first == "setup" {
+                    self.error = "Не удалось подключиться. Проверьте IP, порт, протокол и доступность сервера."
+                } else {
+                    self.error = off ? "Не удалось выключить прокси. Попробуйте ещё раз." : "Проверьте сеть и доступ ProxyPilot к локальной сети в настройках macOS."
+                }
+                self.onChange?()
             }
         }
     }
-}
-
-// ── окно настроек (SwiftUI) ──────────────────────────────────────────────────
-struct ProbeDot: View {
-    let state: Probe
-    var body: some View {
-        switch state {
-        case .unknown:  Circle().fill(.gray.opacity(0.35)).frame(width: 9, height: 9)
-        case .checking: ProgressView().controlSize(.small)
-        case .up:       Circle().fill(.green).frame(width: 9, height: 9)
-        case .down:     Circle().fill(.red).frame(width: 9, height: 9)
-        }
+    func quit() {
+        if preview { NSApp.terminate(nil); return }
+        execute(["disable"]) { NSApp.terminate(nil) }
     }
 }
 
-// TextField с подсказкой: параметр prompt появился только в macOS 12,
-// на Big Sur подставляем placeholder заголовком — визуально то же самое.
-struct HintField: View {
+struct PowerStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.65 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+struct RouteRow: View {
     let title: String
-    @Binding var text: String
-    let hint: String
+    let subtitle: String
+    let symbol: String
+    let selected: Bool
+    let available: Bool
+    let busy: Bool
+    let ink: Color
+    let accent: Color
+    let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        if #available(macOS 12.0, *) {
-            TextField(title, text: $text, prompt: Text(hint))
-        } else {
-            TextField(hint, text: $text)
-        }
+        Button(action: action) {
+            HStack(spacing: 11) {
+                Image(systemName: symbol).font(.system(size: 16, weight: .medium))
+                    .foregroundColor(selected ? accent : ink.opacity(0.65)).frame(width: 26)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text(available ? subtitle : "Сначала настройте адрес прокси")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundColor(selected ? accent : ink.opacity(0.15))
+            }.padding(.horizontal, 13).frame(height: 52)
+                .background(selected ? accent.opacity(0.10) : ink.opacity(hovering && available ? 0.075 : 0.025))
+                .cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? accent.opacity(0.5) : ink.opacity(hovering ? 0.14 : 0.07), lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(PowerStyle()).disabled(!available || busy)
+            .opacity(available ? 1 : 0.45)
+            .onHover { hovering = $0 }
+            .accessibilityLabel(title + (selected ? ", выбран" : "") + (available ? "" : ", не настроен"))
     }
 }
 
-// Зона приёма .ovpn. Путь к профилю руками не набирают — его перетаскивают.
-struct DropZone: View {
-    let current: String
-    let targeted: Bool
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                .foregroundColor(targeted ? Color.accentColor : Color.gray.opacity(0.45))
-            if current.isEmpty {
-                Text("Перетащи сюда файл .ovpn")
-                    .font(.callout).foregroundColor(.secondary)
-            } else {
-                VStack(spacing: 2) {
-                    Text((current as NSString).lastPathComponent).font(.callout)
-                    Text("перетащи другой, чтобы заменить")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-            }
-        }
-        .frame(height: 62)
-    }
-}
-
-struct SettingsView: View {
-    @ObservedObject var store: ConfigStore
-    let currentMode: () -> String
-    let onApplied: () -> Void
-
-    // Всё, что можно вывести, выведено: адреса прокси, порт, префиксы шлюзов,
-    // сетевой сервис, маска, DNS. Здесь остаётся то, что вывести нельзя —
-    // офисный адрес выдают, а профиль приносят файлом.
-    @SwiftUI.State private var showAdvanced = false
-    @SwiftUI.State private var dropTargeted = false
-
-    @ViewBuilder private var fields: some View {
-        Section {
-            HStack {
-                Text("SOCKS5").frame(width: 70, alignment: .leading)
-                Text(store.socks.isEmpty ? "не найден" : store.socks)
-                    .foregroundColor(store.socks.isEmpty ? .secondary : .primary)
-                Spacer()
-                ProbeDot(state: store.socksProbe)
-            }
-            HStack {
-                Text("HTTP").frame(width: 70, alignment: .leading)
-                Text(store.http.isEmpty ? "не найден" : store.http)
-                    .foregroundColor(store.http.isEmpty ? .secondary : .primary)
-                Spacer()
-                ProbeDot(state: store.httpProbe)
-            }
-        } header: {
-            Text("Прокси — найдены сами")
-        } footer: {
-            Text("Мост слушает 127.0.0.1:\(store.port), и клиенты всегда ходят на него. Адреса, порт и префиксы офисных шлюзов правятся в «Дополнительно».")
-                .font(.caption).foregroundColor(.secondary)
-        }
-
-        Section {
-            Toggle("Системный прокси — браузер и остальные GUI", isOn: Binding(
-                get: { store.systemProxyOn }, set: { store.setSystemProxy($0) }))
-            Toggle("Запускать при входе", isOn: Binding(
-                get: { store.loginItemOn }, set: { store.setLoginItem($0) }))
-        } header: {
-            Text("Переключатели")
-        } footer: {
-            Text("Оба действуют сразу, «Сохранить» для них не нужен. Без автозапуска после перезагрузки моста не будет: он живёт дочерним процессом приложения.")
-                .font(.caption).foregroundColor(.secondary)
-        }
-
-        Section {
-            HintField(title: "Адрес в офисе", text: $store.officeIP,
-                      hint: "пусто — адресом не управляем")
-            if store.officeIPMismatch {
-                Text("Адрес не из офисной подсети (\(store.gateways)) — там он не поднимется.")
-                    .font(.caption).foregroundColor(.orange)
-            }
-            HStack {
-                Button("Применить сейчас") {
-                    store.admin(["net", "apply"], note: "Применяю профиль…") { onApplied() }
-                }
-                .disabled(store.officeIP.isEmpty)
-                Button("Применять автоматически") {
-                    store.admin(["net", "install"], note: "Ставлю демон профиля…") { onApplied() }
-                }
-                .disabled(store.officeIP.isEmpty)
-                Spacer()
-            }
-        } header: {
-            Text("Офисный адрес")
-        } footer: {
-            Text("Единственное, что нельзя угадать: фиксированный адрес выдают вам. Маску, сетевой сервис и офисные DNS приложение определяет само. Пусто — сетью не управляем, везде DHCP. Требует пароль администратора.")
-                .font(.caption).foregroundColor(.secondary)
-        }
-
-        Section {
-            DropZone(current: store.vpnProfile, targeted: dropTargeted)
-                .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { providers in
-                    guard let p = providers.first else { return false }
-                    p.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
-                        guard let d = item as? Data,
-                              let url = URL(dataRepresentation: d, relativeTo: nil),
-                              url.pathExtension.lowercased() == "ovpn" else { return }
-                        DispatchQueue.main.async { store.adoptOVPN(url.path) { onApplied() } }
-                    }
-                    return true
-                }
-            Toggle("Поднимать вне офиса, гасить в офисе", isOn: Binding(
-                get: { store.vpnAuto }, set: { store.setVpnAuto($0) }))
-                .disabled(store.vpnProfile.isEmpty)
-            HStack {
-                Button("Поднять") {
-                    store.admin(["vpn", "up"], note: "Поднимаю туннель…") { onApplied() }
-                }
-                .disabled(store.vpnProfile.isEmpty)
-                Button("Опустить") {
-                    store.admin(["vpn", "down"], note: "Опускаю туннель…") { onApplied() }
-                }
-                .disabled(store.vpnProfile.isEmpty)
-                Spacer()
-            }
-        } header: {
-            Text("Туннель — по желанию")
-        } footer: {
-            Text("Из профиля собирается конфиг со split-tunnel: в туннель уходят только офисные сети, а не весь трафик. Маршруты выводятся из офисной подсети. Файл копируется под root с правами 600 — внутри приватный ключ.")
-                .font(.caption).foregroundColor(.secondary)
-        }
-
-        Section {
-            DisclosureGroup("Дополнительно", isExpanded: $showAdvanced) {
-                HintField(title: "SOCKS5", text: $store.socks, hint: "192.168.1.2:9999")
-                HintField(title: "HTTP", text: $store.http, hint: "192.168.1.2:3128")
-                TextField("Порт моста", text: $store.port)
-                HintField(title: "Шлюзы офиса", text: $store.gateways, hint: "192.168.1.")
-                HintField(title: "Сетевой сервис", text: $store.netService,
-                          hint: "пусто — по дефолтному маршруту")
-                HintField(title: "Маска", text: $store.officeMask,
-                          hint: "пусто — как на интерфейсе")
-                HintField(title: "DNS в офисе", text: $store.officeDNS,
-                          hint: "пусто — как выдал роутер при поиске")
-                HintField(title: "В туннель", text: $store.vpnRoutes,
-                          hint: "пусто — /16 вокруг офиса")
-            }
-        } footer: {
-            Text("Заполненные значения перекрывают автоопределение. Порт менять не стоит: на него смотрят системный прокси и shellenv.")
-                .font(.caption).foregroundColor(.secondary)
-        }
-    }
-
+struct PilotView: View {
+    @ObservedObject var model: ProxyModel
+    @Environment(\.colorScheme) private var colorScheme
+    private var ink: Color { colorScheme == .dark ? Color(red: 0.92, green: 0.94, blue: 0.94) : Color(red: 0.12, green: 0.16, blue: 0.15) }
+    private var accent: Color { Color(red: 0.12, green: 0.53, blue: 0.39) }
     var body: some View {
         VStack(spacing: 0) {
-            if #available(macOS 13.0, *) {
-                Form { fields }.formStyle(.grouped)
-            } else {
-                Form { fields }
-            }
-
-            Divider()
-            HStack {
-                Button {
-                    store.detect { onApplied() }
-                } label: {
-                    Label("Найти заново", systemImage: "antenna.radiowaves.left.and.right")
-                }
-                Button("Проверить") { store.probeAll() }
-                Spacer()
-                if store.busy { ProgressView().controlSize(.small) }
-                Button("Сохранить") {
-                    store.save(mode: currentMode()) { onApplied() }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!store.valid || store.busy)
-            }
-            .padding(12)
-
-            if !store.message.isEmpty {
-                let msg = Text(store.message)
-                    .font(.caption).foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12).padding(.bottom, 8)
-                if #available(macOS 12.0, *) {
-                    msg.textSelection(.enabled)
+            HStack(spacing: 7) {
+                if model.addingProxy || ((model.setup || model.choosingRoute) && model.configured) {
+                    Button {
+                        if model.addingProxy { model.addingProxy = false }
+                        else { model.editing = false; model.choosingRoute = false; model.manual = false }
+                        model.error = ""
+                    } label: {
+                        Image(systemName: "chevron.left").frame(width: 24, height: 28)
+                    }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Назад")
+                        .disabled(model.busy)
                 } else {
-                    msg
+                    Image(systemName: "circle.hexagongrid.fill").font(.system(size: 14, weight: .medium))
+                }
+                Text(model.addingProxy ? "Адрес прокси" : model.choosingRoute ? "Маршрут" : model.setup ? "Настройки" : "ProxyPilot").font(.system(size: 14, weight: .semibold))
+                Spacer()
+                if model.preview { Text("ПРЕВЬЮ").font(.system(size: 9, weight: .medium)).foregroundColor(.secondary) }
+                if model.setup && !model.addingProxy {
+                    Button { model.openProxy() } label: {
+                        Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 28, height: 28)
+                    }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Добавить прокси")
+                        .disabled(model.busy || model.loading)
+                }
+                if !model.setup && !model.choosingRoute {
+                    Button { model.editing = true; model.manual = false; model.error = "" } label: {
+                        Image(systemName: "gearshape").font(.system(size: 16)).frame(width: 28, height: 28)
+                    }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Настройки")
+                        .help("Настройки подключения").disabled(model.busy || model.loading)
+                }
+            }.padding(.top, 20)
+            if model.setup {
+                if model.addingProxy { proxyForm } else { settings }
+            } else if model.choosingRoute {
+                routePicker
+            } else {
+            Spacer(minLength: 12)
+            Button(action: model.perform) {
+                VStack(spacing: 18) {
+                    ZStack {
+                        Circle().fill(model.connected && !model.setup ? accent : ink)
+                        if model.busy || model.loading {
+                            ProgressView().progressViewStyle(CircularProgressViewStyle(tint: colorScheme == .dark && !model.connected ? .black : .white))
+                        } else {
+                            Image(systemName: "power").font(.system(size: 36, weight: .light))
+                                .foregroundColor(colorScheme == .dark && !model.connected ? .black : .white)
+                        }
+                    }.frame(width: 104, height: 104).shadow(color: .black.opacity(0.08), radius: 14, x: 0, y: 7)
+                    Text(model.busy ? "Подождите…" : model.actionTitle)
+                        .font(.system(size: 13, weight: .medium)).foregroundColor(ink)
+                }.frame(maxWidth: .infinity).contentShape(Rectangle())
+            }
+            .buttonStyle(PowerStyle())
+            .disabled(model.busy || model.loading)
+            .accessibilityLabel(model.actionTitle).keyboardShortcut(.defaultAction)
+            VStack(spacing: 8) {
+                Text(model.title).font(.system(size: 22, weight: .semibold)).tracking(-0.5)
+                Text(model.detail).font(.system(size: 13)).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            }.padding(.top, 24)
+            Button { model.choosingRoute = true; model.error = "" } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 16, weight: .medium)).foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("МАРШРУТ").font(.system(size: 8, weight: .semibold)).tracking(1).foregroundColor(.secondary)
+                        Text(model.loading || model.busy ? "Проверяем…" : model.state?.route ?? "Не определён")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    Spacer(minLength: 8)
+                    if (model.state?.selected ?? "auto") == "auto" {
+                        Text("АВТО").font(.system(size: 8, weight: .semibold)).tracking(0.5)
+                            .foregroundColor(accent).padding(.horizontal, 7).padding(.vertical, 4)
+                            .background(accent.opacity(0.1)).cornerRadius(5)
+                    }
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundColor(.secondary)
+                }.padding(.horizontal, 13).padding(.vertical, 10)
+                    .background(ink.opacity(0.025)).cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink.opacity(0.09), lineWidth: 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(PowerStyle())
+                .disabled(model.busy || model.loading || !model.configured)
+                .accessibilityLabel("Выбрать маршрут: \(model.state?.route ?? "Не определён")")
+                .padding(.top, 18)
+                .help("Маршрут ProxyPilot для приложений, использующих системный прокси. Другие VPN и прокси могут влиять на трафик отдельно.")
+            }
+            Spacer(minLength: 12)
+            Divider().opacity(0.5)
+            HStack {
+                Text(model.setup ? "HTTP / SOCKS5" : "Маршрут системного прокси")
+                Spacer()
+                Button("Выйти", action: model.quit).disabled(model.busy || model.loading)
+            }.buttonStyle(PlainButtonStyle()).font(.system(size: 11)).foregroundColor(.secondary).padding(.vertical, 16)
+        }
+        .padding(.horizontal, 24).frame(width: 344, height: 432)
+        .foregroundColor(ink)
+        .background(colorScheme == .dark ? Color(red: 0.10, green: 0.12, blue: 0.115) : Color(red: 0.98, green: 0.985, blue: 0.98))
+    }
+    private var routePicker: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Как подключаться?").font(.system(size: 22, weight: .semibold)).tracking(-0.5)
+                .padding(.top, 16)
+            Text(model.busy ? "Применяем маршрут…" : !model.error.isEmpty ? model.error : model.wantsOn ? "Выберите маршрут для обоих локальных мостов." : "Выбор применится при включении прокси.")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+                .lineLimit(2).frame(height: 28, alignment: .topLeading)
+            ForEach(["auto", "direct", "socks", "http"], id: \.self) { route in
+                RouteRow(title: ProxyState.routeName(route), subtitle: routeSubtitle(route), symbol: routeSymbol(route),
+                         selected: (model.state?.selected ?? "auto") == route,
+                         available: route == "socks" ? model.state?.has_socks == true : route == "http" ? model.state?.has_http == true : true,
+                         busy: model.busy, ink: ink, accent: accent) {
+                    model.selectRoute(route)
                 }
             }
         }
-        .frame(width: 470, height: 700)
-        .onAppear {
-            store.load()
-            store.probeAll()
-            store.refreshSwitches()
+    }
+    private func routeSubtitle(_ route: String) -> String {
+        switch route {
+        case "direct": return "Без внешнего прокси"
+        case "socks": return "Через SOCKS5-прокси вашей сети"
+        case "http": return "Через HTTP-прокси вашей сети"
+        default: return "Подбирает маршрут по доступности"
         }
+    }
+    private func routeSymbol(_ route: String) -> String {
+        switch route {
+        case "direct": return "arrow.up.right"
+        case "socks": return "network"
+        case "http": return "globe"
+        default: return "sparkles"
+        }
+    }
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Ваши прокси").font(.system(size: 22, weight: .semibold)).padding(.top, 20)
+            Text(model.configured ? "Сохранённые адреса для подключения." : "Добавьте адрес через + или найдите автоматически.")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+            ForEach(["socks5", "http"], id: \.self) { scheme in
+                if !(model.state?.endpoint(for: scheme) ?? "").isEmpty {
+                    proxyEntry(scheme)
+                }
+            }
+            if !model.configured {
+                VStack(spacing: 8) {
+                    Image(systemName: "network").font(.system(size: 26)).foregroundColor(.secondary)
+                    Text("Пока нет адресов").font(.system(size: 12, weight: .medium))
+                }.frame(maxWidth: .infinity).padding(.vertical, 25)
+                    .background(ink.opacity(0.025)).cornerRadius(12)
+            }
+            Divider().padding(.vertical, 4)
+            Button { model.configure(manually: false) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                    Text("Найти автоматически").font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 10))
+                }.padding(12).background(ink.opacity(0.06)).cornerRadius(10)
+            }.buttonStyle(PlainButtonStyle()).disabled(model.busy || model.loading)
+            Text(model.busy ? model.operation : model.error)
+                .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+        }
+    }
+    private func proxyEntry(_ scheme: String) -> some View {
+        let mode = scheme == "socks5" ? "socks" : "http"
+        let active = model.connected && model.state?.running == mode
+        return Button { model.openProxy(scheme) } label: {
+            HStack(spacing: 11) {
+                Image(systemName: scheme == "socks5" ? "network" : "globe")
+                    .font(.system(size: 17)).foregroundColor(active ? accent : .secondary).frame(width: 26)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 7) {
+                        Text(scheme == "socks5" ? "SOCKS5" : "HTTP").font(.system(size: 12, weight: .semibold))
+                        Text(active ? "Используется" : "Настроен").font(.system(size: 9, weight: .medium))
+                            .foregroundColor(active ? accent : .secondary)
+                    }
+                    Text(model.state?.endpoint(for: scheme) ?? "")
+                        .font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 2)
+                Image(systemName: "pencil").font(.system(size: 12)).foregroundColor(.secondary)
+            }.padding(13).frame(maxWidth: .infinity, alignment: .leading)
+                .background(ink.opacity(0.025)).cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? accent.opacity(0.4) : ink.opacity(0.08), lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(PowerStyle()).disabled(model.busy)
+            .accessibilityLabel("Изменить \(scheme == "socks5" ? "SOCKS5" : "HTTP"): \(model.state?.endpoint(for: scheme) ?? ""), \(active ? "используется" : "настроен")")
+    }
+    private var proxyForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Настроить подключение").font(.system(size: 21, weight: .semibold)).tracking(-0.5).padding(.top, 16)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Протокол").font(.system(size: 11, weight: .medium)).foregroundColor(.secondary)
+                Picker("Протокол", selection: $model.proxyScheme) {
+                    Text("SOCKS5").tag("socks5")
+                    Text("HTTP").tag("http")
+                }.pickerStyle(SegmentedPickerStyle()).labelsHidden()
+            }
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("IP / хост").font(.system(size: 11, weight: .medium)).foregroundColor(.secondary)
+                    TextField("192.168.1.2", text: $model.proxyHost).accessibilityLabel("IP или хост")
+                }
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Порт").font(.system(size: 11, weight: .medium)).foregroundColor(.secondary)
+                    TextField(model.proxyScheme == "socks5" ? "1080" : "3128", text: $model.proxyPort).accessibilityLabel("Порт")
+                }.frame(width: 72)
+            }.textFieldStyle(RoundedBorderTextFieldStyle()).font(.system(size: 13))
+            Text(model.replacesProxy ? "Адрес \(model.proxyScheme == "socks5" ? "SOCKS5" : "HTTP") будет обновлён. Другой протокол останется без изменений." : "Только IP или имя сервера — без http:// и socks5://.")
+                .font(.system(size: 11)).foregroundColor(.secondary).frame(height: 32, alignment: .topLeading)
+            Button(action: model.saveProxy) {
+                Text(model.busy ? "Подключаемся…" : model.replacesProxy ? "Обновить и подключить" : "Добавить и подключить").font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity).padding(.vertical, 10)
+                    .background(accent).foregroundColor(.white).cornerRadius(9)
+            }.buttonStyle(PlainButtonStyle())
+                .disabled(model.busy || model.loading || model.formEndpoint == nil)
+                .opacity(model.formEndpoint == nil || model.busy ? 0.4 : 1)
+            Text(model.error).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2).frame(height: 28, alignment: .topLeading)
+        }.disabled(model.busy)
     }
 }
 
-// ── приложение ───────────────────────────────────────────────────────────────
 final class App: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem!
+    private var popover: NSPopover!
     private var timer: Timer?
-    private var state: State?
-    private var busy = false
-    private var loginItemOn = false
-    private var napBlocker: NSObjectProtocol?
-    private let store = ConfigStore()
-    private var settingsWC: NSWindowController?
-
-    func applicationDidFinishLaunching(_ n: Notification) {
-        // Один экземпляр на систему: запуск второго (например, прямо из DMG
-        // при уже установленном) молча выходит, не плодя вторую иконку в баре.
-        let selfPID = ProcessInfo.processInfo.processIdentifier
-        let twins = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "kz.documentolog.proxypilot")
-            .filter { $0.processIdentifier != selfPID }
-        if !twins.isEmpty {
-            log("уже запущен (pid \(twins[0].processIdentifier)) — второй экземпляр выходит")
-            NSApp.terminate(nil)
-            return
+    private var activity: NSObjectProtocol?
+    private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if model.preview, let appearance = Bundle.main.object(forInfoDictionaryKey: "PreviewAppearance") as? String {
+            NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
         }
-
-        log("старт; CLI=\(CLI.path ?? "НЕ НАЙДЕН")")
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.autosaveName = "ProxyPilot"
-        item.isVisible = true
-        item.menu = NSMenu()
-        item.menu?.delegate = self
-
-        guard CLI.path != nil else {
-            item.button?.title = "PP!"
-            fatalAlert("Не найден CLI `proxypilot`.\n\nОжидается в ~/.local/bin/proxypilot.\nЗапусти install.sh из проекта proxy-pilot.")
-            return
+        let bundleID = Bundle.main.bundleIdentifier ?? "kz.documentolog.proxypilot"
+        if NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+            NSApp.terminate(nil); return
         }
-
-        store.load()   // адреса апстримов — из конфига, а не из дефолтов
-
-        // Без activity macOS усыпляет фоновое приложение (App Nap), и таймер
-        // перестаёт тикать — иконка застывает в старом режиме.
-        // ВАЖНО: именно ...AllowingIdleSystemSleep — обычный .userInitiated
-        // включает idleSystemSleepDisabled и вешает PreventUserIdleSystemSleep,
-        // из-за чего ноут не засыпал, пока ProxyPilot запущен.
-        napBlocker = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiatedAllowingIdleSystemSleep],
-            reason: "опрос состояния прокси")
-
-        // Первый запуск без конфига: detect сам находит прокси, пишет конфиг и
-        // выставляет системный прокси. Раньше следом открывалась форма на 11
-        // полей, и пользователь жал «Сохранить» те же самые значения — шаг был
-        // ритуальный. Теперь просто включаемся; форму показываем, только когда
-        // искать было нечего.
-        if CLI.state()?.configured != true {
-            log("нет конфига — запускаю автопоиск")
-            store.detect { [weak self] in
-                guard let self = self else { return }
-                if let st = CLI.state(), st.configured {
-                    DispatchQueue.global().async {
-                        CLI.run(["auto"])
-                        DispatchQueue.main.async { self.refresh() }
-                    }
-                    self.firstRunSummary(st)
-                } else {
-                    self.openSettings()
-                }
-                self.refresh()
-            }
-        } else {
-            // поднять мост в сохранённом режиме; gost — дочерний процесс app
-            DispatchQueue.global().async {
-                CLI.run(["ensure"])
-                DispatchQueue.main.async { self.refresh() }
-            }
-        }
-
-        DispatchQueue.global().async {
-            let on = LoginItem.enabled()
-            DispatchQueue.main.async { self.loginItemOn = on }
-        }
-
-        // .common, а не дефолтный режим: иначе таймер замирает при открытом меню
-        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-        refresh()
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.target = self; item.button?.action = #selector(toggleWindow)
+        let host = NSHostingController(rootView: PilotView(model: model))
+        popover = NSPopover()
+        popover.contentViewController = host
+        popover.contentSize = NSSize(width: 344, height: 432)
+        popover.behavior = .transient
+        popover.animates = true
+        model.onChange = { [weak self] in self?.renderStatus() }
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep], reason: "Proxy connection")
+        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.model.refresh() }
+        RunLoop.main.add(t, forMode: .common); timer = t
+        renderStatus(); model.refresh()
+        DispatchQueue.main.async { [weak self] in self?.showWindow() }
     }
-
-    // Единственное, что пользователь видит после установки: что нашлось и что
-    // включилось. Одна кнопка вместо формы на 11 полей.
-    private func firstRunSummary(_ s: State) {
-        var lines: [String] = []
-        if !s.socks.isEmpty { lines.append("SOCKS5: \(s.socks)") }
-        if !s.http.isEmpty  { lines.append("HTTP: \(s.http)") }
-        lines.append("Мост: 127.0.0.1:\(s.port)")
-        if s.system_proxy == true { lines.append("Системный прокси: включён") }
-        let a = NSAlert()
-        a.messageText = "ProxyPilot настроен"
-        a.informativeText = lines.joined(separator: "\n")
-            + "\n\nРежим «Авто» — путь выбирается по сети. Всё остальное в меню-баре."
-        a.addButton(withTitle: "Готово")
+    private func renderStatus() {
+        // Keep the same brand mark as the popover header in every state.
+        let image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "ProxyPilot: \(model.title)")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .medium))
+        image?.isTemplate = true; item.button?.image = image
+        item.button?.alphaValue = model.busy || model.loading ? 0.7 : (model.connected ? 1 : 0.45)
+        item.button?.toolTip = "\(model.title) · \(model.state?.route ?? "Проверяем маршрут")"
+    }
+    @objc private func toggleWindow() {
+        if popover.isShown { popover.performClose(nil) } else { showWindow(); model.refresh() }
+    }
+    private func showWindow() {
+        guard let button = item.button, button.window != nil else { return }
         NSApp.activate(ignoringOtherApps: true)
-        a.runModal()
-    }
-
-    // ── обновление состояния ─────────────────────────────────────────────────
-    private func refresh() {
-        guard !busy else { return }
-        DispatchQueue.global().async {
-            let s = CLI.state()
-            // ensure идемпотентен и сам решает, надо ли перезапускать мост:
-            // и когда auto разошёлся с фактическим режимом, и когда сменилась
-            // сеть (режим тот же, но у gost остаётся DNS-кэш от старой сети)
-            if s?.configured == true {
-                CLI.run(["ensure"])
-            }
-            let fresh = CLI.state() ?? s
-            DispatchQueue.main.async {
-                self.state = fresh
-                // конфиг могли поменять из CLI (`proxypilot set …`) — перечитываем,
-                // но не пока открыты Настройки: затёрли бы правки пользователя
-                if self.settingsWC?.window?.isVisible != true {
-                    self.store.load()
-                }
-                self.render()
-            }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if let window = popover.contentViewController?.view.window {
+            window.title = "ProxyPilot"
+            window.setAccessibilityRole(.window)
+            window.setAccessibilitySubrole(.standardWindow)
+            window.setAccessibilityLabel("ProxyPilot")
+            window.makeKey()
         }
     }
-
-    private func render() {
-        let mode = (state?.configured == false) ? "unconfigured" : (state?.running ?? "error")
-        let (symbol, fallback): (String, String) = {
-            if busy { return ("hourglass", "…") }
-            switch mode {
-            case "socks":        return ("bolt.horizontal.circle.fill", "PP⚡")
-            case "http":         return ("tortoise.fill", "PP~")
-            case "direct":       return ("arrow.right.circle", "PP→")
-            case "unconfigured": return ("gearshape", "PP?")
-            default:             return ("exclamationmark.triangle.fill", "PP!")
-            }
-        }()
-        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "ProxyPilot") {
-            img.isTemplate = true
-            item.button?.image = img
-            item.button?.imagePosition = .imageOnly
-        } else {
-            item.button?.image = nil
-            item.button?.title = fallback
-        }
-        item.button?.toolTip = state.map {
-            "proxypilot — 127.0.0.1:\($0.port) (\(human($0.running)))"
-        } ?? "proxypilot — состояние недоступно"
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow(); return true
     }
-
-    private func human(_ mode: String) -> String {
-        switch mode {
-        case "socks":  return "SOCKS5, быстро"
-        case "http":   return "HTTP-прокси, медленно"
-        case "direct": return "без прокси"
-        case "none":   return "мост не запущен"
-        default:       return mode
-        }
-    }
-
-    // ── меню ─────────────────────────────────────────────────────────────────
-    private func menuItem(_ title: String, symbol: String, action: Selector?,
-                          key: String = "") -> NSMenuItem {
-        let mi = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        mi.target = self
-        mi.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        return mi
-    }
-
-    fileprivate func buildMenu(_ menu: NSMenu) {
-        menu.removeAllItems()
-        guard let s = state else {
-            menu.addItem(withTitle: "Состояние недоступно", action: nil, keyEquivalent: "")
-            menu.addItem(.separator())
-            menu.addItem(menuItem("Настройки…", symbol: "gearshape", action: #selector(openSettingsAction), key: ","))
-            menu.addItem(menuItem("Выйти", symbol: "power", action: #selector(quit), key: "q"))
-            return
-        }
-
-        // шапка: адрес моста + текущий канал
-        let head = NSMenuItem()
-        // Когда выбранный режим недоступен, мы молча работаем в обход —
-        // без этой строки пользователь не понял бы, почему галочка на socks,
-        // а трафик идёт напрямую.
-        var headLine = s.running == "none" ? "не запущен" : human(s.running)
-        if s.mode != "auto", s.effective != s.mode {
-            headLine = "\(human(s.mode)) недоступен → \(human(s.effective))"
-        }
-        head.attributedTitle = NSAttributedString(
-            string: "Мост 127.0.0.1:\(s.port)\n\(headLine)",
-            attributes: [
-                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ])
-        head.isEnabled = false
-        menu.addItem(head)
-        menu.addItem(.separator())
-
-        if !s.configured {
-            menu.addItem(withTitle: "Нет конфига — открой Настройки", action: nil, keyEquivalent: "")
-        } else {
-            addMode(menu, "Авто (по сети)", symbol: "sparkles", mode: "auto", s: s,
-                    note: s.mode == "auto" ? "→ \(human(s.effective))" : nil, enabled: true)
-            addMode(menu, "SOCKS5 — быстро", symbol: "bolt.fill", mode: "socks", s: s,
-                    note: s.socks.isEmpty ? "не настроен" : s.socks,
-                    dot: s.socks.isEmpty ? nil : s.socks_up,
-                    enabled: !s.socks.isEmpty && s.socks_up)
-            addMode(menu, "HTTP — запасной", symbol: "tortoise.fill", mode: "http", s: s,
-                    note: s.http.isEmpty ? "не настроен" : s.http,
-                    dot: s.http.isEmpty ? nil : s.http_up,
-                    enabled: !s.http.isEmpty && s.http_up)
-            addMode(menu, "Без прокси", symbol: "arrow.right", mode: "direct", s: s,
-                    note: nil, enabled: true)
-        }
-
-        // ── сеть и туннель ───────────────────────────────────────────────────
-        // Показываем, только когда это кем-то настроено: иначе меню разрастается
-        // без пользы у тех, кому нужен один прокси.
-        let netConfigured = (s.office_ip?.isEmpty == false) || s.vpn_installed == true
-        if let inOffice = s.in_office, netConfigured {
-            menu.addItem(.separator())
-            var lines = [inOffice ? "Сеть: офис" : "Сеть: вне офиса"]
-            if let ip = s.office_ip, !ip.isEmpty {
-                lines.append(inOffice ? "адрес \(ip)" : "адрес по DHCP")
-            }
-            if s.net_daemon != true, s.office_ip?.isEmpty == false {
-                lines.append("применяется только вручную")
-            }
-            let head = NSMenuItem()
-            head.attributedTitle = NSAttributedString(
-                string: lines.joined(separator: "\n"),
-                attributes: [
-                    .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ])
-            head.isEnabled = false
-            menu.addItem(head)
-
-            if s.vpn_installed == true {
-                let up = s.vpn_up == true
-                let foreign = s.vpn_foreign == true
-                let mi = NSMenuItem(
-                    title: foreign ? "Туннель поднят другим клиентом"
-                                   : (up ? "Опустить туннель" : "Поднять туннель"),
-                    action: foreign ? nil : #selector(toggleVPN), keyEquivalent: "")
-                mi.target = self
-                mi.isEnabled = !foreign
-                mi.image = NSImage(systemSymbolName: up ? "bolt.horizontal.fill" : "bolt.horizontal",
-                                   accessibilityDescription: nil)
-                menu.addItem(mi)
-
-                let auto = NSMenuItem(title: "Поднимать вне офиса",
-                                      action: #selector(toggleVPNAuto), keyEquivalent: "")
-                auto.target = self
-                auto.state = (s.vpn_auto == true) ? .on : .off
-                menu.addItem(auto)
-            }
-        }
-
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Замерить скорость…", symbol: "speedometer", action: #selector(bench), key: "b"))
-        menu.addItem(menuItem("Диагностика…", symbol: "stethoscope", action: #selector(doctor), key: "d"))
-        menu.addItem(menuItem("Скопировать адрес прокси", symbol: "doc.on.doc", action: #selector(copyAddr), key: "c"))
-        menu.addItem(.separator())
-        // Системный прокси — то, ради чего раньше ходили в System Settings.
-        // Держим тумблером: включается само при detect, но выключить надо уметь.
-        let sysItem = menuItem("Системный прокси (браузер и GUI)", symbol: "globe",
-                               action: #selector(toggleSystemProxy))
-        sysItem.state = (s.system_proxy == true) ? .on : .off
-        menu.addItem(sysItem)
-        // Без автозапуска после перезагрузки нет моста: gost — дочерний процесс
-        // этого приложения. Поэтому тумблер, а не «поставьте сами в Login Items».
-        let loginMI = menuItem("Запускать при входе", symbol: "power.circle",
-                               action: #selector(toggleLoginItem))
-        loginMI.state = loginItemOn ? .on : .off
-        menu.addItem(loginMI)
-        menu.addItem(menuItem("Найти прокси в сети", symbol: "antenna.radiowaves.left.and.right", action: #selector(detectAction)))
-        menu.addItem(menuItem("Настройки…", symbol: "gearshape", action: #selector(openSettingsAction), key: ","))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Выйти", symbol: "power", action: #selector(quit), key: "q"))
-    }
-
-    private func addMode(_ menu: NSMenu, _ title: String, symbol: String, mode: String,
-                         s: State, note: String?, dot: Bool? = nil, enabled: Bool) {
-        let mi = NSMenuItem(title: title, action: #selector(switchMode(_:)), keyEquivalent: "")
-        mi.target = self
-        mi.representedObject = mode
-        mi.state = (s.mode == mode) ? .on : .off
-        mi.isEnabled = enabled
-        mi.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        if note != nil || dot != nil {
-            let text = NSMutableAttributedString(
-                string: title, attributes: [.font: NSFont.menuFont(ofSize: 0)])
-            if let note = note {
-                text.append(NSAttributedString(
-                    string: "   \(note)",
-                    attributes: [
-                        .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                        .foregroundColor: NSColor.secondaryLabelColor,
-                    ]))
-            }
-            if let dot = dot {
-                text.append(NSAttributedString(
-                    string: "  ●",
-                    attributes: [
-                        .font: NSFont.menuFont(ofSize: 9),
-                        .foregroundColor: dot ? NSColor.systemGreen : NSColor.systemRed,
-                    ]))
-            }
-            mi.attributedTitle = text
-        }
-        menu.addItem(mi)
-    }
-
-    // ── действия ─────────────────────────────────────────────────────────────
-
-    // Подъём и останов туннеля — root, поэтому через диалог пароля системы.
-    @objc private func toggleVPN() {
-        guard let s = state else { return }
-        let up = s.vpn_up == true
-        busy = true; render()
-        DispatchQueue.global().async {
-            let out = stripANSI(CLI.runAdmin(["vpn", up ? "down" : "up"]))
-            log("vpn \(up ? "down" : "up"): \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
-            DispatchQueue.main.async { self.busy = false; self.refresh() }
-        }
-    }
-
-    // networksetup правит системный прокси без root — диалог пароля не нужен.
-    @objc private func toggleSystemProxy() {
-        guard let s = state else { return }
-        let on = s.system_proxy == true
-        busy = true; render()
-        DispatchQueue.global().async {
-            let out = stripANSI(CLI.run(["system", on ? "off" : "on"]))
-            log("system \(on ? "off" : "on"): \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
-            DispatchQueue.main.async { self.busy = false; self.refresh() }
-        }
-    }
-
-    @objc private func toggleLoginItem() {
-        let on = loginItemOn
-        DispatchQueue.global().async {
-            LoginItem.set(!on)
-            let now = LoginItem.enabled()
-            DispatchQueue.main.async { self.loginItemOn = now; self.render() }
-        }
-    }
-
-    // Тумблер автоматики пишет в пользовательский конфиг — root не нужен.
-    @objc private func toggleVPNAuto() {
-        guard let s = state else { return }
-        let on = s.vpn_auto == true
-        DispatchQueue.global().async {
-            CLI.run(["vpn", "auto", on ? "off" : "on"])
-            DispatchQueue.main.async { self.refresh() }
-        }
-    }
-
-    @objc private func switchMode(_ sender: NSMenuItem) {
-        guard let mode = sender.representedObject as? String else { return }
-        busy = true; render()
-        DispatchQueue.global().async {
-            CLI.run([mode])
-            DispatchQueue.main.async { self.busy = false; self.refresh() }
-        }
-    }
-
-    @objc private func bench() {
-        busy = true; render()
-        DispatchQueue.global().async {
-            let out = stripANSI(CLI.run(["bench"]))
-            DispatchQueue.main.async {
-                self.busy = false; self.render()
-                self.show("Скорость каналов", out)
-            }
-        }
-    }
-
-    @objc private func doctor() {
-        DispatchQueue.global().async {
-            let out = stripANSI(CLI.run(["doctor"]))
-            DispatchQueue.main.async { self.show("Диагностика", out) }
-        }
-    }
-
-    @objc private func copyAddr() {
-        guard let s = state else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("http://127.0.0.1:\(s.port)", forType: .string)
-    }
-
-    @objc private func detectAction() {
-        busy = true; render()
-        store.detect { [weak self] in
-            self?.busy = false
-            self?.refresh()
-            self?.show("Автопоиск прокси", self?.store.message ?? "")
-        }
-    }
-
-    @objc private func openSettingsAction() { openSettings() }
-
-    private func openSettings() {
-        if settingsWC == nil {
-            let view = SettingsView(
-                store: store,
-                currentMode: { [weak self] in self?.state?.mode ?? "auto" },
-                onApplied: { [weak self] in self?.refresh() })
-            let host = NSHostingController(rootView: view)
-            let win = NSWindow(contentViewController: host)
-            win.title = "ProxyPilot — Настройки"
-            win.styleMask = [.titled, .closable, .miniaturizable]
-            settingsWC = NSWindowController(window: win)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWC?.window?.center()
-        settingsWC?.showWindow(nil)
-        settingsWC?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func quit() {
-        CLI.run(["stop"])
-        NSApp.terminate(nil)
-    }
-
-    // ── алерты ───────────────────────────────────────────────────────────────
-    private func show(_ title: String, _ body: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let a = NSAlert()
-        a.messageText = title
-        a.alertStyle = .informational
-        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: 460, height: 190))
-        tv.string = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        tv.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        tv.isEditable = false
-        tv.drawsBackground = false
-        a.accessoryView = tv
-        a.addButton(withTitle: "ОК")
-        a.runModal()
-    }
-
-    private func fatalAlert(_ text: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let a = NSAlert()
-        a.messageText = "ProxyPilot"
-        a.informativeText = text
-        a.alertStyle = .critical
-        a.runModal()
-    }
-}
-
-extension App: NSMenuDelegate {
-    func menuNeedsUpdate(_ menu: NSMenu) { buildMenu(menu) }
-    func menuWillOpen(_ menu: NSMenu) { refresh() }
 }
 
 let app = NSApplication.shared
 let delegate = App()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)   // только меню-бар, без иконки в Dock
+app.setActivationPolicy(.accessory)
 app.run()

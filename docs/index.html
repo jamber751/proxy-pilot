@@ -358,7 +358,7 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
 <header class="hero" id="top">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">macOS 11+ &middot; v1.1.3 &middot; MIT</p>
+      <p class="eyebrow">macOS 11+ &middot; v1.4.0 &middot; MIT</p>
       <h1 class="h-display">One local proxy address. Switchable route out.</h1>
       <p class="lede">Corporate HTTP proxies shape traffic while a fast SOCKS5 endpoint sits on the same network — and plenty of tools can't speak SOCKS at all. ProxyPilot bridges that gap and keeps the address your clients use constant.</p>
       <div class="cta-row">
@@ -496,28 +496,25 @@ footer .right{margin-left:auto; display:flex; gap:20px; flex-wrap:wrap}
     <div class="grid-2" style="margin-top:24px">
       <div class="card">
         <h3 class="h-card">A menu bar app that shows the truth</h3>
-        <p>The icon carries the active route. The menu carries live reachability dots for each upstream, so you know a route is dead before you pick it — and a Find on network button that discovers proxies for you. Settings (⌘,) edits addresses, bridge port and office prefixes.</p>
-        <div class="mock" aria-label="ProxyPilot menu bar dropdown">
+        <p>Open the compact panel, choose a route, and use one power button to turn it on or off. Settings shows saved addresses; use + to enter an IP/host, port and protocol. The status checks the bridge and macOS proxy settings. HTTP and SOCKS5 clients share the local port.</p>
+        <div class="mock" aria-label="Illustration of the ProxyPilot power control">
           <div class="mock-head">
-            <div class="t">Bridge 127.0.0.1:3129</div>
-            <div class="s" id="mockState">SOCKS5 &middot; fast</div>
+            <div class="t">ProxyPilot</div>
+            <div class="s" id="mockState" aria-live="polite">Proxy on</div>
           </div>
-          <button class="mock-row" type="button" data-mock="auto"><span class="check"></span> Auto (by network)</button>
-          <button class="mock-row on" type="button" data-mock="socks"><span class="check">&#10003;</span> SOCKS5 — fast <span class="m-tag">192.168.8.2:9999</span> <span class="ok"></span></button>
-          <button class="mock-row" type="button" data-mock="http"><span class="check"></span> HTTP — fallback <span class="m-tag">192.168.8.2:3128</span> <span class="ok"></span></button>
-          <button class="mock-row" type="button" data-mock="direct"><span class="check"></span> Direct</button>
+          <button class="mock-row" type="button" id="mockPower" aria-label="Toggle proxy illustration" aria-pressed="true">Turn off</button>
         </div>
       </div>
       <div class="card">
         <h3 class="h-card">The CLI is the engine, not an afterthought</h3>
-        <p>Everything the app does, the terminal does too — the Settings window writes config through <code>proxypilot set</code>, so exactly one component knows the file format.</p>
+        <p>The app handles everyday setup and switching. Existing command-line integrations remain available through <code>proxypilot</code>.</p>
         <div class="term">
           <div class="term-bar">
             <span class="term-dots"><i></i><i></i><i></i></span>
             <span class="term-title">zsh — proxypilot</span>
           </div>
           <div class="term-body"><pre class="term-out" id="termOut" aria-live="polite"><span class="pr">$</span> proxypilot status
-proxypilot 1.1.3
+proxypilot 1.4.0
 
   proxy address    http://127.0.0.1:3129
   bridge           <span class="ok">running</span> (pid 11599, upstream=socks)
@@ -557,13 +554,13 @@ proxypilot 1.1.3
       <li>
         <div>
           <h3>Right-click <code>Install.command</code> → Open</h3>
-          <p>It copies the app to Applications, clears quarantine, offers to add it to Login Items and launches it. On first run the app finds the proxies on your network by itself and opens Settings so you can confirm them.</p>
+          <p>It copies the app to Applications, sets up Login Items and launches the connection panel.</p>
         </div>
       </li>
       <li>
         <div>
-          <h3>Point the system proxy at the bridge</h3>
-          <p>System Settings → Network → Wi-Fi → Details → Proxies. Set HTTP and HTTPS to <code>127.0.0.1:3129</code> and leave SOCKS off. That address is constant, so this is the last time you open this panel.</p>
+          <h3>Find automatically, then use one button</h3>
+          <p>Press Find automatically (Найти автоматически). ProxyPilot configures macOS for you. If no proxy is found, open Settings → + and enter the host, port and protocol. After setup, the power button turns the proxy on or off.</p>
         </div>
       </li>
     </ol>
@@ -644,7 +641,7 @@ proxypilot 1.1.3
   // ── терминал: вывод настоящих команд CLI ────────────────────────────────
   var OUT = {
     status: [
-      'proxypilot 1.1.3',
+      'proxypilot 1.4.0',
       '',
       '  proxy address    http://127.0.0.1:3129',
       '  bridge           <span class="ok">running</span> (pid 11599, upstream=socks)',
@@ -790,19 +787,13 @@ proxypilot 1.1.3
   onFirstView(document.querySelector('.term'), function(){ run('status'); });
 
   // ── мок меню: живой, как настоящее меню в баре ──────────────────────────
-  var mockRows = Array.prototype.slice.call(document.querySelectorAll('.mock-row'));
+  var mockPower = document.getElementById('mockPower');
   var mockState = document.getElementById('mockState');
-  var MOCK = { auto: 'Auto → SOCKS5 · fast', socks: 'SOCKS5 · fast',
-               http: 'HTTP proxy · fallback', direct: 'Direct · no proxy' };
-  mockRows.forEach(function(row){
-    row.addEventListener('click', function(){
-      mockRows.forEach(function(r){
-        var on = r === row;
-        r.classList.toggle('on', on);
-        r.querySelector('.check').innerHTML = on ? '&#10003;' : '';
-      });
-      if (mockState) mockState.textContent = MOCK[row.dataset.mock];
-    });
+  mockPower.addEventListener('click', function(){
+    var on = mockPower.getAttribute('aria-pressed') !== 'true';
+    mockPower.setAttribute('aria-pressed', String(on));
+    mockPower.textContent = on ? 'Turn off' : 'Turn on';
+    mockState.textContent = on ? 'Proxy on' : 'Proxy off';
   });
 
   // ── копирование блоков кода ─────────────────────────────────────────────

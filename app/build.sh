@@ -18,6 +18,8 @@ command -v swiftc >/dev/null || {
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/Resources/bin"
+cp "${HERE:h}/bin/proxypilot" "$APP/Contents/Resources/bin/proxypilot"
 
 # файл называется main.swift, поэтому код верхнего уровня компилируется как есть.
 # Universal (Intel + Apple Silicon): две компиляции + lipo — DMG должен

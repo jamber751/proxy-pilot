@@ -56,49 +56,64 @@ no terminal.
 
 ## Use it
 
-Everything lives in the menu bar icon, which shows the active route (⚡ SOCKS5 ·
-🐢 HTTP · ⇢ direct). Click to switch routes, benchmark, run diagnostics or open
-**Settings (⌘,)** — deliberately small. The proxies it found are shown, not
-asked for. Two switches act immediately (system proxy, start at login). Then
-the only two things nobody can derive for you: the fixed **office address**, if
-your workplace hands one out, and the **.ovpn profile** — dropped onto the
-window, which builds the split-tunnel on the spot. Everything else — bridge
-port, gateway prefixes, network service, netmask, office DNS, tunnel routes —
-is worked out for you and lives under "Дополнительно" for the rare override.
+Open ProxyPilot and press **Найти автоматически**. The app finds a proxy and
+configures the connection. After setup, the large power button toggles
+**Включить / Выключить**. The status confirms the bridge and macOS proxy state.
 
-There is nothing to fill in on the first launch. The app finds the proxies,
-points the macOS system proxy at its own bridge — every network service at
-once, SOCKS off, bypass list included — turns on `auto` and tells you what it
-found. GUI apps are covered from that moment on; the address is constant, so
-it stays correct when the route changes.
+The **gear icon** opens the saved SOCKS5 and HTTP addresses, marked configured
+or currently in use. Press **+** to enter an IP/hostname and port in separate
+fields and choose SOCKS5 or HTTP. No URL prefix is needed. Click an existing
+row to edit its prefilled address. Saving verifies the server and connects it.
+The current configuration supports one address per protocol; updating one
+preserves the other and does not reset the office network profile.
+Click the route on the main screen to choose Auto, Direct, SOCKS5, or HTTP.
+The checkmark marks the saved choice; the main label always shows the actual
+active route. Unconfigured protocols are disabled. When off, choosing a route
+only saves it for the next power-on. An unreachable upstream is rejected
+without replacing the working connection. If a selected upstream later becomes
+unavailable, the existing direct fallback is explicitly labelled.
+This describes ProxyPilot, not traffic handled by other VPN/proxy tools. Addresses with
+authentication or IPv6 are not supported by this form yet.
 
-Both switches live in the menu: **System proxy** and **Start at login** (the
-bridge is a child process of the app, so without autostart there is no proxy
-after a reboot). From the terminal: `proxypilot system on|off|status`.
+Turning off removes ProxyPilot's HTTP/HTTPS system proxy settings. An existing
+local bridge switches to direct forwarding so already-open terminal clients
+keep working. New shells no longer receive ProxyPilot proxy variables. Exiting
+also disables the proxy; if macOS rejects the change, the app stays open and
+shows an error. Existing VPN/network daemons from older versions are independent
+and are not changed by this switch.
+
+Launching the app checks the saved state and maintains the bridge; it does not
+reapply system proxy settings changed outside ProxyPilot. Use off/on to restore
+them when needed. The power control is not a kill switch.
+
+The app follows the macOS light/dark appearance. No benchmarks, VPN profile
+editor, or advanced settings are shown.
+
+### Telegram / SOCKS5
+
+The local port accepts **both HTTP and SOCKS5**. In Telegram's proxy settings,
+choose SOCKS5, server `127.0.0.1`, port `3129`, and leave username/password blank.
+If you changed `BRIDGE_PORT`, use that port instead. No new port or separate
+route setting is needed: both protocols share the same active upstream and
+local-address bypass. The listener is bound to loopback only, not your LAN.
+
+This uses GOST's [auto handler](https://gost.run/en/reference/handlers/auto/).
+When ProxyPilot is off, the existing local listener forwards directly, as it
+does for HTTP clients; it does not block Telegram. If the bridge is stopped,
+disable the proxy in Telegram or start ProxyPilot. UDP relay is not enabled;
+Telegram calls have not been verified.
 
 <details>
 <summary><b>CLI</b> — same thing from the terminal</summary>
 
 | Command | What it does |
 |---|---|
-| `proxypilot detect` | find proxies, write a config, set the system proxy, turn on |
-| `proxypilot system on\|off\|status` | macOS system proxy on every network service |
-| `proxypilot bench` | compare routes: direct / http / socks5 |
+| `proxypilot detect` | set up and turn on |
+| `proxypilot enable` · `disable` | turn ProxyPilot on or off |
+| `proxypilot route auto\|direct\|socks\|http` | select route; preserve off state |
 | `proxypilot status` · `doctor` | current state · diagnose problems |
-| `proxypilot socks` · `http` · `direct` · `auto` | switch route |
-| `proxypilot set KEY VALUE` | write a config key (validated) |
-| `proxypilot json` | machine-readable state |
-| `proxypilot shellenv` | `eval "$(proxypilot shellenv)"` in `.zshrc` |
-| `proxypilot net` · `net install` | network profile: where you are, apply it on every network change |
-| `proxypilot vpn` · `vpn install FILE.ovpn` | split-tunnel from an OpenVPN profile |
-| `proxypilot vpn auto on` · `vpn up` · `vpn down` | tunnel: automatic outside the office, or by hand |
 
-Config lives in `~/.config/proxypilot/config` (`KEY=VALUE`) and is what the
-Settings window edits — through `proxypilot set`, so only the CLI knows the
-format.
-
-`bench` uses one stream and a short file on purpose: it compares routes against
-each other, not your bandwidth. Measure the line with fast.com.
+Config is created automatically in `~/.config/proxypilot/config`.
 
 </details>
 
@@ -155,8 +170,8 @@ sudo proxypilot vpn install                  # build split-tunnel, install daemo
 proxypilot vpn auto on                       # up outside, down in the office
 ```
 
-Everything is also in Settings (⌘,) — the same keys, plus buttons for the steps
-that need a password.
+These legacy commands are retained only for existing CLI installations. The
+minimal app no longer exposes network-profile or VPN settings.
 
 **Why the office test is strict.** “Can I ping the office gateway” is not enough:
 from home over the VPN it answers too, and the script would set the office static
@@ -192,7 +207,7 @@ block the office tunnel from coming up.
 ## How it works
 
 `bin/proxypilot` (zsh) holds the logic; `app/main.swift` is a menu bar front end
-over `proxypilot json`; the bridge itself is [gost](https://github.com/go-gost/gost).
+over `proxypilot app-state`; the bridge itself is [gost](https://github.com/go-gost/gost).
 ProxyPilot proxies nothing and stores no secrets — it picks the upstream and
 keeps the bridge in the right mode.
 

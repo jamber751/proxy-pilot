@@ -68,6 +68,9 @@ jobs:
           ./bin/proxypilot json | grep -q '"system_proxy"' \
             && echo "  ok  json отдаёт состояние системного прокси"
 
+      - name: Power flow regressions (isolated)
+        run: python3 -m unittest discover -s tests -v
+
   app:
     name: App (universal)
     runs-on: macos-14

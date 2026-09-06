@@ -3,3 +3,4 @@ app/build/
 .DS_Store
 dist/
 vendor/
+__pycache__/

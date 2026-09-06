@@ -33,6 +33,11 @@ jobs:
       - name: Build DMG
         run: ./make-dmg.sh
 
+      - name: Regression tests with packaged GOST
+        env:
+          PROXYPILOT_TEST_GOST: ${{ github.workspace }}/vendor/gost-universal
+        run: python3 -m unittest discover -s tests -v
+
       - name: Verify DMG
         run: |
           VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
