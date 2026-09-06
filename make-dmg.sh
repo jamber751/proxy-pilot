@@ -5,8 +5,8 @@
 # (Contents/Resources/bin), получателю не нужны ни brew, ни репозиторий.
 # На машине разработчика приложение по-прежнему берёт CLI из ~/.local/bin
 # (см. порядок кандидатов в app/main.swift).
-set -euo pipefail
 emulate -L zsh
+set -euo pipefail
 
 HERE="${0:A:h}"
 DIST="$HERE/dist"
@@ -102,24 +102,34 @@ ditto "$SRC" "$DST"
 xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
 echo "✓ installed to $DST"
 
-echo -n "Add to Login Items (start at login)? [y/N] "
-read -k1 ans; echo
-if [[ "$ans" == [yY] ]]; then
-  osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/ProxyPilot.app", hidden:true}' >/dev/null \
-    && echo "✓ added to Login Items" \
-    || echo "failed — add it manually: System Settings → General → Login Items"
+# The bridge runs as a CHILD of the app (it inherits the Local Network
+# permission), so without autostart there is simply no proxy after a reboot.
+# This is not an option worth asking about — it is the only working setup.
+# The menu bar has a toggle to turn it off.
+osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/ProxyPilot.app", hidden:true}' >/dev/null 2>&1 \
+  && echo "✓ starts at login (toggle it off in the menu bar)"
+
+# Shell integration, idempotent — the same block install.sh writes.
+RC="$HOME/.zshrc"
+MARK="# >>> proxypilot >>>"
+if ! grep -qF "$MARK" "$RC" 2>/dev/null; then
+  cp "$RC" "$RC.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+  cat >> "$RC" <<'RCBLOCK'
+
+# >>> proxypilot >>>
+# Proxy for the terminal. The address is always 127.0.0.1 — the route is
+# switched with `proxypilot`, clients never need a restart.
+PP="/Applications/ProxyPilot.app/Contents/Resources/bin/proxypilot"
+[[ -x "$PP" ]] && eval "$("$PP" shellenv)"
+# <<< proxypilot <<<
+RCBLOCK
+  echo "✓ shell integration added to ~/.zshrc (backup next to it)"
 fi
 
 open "$DST"
 echo
-echo "Next:"
-echo "  1. Allow local network access when macOS asks."
-echo "  2. In the Settings window that opens, check the proxy addresses and save."
-echo "  3. System Settings → Network → Wi-Fi → Details → Proxies:"
-echo "     HTTP and HTTPS → 127.0.0.1:3129, SOCKS → off."
-echo
-echo "Shell integration (optional):"
-echo '  echo '\''eval "$(/Applications/ProxyPilot.app/Contents/Resources/bin/proxypilot shellenv)"'\'' >> ~/.zshrc'
+echo "Next: allow local network access when macOS asks — that is all."
+echo "The app finds the proxies, sets the system proxy for GUI apps and turns itself on."
 INSTALLER
 chmod +x "$STAGE/Install.command"
 
@@ -128,9 +138,11 @@ cat > "$STAGE/READ_ME_FIRST.txt" <<EOF
 ProxyPilot $VERSION  (Intel + Apple Silicon, macOS 11+)
 
 QUICK PATH:
-  right-click "Install.command" → Open → Open.
-  The script copies the app to Applications, clears quarantine,
-  offers to start it at login and launches ProxyPilot.
+  right-click "Install.command" → Open → Open. That is the whole install.
+  The script copies the app to Applications, clears quarantine, sets it to
+  start at login, wires up the terminal and launches ProxyPilot. The app
+  then finds the proxies on your network, points the system proxy at its
+  own bridge and switches itself on. Nothing else to fill in.
 
   (A plain double-click is blocked by macOS — the app is not signed with an
    Apple certificate. Alternative: drag "Install.command" into a Terminal
@@ -140,12 +152,13 @@ MANUALLY (if you don't trust the script — fair enough, read it first):
   1. Drag ProxyPilot.app into Applications.
   2. Right-click ProxyPilot.app → Open (or Privacy & Security → Open Anyway).
   3. Allow local network access when macOS asks.
-  4. System Settings → Network → Wi-Fi → Details → Proxies:
-     HTTP and HTTPS → 127.0.0.1:3129, SOCKS → off.
-  5. Start at login: System Settings → General → Login Items → "+" → ProxyPilot.
+  4. Turn on "Start at login" in the menu bar — the bridge is a child process
+     of the app, so without it there is no proxy after a reboot.
 
-On first launch the app discovers proxies on the network by itself and opens
-Settings — check the addresses and hit "Save and apply".
+On first launch the app discovers the proxies, points the macOS system proxy
+at its own bridge (every network service at once) and switches itself on. It
+shows you what it found; there is nothing to fill in. To undo the system part:
+"System proxy" in the menu, or run: proxypilot system off
 
 https://github.com/jamber751/proxy-pilot
 EOF
@@ -155,5 +168,6 @@ mkdir -p "$DIST"
 OUT="$DIST/ProxyPilot-$VERSION.dmg"
 rm -f "$OUT"
 hdiutil create -volname "ProxyPilot" -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null
+[[ -s "$OUT" ]] || { print -u2 "hdiutil не создал $OUT"; exit 1 }
 
 print -- "готово: $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' '))"

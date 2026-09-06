@@ -37,6 +37,37 @@ struct State: Decodable {
     let vpn_up: Bool?
     let vpn_auto: Bool?
     let vpn_foreign: Bool?
+    let system_proxy: Bool?
+}
+
+// Автозапуск. SMAppService появился только в macOS 13, а планка у нас 11 —
+// поэтому через System Events, тем же способом, что и установщик из DMG.
+// Без автозапуска после перезагрузки нет моста: gost живёт дочерним процессом
+// этого приложения (см. шапку файла), так что «выключено» = сломанная машина.
+enum LoginItem {
+    private static func osa(_ script: String) -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        let pipe = Pipe()
+        proc.standardOutput = pipe; proc.standardError = Pipe()
+        do { try proc.run() } catch { return "" }
+        let d = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return String(data: d, encoding: .utf8) ?? ""
+    }
+    static func enabled() -> Bool {
+        osa("tell application \"System Events\" to get the name of every login item")
+            .contains("ProxyPilot")
+    }
+    static func set(_ on: Bool) {
+        if on {
+            let path = Bundle.main.bundlePath
+            _ = osa("tell application \"System Events\" to make login item at end with properties {path:\"\(path)\", hidden:true}")
+        } else {
+            _ = osa("tell application \"System Events\" to delete login item \"ProxyPilot\"")
+        }
+    }
 }
 
 enum CLI {
@@ -150,13 +181,20 @@ final class ConfigStore: ObservableObject {
     @Published var gateways = ""
 
     // сетевой профиль
-    @Published var netService = "Wi-Fi"
+    // Пусто — и CLI выведет сам: сервис по дефолтному маршруту, маску с
+    // интерфейса. Прежние значения "Wi-Fi" и "255.255.255.0" сохранение
+    // записывало в конфиг, заново прибивая то, что должно определяться.
+    @Published var netService = ""
     @Published var officeIP = ""
-    @Published var officeMask = "255.255.255.0"
+    @Published var officeMask = ""
     @Published var officeDNS = ""
     @Published var vpnProfile = ""
     @Published var vpnRoutes = ""
     @Published var vpnAuto = false
+
+    // Тумблеры не ждут «Сохранить»: это не поля конфига, а состояние системы.
+    @Published var systemProxyOn = false
+    @Published var loginItemOn = false
 
     @Published var socksProbe: Probe = .unknown
     @Published var httpProbe: Probe = .unknown
@@ -192,6 +230,7 @@ final class ConfigStore: ObservableObject {
             default: break
             }
         }
+        savedFields = fields
     }
 
     static func unquote(_ s: String) -> String {
@@ -230,6 +269,52 @@ final class ConfigStore: ObservableObject {
     }
     // При статике DNS от DHCP не приедут — пустое поле оставит резолвер как был.
     var officeDNSMissing: Bool { !officeIP.isEmpty && officeDNS.isEmpty }
+
+    func refreshSwitches() {
+        DispatchQueue.global().async {
+            let sp = CLI.state()?.system_proxy == true
+            let li = LoginItem.enabled()
+            DispatchQueue.main.async { self.systemProxyOn = sp; self.loginItemOn = li }
+        }
+    }
+    func setSystemProxy(_ on: Bool) {
+        systemProxyOn = on
+        DispatchQueue.global().async {
+            CLI.run(["system", on ? "on" : "off"])
+            let now = CLI.state()?.system_proxy == true
+            DispatchQueue.main.async { self.systemProxyOn = now }
+        }
+    }
+    func setLoginItem(_ on: Bool) {
+        loginItemOn = on
+        DispatchQueue.global().async {
+            LoginItem.set(on)
+            let now = LoginItem.enabled()
+            DispatchQueue.main.async { self.loginItemOn = now }
+        }
+    }
+    func setVpnAuto(_ on: Bool) {
+        vpnAuto = on
+        DispatchQueue.global().async { CLI.run(["vpn", "auto", on ? "on" : "off"]) }
+    }
+
+    // Профиль кладут перетаскиванием: путь к .ovpn руками не набирают.
+    // Сразу за приёмом собираем split-tunnel — иначе файл лежал бы без дела.
+    func adoptOVPN(_ path: String, completion: @escaping () -> Void) {
+        vpnProfile = path
+        busy = true; message = "Принимаю профиль и собираю туннель…"
+        DispatchQueue.global().async {
+            CLI.run(["set", "VPN_PROFILE", path])
+            let out = stripANSI(CLI.runAdmin(["vpn", "install"]))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.busy = false
+                self.message = out.isEmpty ? "Туннель собран." : out
+                self.load()
+                completion()
+            }
+        }
+    }
 
     func probeAll() {
         probe(\.socksProbe, socks)
@@ -276,21 +361,46 @@ final class ConfigStore: ObservableObject {
         }
     }
 
-    // сохранить через CLI set + перезапустить мост в сохранённом режиме
+    // Снимок значений, прочитанных из файла: с ним сравниваем при сохранении.
+    private var savedFields: [String: String] = [:]
+    private var fields: [String: String] {
+        ["SOCKS_UPSTREAM": socks, "HTTP_UPSTREAM": http,
+         "BRIDGE_PORT": port, "OFFICE_GATEWAYS": gateways,
+         "NET_SERVICE": netService, "OFFICE_IP": officeIP,
+         "OFFICE_MASK": officeMask, "OFFICE_DNS": officeDNS,
+         "VPN_PROFILE": vpnProfile, "VPN_ROUTES": vpnRoutes,
+         "VPN_AUTO": vpnAuto ? "on" : "off"]
+    }
+
+    // сохранить через CLI set; мост трогаем, только если поменялось то, что на него влияет
     func save(mode: String, completion: @escaping () -> Void) {
-        busy = true; message = "Сохраняю и перезапускаю мост…"
-        let fields = [("SOCKS_UPSTREAM", socks), ("HTTP_UPSTREAM", http),
-                      ("BRIDGE_PORT", port), ("OFFICE_GATEWAYS", gateways),
-                      ("NET_SERVICE", netService), ("OFFICE_IP", officeIP),
-                      ("OFFICE_MASK", officeMask), ("OFFICE_DNS", officeDNS),
-                      ("VPN_PROFILE", vpnProfile), ("VPN_ROUTES", vpnRoutes),
-                      ("VPN_AUTO", vpnAuto ? "on" : "off")]
+        let now = fields
+        let changed = now.filter { savedFields[$0.key] != $0.value }
+        guard !changed.isEmpty else {
+            message = "Ничего не изменилось."
+            completion()
+            return
+        }
+        // Раньше «Сохранить» всегда звал switch, а это stop_bridge + start_bridge:
+        // открыл настройки посмотреть, нажал кнопку — и живые соединения оборваны.
+        let restartKeys: Set<String> = ["SOCKS_UPSTREAM", "HTTP_UPSTREAM", "BRIDGE_PORT"]
+        let needsRestart = !restartKeys.isDisjoint(with: changed.keys)
+        busy = true
+        message = needsRestart ? "Сохраняю и перезапускаю мост…" : "Сохраняю…"
         DispatchQueue.global().async {
-            for (k, v) in fields { CLI.run(["set", k, v]) }
-            CLI.run([mode])   // switch: остановит и поднимет мост с новыми апстримами
+            // состояние системного прокси снимаем ДО правок: после смены порта
+            // json сравнивал бы старый порт в системе с новым в конфиге
+            let sysWasOn = CLI.state()?.system_proxy == true
+            for (k, v) in changed { CLI.run(["set", k, v]) }
+            if needsRestart {
+                CLI.run([mode])
+                // порт мог смениться — системный прокси должен смотреть на новый
+                if sysWasOn { CLI.run(["system", "on"]) }
+            }
             DispatchQueue.main.async {
+                self.savedFields = now
                 self.busy = false
-                self.message = "Готово — мост перезапущен."
+                self.message = needsRestart ? "Готово — мост перезапущен." : "Готово."
                 self.probeAll()
                 completion()
             }
@@ -327,105 +437,157 @@ struct HintField: View {
     }
 }
 
+// Зона приёма .ovpn. Путь к профилю руками не набирают — его перетаскивают.
+struct DropZone: View {
+    let current: String
+    let targeted: Bool
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                .foregroundColor(targeted ? Color.accentColor : Color.gray.opacity(0.45))
+            if current.isEmpty {
+                Text("Перетащи сюда файл .ovpn")
+                    .font(.callout).foregroundColor(.secondary)
+            } else {
+                VStack(spacing: 2) {
+                    Text((current as NSString).lastPathComponent).font(.callout)
+                    Text("перетащи другой, чтобы заменить")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+        }
+        .frame(height: 62)
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var store: ConfigStore
     let currentMode: () -> String
     let onApplied: () -> Void
 
-    // содержимое формы отдельно: обёртку выбираем по версии системы
+    // Всё, что можно вывести, выведено: адреса прокси, порт, префиксы шлюзов,
+    // сетевой сервис, маска, DNS. Здесь остаётся то, что вывести нельзя —
+    // офисный адрес выдают, а профиль приносят файлом.
+    @SwiftUI.State private var showAdvanced = false
+    @SwiftUI.State private var dropTargeted = false
+
     @ViewBuilder private var fields: some View {
         Section {
             HStack {
-                HintField(title: "SOCKS5 (быстрый)", text: $store.socks,
-                          hint: "192.168.1.2:9999")
+                Text("SOCKS5").frame(width: 70, alignment: .leading)
+                Text(store.socks.isEmpty ? "не найден" : store.socks)
+                    .foregroundColor(store.socks.isEmpty ? .secondary : .primary)
+                Spacer()
                 ProbeDot(state: store.socksProbe)
             }
             HStack {
-                HintField(title: "HTTP (запасной)", text: $store.http,
-                          hint: "192.168.1.2:3128")
+                Text("HTTP").frame(width: 70, alignment: .leading)
+                Text(store.http.isEmpty ? "не найден" : store.http)
+                    .foregroundColor(store.http.isEmpty ? .secondary : .primary)
+                Spacer()
                 ProbeDot(state: store.httpProbe)
             }
         } header: {
-            Text("Реальные прокси (апстримы)")
+            Text("Прокси — найдены сами")
         } footer: {
-            Text("host:port. Пустое поле выключает режим. Хотя бы один должен быть задан.")
+            Text("Мост слушает 127.0.0.1:\(store.port), и клиенты всегда ходят на него. Адреса, порт и префиксы офисных шлюзов правятся в «Дополнительно».")
                 .font(.caption).foregroundColor(.secondary)
         }
 
         Section {
-            TextField("Порт моста", text: $store.port)
-            HintField(title: "Шлюзы офиса (префиксы)", text: $store.gateways,
-                      hint: "192.168.1.")
+            Toggle("Системный прокси — браузер и остальные GUI", isOn: Binding(
+                get: { store.systemProxyOn }, set: { store.setSystemProxy($0) }))
+            Toggle("Запускать при входе", isOn: Binding(
+                get: { store.loginItemOn }, set: { store.setLoginItem($0) }))
         } header: {
-            Text("Мост и авторежим")
+            Text("Переключатели")
         } footer: {
-            Text("Клиенты всегда ходят на http://127.0.0.1:\(store.port). Если менять порт — обнови системный прокси и shellenv. «Авто» включает прокси, когда шлюз сети начинается с одного из префиксов (через запятую).")
+            Text("Оба действуют сразу, «Сохранить» для них не нужен. Без автозапуска после перезагрузки моста не будет: он живёт дочерним процессом приложения.")
                 .font(.caption).foregroundColor(.secondary)
         }
 
         Section {
-            HintField(title: "Сетевой сервис", text: $store.netService, hint: "Wi-Fi")
             HintField(title: "Адрес в офисе", text: $store.officeIP,
-                      hint: "из офисной подсети; пусто — адрес не менять")
+                      hint: "пусто — адресом не управляем")
             if store.officeIPMismatch {
-                Text("Этот адрес не из офисной подсети (\(store.gateways)) — в офисе он не поднимется.")
-                    .font(.caption).foregroundColor(.orange)
-            }
-            HintField(title: "Маска", text: $store.officeMask, hint: "255.255.255.0")
-            HintField(title: "DNS в офисе", text: $store.officeDNS,
-                      hint: "офисный первым, потом запасной")
-            if store.officeDNSMissing {
-                Text("Без DNS резолвер в офисе останется прежним: при статике адреса от DHCP не приходят.")
+                Text("Адрес не из офисной подсети (\(store.gateways)) — там он не поднимется.")
                     .font(.caption).foregroundColor(.orange)
             }
             HStack {
                 Button("Применить сейчас") {
                     store.admin(["net", "apply"], note: "Применяю профиль…") { onApplied() }
                 }
-                Button("Ставить автоматически") {
+                .disabled(store.officeIP.isEmpty)
+                Button("Применять автоматически") {
                     store.admin(["net", "install"], note: "Ставлю демон профиля…") { onApplied() }
                 }
-                .help("Профиль будет применяться сам при каждой смене сети")
+                .disabled(store.officeIP.isEmpty)
                 Spacer()
             }
         } header: {
-            Text("Профиль сети (офис / не офис)")
+            Text("Офисный адрес")
         } footer: {
-            Text("В офисе выставляется этот адрес и эти DNS, в любой другой сети — DHCP. Офис определяется по префиксам выше, но строго: шлюз должен отвечать за физическим интерфейсом, иначе поднятый VPN сошёл бы за офис. Пустой адрес — сетью не управляем. Требует пароль администратора: смена IP в macOS доступна только root.")
+            Text("Единственное, что нельзя угадать: фиксированный адрес выдают вам. Маску, сетевой сервис и офисные DNS приложение определяет само. Пусто — сетью не управляем, везде DHCP. Требует пароль администратора.")
                 .font(.caption).foregroundColor(.secondary)
         }
 
         Section {
-            HintField(title: "Профиль .ovpn", text: $store.vpnProfile,
-                      hint: "~/Library/…/OpenVPN Connect/profiles/office.ovpn")
-            HintField(title: "В туннель", text: $store.vpnRoutes,
-                      hint: "192.168.0.0/16 — пусто: /16 вокруг офиса")
-            Toggle("Поднимать вне офиса, гасить в офисе", isOn: $store.vpnAuto)
-            HStack {
-                Button("Собрать туннель") {
-                    store.admin(["vpn", "install"], note: "Собираю split-tunnel…") { onApplied() }
+            DropZone(current: store.vpnProfile, targeted: dropTargeted)
+                .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { providers in
+                    guard let p = providers.first else { return false }
+                    p.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                        guard let d = item as? Data,
+                              let url = URL(dataRepresentation: d, relativeTo: nil),
+                              url.pathExtension.lowercased() == "ovpn" else { return }
+                        DispatchQueue.main.async { store.adoptOVPN(url.path) { onApplied() } }
+                    }
+                    return true
                 }
+            Toggle("Поднимать вне офиса, гасить в офисе", isOn: Binding(
+                get: { store.vpnAuto }, set: { store.setVpnAuto($0) }))
                 .disabled(store.vpnProfile.isEmpty)
+            HStack {
                 Button("Поднять") {
                     store.admin(["vpn", "up"], note: "Поднимаю туннель…") { onApplied() }
                 }
+                .disabled(store.vpnProfile.isEmpty)
                 Button("Опустить") {
                     store.admin(["vpn", "down"], note: "Опускаю туннель…") { onApplied() }
                 }
+                .disabled(store.vpnProfile.isEmpty)
                 Spacer()
             }
         } header: {
-            Text("Туннель (VPN) — по желанию")
+            Text("Туннель — по желанию")
         } footer: {
-            Text("Из профиля собирается конфиг со split-tunnel: сервер обычно пушит redirect-gateway, и тогда через офис идёт весь трафик, включая видео. Мы от его маршрута отказываемся и заворачиваем только офисные сети. Профиль копируется под root с правами 600 — внутри приватный ключ. Тумблер можно держать выключенным и поднимать туннель вручную.")
+            Text("Из профиля собирается конфиг со split-tunnel: в туннель уходят только офисные сети, а не весь трафик. Маршруты выводятся из офисной подсети. Файл копируется под root с правами 600 — внутри приватный ключ.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+
+        Section {
+            DisclosureGroup("Дополнительно", isExpanded: $showAdvanced) {
+                HintField(title: "SOCKS5", text: $store.socks, hint: "192.168.1.2:9999")
+                HintField(title: "HTTP", text: $store.http, hint: "192.168.1.2:3128")
+                TextField("Порт моста", text: $store.port)
+                HintField(title: "Шлюзы офиса", text: $store.gateways, hint: "192.168.1.")
+                HintField(title: "Сетевой сервис", text: $store.netService,
+                          hint: "пусто — по дефолтному маршруту")
+                HintField(title: "Маска", text: $store.officeMask,
+                          hint: "пусто — как на интерфейсе")
+                HintField(title: "DNS в офисе", text: $store.officeDNS,
+                          hint: "пусто — как выдал роутер при поиске")
+                HintField(title: "В туннель", text: $store.vpnRoutes,
+                          hint: "пусто — /16 вокруг офиса")
+            }
+        } footer: {
+            Text("Заполненные значения перекрывают автоопределение. Порт менять не стоит: на него смотрят системный прокси и shellenv.")
                 .font(.caption).foregroundColor(.secondary)
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // .formStyle(.grouped) — macOS 13+; на 11–12 Form и так рисуется
-            // сгруппированной, отличий по виду почти нет
             if #available(macOS 13.0, *) {
                 Form { fields }.formStyle(.grouped)
             } else {
@@ -437,12 +599,12 @@ struct SettingsView: View {
                 Button {
                     store.detect { onApplied() }
                 } label: {
-                    Label("Найти в сети", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("Найти заново", systemImage: "antenna.radiowaves.left.and.right")
                 }
                 Button("Проверить") { store.probeAll() }
                 Spacer()
                 if store.busy { ProgressView().controlSize(.small) }
-                Button("Сохранить и применить") {
+                Button("Сохранить") {
                     store.save(mode: currentMode()) { onApplied() }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -455,7 +617,6 @@ struct SettingsView: View {
                     .font(.caption).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.bottom, 8)
-                // выделение текста мышью — macOS 12+; на Big Sur просто без него
                 if #available(macOS 12.0, *) {
                     msg.textSelection(.enabled)
                 } else {
@@ -463,8 +624,12 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(width: 470, height: 560)
-        .onAppear { store.load(); store.probeAll() }
+        .frame(width: 470, height: 700)
+        .onAppear {
+            store.load()
+            store.probeAll()
+            store.refreshSwitches()
+        }
     }
 }
 
@@ -474,6 +639,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var state: State?
     private var busy = false
+    private var loginItemOn = false
     private var napBlocker: NSObjectProtocol?
     private let store = ConfigStore()
     private var settingsWC: NSWindowController?
@@ -515,12 +681,25 @@ final class App: NSObject, NSApplicationDelegate {
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "опрос состояния прокси")
 
-        // первый запуск без конфига: сами находим прокси и открываем настройки
+        // Первый запуск без конфига: detect сам находит прокси, пишет конфиг и
+        // выставляет системный прокси. Раньше следом открывалась форма на 11
+        // полей, и пользователь жал «Сохранить» те же самые значения — шаг был
+        // ритуальный. Теперь просто включаемся; форму показываем, только когда
+        // искать было нечего.
         if CLI.state()?.configured != true {
             log("нет конфига — запускаю автопоиск")
             store.detect { [weak self] in
-                self?.openSettings()
-                self?.refresh()
+                guard let self = self else { return }
+                if let st = CLI.state(), st.configured {
+                    DispatchQueue.global().async {
+                        CLI.run(["auto"])
+                        DispatchQueue.main.async { self.refresh() }
+                    }
+                    self.firstRunSummary(st)
+                } else {
+                    self.openSettings()
+                }
+                self.refresh()
             }
         } else {
             // поднять мост в сохранённом режиме; gost — дочерний процесс app
@@ -530,11 +709,33 @@ final class App: NSObject, NSApplicationDelegate {
             }
         }
 
+        DispatchQueue.global().async {
+            let on = LoginItem.enabled()
+            DispatchQueue.main.async { self.loginItemOn = on }
+        }
+
         // .common, а не дефолтный режим: иначе таймер замирает при открытом меню
         let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
         refresh()
+    }
+
+    // Единственное, что пользователь видит после установки: что нашлось и что
+    // включилось. Одна кнопка вместо формы на 11 полей.
+    private func firstRunSummary(_ s: State) {
+        var lines: [String] = []
+        if !s.socks.isEmpty { lines.append("SOCKS5: \(s.socks)") }
+        if !s.http.isEmpty  { lines.append("HTTP: \(s.http)") }
+        lines.append("Мост: 127.0.0.1:\(s.port)")
+        if s.system_proxy == true { lines.append("Системный прокси: включён") }
+        let a = NSAlert()
+        a.messageText = "ProxyPilot настроен"
+        a.informativeText = lines.joined(separator: "\n")
+            + "\n\nРежим «Авто» — путь выбирается по сети. Всё остальное в меню-баре."
+        a.addButton(withTitle: "Готово")
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
     }
 
     // ── обновление состояния ─────────────────────────────────────────────────
@@ -713,6 +914,18 @@ final class App: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Диагностика…", symbol: "stethoscope", action: #selector(doctor), key: "d"))
         menu.addItem(menuItem("Скопировать адрес прокси", symbol: "doc.on.doc", action: #selector(copyAddr), key: "c"))
         menu.addItem(.separator())
+        // Системный прокси — то, ради чего раньше ходили в System Settings.
+        // Держим тумблером: включается само при detect, но выключить надо уметь.
+        let sysItem = menuItem("Системный прокси (браузер и GUI)", symbol: "globe",
+                               action: #selector(toggleSystemProxy))
+        sysItem.state = (s.system_proxy == true) ? .on : .off
+        menu.addItem(sysItem)
+        // Без автозапуска после перезагрузки нет моста: gost — дочерний процесс
+        // этого приложения. Поэтому тумблер, а не «поставьте сами в Login Items».
+        let loginMI = menuItem("Запускать при входе", symbol: "power.circle",
+                               action: #selector(toggleLoginItem))
+        loginMI.state = loginItemOn ? .on : .off
+        menu.addItem(loginMI)
         menu.addItem(menuItem("Найти прокси в сети", symbol: "antenna.radiowaves.left.and.right", action: #selector(detectAction)))
         menu.addItem(menuItem("Настройки…", symbol: "gearshape", action: #selector(openSettingsAction), key: ","))
         menu.addItem(.separator())
@@ -788,6 +1001,27 @@ final class App: NSObject, NSApplicationDelegate {
                 self.busy = false; self.refresh()
                 self.show("Туннель", out.isEmpty ? "Готово." : out)
             }
+        }
+    }
+
+    // networksetup правит системный прокси без root — диалог пароля не нужен.
+    @objc private func toggleSystemProxy() {
+        guard let s = state else { return }
+        let on = s.system_proxy == true
+        busy = true; render()
+        DispatchQueue.global().async {
+            let out = stripANSI(CLI.run(["system", on ? "off" : "on"]))
+            log("system \(on ? "off" : "on"): \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+            DispatchQueue.main.async { self.busy = false; self.refresh() }
+        }
+    }
+
+    @objc private func toggleLoginItem() {
+        let on = loginItemOn
+        DispatchQueue.global().async {
+            LoginItem.set(!on)
+            let now = LoginItem.enabled()
+            DispatchQueue.main.async { self.loginItemOn = now; self.render() }
         }
     }
 

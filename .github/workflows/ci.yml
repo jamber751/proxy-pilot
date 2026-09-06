@@ -15,7 +15,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          for f in bin/proxypilot install.sh make-dmg.sh; do
+          for f in bin/proxypilot install.sh make-dmg.sh app/build.sh; do
             zsh -n "$f" && echo "  ok  $f"
           done
 
@@ -61,6 +61,12 @@ jobs:
           ./bin/proxypilot set OFFICE_DNS "1.1.1.1 8.8.8.8"
           grep -q 'OFFICE_DNS="1.1.1.1 8.8.8.8"' "${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config" \
             && echo "  ok  список DNS сохранён в кавычках"
+          # системный прокси: status обязан отработать без root и без настроек,
+          # а неизвестный подкоманд — не проходить молча
+          ./bin/proxypilot system status >/dev/null && echo "  ok  system status"
+          ./bin/proxypilot system wat && exit 1 || echo "  ok  system отвергает мусор"
+          ./bin/proxypilot json | grep -q '"system_proxy"' \
+            && echo "  ok  json отдаёт состояние системного прокси"
           # detect переписывает конфиг, но сетевой профиль и туннель обязан переносить,
           # а OFFICE_GATEWAYS (определение офиса) — не подменять текущей сетью: иначе
           # демон перестаёт управлять адресом или, хуже, ставит офисную статику дома.
@@ -76,7 +82,9 @@ jobs:
           touch /tmp/pp-fake.ovpn
           ./bin/proxypilot set VPN_PROFILE /tmp/pp-fake.ovpn
           ./bin/proxypilot set VPN_AUTO on
-          ./bin/proxypilot detect >/dev/null
+          # detect в конце включает системный прокси (cmd_system on) — на раннере это может
+          # не пройти, поэтому код возврата не важен: ниже проверяем сам конфиг.
+          ./bin/proxypilot detect >/dev/null 2>&1 || true
           kill "$HTTPD" 2>/dev/null || true
           CFG="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config"
           grep -qF "Создан 'proxypilot detect'" "$CFG" || { echo "FAIL: detect не переписал конфиг"; exit 1; }

@@ -58,20 +58,31 @@ no terminal.
 
 Everything lives in the menu bar icon, which shows the active route (⚡ SOCKS5 ·
 🐢 HTTP · ⇢ direct). Click to switch routes, benchmark, run diagnostics or open
-**Settings (⌘,)** — proxy addresses with live reachability dots, bridge port,
-office gateway prefixes, all with a "Find on network" button that discovers
-proxies for you. On first launch it does that automatically.
+**Settings (⌘,)** — deliberately small. The proxies it found are shown, not
+asked for. Two switches act immediately (system proxy, start at login). Then
+the only two things nobody can derive for you: the fixed **office address**, if
+your workplace hands one out, and the **.ovpn profile** — dropped onto the
+window, which builds the split-tunnel on the spot. Everything else — bridge
+port, gateway prefixes, network service, netmask, office DNS, tunnel routes —
+is worked out for you and lives under "Дополнительно" for the rare override.
 
-For GUI apps set the system proxy once — **System Settings → Network → Wi-Fi →
-Details → Proxies** → HTTP and HTTPS to `127.0.0.1:3129`, SOCKS **off**. After
-that you never touch it again; the address is constant.
+There is nothing to fill in on the first launch. The app finds the proxies,
+points the macOS system proxy at its own bridge — every network service at
+once, SOCKS off, bypass list included — turns on `auto` and tells you what it
+found. GUI apps are covered from that moment on; the address is constant, so
+it stays correct when the route changes.
+
+Both switches live in the menu: **System proxy** and **Start at login** (the
+bridge is a child process of the app, so without autostart there is no proxy
+after a reboot). From the terminal: `proxypilot system on|off|status`.
 
 <details>
 <summary><b>CLI</b> — same thing from the terminal</summary>
 
 | Command | What it does |
 |---|---|
-| `proxypilot detect` | find proxies on this network, write a config (network-profile and VPN keys are carried over) |
+| `proxypilot detect` | find proxies, write a config (network-profile and VPN keys are carried over), set the system proxy, turn on |
+| `proxypilot system on\|off\|status` | macOS system proxy on every network service |
 | `proxypilot bench` | compare routes: direct / http / socks5 |
 | `proxypilot status` · `doctor` | current state · diagnose problems |
 | `proxypilot socks` · `http` · `direct` · `auto` | switch route |
