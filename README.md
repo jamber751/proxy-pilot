@@ -71,7 +71,7 @@ that you never touch it again; the address is constant.
 
 | Command | What it does |
 |---|---|
-| `proxypilot detect` | find proxies on this network, write a config |
+| `proxypilot detect` | find proxies on this network, write a config (network-profile and VPN keys are carried over) |
 | `proxypilot bench` | compare routes: direct / http / socks5 |
 | `proxypilot status` · `doctor` | current state · diagnose problems |
 | `proxypilot socks` · `http` · `direct` · `auto` | switch route |

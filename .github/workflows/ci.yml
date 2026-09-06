@@ -61,6 +61,32 @@ jobs:
           ./bin/proxypilot set OFFICE_DNS "1.1.1.1 8.8.8.8"
           grep -q 'OFFICE_DNS="1.1.1.1 8.8.8.8"' "${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config" \
             && echo "  ok  список DNS сохранён в кавычках"
+          # detect переписывает конфиг, но сетевой профиль и туннель обязан переносить,
+          # а OFFICE_GATEWAYS (определение офиса) — не подменять текущей сетью: иначе
+          # демон перестаёт управлять адресом или, хуже, ставит офисную статику дома.
+          # Прокси для detect подсовываем сами: HTTP-листенер на адресе раннера
+          # (loopback detect не берёт — защита от петли на собственный мост); отдаёт пустой каталог.
+          IF=$(route -n get default | awk '/interface:/{print $2; exit}')
+          MYIP=$(ipconfig getifaddr "$IF" || ifconfig "$IF" | awk '/inet /{print $2; exit}')
+          python3 -m http.server 8080 --bind "$MYIP" --directory "$(mktemp -d)" >/dev/null 2>&1 &
+          HTTPD=$!; sleep 1; kill -0 "$HTTPD" || { echo "FAIL: тестовый HTTP-листенер не поднялся на $MYIP:8080"; exit 1; }
+          ./bin/proxypilot set HTTP_UPSTREAM "$MYIP:8080"
+          ./bin/proxypilot set OFFICE_GATEWAYS 192.168.8.
+          ./bin/proxypilot set OFFICE_IP 192.168.8.246
+          touch /tmp/pp-fake.ovpn
+          ./bin/proxypilot set VPN_PROFILE /tmp/pp-fake.ovpn
+          ./bin/proxypilot set VPN_AUTO on
+          ./bin/proxypilot detect >/dev/null
+          kill "$HTTPD" 2>/dev/null || true
+          CFG="${XDG_CONFIG_HOME:-$HOME/.config}/proxypilot/config"
+          grep -qF "Создан 'proxypilot detect'" "$CFG" || { echo "FAIL: detect не переписал конфиг"; exit 1; }
+          grep -qF "HTTP_UPSTREAM=$MYIP:8080" "$CFG" || { echo "FAIL: detect не нашёл тестовый прокси"; exit 1; }
+          grep -qxF 'OFFICE_GATEWAYS=192.168.8.' "$CFG" || { echo "FAIL: detect подменил OFFICE_GATEWAYS: $(grep ^OFFICE_GATEWAYS= "$CFG")"; exit 1; }
+          grep -qxF 'OFFICE_IP=192.168.8.246' "$CFG" && grep -qxF 'VPN_PROFILE=/tmp/pp-fake.ovpn' "$CFG" \
+            && grep -qxF 'VPN_AUTO=on' "$CFG" && grep -qxF 'OFFICE_DNS="1.1.1.1 8.8.8.8"' "$CFG" \
+            && echo "  ok  detect переносит сетевой профиль, туннель и OFFICE_GATEWAYS" || { echo "FAIL: detect потерял сетевой профиль"; exit 1; }
+          # чистые функции: разбор ARP, квотирование конфига
+          ./bin/proxypilot selftest
 
   app:
     name: App (universal)
