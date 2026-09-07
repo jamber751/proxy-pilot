@@ -1,0 +1,170 @@
+"""Server side of the readiness handshake: real processes on both ends.
+
+The helper fixture runs the production listener; the client is the readiness
+probe. Both are separate signed processes over a local socket in a disposable
+directory. Unprivileged only: no root helper, no launchd, no VPN operation.
+"""
+import hashlib
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+HELPER = ROOT / 'app/vpn-helper'
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
+class VPNHelperListenerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if os.geteuid() == 0:
+            raise unittest.SkipTest('Never run the listener fixture as root')
+        cls.build = tempfile.TemporaryDirectory(prefix='pp-lis-build-', dir='/tmp')
+        cls.addClassCleanup(cls.build.cleanup)
+        cls.work = Path(cls.build.name)
+        for name, sources, flags in [
+            ('service', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
+                         'VPNReleaseStore.swift', 'VPNHelperListener.swift'], []),
+            # The probe's normal build demands a root server, which no test may
+            # run: only the client side uses the narrow test-policy seam here.
+            ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift'],
+             ['-D', 'VPN_HELPER_READINESS_TESTING']),
+        ]:
+            main = 'vpn_helper_service.swift' if name == 'service' else 'vpn_readiness_checks.swift'
+            files = [HELPER / source for source in sources] + [ROOT / 'tests' / main]
+            slices = []
+            for arch in ('arm64', 'x86_64'):
+                output = cls.work / f'{name}-{arch}'
+                cls.command(['swiftc', *flags, '-target', f'{arch}-apple-macosx11.0', *map(str, files), '-o', str(output)])
+                slices.append(str(output))
+            cls.command(['lipo', '-create', *slices, '-output', str(cls.work / name)])
+        shutil.copyfile(cls.work / 'client', cls.work / 'stranger')
+        (cls.work / 'service').chmod(0o700)
+        (cls.work / 'stranger').chmod(0o700)
+        cls.pins = {}
+        for name, identifier in [('service', 'kz.documentolog.proxypilot.vpn-helper'),
+                                 ('client', 'kz.documentolog.proxypilot'),
+                                 ('stranger', 'kz.documentolog.proxypilot.other')]:
+            cls.command(['codesign', '--force', '--sign', '-', '--identifier', identifier,
+                         '--options', 'runtime,hard,kill', str(cls.work / name)])
+            cls.pins[name] = {}
+            for arch in ('arm64', 'x86_64'):
+                result = cls.command(['codesign', '-d', '--verbose=4', '--arch', arch, str(cls.work / name)])
+                cls.pins[name][arch] = re.search(r'^CDHash=([a-f0-9]{40})$', result.stderr, re.M).group(1)
+
+    @staticmethod
+    def command(args):
+        result = subprocess.run(args, capture_output=True, text=True, timeout=180)
+        if result.returncode:
+            raise AssertionError(' '.join(map(str, args)) + '\n' + result.stdout + result.stderr)
+        return result
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='pp-lis-', dir='/tmp')
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.storage = self.base / 'store'
+        self.storage.mkdir(mode=0o700)
+        self.endpoint = self.storage / 'helper.sock'
+
+    def seed(self, sequence=10, application='client'):
+        artifact = (self.work / 'service').read_bytes()
+        fields = {'format': 1, 'product': 'kz.documentolog.proxypilot', 'sequence': sequence,
+                  'version': '1.6.0', 'protocol': 1,
+                  'app-arm64': self.pins[application]['arm64'], 'app-x86_64': self.pins[application]['x86_64'],
+                  'helper-arm64': self.pins['service']['arm64'], 'helper-x86_64': self.pins['service']['x86_64'],
+                  'helper-sha256': hashlib.sha256(artifact).hexdigest(), 'helper-bytes': len(artifact)}
+        manifest, candidate = self.base / 'manifest', self.base / 'candidate'
+        manifest.write_text(''.join(f'{key}={value}\n' for key, value in fields.items()))
+        candidate.write_bytes(artifact)
+        result = subprocess.run([str(self.work / 'service'), 'seed', str(self.storage), str(manifest), str(candidate)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.stdout.strip(), f'selected:{sequence}', result.stdout + result.stderr)
+
+    def serve(self, ready=True):
+        arguments = [str(self.work / 'service'), 'serve', str(self.storage)] + ([] if ready else ['not-ready'])
+        service = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(service.stdout.close)
+        self.addCleanup(service.wait, 30)
+        self.addCleanup(service.kill)
+        # Never read a live process's stderr here: it would block until exit.
+        self.assertEqual(service.stdout.readline().strip(), 'listening')
+        return service
+
+    def probe(self, client='client', timeout=2000):
+        result = subprocess.run([str(self.work / client), 'probe', str(self.endpoint),
+                                 self.pins['service']['arm64'], str(timeout)],
+                                capture_output=True, text=True, timeout=60)
+        return result.stdout.strip()
+
+    def test_authenticated_client_receives_a_receipt(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.probe(), 'ready:10 closed')
+
+    def test_sequential_clients_are_each_served(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.probe(), 'ready:10 closed')
+        self.assertEqual(self.probe(), 'ready:10 closed')
+
+    def test_client_with_another_identity_is_refused(self):
+        self.seed()
+        self.serve()
+        self.assertIn('rejected:', self.probe(client='stranger'))
+        # The refused peer costs one connection; the listener keeps serving.
+        self.assertEqual(self.probe(), 'ready:10 closed')
+
+    def test_client_outside_the_release_pins_is_refused(self):
+        self.seed(application='stranger')
+        self.serve()
+        self.assertIn('rejected:', self.probe())
+
+    def test_helper_that_is_not_ready_answers_nothing(self):
+        self.seed()
+        self.serve(ready=False)
+        self.assertIn('rejected:', self.probe())
+
+    def test_challenge_for_another_release_is_refused(self):
+        self.seed(sequence=11)
+        self.serve()
+        self.assertIn('rejected:', self.probe())
+
+    def test_endpoint_is_private_to_its_owner(self):
+        self.seed()
+        self.serve()
+        self.assertTrue(self.endpoint.is_socket())
+        self.assertEqual(self.endpoint.stat().st_mode & 0o7777, 0o600)
+        self.assertEqual(self.endpoint.stat().st_uid, os.geteuid())
+
+    def test_an_existing_endpoint_is_never_stolen(self):
+        self.seed()
+        self.endpoint.write_bytes(b'')
+        result = subprocess.run([str(self.work / 'service'), 'serve', str(self.storage)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 71, result.stdout + result.stderr)
+        self.assertIn('unavailable', result.stderr)
+        self.assertFalse(self.endpoint.is_socket())
+
+    def test_shared_storage_directory_is_refused(self):
+        self.seed()
+        self.storage.chmod(0o755)
+        result = subprocess.run([str(self.work / 'service'), 'serve', str(self.storage)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 71, result.stdout + result.stderr)
+        self.assertFalse(self.endpoint.exists())
+
+    def test_a_silent_client_does_not_block_the_next_one(self):
+        self.seed()
+        self.serve()
+        silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(silent.close)
+        silent.connect(str(self.endpoint))
+        # The listener spends only its own deadline on this peer, then moves on.
+        self.assertEqual(self.probe(timeout=5000), 'ready:10 closed')

@@ -45,8 +45,9 @@ not silently accept every later binary with the same identifier.
    hardened and move Sparkle to an **unprivileged updater worker**. The worker
    must never be a proxy for privileged VPN commands. Production migration,
    update UI/preferences, shutdown, cancellation and install/relaunch are pending.
-3. Integrate the helper-to-client identity/readiness gate below; provision the fixed socket securely
-   under root-owned parents, with restricted permissions and close-on-exec.
+3. The helper-to-client identity/readiness gate below is now integrated on both
+   ends, with the endpoint created privately under the protected directory and
+   close-on-exec descriptors, but only between unprivileged processes.
    Protect descriptor lifetime against concurrent close/reuse. This gate
    identifies the original connector, not recipients of a passed descriptor.
    A production transport must explicitly account for descriptor inheritance,
@@ -333,6 +334,42 @@ root ownership under launchd.
 python3 -m unittest discover -s tests -p test_vpn_lifecycle.py -v
 ```
 
+## Helper-side transport and readiness answer
+
+`VPNHelperListener` is the server end of the same handshake, inside the helper.
+It is not a command dispatcher: the only reachable behaviour is answering one
+fixed 56-byte challenge with 56 bytes. No path, argument, profile, operation or
+timeout is nameable by a caller. Every connection is authenticated first, with
+the **client** policy built from the signed release: the owner's UID and the
+application's pinned Code Directory hashes, revalidated again immediately before
+the reply. Rejection costs that connection only — the listener keeps serving,
+so a refused, silent or malformed peer cannot deny service to the real one.
+
+The endpoint is created inside the already-protected directory, resolved from a
+checked descriptor, and bound under a `0177` umask; the listener then verifies it
+really produced a `0600` socket owned by us. It **never** unlinks an existing
+socket: a stale endpoint means the supervisor did not confirm the previous stop,
+and quietly stealing it would hide that. The reply is bound to the release: a
+challenge naming another protocol version or sequence is refused, and the receipt
+is only sent when the helper's own readiness state says yes at that instant, so a
+merely running process cannot answer for a helper that is not ready.
+
+Ten tests run the production listener and the readiness probe as separate signed
+processes: an authenticated client receives a receipt, sequential clients are each
+served, another identity is refused, a client outside the release's pins is
+refused, a not-ready helper answers nothing, a challenge for another release is
+refused, the endpoint is private to its owner, an existing endpoint is never
+stolen, a shared directory is refused, and a silent client does not block the next
+one. The launchd suite now starts this same listener as its service, so those 11
+tests exercise the real helper side, the real adapter and mutual authentication.
+
+Bounded framing, per-request typed operations and privileged work itself remain
+unimplemented — there are no operations to dispatch yet.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_helper_listener.py -v
+```
+
 ## launchd service adapter (production activation mechanics)
 
 `VPNLaunchdRuntime` is the `VPNActivationRuntime` the coordinator was missing:
@@ -366,11 +403,11 @@ recovery restarting the selected release, a service that never listens failing
 inside the deadline and being unloaded, a foreign file on the socket name halting
 activation, the private atomic description and the root-only production entry.
 
-The started fixture is inert: it binds the socket, answers the challenge and does
-nothing else. This proves the activation mechanics, not a root daemon install: the
-system domain, the installation authorization, socket permissions created by the
-production helper, KeepAlive/restart policy, manual-off precedence and a durable
-attempt budget are still open.
+The started service is the production listener above, wrapped in a thin fixture
+main: it binds the socket, answers the challenge and does nothing else. This
+proves the activation mechanics, not a root daemon install: the system domain,
+the installation authorization, KeepAlive/restart policy, manual-off precedence
+and a durable attempt budget are still open.
 
 ```sh
 python3 -m unittest discover -s tests -p test_vpn_launchd.py -v

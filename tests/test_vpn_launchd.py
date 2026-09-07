@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNLaunchdRuntime.swift', 'VPNActivationCoordinator.swift']
+              'VPNHelperListener.swift', 'VPNLaunchdRuntime.swift', 'VPNActivationCoordinator.swift']
+SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
+           'VPNReleaseStore.swift', 'VPNHelperListener.swift']
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
@@ -41,7 +43,7 @@ class VPNLaunchdTests(unittest.TestCase):
         for name, sources, flags in [
             ('driver', [HELPER / source for source in COMPONENTS] + [ROOT / 'tests/vpn_launchd_checks.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING']),
-            ('server', [ROOT / 'tests/vpn_launchd_server.swift'], ['-parse-as-library']),
+            ('server', [HELPER / source for source in SERVICE] + [ROOT / 'tests/vpn_helper_service.swift'], []),
             ('idle', [cls.work / 'idle.swift'], []),
         ]:
             slices = []
@@ -57,11 +59,15 @@ class VPNLaunchdTests(unittest.TestCase):
                          *[str(HELPER / source) for source in COMPONENTS],
                          '-o', str(cls.work / f'production-{arch}.dylib')])
         cls.pins = {}
-        for name in ('server', 'idle'):
+        for name, identifier in [('server', 'kz.documentolog.proxypilot.vpn-helper'),
+                                 ('idle', 'kz.documentolog.proxypilot.vpn-helper'),
+                                 # The driver stands in for the owner's application, which the
+                                 # listener authenticates against the release's pinned hashes.
+                                 ('driver', 'kz.documentolog.proxypilot')]:
             path = cls.work / name
             path.chmod(0o700)
-            cls.command(['codesign', '--force', '--sign', '-', '--identifier',
-                         'kz.documentolog.proxypilot.vpn-helper', '--options', 'runtime,hard,kill', str(path)])
+            cls.command(['codesign', '--force', '--sign', '-', '--identifier', identifier,
+                         '--options', 'runtime,hard,kill', str(path)])
             cls.pins[name] = {}
             for arch in ('arm64', 'x86_64'):
                 result = cls.command(['codesign', '-d', '--verbose=4', '--arch', arch, str(path)])
@@ -103,7 +109,8 @@ class VPNLaunchdTests(unittest.TestCase):
     def run_driver(self, action='update', helper='server', sequence=11, expected=10, timeout=90):
         artifact = (self.work / helper).read_bytes()
         fields = {'format': 1, 'product': 'kz.documentolog.proxypilot', 'sequence': sequence,
-                  'version': '1.6.0', 'protocol': 1, 'app-arm64': '11' * 20, 'app-x86_64': '22' * 20,
+                  'version': '1.6.0', 'protocol': 1,
+                  'app-arm64': self.pins['driver']['arm64'], 'app-x86_64': self.pins['driver']['x86_64'],
                   'helper-arm64': self.pins[helper]['arm64'], 'helper-x86_64': self.pins[helper]['x86_64'],
                   'helper-sha256': hashlib.sha256(artifact).hexdigest(), 'helper-bytes': len(artifact)}
         manifest, candidate = self.base / 'manifest', self.base / 'candidate'
