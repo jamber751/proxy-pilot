@@ -45,6 +45,20 @@ struct VerifiedVPNRelease {
                           codeDirectoryHashes: appHashes)
     }
 
+    func helperPolicy() throws -> VPNPeerPolicy {
+        try VPNPeerPolicy.helper(codeDirectoryHashes: Set(helperHashes.values))
+    }
+
+    #if VPN_HELPER_READINESS_TESTING
+    func testHelperPolicy() throws -> VPNPeerPolicy {
+        try VPNPeerPolicy.testHelper(codeDirectoryHashes: Set(helperHashes.values))
+    }
+    #endif
+
+    func isSameRelease(as other: VerifiedVPNRelease) -> Bool {
+        payloadDigest == other.payloadDigest && authorityDigest == other.authorityDigest
+    }
+
     /// Checks the universal helper's exact bytes before staging. This does NOT
     /// check executable hardening, replace files, authenticate a running helper,
     /// or authorize extraction/execution of a path supplied by a client.

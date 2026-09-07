@@ -16,7 +16,26 @@ struct VPNPeerPolicy {
     fileprivate let codeDirectoryHashes: Set<Data>
 
     init(userID: uid_t, signingIdentifier: String, codeDirectoryHashes: Set<Data>) throws {
-        guard userID != 0, userID != uid_t.max,
+        guard userID != 0 else { throw VPNPeerAuthenticationError.invalidPolicy }
+        try self.init(trustedUserID: userID, signingIdentifier: signingIdentifier, codeDirectoryHashes: codeDirectoryHashes)
+    }
+
+    /// The server role always requires root; a caller cannot enroll another UID.
+    static func helper(codeDirectoryHashes: Set<Data>) throws -> VPNPeerPolicy {
+        try VPNPeerPolicy(trustedUserID: 0, signingIdentifier: "kz.documentolog.proxypilot.vpn-helper",
+                          codeDirectoryHashes: codeDirectoryHashes)
+    }
+
+    #if VPN_HELPER_READINESS_TESTING
+    // Only for unprivileged disposable process tests, absent in normal builds.
+    static func testHelper(codeDirectoryHashes: Set<Data>) throws -> VPNPeerPolicy {
+        try VPNPeerPolicy(trustedUserID: geteuid(), signingIdentifier: "kz.documentolog.proxypilot.vpn-helper",
+                          codeDirectoryHashes: codeDirectoryHashes)
+    }
+    #endif
+
+    private init(trustedUserID userID: uid_t, signingIdentifier: String, codeDirectoryHashes: Set<Data>) throws {
+        guard userID != uid_t.max,
               !signingIdentifier.isEmpty, signingIdentifier.utf8.count <= 255,
               signingIdentifier.utf8.allSatisfy({
                   (48...57).contains($0) || (65...90).contains($0) ||
