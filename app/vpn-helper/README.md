@@ -32,11 +32,11 @@ not silently accept every later binary with the same identifier.
 
 1. Production bootstrap and pin activation. The release verifier authenticates
    descriptions; the descriptor-relative store below persists and rechecks them.
-   Fixed-directory provisioning and atomic on-disk binary/policy selection are
-   now implemented below, but not integrated or tested through a real root
-   installation. An isolated single-owner activation coordinator is described
-   below; its production supervisor/launchd adapter is still missing. None of these
-   components bootstraps the trusted release key.
+   Provisioning, atomic selection, cross-process ownership, the launchd adapter
+   and the installation sequence that composes them all exist below and are
+   tested unprivileged, but never through a real root installation in the system
+   domain. None of these components bootstraps or rotates the trusted release
+   key, which production must embed in the helper and installer.
 2. Production frontend compatibility: today's ad-hoc app loads Sparkle and does
    not meet this gate's hardening policy. Do not silently disable validation,
    change signing models or raise the macOS floor to get a passing result.
@@ -369,6 +369,37 @@ unimplemented — there are no operations to dispatch yet.
 ```sh
 python3 -m unittest discover -s tests -p test_vpn_helper_listener.py -v
 ```
+
+## Authorized installation sequence
+
+`VPNInstaller` is the one place the pieces are composed, in a fixed order:
+provision the protected directory, take the lifecycle lease, verify the signed
+release, publish the policy/binary transaction, and only then activate through
+launchd. The lease comes before anything else so an installation cannot race a
+running supervisor into stopping or starting the service behind its back. It is
+not an IPC entry point, an updater or a user command: the caller must already
+hold the user's system installation authorization, and the trusted release key
+must be embedded in this code, never read from storage or the network.
+
+`install` refuses when a policy already exists — an existing installation is
+changed by `update`, never re-bootstrapped over — and `update` never creates the
+directory, so an absent one answers "not installed" while an unsafe one still
+surfaces as unsafe and is never silently reprovisioned. Storage errors stay
+themselves: a damaged installation is not reported as an absent one, and neither
+is repaired by an update. Both production entries refuse unless running as root.
+
+Eight tests run the whole sequence unprivileged, with a disposable base directory
+standing in for `/Library/Application Support` and the user's own launchd domain
+for the system domain: an installation provisions `0700` directories, publishes
+the policy and starts a service that answers the readiness challenge; a second
+installation is refused and leaves the running service alone; an unsigned release
+installs nothing and starts nothing; an update replaces the installed release; an
+update without an installation is refused; a held lifecycle lease blocks a
+concurrent installation; a shared application directory is refused; and the
+production entry refuses without root.
+
+Trusted key rotation, uninstall, boot-time recovery and the updater integration
+are not implemented. Nothing here has been run as root or in the system domain.
 
 ## Manual off and a durable attempt budget
 
