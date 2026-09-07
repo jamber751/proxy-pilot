@@ -86,8 +86,28 @@ enum VPNActivationChecks {
                 _ = try store.bootstrapDeployment(payload: payload, signature: signature, helper: helper, trustedOwnerUserID: geteuid())
                 print("selected:\(try store.loadDeployment().release.sequence)"); return
             }
+            let owned = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard owned >= 0 else { exit(77) }
+            let lease: VPNLifecycleLease
+            do { lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: owned) }
+            catch { close(owned); print("ownership:\(error)"); exit(78) }
+            close(owned)
             let runtime = FixtureRuntime(directory: URL(fileURLWithPath: args[2]), mode: args[6])
-            let coordinator = VPNActivationCoordinator(store: store, runtime: runtime)
+            let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease)
+            // Replaces the lock the way a second supervisor's provisioning would:
+            // our descriptor stays open, but the directory names another file.
+            let breakLease = {
+                let directory = URL(fileURLWithPath: args[2])
+                let lock = directory.appendingPathComponent("lifecycle.lock")
+                try FileManager.default.moveItem(at: lock, to: directory.appendingPathComponent("moved.lock"))
+                guard FileManager.default.createFile(atPath: lock.path, contents: nil,
+                                                     attributes: [.posixPermissions: 0o600]) else {
+                    throw FixtureFailure.injected
+                }
+            }
+            if args[6] == "lose-before-stop" { try breakLease() }
+            if args[6] == "lose-after-stop" { runtime.onStop = breakLease }
+            if args[6] == "lose-after-start" { runtime.onStart = breakLease }
             if args[6] == "reentrant" {
                 runtime.onStop = {
                     do { _ = try coordinator.recoverSelected(); throw FixtureFailure.injected }
@@ -126,6 +146,9 @@ enum VPNActivationChecks {
             } catch let failure as VPNActivationFailure {
                 print("failure:\(failure.phase) cleanup:\(failure.cleanupConfirmed)")
                 status = 77
+            } catch VPNActivationCoordinatorError.ownershipLost {
+                print("ownership:lost")
+                status = 78
             }
         } catch { print("rejected:\(error)"); status = 77 }
         exit(status)

@@ -17,20 +17,22 @@ struct VPNActivationFailure: Error {
     let phase: VPNActivationPhase
     let cleanupConfirmed: Bool
 }
-enum VPNActivationCoordinatorError: Error { case busy, deadlineExceeded, selectionChanged }
+enum VPNActivationCoordinatorError: Error { case busy, deadlineExceeded, selectionChanged, ownershipLost }
 
 /// Single-owner, synchronous coordinator; not yet connected to an installer,
 /// updater or launchd. One call is one attempt, with no retry loop or downgrade.
-/// Production needs an exclusive lifetime/supervisor lock around this owner;
-/// this local gate alone is NOT cross-process lifecycle serialization.
+/// The caller must hold the cross-process lifecycle lease for the supervisor's
+/// whole lifetime; the local gate only rejects reentry inside this process.
 final class VPNActivationCoordinator {
     private let store: VPNReleaseStore
     private let runtime: VPNActivationRuntime
+    private let lease: VPNLifecycleLease
     private let gate = NSLock()
 
-    init(store: VPNReleaseStore, runtime: VPNActivationRuntime) {
+    init(store: VPNReleaseStore, runtime: VPNActivationRuntime, lease: VPNLifecycleLease) {
         self.store = store
         self.runtime = runtime
+        self.lease = lease
     }
 
     func update(payload: Data, signature: Data, helper: Data, expectedSequence: UInt64) throws -> VPNHelperReady {
@@ -39,6 +41,7 @@ final class VPNActivationCoordinator {
             let prepared = try store.prepareDeployment(payload: payload, signature: signature,
                                                         helper: helper, expectedSequence: expectedSequence)
             try stop()
+            try requireOwnership()
             let selected: VPNAuthorizedDeployment
             do { selected = try store.commitPreparedDeployment(prepared) }
             catch {
@@ -66,10 +69,18 @@ final class VPNActivationCoordinator {
     private func exclusively<T>(_ body: () throws -> T) throws -> T {
         guard gate.try() else { throw VPNActivationCoordinatorError.busy }
         defer { gate.unlock() }
+        try requireOwnership()
         return try body()
     }
 
+    /// A replaced or released lease means another supervisor may already own the
+    /// service. Stop instead of continuing, and never "repair" the lock here.
+    private func requireOwnership() throws {
+        do { try lease.check() } catch { throw VPNActivationCoordinatorError.ownershipLost }
+    }
+
     private func stop() throws {
+        try requireOwnership()
         let deadline = Self.deadline()
         do {
             try runtime.stopAndDrain(deadline: deadline)
@@ -81,6 +92,7 @@ final class VPNActivationCoordinator {
         var phase = VPNActivationPhase.selection
         do {
             try requireSelected(selected)
+            try requireOwnership()
             phase = .start
             let deadline = Self.deadline()
             let socket = try runtime.startIdleAndConnect(selected, deadline: deadline)
@@ -100,7 +112,12 @@ final class VPNActivationCoordinator {
             #endif
             phase = .selection
             try requireSelected(selected)
+            try requireOwnership()
             return ready
+        } catch VPNActivationCoordinatorError.ownershipLost {
+            // Cleanup would stop a service another supervisor may now own.
+            // Report the lost lease instead; recovery needs a fresh owner.
+            throw VPNActivationCoordinatorError.ownershipLost
         } catch {
             // The adapter may have started a process even when launch threw.
             // Cleanup failure is explicit; never return a stale "ready" receipt.

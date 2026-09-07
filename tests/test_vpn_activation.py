@@ -2,6 +2,7 @@
 
 The unprivileged runtime is test-only; this does not prove launchd/root cleanup.
 """
+import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -27,7 +28,8 @@ class VPNActivationTests(unittest.TestCase):
         common = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift']
         for name, source_names, main, flags in [
             ('server', common, 'vpn_readiness_checks.swift', []),
-            ('coordinator', common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNActivationCoordinator.swift'],
+            ('coordinator', common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift',
+                                       'VPNLifecycleOwnership.swift', 'VPNActivationCoordinator.swift'],
              'vpn_activation_checks.swift', ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_RELEASE_STORE_TESTING']),
         ]:
             sources = [ROOT / 'app/vpn-helper' / source for source in source_names] + [ROOT / 'tests' / main]
@@ -39,7 +41,8 @@ class VPNActivationTests(unittest.TestCase):
             cls.command(['lipo', '-create', *slices, '-output', str(cls.work / name)])
         # Ensure the coordinator also compiles without either test-only seam.
         sources = [ROOT / 'app/vpn-helper' / source for source in
-                   common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNActivationCoordinator.swift']]
+                   common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift',
+                             'VPNLifecycleOwnership.swift', 'VPNActivationCoordinator.swift']]
         for arch in ('arm64', 'x86_64'):
             cls.command(['swiftc', '-emit-library', '-target', f'{arch}-apple-macosx11.0', *map(str, sources),
                          '-o', str(cls.work / f'production-{arch}.dylib')])
@@ -205,3 +208,33 @@ class VPNActivationTests(unittest.TestCase):
         result = self.run_coordinator('recover')
         self.assertIn('failure:selection cleanup:true', result.stdout)
         self.assertNotIn('start:', result.stdout)
+
+    def test_activation_requires_exclusive_cross_process_ownership(self):
+        with open(self.directory / 'lifecycle.lock', 'w', opener=lambda path, flags:
+                  os.open(path, os.O_RDWR | os.O_CREAT, 0o600)) as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_coordinator()
+            self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.strip(), 'ownership:busy')
+            self.assertNotIn('stop:', result.stdout)
+        self.assertEqual(self.selected(), 10)
+
+    def test_lost_ownership_before_stop_never_touches_the_service(self):
+        result = self.run_coordinator(mode='lose-before-stop')
+        self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'ownership:lost')
+        self.assertNotIn('stop:', result.stdout)
+        self.assertEqual(self.selected(), 10)
+
+    def test_lost_ownership_after_stop_prevents_commit_and_start(self):
+        result = self.run_coordinator(mode='lose-after-stop')
+        self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['stop:1', 'ownership:lost'])
+        self.assertEqual(self.selected(), 10)
+
+    def test_lost_ownership_after_start_reports_without_stopping_a_foreign_owner(self):
+        result = self.run_coordinator(mode='lose-after-start')
+        self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+        # One stop only: cleanup here could stop the new owner's service.
+        self.assertEqual(result.stdout.splitlines(), ['stop:1', 'start:11', 'ownership:lost'])
+        self.assertEqual(self.selected(), 11)

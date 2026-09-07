@@ -58,7 +58,9 @@ not silently accept every later binary with the same identifier.
 5. Production helper activation and failed-start recovery, plus system-level tests.
    The disk-selection transaction below does not stop/start a service, drain VPN
    operations or validate a running candidate. No routing/DNS/subprocess launch
-   is implemented in these components.
+   is implemented in these components. Cross-process lifecycle ownership is now
+   enforced between unprivileged processes, but the launchd adapter that would
+   actually stop, start and confirm cleanup of a root service is still missing.
 
 ## Verification
 
@@ -298,6 +300,38 @@ verify that the **normal build rejects even the correctly pinned non-root
 server**. Positive root-server authentication and Intel/macOS 11 execution have
 not been tested. No elevated fixture or real VPN profile is used.
 
+## Cross-process lifecycle ownership
+
+`VPNLifecycleOwnership` is the supervisor gate the coordinator was missing: one
+process at a time may stop or start the fixed service. It opens `lifecycle.lock`
+relative to the protected directory descriptor (no path, `O_NOFOLLOW`), requires a
+private `0700` directory and a `0600`, single-link, owner-matching regular file
+with no ACL entries, then takes an exclusive non-blocking `flock`. The kernel
+releases that lock when the owning process exits, including a crash, so a dead
+supervisor cannot keep the service unmanageable.
+
+Holding a descriptor is not ownership: `check()` reruns the file checks and proves
+the directory still names the exact file we hold. A renamed, replaced or unlinked
+lock fails closed, because a second supervisor can lock the new file and start
+managing the same service. The coordinator rechecks the lease before the stop,
+before the commit, before the start and before returning readiness. If it is lost
+after a start, the failure is reported **without** stop/cleanup: stopping there
+could stop a service the new owner already manages. A lease is not permission to
+run a release, not proof that a helper is running and not a disk transaction lock.
+
+Fourteen tests run separate real processes against disposable directories: a second
+process is refused while a lease is held, a killed owner releases it without any
+cleanup, a second lease inside the same process is refused, and rename/unlink/
+release are all detected by the owner. Symlinked, group-readable, hard-linked and
+ACL-carrying locks, shared directories and ACL-carrying directories are rejected.
+Four activation tests cover ownership taken by another process and lost before the
+stop, after the stop and after the start. Unprivileged exclusion is not proof of
+root ownership under launchd.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_lifecycle.py -v
+```
+
 ## Single-owner activation coordinator (not launchd integration)
 
 `VPNActivationCoordinator` now composes staged storage with authenticated
@@ -332,14 +366,13 @@ no automatic reinitialization. A compatible repair release must advance the
 signed sequence; authorized repair/recovery UI is still pending. An identical
 update may explicitly restart the selected version once, without changing policy.
 
-The instance gate rejects concurrent/reentrant calls. **It is not a cross-process
-supervisor lock.** Production must enforce one lifecycle owner for its entire
-lifetime and route all activation requests through it. The storage lock still
-protects each disk transaction, and selection checks detect intervening writers,
-but neither substitutes for exclusive ownership of runtime resources. A durable
-attempt budget, cancellation/manual-off handling, authenticated command transport,
-launchd wiring and startup recovery integration remain unfinished. The adapter's
-deadlines are a contract checked after return, not preemption of a blocking adapter.
+The instance gate rejects concurrent/reentrant calls inside one process. Exclusion
+between processes now comes from the lifecycle lease described below, which the
+coordinator requires and rechecks. The storage lock still protects each disk
+transaction, and selection checks detect intervening writers. A durable attempt
+budget, cancellation/manual-off handling, authenticated command transport, launchd
+wiring and startup recovery integration remain unfinished. The adapter's deadlines
+are a contract checked after return, not preemption of a blocking adapter.
 
 Eighteen activation tests combine real signed Universal files, the protected
 store, separate inert processes and authenticated readiness. They cover invalid
