@@ -30,9 +30,10 @@ not silently accept every later binary with the same identifier.
 
 ## Still required before any privileged operation
 
-1. Production bootstrap, protected state and pin activation. The pure signed
-   release verifier below now authenticates a description using a supplied
-   trusted public key; this does not bootstrap that key or persist the decision.
+1. Production bootstrap and pin activation. The release verifier authenticates
+   descriptions; the descriptor-relative store below persists and rechecks them.
+   Root-owned directory provisioning and coordinated binary/policy activation
+   are still not implemented. Neither component bootstraps the trusted key.
 2. Production frontend compatibility: today's ad-hoc app loads Sparkle and does
    not meet this gate's hardening policy. Do not silently disable validation,
    change signing models or raise the macOS floor to get a passing result.
@@ -101,9 +102,10 @@ execute it. Those checks still belong in a protected installer transaction.
 
 Given the previously verified release, it rejects an older sequence/version,
 another authority, and different payloads reusing the same sequence. Identical
-retries are idempotent. This is **not durable anti-rollback yet**: production must
-load the last committed signed description from root-owned storage, retain the
-version floor across restarts, lock check+commit, and recover failed updates.
+retries are idempotent. This verifier alone is **not durable anti-rollback**;
+`VPNReleaseStore` now implements persistence, signature revalidation and locked
+check+commit, but production must provision its root-owned directory and
+coordinate it with helper activation/recovery.
 Missing/corrupt installed state must not be treated as `previous: nil`; that is
 only for an explicitly authorized first installation. Selecting and storing the
 owner UID, trust bootstrap, public-key rotation and artifact activation remain
@@ -129,6 +131,58 @@ tampering and completes when the feed is missing. The worker's own version is
 No update is downloaded/installed; production UI and files remain unchanged.
 The blocking test pipe is not a production transport implementation.
 
+## Persisted policy (isolated storage component)
+
+`VPNReleaseStore.swift` receives a trusted **open directory descriptor**, never
+a client-supplied path. It duplicates the descriptor close-on-exec, requires the
+directory owner to equal its effective UID and permissions 0700, and rejects
+extended ACL entries. Production must run this in the root helper against a
+fixed root-owned directory with protected ancestors; it must not reuse the
+unprivileged app's VPN data directory. Directory provisioning and IPC wiring are
+still absent. Tests run as the current user with isolated 0700 directories.
+
+Each operation takes a nonblocking cross-process lock and uses descriptor-relative
+access with no symlink following. Record/marker/lock must be singly linked regular
+0600 files owned by the store's UID, without ACL entries. Bounded canonical JSON
+stores the signed manifest, signature and installation owner together; each load
+re-verifies the signature. Updates preserve the owner and compare the expected
+sequence against freshly read state, so an outdated writer cannot overwrite a
+newer accepted release. Identical descriptions are idempotent even when presented
+with a different valid signature.
+
+An explicit first-install operation persists `initialized` before `release.json`.
+Missing, corrupt, oversized, noncanonical or incorrectly signed state is an error,
+not an empty store. Existing marker/record prevents reinitialization. Interrupted
+first installation fails closed and needs a future authorized recovery flow;
+there is no automatic reset or factory-pin fallback. The lock may exist in an
+otherwise fresh directory and does not by itself indicate successful bootstrap.
+
+Replacement uses a private exclusive temporary file, file fsync, atomic rename
+and directory fsync. A failure after rename reports `commitUncertain`, never
+promises that old state is unchanged. Caller must reload/reconcile. A process
+crash can leave a private `.release-*.tmp` file; readers ignore it. Automated
+orphan cleanup is not implemented. Crash hooks exist only behind the test compiler
+flag `VPN_RELEASE_STORE_TESTING`, absent from normal compilation.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_release_store.py -v
+```
+
+Separate processes test initialization/restart, persisted rejection of older
+releases, retry/stale/conflicting writes, invalid signatures, corruption/deletion,
+locks, symlinks/hard links/FIFOs, modes/ACLs, and forced exits before/after rename
+and during first installation. These are **process-crash tests, not physical
+power-loss tests**. The deterministic fixture signing seed is intentionally
+public and used only by the disposable test executable, never by production.
+
+This persists authorization, **not helper installation or VPN connection state**.
+Do not call `accept` merely on download: a reviewed activation transaction must
+coordinate policy advancement with the new helper, including recovery. It does
+not defend against root deliberately replacing the complete directory with an
+older valid snapshot, and cannot replace authenticated key bootstrap or binary
+validation. Working application and installation packages still do not include
+this component.
+
 ## References
 
 - macOS public SDK: `sys/un.h` (`LOCAL_PEERTOKEN`), Security `SecCode.h`
@@ -139,3 +193,5 @@ The blocking test pipe is not a production transport implementation.
 - [Sparkle maintainer: ad-hoc signing and library validation](https://github.com/sparkle-project/Sparkle/discussions/2466).
 - [Sparkle: updating another bundle from a separate process](https://sparkle-project.org/documentation/bundles/).
 - [Apple: CryptoKit Ed25519 verification](https://developer.apple.com/documentation/cryptokit/curve25519/signing/publickey).
+- Apple libc sources: [ACL descriptor lookup](https://github.com/apple-oss-distributions/Libc/blob/main/posix1e/acl_file.c)
+  and [absent ACL property semantics](https://github.com/apple-oss-distributions/Libc/blob/main/gen/filesec.c).
