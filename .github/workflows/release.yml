@@ -57,7 +57,9 @@ jobs:
         run: zsh app/sign-update.sh
 
       - name: Verify signed feed using real Sparkle
-        run: python3 -m unittest discover -s tests -p test_sparkle_feed.py -v
+        run: |
+          python3 -m unittest discover -s tests -p test_sparkle_feed.py -v
+          python3 -m unittest discover -s tests -p test_update_controls.py -v
 
       - name: Test ad-hoc update installation and relaunch (disposable app)
         env:

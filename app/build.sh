@@ -34,10 +34,10 @@ cp "${HERE:h}/bin/proxypilot" "$APP/Contents/Resources/bin/proxypilot"
 # запускаться и на x86_64-маках.
 swiftc -O -module-cache-path "$OUT/ModuleCache" -target "arm64-apple-macosx11.0" \
   -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  -o "$APP/Contents/MacOS/ProxyPilot-arm64" "$HERE/main.swift" "$HERE/Updates.swift"
+  -o "$APP/Contents/MacOS/ProxyPilot-arm64" "$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
 swiftc -O -module-cache-path "$OUT/ModuleCache" -target "x86_64-apple-macosx11.0" \
   -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  -o "$APP/Contents/MacOS/ProxyPilot-x86_64" "$HERE/main.swift" "$HERE/Updates.swift"
+  -o "$APP/Contents/MacOS/ProxyPilot-x86_64" "$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
 lipo -create "$APP/Contents/MacOS/ProxyPilot-arm64" "$APP/Contents/MacOS/ProxyPilot-x86_64" \
   -output "$APP/Contents/MacOS/ProxyPilot"
 rm -f "$APP/Contents/MacOS/ProxyPilot-arm64" "$APP/Contents/MacOS/ProxyPilot-x86_64"

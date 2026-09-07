@@ -8,6 +8,8 @@ final class UpdateModel: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStan
     @Published private(set) var canCheck = false
     @Published private(set) var automaticChecks = true
     @Published private(set) var availableVersion: String?
+    @Published private(set) var isPreview = false
+    @Published private(set) var sessionInProgress = false
     let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     var onPresent: (() -> Void)?
     var onAbort: (() -> Void)?
@@ -16,6 +18,7 @@ final class UpdateModel: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStan
     private var observations: [NSKeyValueObservation] = []
 
     func start(preview: Bool) {
+        isPreview = preview
         guard !preview, controller == nil else { return }
         let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: self)
         self.controller = controller
@@ -25,15 +28,25 @@ final class UpdateModel: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStan
             },
             controller.updater.observe(\.automaticallyChecksForUpdates, options: [.initial, .new]) { [weak self] updater, _ in
                 self?.automaticChecks = updater.automaticallyChecksForUpdates
+            },
+            controller.updater.observe(\.sessionInProgress, options: [.initial, .new]) { [weak self] updater, _ in
+                self?.sessionInProgress = updater.sessionInProgress
             }
         ]
         controller.startUpdater()
     }
 
     func check() {
-        guard canCheck else { return }
+        guard canCheck, let controller = controller else { return }
         onPresent?()
-        controller?.checkForUpdates(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        controller.checkForUpdates(nil)
+    }
+
+    var checkTitle: String {
+        if isPreview { return "Недоступно в превью" }
+        if !canCheck { return sessionInProgress ? "Проверяем…" : "Подождите…" }
+        return availableVersion.map { "Обновить до \($0)" } ?? "Проверить обновления"
     }
 
     func setAutomaticChecks(_ enabled: Bool) {
@@ -48,7 +61,7 @@ final class UpdateModel: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStan
         if handleShowingUpdate { onPresent?() }
     }
     func standardUserDriverWillFinishUpdateSession() { availableVersion = nil }
-    func standardUserDriverDidShowModalAlert() { onPresent?() }
+    func standardUserDriverWillShowModalAlert() { onPresent?() }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) { onAbort?() }
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
@@ -62,17 +75,25 @@ struct UpdatesView: View {
     @ObservedObject var updates: UpdateModel
     let busy: Bool
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             HStack {
                 Text("Версия \(updates.currentVersion)").foregroundColor(.secondary)
                 Spacer()
-                Button(updates.availableVersion.map { "Обновить до \($0)" } ?? "Проверить обновления", action: updates.check)
+                Button(action: updates.check) {
+                    Text(updates.checkTitle).fontWeight(.medium)
+                        .padding(.horizontal, 10).frame(minHeight: 30)
+                        .background(Color.primary.opacity(0.06)).cornerRadius(8)
+                        .contentShape(Rectangle())
+                }
+                    .accessibilityIdentifier("checkUpdates")
                     .disabled(!updates.canCheck || busy)
+                    .help(updates.isPreview ? "В тестовом макете обновления отключены. Откройте установленный ProxyPilot." : "Проверить наличие новой версии и показать результат.")
             }
             Toggle("Проверять автоматически", isOn: Binding(get: { updates.automaticChecks }, set: updates.setAutomaticChecks))
-                .toggleStyle(CheckboxToggleStyle()).frame(maxWidth: .infinity, alignment: .leading)
-                .help("Раз в сутки. Установка и перезапуск — только после подтверждения.")
-                .disabled(busy)
-        }.font(.system(size: 10)).buttonStyle(PlainButtonStyle()).padding(.bottom, 12)
+                .toggleStyle(PilotCheckboxStyle())
+                .accessibilityIdentifier("automaticUpdates")
+                .help(updates.isPreview ? "В тестовом макете автопроверка отключена." : "Раз в сутки. Установка и перезапуск — только после подтверждения.")
+                .disabled(busy || updates.isPreview)
+        }.font(.system(size: 10)).buttonStyle(PilotButtonStyle()).padding(.bottom, 4)
     }
 }

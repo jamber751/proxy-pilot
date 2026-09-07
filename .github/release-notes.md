@@ -1,53 +1,42 @@
-### What's new in 1.5.0
+### What's new in 1.5.1
 
-- Daily automatic update checks, with a quiet indicator in the gear menu.
-- Check or install an update from Settings; no forced background restart.
-- Sparkle verifies the signed update feed and archive before extraction.
-- Updates replace the app, CLI and GOST together and preserve proxy configuration,
-  selected route and enabled state. The bridge may briefly reconnect on relaunch.
-- No Apple Developer subscription required; the first installation is still ad-hoc signed.
-- Settings keep the footer visible and only scroll when content actually overflows.
-- In-app release notes are concise, formatted and separate from first-install instructions.
+- **Easier clicks.** Larger hit targets for Back, Add, Settings, Quit and Check for
+  Updates. Proxy cards, discovery and save buttons respond across their full area.
+- **Consistent feedback.** Subtle hover highlights and pressed states throughout
+  the app, with matching green accents for the protocol selector and checkbox.
+  Disabled controls do not highlight on hover.
+- **Clearer update checks.** Check for Updates is now a visible button with a
+  waiting/checking state. Manual checks bring the update UI to the foreground.
+- **Unmistakable test previews.** Development previews have a separate name,
+  menu-bar icon and TEST badge. Their disabled updater is explicitly labeled;
+  they do not change your saved proxies or macOS proxy settings.
+- **Compact layout.** The normal settings screen still fits without scrolling;
+  longer error messages scroll without hiding the footer.
+- **English release notes**, both here and in the in-app update window.
 
-### Included from 1.4.0
+### Update
 
-- Minimal menu-bar popover anchored to the ProxyPilot icon; the large power button stays.
-- Route picker: Auto, Direct, SOCKS5 and HTTP, with the actual active route shown separately.
-- Saved proxy list; add or edit an IP/host and port, selecting the protocol without typing a URL.
-- HTTP and SOCKS5 clients share the local loopback port, including Telegram.
-- Error handling, configuration preservation and isolated regression tests.
+On **1.5.0**, open **Settings → Check for Updates**, then confirm the update.
+Automatic checks remain optional;
+installation and restart require your confirmation.
 
-### Install
+On **1.4.0 or earlier**, install the DMG manually once. Open the DMG and read
+`READ_ME_FIRST.txt` for the installer and drag-to-Applications options. The app
+is ad-hoc signed, not Developer ID signed or notarized; macOS security prompts
+still apply.
 
-Download the DMG below → right-click **`Install.command`** → **Open**.
+Your saved proxy addresses, selected route and on/off state are preserved.
+Connections through the local bridge may briefly reconnect when the app restarts.
+This release does not change proxy routing or add VPN behavior.
 
-The script copies the app to Applications, clears the quarantine flag, attempts to
-add it to Login Items and launches it. Press **Find automatically** in ProxyPilot,
-or use the gear icon and **+** to enter your proxy address.
+Universal app for Apple Silicon and Intel, macOS 11 or newer. The CLI and GOST
+are bundled; Homebrew is not required.
 
-Self-contained: the CLI and `gost` ship inside the bundle — no Homebrew, no
-terminal. Universal binary (Intel + Apple Silicon), macOS 11 Big Sur and newer.
+### Verification
 
-Existing 1.4.0 users must install this version manually once. Later updates are
-available in the app's Settings. Automatic checks can be turned off there.
+Regression coverage includes control hit-target sizes, seven layout states,
+manual update results (new version, up to date and unavailable server), signed
+feed verification, local HTTP/SOCKS5 bridges and a disposable Sparkle
+installation/relaunch. Tests do not replace your installed ProxyPilot.
 
-> A plain double-click is blocked: the app is ad-hoc signed, not Developer ID.
-> Right-click → Open is the way around it. `READ_ME_FIRST.txt` inside the image
-> explains the manual path too.
-
-### After installing
-
-The power button applies/removes ProxyPilot's macOS HTTP/HTTPS proxy settings.
-Switching routes keeps the local address unchanged. Turning off leaves an
-existing local bridge forwarding directly, so terminal and Telegram clients
-can continue working. This is not a kill switch or a VPN.
-
-Telegram: choose SOCKS5, server `127.0.0.1`, port `3129`, no username/password.
-The listener is local to your Mac. UDP relay and Telegram calls are not verified.
-
-Startup checks the saved state and bridge; it does not reapply system proxy
-settings that were changed outside ProxyPilot. If necessary, turn the proxy
-off/on. Settings currently support one address per protocol, without proxy
-authentication or IPv6. Legacy VPN/network-profile commands remain CLI-only.
-
-Full documentation: [README](https://github.com/jamber751/proxy-pilot#readme)
+[Full documentation](https://github.com/jamber751/proxy-pilot#readme)

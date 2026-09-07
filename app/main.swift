@@ -283,8 +283,7 @@ final class ProxyModel: ObservableObject {
 
 struct PowerStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.65 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+        PilotButtonStyle(highlightsSurface: false).makeBody(configuration: configuration)
     }
 }
 
@@ -298,7 +297,6 @@ struct RouteRow: View {
     let ink: Color
     let accent: Color
     let action: () -> Void
-    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -315,13 +313,11 @@ struct RouteRow: View {
                     .font(.system(size: 16, weight: .regular))
                     .foregroundColor(selected ? accent : ink.opacity(0.15))
             }.padding(.horizontal, 13).frame(height: 52)
-                .background(selected ? accent.opacity(0.10) : ink.opacity(hovering && available ? 0.075 : 0.025))
+                .background(selected ? accent.opacity(0.10) : ink.opacity(0.025))
                 .cornerRadius(12)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? accent.opacity(0.5) : ink.opacity(hovering ? 0.14 : 0.07), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? accent.opacity(0.5) : ink.opacity(0.07), lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: 12))
-        }.buttonStyle(PowerStyle()).disabled(!available || busy)
-            .opacity(available ? 1 : 0.45)
-            .onHover { hovering = $0 }
+        }.buttonStyle(PilotButtonStyle(cornerRadius: 12)).disabled(!available || busy)
             .accessibilityLabel(title + (selected ? ", выбран" : "") + (available ? "" : ", не настроен"))
     }
 }
@@ -337,7 +333,7 @@ struct PilotView: View {
     @State private var settingsHeight: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     private var ink: Color { colorScheme == .dark ? Color(red: 0.92, green: 0.94, blue: 0.94) : Color(red: 0.12, green: 0.16, blue: 0.15) }
-    private var accent: Color { Color(red: 0.12, green: 0.53, blue: 0.39) }
+    private var accent: Color { PilotTheme.accent }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
@@ -347,31 +343,37 @@ struct PilotView: View {
                         else { model.editing = false; model.choosingRoute = false; model.manual = false }
                         model.error = ""
                     } label: {
-                        Image(systemName: "chevron.left").frame(width: 24, height: 28)
-                    }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Назад")
+                        Image(systemName: "chevron.left").frame(width: 36, height: 36)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(PilotButtonStyle()).accessibilityLabel("Назад")
+                        .accessibilityIdentifier("back")
                         .disabled(model.busy)
                 } else {
                     Image(systemName: "circle.hexagongrid.fill").font(.system(size: 14, weight: .medium))
                 }
                 Text(model.addingProxy ? "Адрес прокси" : model.choosingRoute ? "Маршрут" : model.setup ? "Настройки" : "ProxyPilot").font(.system(size: 14, weight: .semibold))
                 Spacer()
-                if model.preview { Text("ПРЕВЬЮ").font(.system(size: 9, weight: .medium)).foregroundColor(.secondary) }
+                if model.preview { Text("ТЕСТ").font(.system(size: 9, weight: .semibold)).foregroundColor(.orange) }
                 if model.setup && !model.addingProxy {
                     Button { model.openProxy() } label: {
-                        Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 28, height: 28)
-                    }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Добавить прокси")
+                        Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(PilotButtonStyle()).accessibilityLabel("Добавить прокси")
+                        .accessibilityIdentifier("addProxy")
                         .disabled(model.busy || model.loading)
                 }
                 if !model.setup && !model.choosingRoute {
                     Button { model.editing = true; model.manual = false; model.error = "" } label: {
-                        Image(systemName: "gearshape").font(.system(size: 16)).frame(width: 28, height: 28)
+                        Image(systemName: "gearshape").font(.system(size: 16)).frame(width: 36, height: 36)
                             .overlay(Group {
                                 if updates.availableVersion != nil { Circle().fill(accent).frame(width: 5, height: 5) }
                             }, alignment: .topTrailing)
-                    }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Настройки")
+                            .contentShape(Rectangle())
+                    }.buttonStyle(PilotButtonStyle()).accessibilityLabel("Настройки")
+                        .accessibilityIdentifier("settings")
                         .help("Настройки подключения").disabled(model.busy || model.loading)
                 }
-            }.padding(.top, 20)
+            }.frame(height: 36).padding(.top, 12)
                 .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
             if model.setup {
                 if model.addingProxy { proxyForm } else { settingsPanel }
@@ -421,7 +423,7 @@ struct PilotView: View {
                     .background(ink.opacity(0.025)).cornerRadius(12)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink.opacity(0.09), lineWidth: 1))
                     .contentShape(RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(PowerStyle())
+            }.buttonStyle(PilotButtonStyle(cornerRadius: 12))
                 .disabled(model.busy || model.loading || !model.configured)
                 .accessibilityLabel("Выбрать маршрут: \(model.state?.route ?? "Не определён")")
                 .padding(.top, 18)
@@ -437,12 +439,15 @@ struct PilotView: View {
             HStack {
                 Text(model.setup ? "HTTP / SOCKS5" : "Маршрут системного прокси")
                 Spacer()
-                Button("Выйти", action: model.quit).disabled(model.busy || model.loading)
-            }.buttonStyle(PlainButtonStyle()).font(.system(size: 11)).foregroundColor(.secondary).padding(.vertical, 16)
+                Button(action: model.quit) {
+                    Text("Выйти").frame(minWidth: 52, minHeight: 32).contentShape(Rectangle())
+                }.accessibilityIdentifier("quit").disabled(model.busy || model.loading)
+            }.buttonStyle(PilotButtonStyle()).font(.system(size: 11)).foregroundColor(.secondary).padding(.vertical, 7)
                 .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
         }
         .padding(.horizontal, 24).frame(width: 344, height: 432)
         .foregroundColor(ink)
+        .accentColor(accent)
         .background(colorScheme == .dark ? Color(red: 0.10, green: 0.12, blue: 0.115) : Color(red: 0.98, green: 0.985, blue: 0.98))
     }
     private var routePicker: some View {
@@ -492,7 +497,7 @@ struct PilotView: View {
         }.onPreferenceChange(SettingsHeightKey.self) { settingsHeight = $0 }
     }
     private var measuredSettings: some View {
-        settings.padding(.bottom, 12)
+        settings.padding(.bottom, 8)
             .fixedSize(horizontal: false, vertical: true)
             .background(GeometryReader { geometry in
                 Color.clear.preference(key: SettingsHeightKey.self, value: geometry.size.height)
@@ -500,7 +505,7 @@ struct PilotView: View {
     }
     private var settings: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Ваши прокси").font(.system(size: 22, weight: .semibold)).padding(.top, 16)
+            Text("Ваши прокси").font(.system(size: 22, weight: .semibold)).padding(.top, 12)
             Text(model.configured ? "Сохранённые адреса для подключения." : "Добавьте адрес через + или найдите автоматически.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
             ForEach(["socks5", "http"], id: \.self) { scheme in
@@ -515,7 +520,7 @@ struct PilotView: View {
                 }.frame(maxWidth: .infinity).padding(.vertical, 25)
                     .background(ink.opacity(0.025)).cornerRadius(12)
             }
-            Divider().padding(.vertical, 4)
+            Divider().padding(.vertical, 2)
             Button { model.configure(manually: false) } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkle.magnifyingglass")
@@ -523,7 +528,9 @@ struct PilotView: View {
                     Spacer()
                     Image(systemName: "chevron.right").font(.system(size: 10))
                 }.padding(12).background(ink.opacity(0.06)).cornerRadius(10)
-            }.buttonStyle(PlainButtonStyle()).disabled(model.busy || model.loading)
+                    .contentShape(RoundedRectangle(cornerRadius: 10))
+            }.buttonStyle(PilotButtonStyle(cornerRadius: 10)).accessibilityIdentifier("discover")
+                .disabled(model.busy || model.loading)
             if model.busy || !model.error.isEmpty {
                 Text(model.busy ? model.operation : model.error)
                     .font(.system(size: 10)).foregroundColor(.secondary)
@@ -553,7 +560,7 @@ struct PilotView: View {
                 .background(ink.opacity(0.025)).cornerRadius(12)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? accent.opacity(0.4) : ink.opacity(0.08), lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: 12))
-        }.buttonStyle(PowerStyle()).disabled(model.busy)
+        }.buttonStyle(PilotButtonStyle(cornerRadius: 12)).disabled(model.busy)
             .accessibilityLabel("Изменить \(scheme == "socks5" ? "SOCKS5" : "HTTP"): \(model.state?.endpoint(for: scheme) ?? ""), \(active ? "используется" : "настроен")")
     }
     private var proxyForm: some View {
@@ -561,10 +568,19 @@ struct PilotView: View {
             Text("Настроить подключение").font(.system(size: 21, weight: .semibold)).tracking(-0.5).padding(.top, 16)
             VStack(alignment: .leading, spacing: 7) {
                 Text("Протокол").font(.system(size: 11, weight: .medium)).foregroundColor(.secondary)
-                Picker("Протокол", selection: $model.proxyScheme) {
-                    Text("SOCKS5").tag("socks5")
-                    Text("HTTP").tag("http")
-                }.pickerStyle(SegmentedPickerStyle()).labelsHidden()
+                HStack(spacing: 3) {
+                    ForEach(["socks5", "http"], id: \.self) { scheme in
+                        Button { model.proxyScheme = scheme } label: {
+                            Text(scheme == "socks5" ? "SOCKS5" : "HTTP")
+                                .font(.system(size: 12, weight: .medium))
+                                .frame(maxWidth: .infinity, minHeight: 32)
+                                .foregroundColor(model.proxyScheme == scheme ? ink : .secondary)
+                                .background(model.proxyScheme == scheme ? accent.opacity(0.16) : Color.clear)
+                                .cornerRadius(7).contentShape(Rectangle())
+                        }.buttonStyle(PilotButtonStyle(cornerRadius: 7))
+                            .accessibilityAddTraits(model.proxyScheme == scheme ? .isSelected : [])
+                    }
+                }.padding(3).background(ink.opacity(0.04)).cornerRadius(10)
             }
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -582,9 +598,10 @@ struct PilotView: View {
                 Text(model.busy ? "Подключаемся…" : model.replacesProxy ? "Обновить и подключить" : "Добавить и подключить").font(.system(size: 12, weight: .semibold))
                     .frame(maxWidth: .infinity).padding(.vertical, 10)
                     .background(accent).foregroundColor(.white).cornerRadius(9)
-            }.buttonStyle(PlainButtonStyle())
+                    .contentShape(RoundedRectangle(cornerRadius: 9))
+            }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+                .accessibilityIdentifier("saveProxy")
                 .disabled(model.busy || model.loading || model.formEndpoint == nil)
-                .opacity(model.formEndpoint == nil || model.busy ? 0.4 : 1)
             Text(model.error).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2).frame(height: 28, alignment: .topLeading)
         }.disabled(model.busy)
     }
@@ -629,12 +646,12 @@ final class App: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self] in self?.showWindow() }
     }
     private func renderStatus() {
-        // Keep the same brand mark as the popover header in every state.
-        let image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "ProxyPilot: \(model.title)")?
+        // Production keeps its brand mark; test fixtures must be unmistakable.
+        let image = NSImage(systemSymbolName: model.preview ? "hammer.circle.fill" : "circle.hexagongrid.fill", accessibilityDescription: model.preview ? "ProxyPilot — тестовый макет" : "ProxyPilot: \(model.title)")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .medium))
         image?.isTemplate = true; item.button?.image = image
         item.button?.alphaValue = model.busy || model.loading ? 0.7 : (model.connected ? 1 : 0.45)
-        item.button?.toolTip = "\(model.title) · \(model.state?.route ?? "Проверяем маршрут")"
+        item.button?.toolTip = model.preview ? "Тестовый макет — не управляет прокси" : "\(model.title) · \(model.state?.route ?? "Проверяем маршрут")"
     }
     @objc private func toggleWindow() {
         if popover.isShown { popover.performClose(nil) } else { showWindow(); model.refresh() }
@@ -644,10 +661,10 @@ final class App: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         if let window = popover.contentViewController?.view.window {
-            window.title = "ProxyPilot"
+            window.title = model.preview ? "ProxyPilot — тестовый макет" : "ProxyPilot"
             window.setAccessibilityRole(.window)
             window.setAccessibilitySubrole(.standardWindow)
-            window.setAccessibilityLabel("ProxyPilot")
+            window.setAccessibilityLabel(window.title)
             window.makeKey()
         }
     }

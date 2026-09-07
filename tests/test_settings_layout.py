@@ -14,6 +14,13 @@ FRAMEWORKS = ROOT / 'vendor/sparkle-2.9.6/Sparkle.xcframework/macos-arm64_x86_64
 class SettingsLayoutTests(unittest.TestCase):
     def test_footer_bounds_and_scroll_only_on_overflow(self):
         source = (ROOT / 'app/main.swift').read_text().split('\nfinal class App:', 1)[0]
+        updates_source = (ROOT / 'app/Updates.swift').read_text()
+        for name in ['back', 'addProxy', 'settings', 'quit', 'discover', 'saveProxy', 'checkUpdates', 'automaticUpdates']:
+            identifier = f'.accessibilityIdentifier("{name}")'
+            probe = identifier + f'.background(GeometryReader {{ geometry in Color.clear.preference(key: HitBounds.self, value: ["{name}": geometry.size]) }})'
+            self.assertEqual((source + updates_source).count(identifier), 1)
+            source = source.replace(identifier, probe)
+            updates_source = updates_source.replace(identifier, probe)
         target = 'Text(model.setup ? "HTTP / SOCKS5" : "Маршрут системного прокси")'
         self.assertEqual(source.count(target), 1)
         source = source.replace(target, target + '''
@@ -32,6 +39,12 @@ class SettingsLayoutTests(unittest.TestCase):
 struct FooterBounds: PreferenceKey {
     static var defaultValue = CGRect.null
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+struct HitBounds: PreferenceKey {
+    static var defaultValue: [String: CGSize] = [:]
+    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
 }
 struct SettingsScrollEnabled: PreferenceKey {
     static var defaultValue = false
@@ -59,12 +72,14 @@ for scenario in ["configured", "empty", "error", "busy", "main", "form", "routes
     var scrolling = false
     var contentHeight: CGFloat = 0
     var viewportHeight: CGFloat = 0
+    var hitBounds: [String: CGSize] = [:]
     let root = PilotView(model: model, updates: UpdateModel())
         .coordinateSpace(name: "testPopover")
         .onPreferenceChange(FooterBounds.self) { footer = $0 }
         .onPreferenceChange(SettingsScrollEnabled.self) { scrolling = $0 }
         .onPreferenceChange(SettingsHeightKey.self) { contentHeight = $0 }
         .onPreferenceChange(SettingsViewportHeight.self) { viewportHeight = $0 }
+        .onPreferenceChange(HitBounds.self) { hitBounds = $0 }
     let host = NSHostingView(rootView: root)
     host.frame = NSRect(x: 0, y: 0, width: 344, height: 432)
     let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -78,6 +93,15 @@ for scenario in ["configured", "empty", "error", "busy", "main", "form", "routes
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
     precondition(!footer.isNull, "No layout for \\(scenario)")
+    var required = ["quit"]
+    if scenario == "main" { required += ["settings"] }
+    if scenario == "configured" { required += ["back", "addProxy", "discover", "checkUpdates", "automaticUpdates"] }
+    if scenario == "form" { required += ["back", "saveProxy"] }
+    for name in required {
+        let bounds = hitBounds[name] ?? .zero
+        let minHeight: CGFloat = ["back", "addProxy", "settings"].contains(name) ? 36 : name == "automaticUpdates" ? 28 : 30
+        precondition(bounds.height >= minHeight && bounds.width >= 36, "Small hit target: \\(name) \\(bounds)")
+    }
     precondition(footer.minX >= 23 && footer.maxX <= 321, "Horizontal overflow: \\(scenario) \\(footer)")
     precondition(footer.maxY <= 416.5, "Missing bottom inset: \\(scenario) \\(footer)")
     precondition(footer.minY >= 390, "Footer moved up: \\(scenario) \\(footer)")
@@ -110,10 +134,13 @@ for scenario in ["configured", "empty", "error", "busy", "main", "form", "routes
         with tempfile.TemporaryDirectory(prefix='proxypilot-layout-') as directory:
             script, binary = Path(directory) / 'main.swift', Path(directory) / 'layout-test'
             script.write_text(source + checks)
+            updates = Path(directory) / 'Updates.swift'
+            updates.write_text(updates_source)
             built = subprocess.run(['swiftc', '-module-cache-path', str(ROOT / 'app/build/ModuleCache'),
                                     '-F', str(FRAMEWORKS), '-framework', 'Sparkle',
                                     '-Xlinker', '-rpath', '-Xlinker', str(FRAMEWORKS),
-                                    str(script), str(ROOT / 'app/Updates.swift'), '-o', str(binary)], capture_output=True, text=True)
+                                    str(script), str(updates), str(ROOT / 'app/Controls.swift'),
+                                    '-o', str(binary)], capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -106,7 +106,8 @@ app.run()
                          ['plain-text', 'markdown'])
         notes = description.text or ''
         self.assertEqual(notes.strip(), (ROOT / '.github/update-notes.html').read_text().strip())
-        self.assertIn('<h2>Что нового</h2>', notes)
+        self.assertIn('<html lang="en">', notes)
+        self.assertIn("<h2>What's new</h2>", notes)
         self.assertEqual(notes.count('<li>'), 4)
         for unwanted in ['### ', 'Install.command', '<script', '<iframe', '<img', 'src=']:
             self.assertNotIn(unwanted, notes)

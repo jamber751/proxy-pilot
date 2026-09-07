@@ -15,7 +15,7 @@ notarized: macOS Gatekeeper prompts still apply.
 - No automatic downloads/installations or forced restart. The user confirms
   installation. Sparkle may request administrator authorization if the app is
   not writable by the current user.
-- The update window uses compact Russian HTML notes from `.github/update-notes.html`.
+- The update window uses compact English HTML notes from `.github/update-notes.html`.
   Full GitHub release notes and first-install instructions remain separate in
   `.github/release-notes.md`. Update both files for each release before signing.
 - Configuration remains outside the bundle. The whole app, CLI and GOST update
@@ -104,12 +104,12 @@ the requested tag, tests the bundle, signs it, uploads all three assets to a
 draft and only then publishes it. Published signed releases are immutable; make
 a newer version instead of replacing an existing package.
 
-For the prepared 1.5.0 release, after the signing secret is configured and CI is
+For the prepared 1.5.1 release, after the signing secret is configured and CI is
 green, create and push the release tag from the reviewed commit on `main`:
 
 ```sh
-git tag v1.5.0
-git push origin v1.5.0
+git tag v1.5.1
+git push origin v1.5.1
 ```
 
 Feed URL: `https://github.com/jamber751/proxy-pilot/releases/latest/download/appcast.xml`.
@@ -139,7 +139,7 @@ invalid signatures, read-only installation and relaunch. Check enabled, disabled
 and stopped bridges, and configured SOCKS5/HTTP routes. Do not test by replacing
 the user's installed app without explicit intent to install it.
 
-### Local verification, 2026-09-07
+### Initial 1.5.0 local verification, 2026-09-07
 
 - Universal arm64/x86_64 app and GOST built; deep code-signature check passed.
 - DMG filesystem checksums verified; ZIP and feed signed with the Keychain key.
@@ -158,8 +158,9 @@ the user's installed app without explicit intent to install it.
 
 Not yet verified: real ProxyPilot-to-ProxyPilot replacement during active user
 traffic; authorization on an unwritable app; first install of a quarantined
-download on a clean Mac; the GitHub-hosted pipeline. The GitHub signing secret
-and public release are intentionally not created by this local implementation.
+download on a clean Mac. The GitHub-hosted pipeline subsequently published
+v1.5.0 successfully using the existing encrypted signing secret. Release builds
+also run the manual-update result checks against the freshly signed feed.
 
 References: [Sparkle setup](https://sparkle-project.org/documentation/),
 [gentle reminders](https://sparkle-project.org/documentation/gentle-reminders/),
