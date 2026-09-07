@@ -22,9 +22,12 @@ HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
               'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNHelperListener.swift', 'VPNLaunchdRuntime.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift']
+              'VPNLaunchdRuntime.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNHelperListener.swift']
+           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
+           'VPNHelperListener.swift']
+# The helper re-validates profiles with the application's own importer.
+IMPORTER = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
@@ -44,7 +47,8 @@ class VPNLaunchdTests(unittest.TestCase):
         for name, sources, flags in [
             ('driver', [HELPER / source for source in COMPONENTS] + [ROOT / 'tests/vpn_launchd_checks.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING']),
-            ('server', [HELPER / source for source in SERVICE] + [ROOT / 'tests/vpn_helper_service.swift'], []),
+            ('server', [HELPER / source for source in SERVICE] + IMPORTER
+             + [ROOT / 'tests/vpn_helper_service.swift'], []),
             ('idle', [cls.work / 'idle.swift'], []),
         ]:
             slices = []

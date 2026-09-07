@@ -21,10 +21,14 @@ HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
               'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNHelperListener.swift', 'VPNDirectoryProvisioner.swift', 'VPNLaunchdRuntime.swift',
-              'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNInstaller.swift']
+              'VPNDirectoryProvisioner.swift', 'VPNLaunchdRuntime.swift',
+              'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNProfileVault.swift',
+              'VPNInstaller.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNHelperListener.swift']
+           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
+           'VPNHelperListener.swift']
+# The helper re-validates profiles with the application's own importer.
+IMPORTER = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
 SEAMS = ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING', '-D', 'VPN_INSTALLER_TESTING']
 
 
@@ -42,7 +46,8 @@ class VPNInstallerTests(unittest.TestCase):
         cls.work = Path(cls.build.name)
         for name, sources, flags in [
             ('installer', [HELPER / source for source in COMPONENTS] + [ROOT / 'tests/vpn_installer_checks.swift'], SEAMS),
-            ('server', [HELPER / source for source in SERVICE] + [ROOT / 'tests/vpn_helper_service.swift'], []),
+            ('server', [HELPER / source for source in SERVICE] + IMPORTER
+             + [ROOT / 'tests/vpn_helper_service.swift'], []),
         ]:
             slices = []
             for arch in ('arm64', 'x86_64'):

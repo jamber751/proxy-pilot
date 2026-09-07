@@ -166,11 +166,12 @@ enum VPNInstaller {
     }
 
     private static func removable(_ name: String) -> Bool {
-        if ["initialized", "release.json", "release.lock", "activation.json",
-            VPNLifecycleLease.lockName, VPNHelperListener.socketName].contains(name) { return true }
+        if ["initialized", "release.json", "release.lock", "activation.json", VPNProfileVault.name,
+            VPNLifecycleLease.lockName, VPNHelperProtocol.socketName].contains(name) { return true }
         if name.hasPrefix("helper-"), name.count == 71,
            name.dropFirst(7).allSatisfy({ $0.isHexDigit && !$0.isUppercase }) { return true }
-        if name.hasSuffix(".tmp"), name.hasPrefix(".release-") || name.hasPrefix(".activation-") { return true }
+        if name.hasSuffix(".tmp"), name.hasPrefix(".release-") || name.hasPrefix(".activation-")
+            || name.hasPrefix(".profile-") { return true }
         return false
     }
 

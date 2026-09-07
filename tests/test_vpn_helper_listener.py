@@ -18,6 +18,18 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'app/vpn-helper'
+PROFILE = '''client
+dev tun
+proto udp
+remote vpn.company.example 1194
+remote-cert-tls server
+auth-user-pass
+<ca>
+-----BEGIN CERTIFICATE-----
+QUJDRA==
+-----END CERTIFICATE-----
+</ca>
+'''
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
@@ -31,7 +43,8 @@ class VPNHelperListenerTests(unittest.TestCase):
         cls.work = Path(cls.build.name)
         for name, sources, flags in [
             ('service', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-                         'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNHelperListener.swift'], []),
+                         'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
+                         'VPNHelperListener.swift'], []),
             # The probe's normal build demands a root server, which no test may
             # run: only the client side uses the narrow test-policy seam here.
             ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
@@ -40,6 +53,9 @@ class VPNHelperListenerTests(unittest.TestCase):
         ]:
             main = 'vpn_helper_service.swift' if name == 'service' else 'vpn_readiness_checks.swift'
             files = [HELPER / source for source in sources] + [ROOT / 'tests' / main]
+            if name == 'service':
+                # The helper re-validates profiles with the application's own importer.
+                files += [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
             slices = []
             for arch in ('arm64', 'x86_64'):
                 output = cls.work / f'{name}-{arch}'
@@ -230,3 +246,48 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.seed()
         self.serve()
         self.assertEqual(self.session('garbage'), ['answer:closed'])
+
+    def store_profile(self, text):
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(text)
+        return self.session(f'profile={candidate}')
+
+    def test_a_valid_profile_is_revalidated_and_kept(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.store_profile(PROFILE), ['answer:0 body:0'])
+        stored = self.storage / 'profile.ovpn'
+        # What is kept is the importer's normalized form, not the client's bytes.
+        kept = stored.read_text()
+        self.assertIn('remote "vpn.company.example" "1194"', kept)
+        self.assertIn('BEGIN CERTIFICATE', kept)
+        # The importer's hardening travels with the stored bytes.
+        self.assertIn('script-security 1', kept)
+        self.assertEqual(stored.stat().st_mode & 0o7777, 0o600)
+
+    def test_the_helper_refuses_what_its_own_importer_rejects(self):
+        self.seed()
+        self.serve()
+        # A client could have "imported" this happily; the helper decides again.
+        self.assertEqual(self.store_profile(PROFILE + 'up /tmp/script\n'), ['answer:2 body:0'])
+        self.assertFalse((self.storage / 'profile.ovpn').exists())
+
+    def test_a_rejected_profile_leaves_the_stored_one_untouched(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.store_profile(PROFILE), ['answer:0 body:0'])
+        kept = (self.storage / 'profile.ovpn').read_text()
+        self.assertEqual(self.store_profile('not a profile'), ['answer:2 body:0'])
+        self.assertEqual((self.storage / 'profile.ovpn').read_text(), kept)
+
+    def test_an_empty_profile_is_refused(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.store_profile(''), ['answer:2 body:0'])
+        self.assertFalse((self.storage / 'profile.ovpn').exists())
+
+    def test_a_profile_larger_than_the_frame_limit_is_never_sent(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.store_profile(PROFILE + '#' + 'x' * 70000), ['request:payloadTooLarge'])
+        self.assertFalse((self.storage / 'profile.ovpn').exists())

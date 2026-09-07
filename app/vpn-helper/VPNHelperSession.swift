@@ -1,7 +1,7 @@
 import Darwin
 import Dispatch
 
-enum VPNHelperSessionError: Error { case exhausted, closed, invalidResponse, timeout, transport }
+enum VPNHelperSessionError: Error { case exhausted, closed, payloadTooLarge, invalidResponse, timeout, transport }
 
 /// Client side of one short conversation with the helper: authenticate readiness
 /// first, then send a bounded number of typed requests on that same connection.
@@ -60,7 +60,7 @@ final class VPNHelperSession {
     func request(_ operation: VPNHelperOperation, payload: [UInt8] = []) throws -> (VPNHelperStatus, [UInt8]) {
         guard socket >= 0 else { throw VPNHelperSessionError.closed }
         guard remaining > 0 else { throw VPNHelperSessionError.exhausted }
-        guard payload.count <= VPNHelperProtocol.maximumPayloadBytes else { throw VPNHelperSessionError.invalidResponse }
+        guard payload.count <= VPNHelperProtocol.maximumPayloadBytes else { throw VPNHelperSessionError.payloadTooLarge }
         remaining -= 1
         let deadline = DispatchTime.now().uptimeNanoseconds
             + UInt64(VPNHelperProtocol.requestTimeoutMilliseconds) * 1_000_000

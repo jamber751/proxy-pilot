@@ -98,6 +98,17 @@ enum VPNReadinessChecks {
         let fd = connect(path)
         do {
             let release = try fixtureRelease(pin: pin)
+            if scenario.hasPrefix("profile=") {
+                let path = String(scenario.dropFirst("profile=".count))
+                let bytes = [UInt8](try Data(contentsOf: URL(fileURLWithPath: path)))
+                let session = try VPNHelperSession.testOpen(takingSocket: fd, release: release,
+                                                            timeoutMilliseconds: timeout)
+                do {
+                    let (status, body) = try session.request(.storeProfile, payload: bytes)
+                    print("answer:\(status.rawValue) body:\(body.count)")
+                } catch { print("request:\(error)") }
+                return
+            }
             if ["status", "twice", "limit"].contains(scenario) {
                 let session = try VPNHelperSession.testOpen(takingSocket: fd, release: release,
                                                             timeoutMilliseconds: timeout)

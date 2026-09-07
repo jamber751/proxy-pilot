@@ -9,6 +9,9 @@ enum VPNHelperTransportError: Error { case timeout, transport }
 /// not something a client can request or a payload can imply.
 enum VPNHelperOperation: UInt16 {
     case status = 1
+    /// Hands the helper profile bytes to re-validate and keep. It never makes
+    /// the helper connect, route or resolve anything.
+    case storeProfile = 2
 }
 
 enum VPNHelperStatus: UInt16 {
@@ -19,6 +22,9 @@ enum VPNHelperStatus: UInt16 {
 }
 
 enum VPNHelperProtocol {
+    /// One definition of the endpoint name, shared by the helper that binds it
+    /// and the adapter that waits for, connects to and removes it.
+    static let socketName = "helper.sock"
     static let requestMagic = Array("PPVNOP01".utf8)
     static let responseMagic = Array("PPVNRS01".utf8)
     /// A request header is magic, operation, revision and payload length.

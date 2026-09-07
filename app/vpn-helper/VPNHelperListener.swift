@@ -10,12 +10,13 @@ enum VPNHelperListenerError: Error { case unsafeStorage, unavailable, invalidTim
 /// operation a caller can name. Every connection is authenticated as the owner's
 /// signed application, bounded by a deadline, and served one at a time.
 final class VPNHelperListener {
-    static let socketName = "helper.sock"
+    static let socketName = VPNHelperProtocol.socketName
     private static let request = Array("PPVNRQ01".utf8)
     private static let response = Array("PPVNOK01".utf8)
     private var listener: Int32
     private let release: VerifiedVPNRelease
     private let policy: VPNPeerPolicy
+    private let vault: VPNProfileVault
 
     /// Creates the fixed endpoint inside an already-protected directory. It never
     /// unlinks an existing socket: a stale endpoint means the supervisor did not
@@ -68,13 +69,20 @@ final class VPNHelperListener {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unavailable
         }
-        return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy)
+        do {
+            let vault = try VPNProfileVault(trustedDirectoryDescriptor: directory)
+            return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy, vault: vault)
+        } catch {
+            Darwin.close(socketDescriptor)
+            throw VPNHelperListenerError.unsafeStorage
+        }
     }
 
-    private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy) {
+    private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy, vault: VPNProfileVault) {
         self.listener = listener
         self.release = release
         self.policy = policy
+        self.vault = vault
     }
 
     deinit { close() }
@@ -139,19 +147,21 @@ final class VPNHelperListener {
             try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
             // A client that believes it is talking to another build is answered
             // with a refusal, never with an operation meant for that build.
+            // A refusal is still an answer: break to the farewell below rather
+            // than closing here, or the reset would lose the answer we just sent.
             guard VPNHelperProtocol.number(header[10..<18]) == release.sequence else {
                 try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
-                return
+                break
             }
             guard let operation = VPNHelperOperation(rawValue: UInt16(VPNHelperProtocol.number(header[8..<10]))) else {
                 try answer(.unsupported, payload: [], to: client, deadline: deadline)
-                return
+                break
             }
             switch operation {
             case .status:
                 guard payload.isEmpty else {
                     try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
-                    return
+                    break
                 }
                 // Reaching this point already means the helper answered its
                 // readiness challenge, so the answer is the release it serves.
@@ -159,6 +169,17 @@ final class VPNHelperListener {
                 let body = VPNHelperProtocol.encode(release.sequence)
                     + VPNHelperProtocol.encode(release.protocolVersion)
                 try answer(.ok, payload: body, to: client, deadline: deadline)
+            case .storeProfile:
+                // The client's own import decided nothing: the helper inspects
+                // the bytes again with the same importer before keeping them.
+                // Rejection leaves the previously stored profile untouched.
+                guard !payload.isEmpty,
+                      let profile = try? VPNProfileImporter.inspect(data: Data(payload), name: "profile.ovpn"),
+                      (try? vault.save(profile.protectedContents)) != nil else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                try answer(.ok, payload: [], to: client, deadline: deadline)
             }
         }
         // The budget is spent, but the peer still has to read the last answer.

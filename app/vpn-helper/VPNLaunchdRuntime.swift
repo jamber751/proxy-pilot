@@ -18,8 +18,7 @@ enum VPNLaunchdError: Error {
 /// It starts an idle helper only: no profile, routes, DNS or VPN operation.
 final class VPNLaunchdRuntime: VPNActivationRuntime {
     static let productionLabel = "kz.documentolog.proxypilot.vpn-helper"
-    // One definition of the endpoint name, shared with the helper side.
-    private static let socketName = VPNHelperListener.socketName
+    private static let socketName = VPNHelperProtocol.socketName
     private static let launchctl = "/bin/launchctl"
     private let domain: String
     private let label: String

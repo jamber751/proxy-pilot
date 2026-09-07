@@ -451,8 +451,20 @@ unknown operation is refused, a request for another revision is refused, an
 unexpected payload is refused, an oversized frame ends the connection quickly
 rather than after a deadline, and a malformed frame ends it too.
 
-There are still no privileged operations: `status` reads nothing and changes
-nothing, and no profile, route, DNS or subprocess work exists to dispatch.
+`storeProfile` is the first operation that changes anything. The helper does not
+trust the client's import: it inspects the bytes again with the **same importer
+the application uses**, and keeps only the importer's normalized, hardened output
+in `profile.ovpn` (`0600`) inside the protected directory. `VPNProfileVault`
+writes it atomically — temporary file, `fsync`, rename, `fsync` — so a refusal or
+an interrupted write leaves the previously stored profile exactly as it was, and
+never a truncated one. A profile larger than the frame limit never leaves the
+client. Storing a profile still connects nothing: no routes, no DNS, no OpenVPN.
+
+Five more tests cover it: a valid profile is re-validated and kept in normalized
+form, the helper refuses what its own importer rejects even when a client
+accepted it, a rejected profile leaves the stored one untouched, an empty payload
+is refused, and an oversized profile is never sent. A mutation that stores the
+client's bytes unchecked fails three of them.
 
 ## Manual off and a durable attempt budget
 
