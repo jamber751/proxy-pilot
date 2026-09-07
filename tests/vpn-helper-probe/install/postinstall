@@ -1,0 +1,10 @@
+#!/bin/zsh
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[[ $EUID == 0 && ${3:-} == / ]] || exit 77
+/usr/sbin/chown root:wheel /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist /Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe
+/bin/chmod 644 /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist
+/bin/chmod 755 /Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe
+/usr/bin/codesign --verify --strict /Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe
+/bin/launchctl bootstrap system /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist
+/Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe --check-installed

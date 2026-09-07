@@ -1,0 +1,30 @@
+#!/bin/zsh
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[[ $EUID == 0 && ${3:-} == / ]] || exit 77
+for parent in /Library/LaunchDaemons /Library/PrivilegedHelperTools; do
+  [[ ! -L "$parent" ]] || exit 77
+  if [[ -e "$parent" ]]; then
+    [[ -d "$parent" && $(/usr/bin/stat -f %u "$parent") == 0 ]] || exit 77
+    mode=$(/usr/bin/stat -f %Lp "$parent")
+    (( (8#$mode & 8#022) == 0 )) || exit 77
+  fi
+done
+for item in /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist /Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe; do
+  [[ ! -L "$item" ]] || exit 77
+  if [[ -e "$item" ]]; then
+    [[ -f "$item" && $(/usr/bin/stat -f %u "$item") == 0 && $(/usr/bin/stat -f %l "$item") == 1 ]] || exit 77
+  fi
+done
+if [[ -e /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist ]]; then
+  [[ $(/usr/libexec/PlistBuddy -c 'Print :Label' /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist) == kz.documentolog.proxypilot.vpn-probe ]] || exit 77
+  [[ $(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist) == /Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe ]] || exit 77
+fi
+if /bin/launchctl print system/kz.documentolog.proxypilot.vpn-probe >/dev/null 2>&1; then
+  /bin/launchctl bootout system/kz.documentolog.proxypilot.vpn-probe
+fi
+# Only these two inert probe files; never a directory, legacy VPN or application data.
+/bin/rm -f -- /Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-probe.plist /Library/PrivilegedHelperTools/kz.documentolog.proxypilot.vpn-probe
+if /usr/sbin/pkgutil --pkg-info kz.documentolog.proxypilot.vpn-probe >/dev/null 2>&1; then
+  /usr/sbin/pkgutil --forget kz.documentolog.proxypilot.vpn-probe >/dev/null
+fi
