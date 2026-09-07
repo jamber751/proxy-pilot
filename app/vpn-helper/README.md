@@ -32,8 +32,10 @@ not silently accept every later binary with the same identifier.
 
 1. Production bootstrap and pin activation. The release verifier authenticates
    descriptions; the descriptor-relative store below persists and rechecks them.
-   Root-owned directory provisioning and coordinated binary/policy activation
-   are still not implemented. Neither component bootstraps the trusted key.
+   Fixed-directory provisioning and atomic on-disk binary/policy selection are
+   now implemented below, but not integrated or tested through a real root
+   installation. Runtime activation/recovery is still missing. None of these
+   components bootstraps the trusted release key.
 2. Production frontend compatibility: today's ad-hoc app loads Sparkle and does
    not meet this gate's hardening policy. Do not silently disable validation,
    change signing models or raise the macOS floor to get a passing result.
@@ -52,8 +54,10 @@ not silently accept every later binary with the same identifier.
    versions and typed operations; repeat profile/resource validation in the
    privileged process. Never accept arbitrary shell commands, file paths or
    OpenVPN arguments. Bind state-changing operations to the owner and revision.
-5. Atomic helper/policy upgrades and failed-update recovery, plus system-level
-   tests. No routing, DNS, subprocess launch or privileged operation exists here.
+5. Runtime helper activation and failed-start recovery, plus system-level tests.
+   The disk-selection transaction below does not stop/start a service, drain VPN
+   operations or validate a running candidate. No routing/DNS/subprocess launch
+   is implemented in these components.
 
 ## Verification
 
@@ -107,9 +111,10 @@ retries are idempotent. This verifier alone is **not durable anti-rollback**;
 check+commit, but production must provision its root-owned directory and
 coordinate it with helper activation/recovery.
 Missing/corrupt installed state must not be treated as `previous: nil`; that is
-only for an explicitly authorized first installation. Selecting and storing the
-owner UID, trust bootstrap, public-key rotation and artifact activation remain
-unfinished. Do not add a root daemon that enrolls its caller's hash automatically.
+only for an explicitly authorized first installation. Selecting the installation
+owner, trust bootstrap, public-key rotation and runtime artifact activation remain
+unfinished. The store retains the explicitly provided owner but does not
+authenticate that first-install choice. Do not let a caller enroll its own hash.
 
 ```sh
 python3 -m unittest discover -s tests -p test_vpn_release_authorization.py -v
@@ -138,8 +143,9 @@ a client-supplied path. It duplicates the descriptor close-on-exec, requires the
 directory owner to equal its effective UID and permissions 0700, and rejects
 extended ACL entries. Production must run this in the root helper against a
 fixed root-owned directory with protected ancestors; it must not reuse the
-unprivileged app's VPN data directory. Directory provisioning and IPC wiring are
-still absent. Tests run as the current user with isolated 0700 directories.
+unprivileged app's VPN data directory. Directory provisioning now has a fixed-path
+primitive described below; installation and IPC wiring are still absent. Tests
+run as the current user with isolated 0700 directories.
 
 Each operation takes a nonblocking cross-process lock and uses descriptor-relative
 access with no symlink following. Record/marker/lock must be singly linked regular
@@ -183,6 +189,75 @@ older valid snapshot, and cannot replace authenticated key bootstrap or binary
 validation. Working application and installation packages still do not include
 this component.
 
+## Protected installation directory
+
+`VPNDirectoryProvisioner.openSystemDirectory(create:)` checks for UID 0 before
+opening anything. It walks `/` → `Library` → `Application Support` using separate
+no-follow directory opens, checks root ownership, a local filesystem, non-writable
+group/other permissions and absence of ACL entries, then opens/creates only
+`ProxyPilot/VPN` with 0700 permissions. Existing incompatible directories are
+rejected, never chowned/chmodded or cleared. A caller owns the returned close-on-exec
+descriptor and may pass it to the store. There is no user-provided system path.
+
+The internal descriptor-relative primitive is tested under a private temporary
+base owned by the test UID. Production must only enter through the root-gated
+system function after installation authorization. Tests explicitly refuse to
+exercise the production function when elevated. Its successful full `/Library`
+walk still needs live acceptance, especially on machines with existing ACLs or
+earlier installations. The current run created no system directory.
+
+## Atomic on-disk binary/policy selection (schema 2)
+
+`bootstrapDeployment`, `commitDeployment` and `loadDeployment` bind a signed
+release description to a content-addressed executable, `helper-<SHA256>`:
+
+1. Verify the release signature, owner/sequence and exact candidate bytes.
+2. Create a private 0700 temporary executable. `VPNHelperArtifact` checks the
+   universal format, exactly arm64/x86_64 slices, executable file type, each
+   architecture's expected CDHash and helper identifier, valid native signatures,
+   hardened runtime/hard/kill flags and absence of entitlements. Checks explicitly
+   cover all architectures and disable network access (no notarization claim).
+3. Sync and publish the verified executable under its derived basename. Recheck
+   an already staged file too; never overwrite corrupt/linked candidates silently.
+4. Atomically replace one schema-2 `release.json` record. That record selects both
+   the policy and the exact executable. Keep the old executable; do not remove it
+   during this transaction. Re-read/verify the selected file on every load.
+
+The accepted universal form is FAT32 with two ordinary arm64/x86_64 slices, matching
+the current build; thin, extra-architecture and malformed files fail closed. The
+protected local directory must not be concurrently writable by untrusted parties:
+Apple's static signature API is path-based. The validator cross-checks the opened
+file's device/inode against the resolved path but does not defend against root
+deliberately modifying it during validation.
+
+Policy-only schema-1 methods cannot update schema-2 deployments. Schema 1 is not
+silently migrated to schema 2. A crash after publishing the candidate but before
+the selector leaves the old pair selected; retry rechecks/reuses the candidate.
+A crash after replacing the selector leaves the new complete pair selected.
+Corrupt/missing selected code fails closed, not an automatic fallback to an old
+binary. Old/unselected artifacts and private crash leftovers are retained; bounded
+cleanup and installation recovery still require a lifecycle design.
+
+`VPNAuthorizedDeployment` means **verified on disk**, not running, healthy or VPN
+connected. Do not wire `commitDeployment` directly to an unauthenticated download
+request. A runtime coordinator still needs quiescence, authenticated candidate
+startup/health checks, commit ordering, restart recovery and a deliberate policy
+for failed startup without undoing the accepted security floor. This is not a
+completed launchd update/rollback implementation.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_directory.py -v
+python3 -m unittest discover -s tests -p test_vpn_deployment.py -v
+```
+
+Seven directory tests and nineteen deployment tests use disposable local files,
+real universal ad-hoc signatures and separate coordinator processes. They cover
+both architecture pins/signatures (including a weak or differently identified
+Intel slice), malformed code, modes/ACLs/links, corruption, stale/repeated writes,
+and forced process exits around candidate/selector replacement. The C helper
+fixtures are inert and **never executed**. These tests neither register a service
+nor establish power-loss durability or successful root installation.
+
 ## References
 
 - macOS public SDK: `sys/un.h` (`LOCAL_PEERTOKEN`), Security `SecCode.h`
@@ -195,3 +270,4 @@ this component.
 - [Apple: CryptoKit Ed25519 verification](https://developer.apple.com/documentation/cryptokit/curve25519/signing/publickey).
 - Apple libc sources: [ACL descriptor lookup](https://github.com/apple-oss-distributions/Libc/blob/main/posix1e/acl_file.c)
   and [absent ACL property semantics](https://github.com/apple-oss-distributions/Libc/blob/main/gen/filesec.c).
+- [Apple: validating all slices and limits of static code validation](https://developer.apple.com/documentation/security/secstaticcodecheckvalidity(_:_:_:)).

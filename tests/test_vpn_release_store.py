@@ -25,7 +25,7 @@ class VPNReleaseStoreTests(unittest.TestCase):
         cls.addClassCleanup(cls.build.cleanup)
         directory = Path(cls.build.name)
         sources = [ROOT / 'app/vpn-helper' / file for file in
-                   ('VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNReleaseStore.swift')]
+                   ('VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift', 'VPNReleaseStore.swift')]
         sources.append(ROOT / 'tests/vpn_release_store_checks.swift')
         slices = []
         for arch in ('arm64', 'x86_64'):

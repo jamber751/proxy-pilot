@@ -19,14 +19,14 @@ struct VerifiedVPNRelease {
     let version: String
     let protocolVersion: UInt64
     fileprivate let appHashes: Set<Data>
-    fileprivate let helperHashes: Set<Data>
+    fileprivate let helperHashes: [String: Data]
     fileprivate let helperSHA256: Data
     fileprivate let helperByteCount: Int
     fileprivate let payloadDigest: Data
     fileprivate let authorityDigest: Data
 
     fileprivate init(sequence: UInt64, version: String, protocolVersion: UInt64,
-                     appHashes: Set<Data>, helperHashes: Set<Data>, helperSHA256: Data,
+                     appHashes: Set<Data>, helperHashes: [String: Data], helperSHA256: Data,
                      helperByteCount: Int, payloadDigest: Data, authorityDigest: Data) {
         self.sequence = sequence
         self.version = version
@@ -53,6 +53,13 @@ struct VerifiedVPNRelease {
             throw VPNReleaseAuthorizationError.invalidHelperArtifact
         }
     }
+
+    // Content-addressed basename only; never accept an artifact path from IPC.
+    var helperArtifactName: String {
+        "helper-" + helperSHA256.map { String(format: "%02x", $0) }.joined()
+    }
+
+    func helperHash(forArchitecture architecture: String) -> Data? { helperHashes[architecture] }
 }
 
 /// Verification-only building block; not linked to the app or an installer.
@@ -142,7 +149,7 @@ struct VPNReleaseAuthority {
         }
         return VerifiedVPNRelease(
             sequence: sequence, version: values[3], protocolVersion: protocolVersion,
-            appHashes: [appARM, appIntel], helperHashes: [helperARM, helperIntel],
+            appHashes: [appARM, appIntel], helperHashes: ["arm64": helperARM, "x86_64": helperIntel],
             helperSHA256: helperHash, helperByteCount: Int(helperBytes),
             payloadDigest: digest, authorityDigest: authorityDigest)
     }
