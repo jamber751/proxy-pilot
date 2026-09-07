@@ -51,11 +51,15 @@ enum VPNLaunchdChecks {
             do { lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: owned) }
             catch { close(owned); print("ownership:\(error)"); exit(78) }
             close(owned)
-            let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease)
+            let budgetDirectory = open(storagePath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard budgetDirectory >= 0 else { exit(77) }
+            let budget = try VPNActivationBudget(trustedDirectoryDescriptor: budgetDirectory)
+            close(budgetDirectory)
+            let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease, budget: budget)
             do {
-                let ready = args[1] == "recover" ? try coordinator.recoverSelected()
+                let ready = args[1] == "recover" ? try coordinator.recoverSelected(intent: .explicit)
                     : try coordinator.update(payload: payload, signature: signature,
-                                             helper: helper, expectedSequence: expected)
+                                             helper: helper, expectedSequence: expected, intent: .explicit)
                 print("ready:\(ready.release.sequence)")
             } catch let failure as VPNActivationFailure {
                 print("failure:\(failure.phase) cleanup:\(failure.cleanupConfirmed)")

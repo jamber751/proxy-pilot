@@ -29,7 +29,7 @@ class VPNActivationTests(unittest.TestCase):
         for name, source_names, main, flags in [
             ('server', common, 'vpn_readiness_checks.swift', []),
             ('coordinator', common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift',
-                                       'VPNLifecycleOwnership.swift', 'VPNActivationCoordinator.swift'],
+                                       'VPNLifecycleOwnership.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift'],
              'vpn_activation_checks.swift', ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_RELEASE_STORE_TESTING']),
         ]:
             sources = [ROOT / 'app/vpn-helper' / source for source in source_names] + [ROOT / 'tests' / main]
@@ -42,7 +42,7 @@ class VPNActivationTests(unittest.TestCase):
         # Ensure the coordinator also compiles without either test-only seam.
         sources = [ROOT / 'app/vpn-helper' / source for source in
                    common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift',
-                             'VPNLifecycleOwnership.swift', 'VPNActivationCoordinator.swift']]
+                             'VPNLifecycleOwnership.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift']]
         for arch in ('arm64', 'x86_64'):
             cls.command(['swiftc', '-emit-library', '-target', f'{arch}-apple-macosx11.0', *map(str, sources),
                          '-o', str(cls.work / f'production-{arch}.dylib')])
@@ -238,3 +238,76 @@ class VPNActivationTests(unittest.TestCase):
         # One stop only: cleanup here could stop the new owner's service.
         self.assertEqual(result.stdout.splitlines(), ['stop:1', 'start:11', 'ownership:lost'])
         self.assertEqual(self.selected(), 11)
+
+    def budget(self):
+        result = self.run_coordinator('budget')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state, failures = result.stdout.strip().split(' ')
+        return state.split(':')[1], int(failures.split(':')[1])
+
+    def test_successful_activation_leaves_the_budget_clear(self):
+        self.assertEqual(self.run_coordinator().stdout.splitlines()[-1], 'ready:11')
+        self.assertEqual(self.budget(), ('on', 0))
+
+    def test_invalid_request_never_spends_an_attempt(self):
+        self.assertEqual(self.run_coordinator(mode='bad-signature').returncode, 77)
+        self.assertEqual(self.budget(), ('on', 0))
+
+    def test_automatic_attempts_stop_after_repeated_failures(self):
+        # One update commits the new selection; the retries are recoveries of it.
+        self.assertIn('failure:', self.run_coordinator('update-auto', mode='start-fails').stdout)
+        for _ in range(2):
+            self.assertIn('failure:', self.run_coordinator('recover-auto', mode='start-fails').stdout)
+        self.assertEqual(self.budget(), ('on', 3))
+        blocked = self.run_coordinator('recover-auto')
+        self.assertEqual(blocked.returncode, 79, blocked.stdout + blocked.stderr)
+        self.assertEqual(blocked.stdout.strip(), 'budget:exhausted')
+        self.assertNotIn('stop:', blocked.stdout)
+
+    def test_an_explicit_attempt_survives_an_exhausted_budget_and_clears_it(self):
+        self.run_coordinator('update-auto', mode='start-fails')
+        for _ in range(2):
+            self.run_coordinator('recover-auto', mode='start-fails')
+        self.assertEqual(self.budget(), ('on', 3))
+        recovered = self.run_coordinator('recover')
+        self.assertEqual(recovered.stdout.splitlines()[-1], 'ready:11', recovered.stdout + recovered.stderr)
+        self.assertEqual(self.budget(), ('on', 0))
+
+    def test_a_crashed_attempt_is_still_charged(self):
+        self.assertEqual(self.run_coordinator(mode='crash-before-commit').returncode, 86)
+        self.assertEqual(self.budget(), ('on', 1))
+
+    def test_manual_off_outranks_automatic_activation(self):
+        self.assertEqual(self.run_coordinator('turn-off').stdout.splitlines(), ['stop:1', 'turned-off'])
+        self.assertEqual(self.budget(), ('off', 0))
+        blocked = self.run_coordinator('update-auto')
+        self.assertEqual(blocked.returncode, 79, blocked.stdout + blocked.stderr)
+        self.assertEqual(blocked.stdout.strip(), 'budget:turnedOff')
+        self.assertNotIn('stop:', blocked.stdout)
+        self.assertEqual(self.selected(), 10)
+
+    def test_the_owner_can_turn_the_vpn_back_on(self):
+        self.run_coordinator('turn-off')
+        result = self.run_coordinator()
+        self.assertEqual(result.stdout.splitlines()[-1], 'ready:11', result.stdout + result.stderr)
+        self.assertEqual(self.budget(), ('on', 0))
+
+    def test_manual_off_persists_when_the_stop_fails(self):
+        result = self.run_coordinator('turn-off', mode='stop-fails')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertIn('failure:stop', result.stdout)
+        self.assertEqual(self.budget(), ('off', 0))
+
+    def test_a_damaged_budget_is_never_repaired_into_a_fresh_one(self):
+        (self.directory / 'activation.json').write_text('{"schema":1,"desired":true,"failures":99}')
+        (self.directory / 'activation.json').chmod(0o600)
+        blocked = self.run_coordinator()
+        self.assertEqual(blocked.returncode, 79, blocked.stdout + blocked.stderr)
+        self.assertEqual(blocked.stdout.strip(), 'budget:invalidState')
+        self.assertNotIn('stop:', blocked.stdout)
+
+    def test_a_group_readable_budget_is_refused(self):
+        self.run_coordinator('turn-off')
+        (self.directory / 'activation.json').chmod(0o640)
+        blocked = self.run_coordinator()
+        self.assertEqual(blocked.stdout.strip(), 'budget:unsafeStorage')

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNHelperListener.swift', 'VPNLaunchdRuntime.swift', 'VPNActivationCoordinator.swift']
+              'VPNHelperListener.swift', 'VPNLaunchdRuntime.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
            'VPNReleaseStore.swift', 'VPNHelperListener.swift']
 

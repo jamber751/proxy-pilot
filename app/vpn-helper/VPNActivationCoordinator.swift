@@ -27,19 +27,25 @@ final class VPNActivationCoordinator {
     private let store: VPNReleaseStore
     private let runtime: VPNActivationRuntime
     private let lease: VPNLifecycleLease
+    private let budget: VPNActivationBudget
     private let gate = NSLock()
 
-    init(store: VPNReleaseStore, runtime: VPNActivationRuntime, lease: VPNLifecycleLease) {
+    init(store: VPNReleaseStore, runtime: VPNActivationRuntime, lease: VPNLifecycleLease,
+         budget: VPNActivationBudget) {
         self.store = store
         self.runtime = runtime
         self.lease = lease
+        self.budget = budget
     }
 
-    func update(payload: Data, signature: Data, helper: Data, expectedSequence: UInt64) throws -> VPNHelperReady {
+    func update(payload: Data, signature: Data, helper: Data, expectedSequence: UInt64,
+                intent: VPNActivationIntent) throws -> VPNHelperReady {
         try exclusively {
             // Invalid or obsolete candidates do not stop the working service.
             let prepared = try store.prepareDeployment(payload: payload, signature: signature,
                                                         helper: helper, expectedSequence: expectedSequence)
+            // Charged only once the request is worth starting a service for.
+            try budget.beginAttempt(intent: intent)
             try stop()
             try requireOwnership()
             let selected: VPNAuthorizedDeployment
@@ -56,13 +62,23 @@ final class VPNActivationCoordinator {
     /// Explicit recovery/retry: stop any instance owned by our supervisor,
     /// re-read the authenticated disk selection, then make exactly one attempt.
     /// After a committed update, only the new security floor may be restarted.
-    func recoverSelected() throws -> VPNHelperReady {
+    func recoverSelected(intent: VPNActivationIntent) throws -> VPNHelperReady {
         try exclusively {
+            try budget.beginAttempt(intent: intent)
             try stop()
             let selected: VPNAuthorizedDeployment
             do { selected = try store.loadDeployment() }
             catch { throw VPNActivationFailure(phase: .selection, cleanupConfirmed: true) }
             return try startAndCheck(selected)
+        }
+    }
+
+    /// The owner's decision outranks automation: it is persisted first, so a
+    /// failed or interrupted stop still cannot be undone by an automatic retry.
+    func turnOff() throws {
+        try exclusively {
+            try budget.recordManualOff()
+            try stop()
         }
     }
 
@@ -113,6 +129,8 @@ final class VPNActivationCoordinator {
             phase = .selection
             try requireSelected(selected)
             try requireOwnership()
+            // Only a confirmed activation clears the failure count.
+            try budget.recordSuccess()
             return ready
         } catch VPNActivationCoordinatorError.ownershipLost {
             // Cleanup would stop a service another supervisor may now own.

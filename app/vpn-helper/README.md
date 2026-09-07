@@ -370,6 +370,33 @@ unimplemented — there are no operations to dispatch yet.
 python3 -m unittest discover -s tests -p test_vpn_helper_listener.py -v
 ```
 
+## Manual off and a durable attempt budget
+
+`VPNActivationBudget` answers one question — may we try to start the helper
+again? — from durable state next to the release policy. Two rules: the owner's
+decision to turn the VPN off outranks every automatic attempt, and repeated
+failures stop automatic retries instead of looping. It authorizes nothing on its
+own: it cannot start, stop or select anything, and it is not VPN state.
+
+An attempt is charged **before** it happens, so a process that dies mid-attempt
+has still spent it and a crash loop cannot restart the helper forever. Only a
+confirmed activation clears the count, and that same write records that the VPN
+is meant to be on. An explicit user action is always allowed through — the budget
+bounds automation, not the owner. `turnOff` persists the decision first and stops
+afterwards, so a failed or interrupted stop still cannot be undone by automation.
+A missing record is a first run; a damaged one is refused rather than repaired
+into a fresh budget, which would be the easiest way to defeat both rules. The
+coordinator charges the attempt only once a request is worth starting a service
+for, so an invalid signature or a stale revision never spends one.
+
+Ten activation tests cover a cleared budget after success, an invalid request
+spending nothing, automatic attempts stopping after three failures, an explicit
+attempt surviving an exhausted budget and clearing it, a crashed attempt still
+being charged, manual off outranking automation, the owner turning the VPN back
+on, manual off persisting when the stop fails, a damaged record refused and a
+group-readable record refused. Mutation runs confirm that dropping either rule,
+or charging after the attempt, fails those tests.
+
 ## launchd service adapter (production activation mechanics)
 
 `VPNLaunchdRuntime` is the `VPNActivationRuntime` the coordinator was missing:

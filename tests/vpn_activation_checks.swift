@@ -78,6 +78,15 @@ enum VPNActivationChecks {
             catch { close(fd); throw error }
             close(fd)
             if args[1] == "load" { print("selected:\(try store.loadDeployment().release.sequence)"); return }
+            let budgetDirectory = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard budgetDirectory >= 0 else { exit(77) }
+            let budget = try VPNActivationBudget(trustedDirectoryDescriptor: budgetDirectory)
+            close(budgetDirectory)
+            if args[1] == "budget" {
+                let state = try budget.snapshot()
+                print("budget:\(state.desired ? "on" : "off") failures:\(state.failures)")
+                return
+            }
             let payload = try Data(contentsOf: URL(fileURLWithPath: args[3]))
             let helper = try Data(contentsOf: URL(fileURLWithPath: args[4]))
             var signature = try key.signature(for: VPNReleaseAuthority.signatureDomain + payload)
@@ -93,7 +102,7 @@ enum VPNActivationChecks {
             catch { close(owned); print("ownership:\(error)"); exit(78) }
             close(owned)
             let runtime = FixtureRuntime(directory: URL(fileURLWithPath: args[2]), mode: args[6])
-            let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease)
+            let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease, budget: budget)
             // Replaces the lock the way a second supervisor's provisioning would:
             // our descriptor stays open, but the directory names another file.
             let breakLease = {
@@ -110,7 +119,7 @@ enum VPNActivationChecks {
             if args[6] == "lose-after-start" { runtime.onStart = breakLease }
             if args[6] == "reentrant" {
                 runtime.onStop = {
-                    do { _ = try coordinator.recoverSelected(); throw FixtureFailure.injected }
+                    do { _ = try coordinator.recoverSelected(intent: .explicit); throw FixtureFailure.injected }
                     catch VPNActivationCoordinatorError.busy { print("busy") }
                 }
             }
@@ -138,11 +147,21 @@ enum VPNActivationChecks {
             }
             #endif
             defer { runtime.cleanup(); runtime.onStop = nil; runtime.onStart = nil }
+            let intent: VPNActivationIntent = args[1].hasSuffix("-auto") ? .automatic : .explicit
             do {
+                if args[1] == "turn-off" {
+                    try coordinator.turnOff()
+                    print("turned-off")
+                    exit(0)
+                }
                 let ready: VPNHelperReady
-                if args[1] == "recover" { ready = try coordinator.recoverSelected() }
-                else { ready = try coordinator.update(payload: payload, signature: signature, helper: helper, expectedSequence: expected) }
+                if args[1].hasPrefix("recover") { ready = try coordinator.recoverSelected(intent: intent) }
+                else { ready = try coordinator.update(payload: payload, signature: signature, helper: helper,
+                                                      expectedSequence: expected, intent: intent) }
                 print("ready:\(ready.release.sequence)")
+            } catch let denied as VPNActivationBudgetError {
+                print("budget:\(denied)")
+                status = 79
             } catch let failure as VPNActivationFailure {
                 print("failure:\(failure.phase) cleanup:\(failure.cleanupConfirmed)")
                 status = 77
