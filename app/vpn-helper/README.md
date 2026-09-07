@@ -58,9 +58,10 @@ not silently accept every later binary with the same identifier.
 5. Production helper activation and failed-start recovery, plus system-level tests.
    The disk-selection transaction below does not stop/start a service, drain VPN
    operations or validate a running candidate. No routing/DNS/subprocess launch
-   is implemented in these components. Cross-process lifecycle ownership is now
-   enforced between unprivileged processes, but the launchd adapter that would
-   actually stop, start and confirm cleanup of a root service is still missing.
+   is implemented in these components. Cross-process lifecycle ownership and the
+   launchd adapter now exist and are tested with a real per-user launchd service,
+   but the system domain, root installation authorization and restart policy are
+   untested, and the helper that would serve production requests does not exist.
 
 ## Verification
 
@@ -332,13 +333,57 @@ root ownership under launchd.
 python3 -m unittest discover -s tests -p test_vpn_lifecycle.py -v
 ```
 
-## Single-owner activation coordinator (not launchd integration)
+## launchd service adapter (production activation mechanics)
 
-`VPNActivationCoordinator` now composes staged storage with authenticated
-readiness. It accepts only a trusted local `VPNActivationRuntime` adapter, not
-paths, commands, PIDs or process handles supplied through IPC. There is currently
-**no production adapter**. The isolated test adapter launches inert fixtures as
-the current non-root user; it does not exercise routing/DNS cleanup.
+`VPNLaunchdRuntime` is the `VPNActivationRuntime` the coordinator was missing:
+launchd is the only thing that starts, supervises and stops the fixed service.
+The domain, label, plist location, socket name and argument vector are fixed in
+code — nothing here accepts a path, PID, command or argument from IPC. The
+executable is the content-addressed file the store verified for that deployment,
+rechecked as a private single-link regular file before its path reaches launchd.
+`system()` refuses unless it runs as root and uses `system/` with the fixed
+`/Library/LaunchDaemons` description; a narrow `VPN_LAUNCHD_TESTING` seam adds a
+per-user-domain constructor that is absent from normal builds.
+
+`stopAndDrain` boots the label out (treating "not loaded" as success), then
+**confirms**: launchd no longer knows the label, nothing answers the socket, and
+the leftover endpoint is removed — but only when it is really a socket owned by
+us, never a substituted regular file or symlink. An unconfirmed stop is an error,
+so the coordinator cannot start a second instance on top of a live one.
+`startIdleAndConnect` refuses to start while a socket still exists, writes the
+service description atomically (`0644`, private temporary file, `fsync`, rename,
+`fsync`), bootstraps it and waits for the endpoint until the caller's deadline,
+returning a connected close-on-exec descriptor. Every `launchctl` run is direct
+execution with no shell, no inherited environment and a deadline that kills it.
+
+Eleven tests drive the real adapter through the real coordinator against real
+launchd, in the current user's own GUI domain under a disposable label (never the
+system domain, never `/Library/LaunchDaemons`), and boot the label out afterwards.
+They cover a started service authenticated by the readiness challenge, a stop that
+confirms the label is gone and the helper PID no longer exists, socket removal,
+idempotent stop, a second update replacing a running service with a new process,
+recovery restarting the selected release, a service that never listens failing
+inside the deadline and being unloaded, a foreign file on the socket name halting
+activation, the private atomic description and the root-only production entry.
+
+The started fixture is inert: it binds the socket, answers the challenge and does
+nothing else. This proves the activation mechanics, not a root daemon install: the
+system domain, the installation authorization, socket permissions created by the
+production helper, KeepAlive/restart policy, manual-off precedence and a durable
+attempt budget are still open.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_launchd.py -v
+```
+
+## Single-owner activation coordinator
+
+`VPNActivationCoordinator` composes staged storage with authenticated readiness.
+It accepts only a trusted local `VPNActivationRuntime` adapter, not paths,
+commands, PIDs or process handles supplied through IPC. The launchd adapter above
+is the production implementation; the isolated fixture adapter still drives the
+failure-injection tests as the current non-root user. Neither exercises routing or
+DNS cleanup, because no component performs routing or DNS.
 
 An update makes one attempt, in this order:
 
