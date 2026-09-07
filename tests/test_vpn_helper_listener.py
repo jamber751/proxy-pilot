@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,10 +31,11 @@ class VPNHelperListenerTests(unittest.TestCase):
         cls.work = Path(cls.build.name)
         for name, sources, flags in [
             ('service', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-                         'VPNReleaseStore.swift', 'VPNHelperListener.swift'], []),
+                         'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNHelperListener.swift'], []),
             # The probe's normal build demands a root server, which no test may
             # run: only the client side uses the narrow test-policy seam here.
-            ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift'],
+            ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
+                        'VPNHelperReadiness.swift', 'VPNHelperSession.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING']),
         ]:
             main = 'vpn_helper_service.swift' if name == 'service' else 'vpn_readiness_checks.swift'
@@ -96,6 +98,12 @@ class VPNHelperListenerTests(unittest.TestCase):
         # Never read a live process's stderr here: it would block until exit.
         self.assertEqual(service.stdout.readline().strip(), 'listening')
         return service
+
+    def session(self, scenario, client='client', timeout=2000):
+        result = subprocess.run([str(self.work / client), 'session', str(self.endpoint),
+                                 self.pins['service']['arm64'], str(timeout), scenario],
+                                capture_output=True, text=True, timeout=60)
+        return result.stdout.strip().splitlines()
 
     def probe(self, client='client', timeout=2000):
         result = subprocess.run([str(self.work / client), 'probe', str(self.endpoint),
@@ -168,3 +176,57 @@ class VPNHelperListenerTests(unittest.TestCase):
         silent.connect(str(self.endpoint))
         # The listener spends only its own deadline on this peer, then moves on.
         self.assertEqual(self.probe(timeout=5000), 'ready:10 closed')
+
+    def test_status_answers_the_running_release(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
+
+    def test_several_requests_share_one_authenticated_connection(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('twice'), ['answer:ok sequence:10 protocol:1'] * 2)
+
+    def test_a_connection_is_spent_after_its_request_budget(self):
+        self.seed()
+        self.serve()
+        answers = self.session('limit')
+        self.assertEqual(answers.count('answer:ok sequence:10 protocol:1'), 8)
+        self.assertEqual(answers[-1], 'request9:exhausted')
+        # The listener is free again for the next connection.
+        self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
+
+    def test_an_unknown_operation_is_refused(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('unknown'), ['answer:1'])
+
+    def test_a_request_for_another_revision_is_refused(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('revision'), ['answer:2'])
+
+    def test_an_unexpected_payload_is_refused(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('payload'), ['answer:2'])
+
+    def test_an_oversized_frame_ends_the_connection_without_reading_it(self):
+        self.seed()
+        self.serve()
+        started = time.monotonic()
+        self.assertEqual(self.session('oversize'), ['answer:closed'])
+        # Refused on the header, not by waiting out a deadline for a megabyte.
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
+
+    def test_the_helper_stops_answering_after_its_own_request_budget(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('flood'), ['answered:8'])
+        self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
+
+    def test_a_malformed_frame_ends_the_connection(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.session('garbage'), ['answer:closed'])

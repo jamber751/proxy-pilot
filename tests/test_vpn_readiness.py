@@ -25,7 +25,8 @@ class VPNReadinessTests(unittest.TestCase):
         cls.addClassCleanup(cls.build.cleanup)
         cls.work = Path(cls.build.name)
         sources = [ROOT / 'app/vpn-helper' / name for name in
-                   ('VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift')]
+                   ('VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
+                    'VPNHelperReadiness.swift', 'VPNHelperSession.swift')]
         sources.append(ROOT / 'tests/vpn_readiness_checks.swift')
         for flavor in ('test', 'production'):
             slices = []

@@ -25,7 +25,8 @@ class VPNActivationTests(unittest.TestCase):
         cls.build = tempfile.TemporaryDirectory(prefix='pp-act-build-', dir='/tmp')
         cls.addClassCleanup(cls.build.cleanup)
         cls.work = Path(cls.build.name)
-        common = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift']
+        common = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
+                  'VPNHelperReadiness.swift', 'VPNHelperSession.swift']
         for name, source_names, main, flags in [
             ('server', common, 'vpn_readiness_checks.swift', []),
             ('coordinator', common + ['VPNHelperArtifact.swift', 'VPNReleaseStore.swift',

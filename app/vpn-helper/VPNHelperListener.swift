@@ -93,7 +93,7 @@ final class VPNHelperListener {
         guard (1...5000).contains(timeoutMilliseconds) else { throw VPNHelperListenerError.invalidTimeout }
         guard listener >= 0 else { throw VPNHelperListenerError.unavailable }
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
-        try wait(listener, events: Int16(POLLIN), deadline: deadline)
+        try VPNHelperProtocol.wait(listener, events: Int16(POLLIN), deadline: deadline)
         let client = accept(listener, nil, nil)
         guard client >= 0 else { throw VPNHelperListenerError.unavailable }
         defer { Darwin.close(client) }
@@ -103,7 +103,7 @@ final class VPNHelperListener {
                          socklen_t(MemoryLayout.size(ofValue: enabled))) == 0 else { return false }
         do {
             try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
-            let challenge = try read(count: 56, socket: client, deadline: deadline)
+            let challenge = try VPNHelperProtocol.read(count: 56, socket: client, deadline: deadline)
             guard Array(challenge.prefix(8)) == Self.request,
                   Array(challenge[8..<16]) == Self.encoded(release.protocolVersion),
                   Array(challenge[16..<24]) == Self.encoded(release.sequence) else { return false }
@@ -111,59 +111,71 @@ final class VPNHelperListener {
             // not readiness, and a rejected answer must not be a stale success.
             guard isReady() else { return false }
             try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
-            try write(Self.response + challenge.dropFirst(8), socket: client, deadline: deadline)
-            // Hold the connection while the peer re-checks our running signature;
-            // it closes first, and a slow peer only spends its own deadline.
-            var byte: UInt8 = 0
-            try? wait(client, events: Int16(POLLIN), deadline: deadline)
-            _ = recv(client, &byte, 1, MSG_DONTWAIT)
+            try VPNHelperProtocol.write(Self.response + challenge.dropFirst(8), socket: client, deadline: deadline)
+            // The peer re-checks our running signature and may then spend a
+            // bounded number of typed requests; either way it closes first.
+            try serveRequests(client, isReady: isReady)
             return true
         } catch { return false }
     }
 
+    /// A bounded conversation: at most `maximumRequestsPerConnection` frames,
+    /// each within the connection deadline, each re-authenticated and each bound
+    /// to the release this helper is running. Anything unexpected ends it — the
+    /// listener answers the next connection instead of parsing further.
+    private func serveRequests(_ client: Int32, isReady: () -> Bool) throws {
+        let conversation = DispatchTime.now().uptimeNanoseconds
+            + UInt64(VPNHelperProtocol.conversationTimeoutMilliseconds) * 1_000_000
+        for _ in 0..<VPNHelperProtocol.maximumRequestsPerConnection {
+            let deadline = min(conversation, DispatchTime.now().uptimeNanoseconds
+                + UInt64(VPNHelperProtocol.requestTimeoutMilliseconds) * 1_000_000)
+            guard let header = try VPNHelperProtocol.read(count: VPNHelperProtocol.headerBytes, socket: client,
+                                                          deadline: deadline, allowingClose: true) else { return }
+            guard Array(header.prefix(8)) == VPNHelperProtocol.requestMagic else { return }
+            let length = Int(VPNHelperProtocol.number(header[18..<22]))
+            guard length <= VPNHelperProtocol.maximumPayloadBytes else { return }
+            let payload = length == 0 ? []
+                : try VPNHelperProtocol.read(count: length, socket: client, deadline: deadline)
+            try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
+            // A client that believes it is talking to another build is answered
+            // with a refusal, never with an operation meant for that build.
+            guard VPNHelperProtocol.number(header[10..<18]) == release.sequence else {
+                try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                return
+            }
+            guard let operation = VPNHelperOperation(rawValue: UInt16(VPNHelperProtocol.number(header[8..<10]))) else {
+                try answer(.unsupported, payload: [], to: client, deadline: deadline)
+                return
+            }
+            switch operation {
+            case .status:
+                guard payload.isEmpty else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    return
+                }
+                // Reaching this point already means the helper answered its
+                // readiness challenge, so the answer is the release it serves.
+                _ = isReady()
+                let body = VPNHelperProtocol.encode(release.sequence)
+                    + VPNHelperProtocol.encode(release.protocolVersion)
+                try answer(.ok, payload: body, to: client, deadline: deadline)
+            }
+        }
+        // The budget is spent, but the peer still has to read the last answer.
+        // Closing here would reset the connection and lose it, so wait briefly
+        // for the peer to hang up first; a peer that lingers only costs itself.
+        let farewell = DispatchTime.now().uptimeNanoseconds
+            + UInt64(VPNHelperProtocol.requestTimeoutMilliseconds) * 1_000_000
+        _ = try? VPNHelperProtocol.read(count: 1, socket: client, deadline: farewell, allowingClose: true)
+    }
+
+    private func answer(_ status: VPNHelperStatus, payload: [UInt8], to client: Int32, deadline: UInt64) throws {
+        try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
+        try VPNHelperProtocol.write(VPNHelperProtocol.response(status, payload: payload),
+                                    socket: client, deadline: deadline)
+    }
+
     private static func encoded(_ value: UInt64) -> [UInt8] {
         (0..<8).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
-    }
-
-    private func wait(_ socket: Int32, events: Int16, deadline: UInt64) throws {
-        while true {
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline else { throw VPNHelperListenerError.unavailable }
-            var descriptor = pollfd(fd: socket, events: events, revents: 0)
-            let result = poll(&descriptor, 1, Int32((deadline - now + 999_999) / 1_000_000))
-            if result < 0, errno == EINTR { continue }
-            guard result >= 0 else { throw VPNHelperListenerError.unavailable }
-            if result == 0 { continue }
-            guard descriptor.revents & Int16(POLLNVAL | POLLERR) == 0 else { throw VPNHelperListenerError.unavailable }
-            guard descriptor.revents & (events | Int16(POLLHUP)) != 0 else { continue }
-            return
-        }
-    }
-
-    private func read(count: Int, socket: Int32, deadline: UInt64) throws -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: count), offset = 0
-        while offset < count {
-            try wait(socket, events: Int16(POLLIN), deadline: deadline)
-            let received = bytes.withUnsafeMutableBytes {
-                recv(socket, $0.baseAddress!.advanced(by: offset), count - offset, MSG_DONTWAIT)
-            }
-            if received < 0, [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { continue }
-            guard received > 0 else { throw VPNHelperListenerError.unavailable }
-            offset += received
-        }
-        return bytes
-    }
-
-    private func write(_ bytes: [UInt8], socket: Int32, deadline: UInt64) throws {
-        var offset = 0
-        while offset < bytes.count {
-            try wait(socket, events: Int16(POLLOUT), deadline: deadline)
-            let sent = bytes.withUnsafeBytes {
-                send(socket, $0.baseAddress!.advanced(by: offset), bytes.count - offset, MSG_DONTWAIT)
-            }
-            if sent < 0, [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { continue }
-            guard sent > 0 else { throw VPNHelperListenerError.unavailable }
-            offset += sent
-        }
     }
 }

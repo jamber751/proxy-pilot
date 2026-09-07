@@ -418,6 +418,42 @@ service again; after an uninstall there is nothing left to load.
 Trusted key embedding and rotation, and the updater integration, are still
 missing. Nothing here has been run as root or in the system domain.
 
+## Typed request protocol (1.5c, first half)
+
+`VPNHelperProtocol` is the whole vocabulary the privileged helper understands:
+fixed frames, fixed sizes, no strings, no paths, no shell. A request is magic,
+a 16-bit operation, the 64-bit release revision the client believes it is talking
+to, and a length-prefixed payload; an answer is magic, a status and a payload.
+Adding an operation is a deliberate change in that file, never something a client
+can request or a payload can imply. Today the list holds exactly one operation,
+`status`, which answers with the running release's sequence and protocol version.
+
+The limits are part of the format: at most 64 KiB per payload, at most eight
+requests per connection, a deadline per request (re-authenticating a peer costs
+real time) and a separate cap on the whole conversation, so a slow or idle client
+cannot hold the single-threaded helper for the sum of every deadline. Oversized
+or malformed frames end the connection on the header, without reading the body.
+A request naming another revision is refused rather than answered, so a helper
+that was replaced mid-conversation never applies an operation meant for another
+build. Both ends re-authenticate around every request: no cached authorization,
+no ambient authority. When the budget is spent, the helper waits briefly for the
+peer to hang up instead of resetting the connection over its last answer.
+
+`VPNHelperSession` is the client end: it performs the readiness handshake, then
+spends the same bounded budget on that connection, and closes on any refusal or
+transport error rather than retrying on a connection whose identity it could not
+confirm again. Both ends share one deadline-bounded framing implementation.
+
+Nine tests drive the protocol against the real listener: `status` answers the
+running release, several requests share one authenticated connection, a client's
+budget is spent after eight, the helper stops answering after its own budget, an
+unknown operation is refused, a request for another revision is refused, an
+unexpected payload is refused, an oversized frame ends the connection quickly
+rather than after a deadline, and a malformed frame ends it too.
+
+There are still no privileged operations: `status` reads nothing and changes
+nothing, and no profile, route, DNS or subprocess work exists to dispatch.
+
 ## Manual off and a durable attempt budget
 
 `VPNActivationBudget` answers one question — may we try to start the helper

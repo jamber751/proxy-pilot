@@ -18,12 +18,13 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'app/vpn-helper'
-COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperReadiness.swift',
+COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
+              'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
               'VPNHelperListener.swift', 'VPNDirectoryProvisioner.swift', 'VPNLaunchdRuntime.swift',
               'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNInstaller.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-           'VPNReleaseStore.swift', 'VPNHelperListener.swift']
+           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNHelperListener.swift']
 SEAMS = ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING', '-D', 'VPN_INSTALLER_TESTING']
 
 
