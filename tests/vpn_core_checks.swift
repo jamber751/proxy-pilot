@@ -41,10 +41,47 @@ QUJDRA==
         case "files": try files(directory)
         case "store": try store(directory)
         case "store-security": try storeSecurity(directory)
+        case "migration": try migration()
         default: fatalError("Unknown test group")
         }
         print("\(group): \(count) checks passed")
     }
+    static func migration() throws {
+        func migrated(_ text: String) -> [String] {
+            VPNLegacyMigration.resources(inLegacyConfiguration: text).migrated.map { $0.address }
+        }
+        try check(migrated("VPN_ROUTES=\"10.0.0.0/8 192.168.1.0/24\"\n") == ["10.0.0.0/8", "192.168.1.0/24"],
+                  "plain networks migrate in order")
+        try check(migrated("OFFICE_IP=1.2.3.4\nexport VPN_ROUTES='10.1.0.0/16,10.2.0.0/16'\n")
+                  == ["10.1.0.0/16", "10.2.0.0/16"], "quoting, export and commas")
+        try check(migrated("VPN_ROUTES=10.3.0.0/16 # office\n") == ["10.3.0.0/16"], "unquoted value ends at a comment")
+        try check(migrated("VPN_ROUTES=\"10.4.0.0/16\"\nVPN_ROUTES=\"10.5.0.0/16\"\n") == ["10.5.0.0/16"],
+                  "the last assignment wins")
+        try check(migrated("#VPN_ROUTES=\"10.6.0.0/16\"\n").isEmpty, "commented assignments are ignored")
+        try check(migrated("VPN_ROUTES=\"\"\n").isEmpty && migrated("OFFICE_IP=1.2.3.4\n").isEmpty,
+                  "absent or empty routes migrate nothing")
+
+        let mixed = "VPN_ROUTES=\"10.7.0.0/16 0.0.0.0/0 10.0.0.0/4 gitlab.example 2001:db8::/48 not-an-address 10.7.0.0/16 $(rm -rf /)\""
+        let result = VPNLegacyMigration.resources(inLegacyConfiguration: mixed)
+        try check(result.migrated.map { $0.address } == ["10.7.0.0/16"], "only IPv4 hosts and networks migrate")
+        // The command substitution is only three unparsable words here: nothing
+        // in this path expands, quotes or executes anything from the old file.
+        try check(result.skipped == 9, "everything else is counted as skipped")
+
+        var config = VPNConfiguration()
+        let applied = try VPNLegacyMigration.migrate(into: &config, legacyConfiguration: "VPN_ROUTES=\"10.8.0.0/16 10.9.0.0/16\"")
+        try check(applied.migrated.count == 2 && config.resources.count == 2, "migration fills an empty list")
+        try check(config.profileName == nil && !config.desiredEnabled, "migration never enables the VPN or invents a profile")
+        try check(config.resources.allSatisfy { $0.name.isEmpty }, "migrated resources carry no invented names")
+        do {
+            _ = try VPNLegacyMigration.migrate(into: &config, legacyConfiguration: "VPN_ROUTES=\"10.10.0.0/16\"")
+            throw NSError(domain: "VPNCoreChecks", code: 3, userInfo: [NSLocalizedDescriptionKey: "second migration accepted"])
+        } catch let error as VPNMigrationError {
+            try check(error == .alreadyConfigured, "a configured list is never overwritten")
+        }
+        try config.validate()
+    }
+
     static func resources() throws {
         let examples: [(String, String, VPNResource.Kind)] = [
             (" GitLab.Company.Example. ", "gitlab.company.example", .domain),

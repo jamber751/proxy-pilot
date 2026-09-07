@@ -17,7 +17,8 @@ class VPNCoreTests(unittest.TestCase):
         cls.build = tempfile.TemporaryDirectory(prefix='proxypilot-vpn-build-')
         cls.binary = Path(cls.build.name) / 'vpn-checks'
         sources = [ROOT / 'app' / name for name in
-                   ['VPNConfiguration.swift', 'VPNProfileImporter.swift', 'VPNStore.swift']]
+                   ['VPNConfiguration.swift', 'VPNProfileImporter.swift', 'VPNStore.swift',
+                    'VPNLegacyMigration.swift']]
         built = subprocess.run(['swiftc', '-target', 'arm64-apple-macosx11.0' if
                                 platform.machine() == 'arm64' else 'x86_64-apple-macosx11.0',
                                 *map(str, sources), str(ROOT / 'tests/vpn_core_checks.swift'),
@@ -44,3 +45,4 @@ class VPNCoreTests(unittest.TestCase):
     def test_picker_and_drop_files(self): self.run_group('files')
     def test_atomic_store_and_pending_revisions(self): self.run_group('store')
     def test_store_security_and_corruption(self): self.run_group('store-security')
+    def test_legacy_route_migration(self): self.run_group('migration')
