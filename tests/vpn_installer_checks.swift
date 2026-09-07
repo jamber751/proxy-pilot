@@ -32,6 +32,11 @@ enum VPNInstallerChecks {
                 catch { print("root-entry:\(error)") }
                 exit(0)
             }
+            if args[1] == "uninstall" {
+                try VPNInstaller.testUninstall(base: base, label: label, plistDirectory: plists)
+                print("uninstalled")
+                exit(0)
+            }
             let ready: VPNHelperReady
             if args[1].hasPrefix("install") {
                 ready = try VPNInstaller.testInstall(payload: payload, signature: signature, helper: helper,

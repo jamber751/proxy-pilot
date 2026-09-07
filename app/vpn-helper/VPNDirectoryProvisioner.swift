@@ -32,6 +32,35 @@ enum VPNDirectoryProvisioner {
         return try openChild(parent: app, name: "VPN", create: create, privateDirectory: true)
     }
 
+    /// Removes the two application directories, innermost first, and only when
+    /// they are already empty and still pass the same checks. Never recursive and
+    /// never forced: emptying the VPN directory is the caller's explicit step.
+    static func removeBelowTrustedBase(_ base: Int32) throws {
+        try check(base, privateDirectory: false)
+        let app = try openChild(parent: base, name: "ProxyPilot", create: false, privateDirectory: true)
+        defer { close(app) }
+        let vpn = try openChild(parent: app, name: "VPN", create: false, privateDirectory: true)
+        close(vpn)
+        guard unlinkat(app, "VPN", AT_REMOVEDIR) == 0, fsync(app) == 0,
+              unlinkat(base, "ProxyPilot", AT_REMOVEDIR) == 0, fsync(base) == 0 else {
+            throw VPNDirectoryError.unavailable
+        }
+    }
+
+    static func removeSystemDirectories() throws {
+        guard geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
+        var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw VPNDirectoryError.unavailable }
+        defer { close(parent) }
+        try check(parent, privateDirectory: false)
+        for name in ["Library", "Application Support"] {
+            let child = try openChild(parent: parent, name: name, create: false, privateDirectory: false)
+            close(parent)
+            parent = child
+        }
+        try removeBelowTrustedBase(parent)
+    }
+
     private static func openChild(parent: Int32, name: String, create: Bool, privateDirectory: Bool) throws -> Int32 {
         var child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if child < 0, errno == ENOENT, create {

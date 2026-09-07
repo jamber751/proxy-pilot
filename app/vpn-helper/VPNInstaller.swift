@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 
 enum VPNInstallerError: Error {
@@ -6,6 +7,8 @@ enum VPNInstallerError: Error {
     case busy
     case alreadyInstalled
     case notInstalled
+    case unexpectedContent
+    case removalFailed
 }
 
 /// One authorized installation path, in a fixed order: provision the protected
@@ -41,7 +44,26 @@ enum VPNInstaller {
                           directory: directory, runtime: runtime)
     }
 
+    /// Stop the service, take its launchd description away so no boot brings it
+    /// back, then remove exactly the files this component created. Anything else
+    /// in the directory aborts the removal instead of being deleted.
+    static func uninstall() throws {
+        guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
+        let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
+        try uninstall(directory: directory, runtime: runtime)
+        try VPNDirectoryProvisioner.removeSystemDirectories()
+    }
+
     #if VPN_INSTALLER_TESTING
+    static func testUninstall(base: Int32, label: String, plistDirectory: URL) throws {
+        let directory = try openInstalled { try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false) }
+        let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plistDirectory,
+                                                           storageDirectory: directory)
+        try uninstall(directory: directory, runtime: runtime)
+        try VPNDirectoryProvisioner.removeBelowTrustedBase(base)
+    }
+
     /// Disposable per-user variant: the same order and the same components, in a
     /// private base directory and the user's launchd domain. Absent from normal
     /// builds; it proves the sequence, never a privileged system installation.
@@ -98,6 +120,58 @@ enum VPNInstaller {
         let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease, budget: budget)
         return try coordinator.update(payload: payload, signature: signature, helper: helper,
                                       expectedSequence: expectedSequence, intent: intent)
+    }
+
+    private static func uninstall(directory: Int32, runtime: VPNLaunchdRuntime) throws {
+        defer { close(directory) }
+        let lease = try lifecycleLease(directory)
+        defer { lease.release() }
+        // Decide what may be removed before stopping anything: an unexpected
+        // file must not leave a stopped service and a half-removed directory.
+        let removable = try removableNames(directory)
+        try runtime.stopAndDrain(deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
+        try runtime.removeServiceDescription()
+        try remove(removable, from: directory)
+    }
+
+    /// Only names this component creates may be removed, by exact name or by the
+    /// content-addressed helper pattern. Anything else aborts the uninstall.
+    private static func removableNames(_ directory: Int32) throws -> [String] {
+        let copy = fcntl(directory, F_DUPFD_CLOEXEC, 0)
+        guard copy >= 0, let stream = fdopendir(copy) else {
+            if copy >= 0 { close(copy) }
+            throw VPNInstallerError.removalFailed
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            let name = withUnsafeBytes(of: entry.pointee.d_name) {
+                String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
+            }
+            if name == "." || name == ".." { continue }
+            guard removable(name) else { throw VPNInstallerError.unexpectedContent }
+            names.append(name)
+        }
+        return names
+    }
+
+    /// The lifecycle lock goes last: removing it is the moment our exclusive
+    /// ownership of this installation ends.
+    private static func remove(_ names: [String], from directory: Int32) throws {
+        for name in names.sorted(by: { $1 == VPNLifecycleLease.lockName && $0 != VPNLifecycleLease.lockName }) {
+            guard unlinkat(directory, name, 0) == 0 || errno == ENOENT else {
+                throw VPNInstallerError.removalFailed
+            }
+        }
+    }
+
+    private static func removable(_ name: String) -> Bool {
+        if ["initialized", "release.json", "release.lock", "activation.json",
+            VPNLifecycleLease.lockName, VPNHelperListener.socketName].contains(name) { return true }
+        if name.hasPrefix("helper-"), name.count == 71,
+           name.dropFirst(7).allSatisfy({ $0.isHexDigit && !$0.isUppercase }) { return true }
+        if name.hasSuffix(".tmp"), name.hasPrefix(".release-") || name.hasPrefix(".activation-") { return true }
+        return false
     }
 
     /// An update never creates the directory. Absent and unreachable are the

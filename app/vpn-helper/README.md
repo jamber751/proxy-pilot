@@ -398,8 +398,25 @@ update without an installation is refused; a held lifecycle lease blocks a
 concurrent installation; a shared application directory is refused; and the
 production entry refuses without root.
 
-Trusted key rotation, uninstall, boot-time recovery and the updater integration
-are not implemented. Nothing here has been run as root or in the system domain.
+`uninstall` is the reverse, and it decides what it may remove **before** it stops
+anything: an unexpected file aborts the removal instead of leaving a stopped
+service and a half-removed installation. It then stops the service, takes the
+launchd description away and removes exactly the names this component creates —
+by exact name or the content-addressed helper pattern — with the lifecycle lock
+last, because removing it ends our exclusive ownership. The two application
+directories are removed only when already empty and still passing their checks;
+nothing is recursive or forced. Six more tests cover the full removal, an
+uninstall without an installation, foreign files aborting it with the service
+still running, a held lease blocking it, and the two boot cases.
+
+While the service description exists, launchd starts the helper at every boot
+without asking the coordinator — that is how the helper returns after a restart,
+and it is why the uninstall has to take the description away. The tests cover
+both halves: after a stop the description survives and loading it starts the
+service again; after an uninstall there is nothing left to load.
+
+Trusted key embedding and rotation, and the updater integration, are still
+missing. Nothing here has been run as root or in the system domain.
 
 ## Manual off and a durable attempt budget
 

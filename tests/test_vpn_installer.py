@@ -151,3 +151,52 @@ class VPNInstallerTests(unittest.TestCase):
 
     def test_production_entry_requires_root(self):
         self.assertEqual(self.run_installer('root-entry').stdout.strip(), 'root-entry:requiresRoot')
+
+    def test_uninstall_stops_the_service_and_removes_every_file(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'uninstalled', result.stdout + result.stderr)
+        self.assertFalse(self.loaded())
+        self.assertFalse((self.plists / f'{self.label}.plist').exists())
+        self.assertFalse((self.support / 'ProxyPilot').exists())
+        self.assertEqual(sorted(os.listdir(self.support)), [])
+
+    def test_uninstall_without_an_installation_is_refused(self):
+        result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'rejected:notInstalled', result.stdout + result.stderr)
+
+    def test_uninstall_keeps_foreign_files_and_removes_nothing(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        (self.storage / 'someone-elses.txt').write_text('keep me')
+        result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'rejected:unexpectedContent', result.stdout + result.stderr)
+        self.assertTrue((self.storage / 'release.json').exists())
+        self.assertTrue((self.storage / 'someone-elses.txt').exists())
+        # Refusing must not leave a stopped service and a half-removed install.
+        self.assertTrue(self.loaded())
+        self.assertTrue((self.plists / f'{self.label}.plist').exists())
+
+    def test_a_held_lease_blocks_uninstall(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        with open(self.storage / 'lifecycle.lock', 'r+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'rejected:busy', result.stdout + result.stderr)
+        self.assertTrue((self.storage / 'release.json').exists())
+
+    def test_the_service_description_survives_a_stop_so_a_boot_restarts_it(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        plist = self.plists / f'{self.label}.plist'
+        self.boot_out()
+        self.assertFalse(self.loaded())
+        self.assertTrue(plist.exists())
+        # launchd loading the description is what a restart does for us.
+        self.command(['/bin/launchctl', 'bootstrap', self.domain, str(plist)])
+        self.assertTrue(self.loaded())
+
+    def test_after_uninstall_no_description_can_restart_the_service(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        plist = self.plists / f'{self.label}.plist'
+        self.assertEqual(self.run_installer('uninstall').stdout.strip(), 'uninstalled')
+        self.assertFalse(plist.exists())
+        self.assertFalse(self.loaded())

@@ -125,6 +125,26 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
         }
     }
 
+    /// Removes only our own description, by its exact name, after the service is
+    /// already stopped. While it exists, launchd starts the service again at every
+    /// boot without asking the coordinator — that is how the helper comes back
+    /// after a restart, and why an uninstall has to take the description away.
+    func removeServiceDescription() throws {
+        let folder = plist.deletingLastPathComponent()
+        let parent = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard parent >= 0 else { throw VPNLaunchdError.unsafeStorage }
+        defer { close(parent) }
+        var described = stat()
+        guard fstatat(parent, plist.lastPathComponent, &described, AT_SYMLINK_NOFOLLOW) == 0 else {
+            guard errno == ENOENT else { throw VPNLaunchdError.unsafeStorage }
+            return
+        }
+        guard described.st_mode & S_IFMT == S_IFREG, described.st_uid == geteuid(),
+              unlinkat(parent, plist.lastPathComponent, 0) == 0, fsync(parent) == 0 else {
+            throw VPNLaunchdError.unsafeStorage
+        }
+    }
+
     private func checkedHelperPath(_ deployment: VPNAuthorizedDeployment) throws -> String {
         // The store verified this file's signature, pinned hashes, permissions
         // and ACL for this deployment. Recheck that the name still resolves to a

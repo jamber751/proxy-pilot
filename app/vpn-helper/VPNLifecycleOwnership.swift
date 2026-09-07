@@ -9,7 +9,7 @@ enum VPNLifecycleOwnershipError: Error { case unsafeStorage, busy, lost }
 /// NOT evidence that a helper is running or still owned at any later moment.
 /// The kernel releases the lock when the owning process exits, including a crash.
 final class VPNLifecycleLease {
-    fileprivate static let name = "lifecycle.lock"
+    static let lockName = "lifecycle.lock"
     private var directory: Int32
     private var lock: Int32
 
@@ -28,7 +28,7 @@ final class VPNLifecycleLease {
         guard lock >= 0, directory >= 0 else { throw VPNLifecycleOwnershipError.lost }
         var held = stat(), named = stat()
         guard fstat(lock, &held) == 0,
-              fstatat(directory, VPNLifecycleLease.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              fstatat(directory, VPNLifecycleLease.lockName, &named, AT_SYMLINK_NOFOLLOW) == 0,
               held.st_dev == named.st_dev, held.st_ino == named.st_ino else {
             throw VPNLifecycleOwnershipError.lost
         }
@@ -51,7 +51,7 @@ enum VPNLifecycleOwnership {
         guard directory >= 0 else { throw VPNLifecycleOwnershipError.unsafeStorage }
         do {
             try checkDirectory(directory)
-            let lock = openat(directory, VPNLifecycleLease.name,
+            let lock = openat(directory, VPNLifecycleLease.lockName,
                               O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
             guard lock >= 0 else { throw VPNLifecycleOwnershipError.unsafeStorage }
             do {
