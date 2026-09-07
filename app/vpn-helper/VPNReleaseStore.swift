@@ -29,6 +29,22 @@ struct VPNAuthorizedDeployment {
     }
 }
 
+/// Opaque, staged update. Possession does not authorize starting a process.
+/// Commit always rechecks protected current state and the candidate file.
+struct VPNPreparedDeployment {
+    let previous: VPNAuthorizedDeployment
+    let candidate: VPNAuthorizedDeployment
+    fileprivate let payload: Data
+    fileprivate let signature: Data
+    fileprivate init(previous: VPNAuthorizedDeployment, candidate: VPNAuthorizedDeployment,
+                     payload: Data, signature: Data) {
+        self.previous = previous
+        self.candidate = candidate
+        self.payload = payload
+        self.signature = signature
+    }
+}
+
 /// A descriptor-relative policy store, NOT an installer or helper activator.
 /// Production must supply a securely opened root-owned directory under fixed,
 /// protected parents and run as root. Tests exercise the same checks using the
@@ -73,6 +89,38 @@ final class VPNReleaseStore {
             let (envelope, state) = try readCurrent()
             guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
             return VPNAuthorizedDeployment(state)
+        }
+    }
+
+    /// Validate and stage BEFORE interrupting the running version. This does
+    /// not change the selected security floor or imply a successful update.
+    func prepareDeployment(payload: Data, signature: Data, helper: Data,
+                           expectedSequence: UInt64) throws -> VPNPreparedDeployment {
+        try withLock {
+            let (envelope, state) = try readCurrent()
+            guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
+            guard state.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
+            let release = try authority.verify(payload: payload, signature: signature, previous: state.release)
+            try stageArtifact(helper, release: release)
+            return VPNPreparedDeployment(previous: VPNAuthorizedDeployment(state),
+                candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: state.ownerUserID, release: release)),
+                payload: payload, signature: signature)
+        }
+    }
+
+    @discardableResult
+    func commitPreparedDeployment(_ prepared: VPNPreparedDeployment) throws -> VPNAuthorizedDeployment {
+        try withLock {
+            let (envelope, current) = try readCurrent()
+            guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
+            guard current.ownerUserID == prepared.previous.ownerUserID,
+                  current.release.isSameRelease(as: prepared.previous.release) else { throw VPNReleaseStoreError.staleRevision }
+            let release = try authority.verify(payload: prepared.payload, signature: prepared.signature, previous: current.release)
+            try validateStoredArtifact(release)
+            let next = Envelope(schema: 2, owner: current.ownerUserID, payload: prepared.payload, signature: prepared.signature)
+            if envelope.payload != next.payload { try replace(recordName, with: encode(next)) }
+            else if fsync(directory) != 0 { throw VPNReleaseStoreError.commitUncertain }
+            return VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: current.ownerUserID, release: release))
         }
     }
 

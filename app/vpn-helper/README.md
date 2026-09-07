@@ -34,7 +34,8 @@ not silently accept every later binary with the same identifier.
    descriptions; the descriptor-relative store below persists and rechecks them.
    Fixed-directory provisioning and atomic on-disk binary/policy selection are
    now implemented below, but not integrated or tested through a real root
-   installation. Runtime activation/recovery is still missing. None of these
+   installation. An isolated single-owner activation coordinator is described
+   below; its production supervisor/launchd adapter is still missing. None of these
    components bootstraps the trusted release key.
 2. Production frontend compatibility: today's ad-hoc app loads Sparkle and does
    not meet this gate's hardening policy. Do not silently disable validation,
@@ -44,7 +45,7 @@ not silently accept every later binary with the same identifier.
    hardened and move Sparkle to an **unprivileged updater worker**. The worker
    must never be a proxy for privileged VPN commands. Production migration,
    update UI/preferences, shutdown, cancellation and install/relaunch are pending.
-3. Authenticate the helper to the client; provision the fixed socket securely
+3. Integrate the helper-to-client identity/readiness gate below; provision the fixed socket securely
    under root-owned parents, with restricted permissions and close-on-exec.
    Protect descriptor lifetime against concurrent close/reuse. This gate
    identifies the original connector, not recipients of a passed descriptor.
@@ -54,7 +55,7 @@ not silently accept every later binary with the same identifier.
    versions and typed operations; repeat profile/resource validation in the
    privileged process. Never accept arbitrary shell commands, file paths or
    OpenVPN arguments. Bind state-changing operations to the owner and revision.
-5. Runtime helper activation and failed-start recovery, plus system-level tests.
+5. Production helper activation and failed-start recovery, plus system-level tests.
    The disk-selection transaction below does not stop/start a service, drain VPN
    operations or validate a running candidate. No routing/DNS/subprocess launch
    is implemented in these components.
@@ -257,6 +258,101 @@ Intel slice), malformed code, modes/ACLs/links, corruption, stale/repeated write
 and forced process exits around candidate/selector replacement. The C helper
 fixtures are inert and **never executed**. These tests neither register a service
 nor establish power-loss durability or successful root installation.
+
+## Authenticated helper readiness
+
+`VerifiedVPNRelease.helperPolicy()` derives helper pins only from the verified
+manifest and fixes the peer UID to **root** and identifier to
+`kz.documentolog.proxypilot.vpn-helper`. The frontend policy still rejects UID 0;
+the two roles do not share a caller-selectable UID exception. Both use the same
+kernel audit-token, dynamic code-signature and hardening checks.
+
+`VPNHelperReadiness.probe` consumes an exclusively owned connected local stream
+descriptor, marks it close-on-exec, suppresses SIGPIPE and validates the peer
+before sending and after receiving. A fixed 56-byte request/response contains an
+8-byte kind/version marker, unsigned big-endian protocol and release sequence,
+and a fresh 32-byte system-random challenge. Only an exact readiness response is
+accepted. The socket is closed on success and failure; no authorization cache or
+subsequent privileged command is attached to this probe connection.
+
+Nonblocking I/O and poll use one monotonic deadline (default two seconds, local
+maximum five), shared across partial reads/writes. Partial bytes cannot extend it.
+EOF, wrong kind/protocol/sequence/challenge and unavailable peers fail closed.
+Native Security calls are synchronous and not cancellable by this I/O deadline;
+they are checked against it on completion. Do not run this on the UI thread or
+claim a hard wall-clock bound for the Security subsystem.
+
+The returned opaque `VPNHelperReady` is **point-in-time service readiness**, not
+a live session handle, persisted health, proof of installed routes or VPN
+connectivity. A future production responder must check its locally loaded policy
+and actual idle initialization before replying, not blindly echo the challenge.
+No production responder is implemented here. Socket provisioning, safe server
+ownership across fork/exec/fd transfer, client authorization and the actual
+command protocol still need transport integration/review.
+
+Twelve tests use separate real signed unprivileged processes, including the
+server/listener side of the peer check. A narrowly scoped
+`VPN_HELPER_READINESS_TESTING` build flag substitutes only the fixture's UID;
+it is absent from normal builds. Tests compile both forms for arm64/x86_64 and
+verify that the **normal build rejects even the correctly pinned non-root
+server**. Positive root-server authentication and Intel/macOS 11 execution have
+not been tested. No elevated fixture or real VPN profile is used.
+
+## Single-owner activation coordinator (not launchd integration)
+
+`VPNActivationCoordinator` now composes staged storage with authenticated
+readiness. It accepts only a trusted local `VPNActivationRuntime` adapter, not
+paths, commands, PIDs or process handles supplied through IPC. There is currently
+**no production adapter**. The isolated test adapter launches inert fixtures as
+the current non-root user; it does not exercise routing/DNS cleanup.
+
+An update makes one attempt, in this order:
+
+1. `prepareDeployment` verifies and stages the candidate without advancing the
+   selected release or interrupting the old service. Invalid/stale requests stop
+   here. An opaque prepared value is not permission to start that file.
+2. Ask the runtime to drain operations, release owned resources and confirm its
+   old process has exited. Failed/late confirmation prevents commit and launch.
+3. `commitPreparedDeployment` re-reads the owner/current signed release under
+   the storage lock, rejects stale preparation, rechecks the staged executable
+   and atomically selects it. A failed or uncertain commit does not launch either
+   version; recovery must reload authenticated state.
+4. Start only the selected **idle** helper, with no profile, routes or DNS
+   applied. Authenticate its readiness response against that exact release.
+5. Recheck disk selection before returning readiness. If launch, readiness or
+   selection validation fails, ask the adapter to stop/drain the possibly started
+   process. Report the failure phase and whether cleanup was confirmed.
+
+`recoverSelected` is an explicit single attempt: stop the supervisor-owned
+instance, revalidate the current disk selection and start/check only that version.
+A process crash before commit leaves the previous selection; after commit only
+the new security floor is eligible. There is no automatic downgrade after a
+failed start, no retry loop, no fallback from corrupt/missing selected files and
+no automatic reinitialization. A compatible repair release must advance the
+signed sequence; authorized repair/recovery UI is still pending. An identical
+update may explicitly restart the selected version once, without changing policy.
+
+The instance gate rejects concurrent/reentrant calls. **It is not a cross-process
+supervisor lock.** Production must enforce one lifecycle owner for its entire
+lifetime and route all activation requests through it. The storage lock still
+protects each disk transaction, and selection checks detect intervening writers,
+but neither substitutes for exclusive ownership of runtime resources. A durable
+attempt budget, cancellation/manual-off handling, authenticated command transport,
+launchd wiring and startup recovery integration remain unfinished. The adapter's
+deadlines are a contract checked after return, not preemption of a blocking adapter.
+
+Eighteen activation tests combine real signed Universal files, the protected
+store, separate inert processes and authenticated readiness. They cover invalid
+preparation, stop/start/cleanup failures, candidate tampering, changed selection,
+reentry, idempotent updates, rollback rejection, corrupt state and forced exits
+around commit followed by a fresh recovery process. Normal code also compiles
+without the test flags for both architectures. These tests are not real root
+service installation, power-loss, launchd recovery or working VPN acceptance.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_readiness.py -v
+python3 -m unittest discover -s tests -p test_vpn_activation.py -v
+```
 
 ## References
 
