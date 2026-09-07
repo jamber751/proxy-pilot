@@ -466,6 +466,40 @@ accepted it, a rejected profile leaves the stored one untouched, an empty payloa
 is refused, and an oversized profile is never sent. A mutation that stores the
 client's bytes unchecked fails three of them.
 
+## Release trust and the signing key
+
+`VPNReleaseTrust` is the one place the helper and installer learn whom to trust,
+and the key is compiled in on purpose: reading it from storage, preferences or
+the network would let whoever controls that source authorize root code. Only the
+public half is in the repository (`app/vpn-release-public-key.txt`, mirrored by
+the constant). An empty constant fails closed — a build with no trusted key
+authorizes nothing at all, which is what a test asserts by compiling one.
+
+`app/vpn-release-key.swift` keeps the private key the way Sparkle's key is kept:
+in the Keychain, never on disk, never in argv, never printed. `generate` writes
+the public half and refuses to overwrite an existing key unless `--force` is
+given, because rotating invalidates every earlier release. `sign` produces a
+detached signature over the same domain-separated bytes the helper verifies, so
+a signature over an archive or an appcast can never authorize root code. `verify`
+runs the helper's own verifier — format, protocol, sequence and pinned hashes,
+not just signature bytes. `--keychain` points every operation at another keychain
+file, which is how the tests stay off the developer's login keychain entirely.
+
+Nine tests generate, sign, verify and reject inside a disposable keychain they
+create and delete: the public half is published while the secret never appears in
+output, a changed release description fails verification, another key cannot sign
+for this one, an existing key is never replaced silently while rotation stays
+possible, signing without a key refuses, the committed public key matches the
+compiled constant, and a build without trust refuses to build an authority.
+
+Rotation means shipping a new build with a new constant. There is no chained
+rotation and no way to authorize a new key with the old one; a release signed by
+an unknown key must simply fail to verify.
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_release_key.py -v
+```
+
 ## Manual off and a durable attempt budget
 
 `VPNActivationBudget` answers one question — may we try to start the helper
