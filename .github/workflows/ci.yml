@@ -15,7 +15,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          for f in bin/proxypilot install.sh make-dmg.sh app/build.sh; do
+          for f in bin/proxypilot install.sh make-dmg.sh app/build.sh app/fetch-sparkle.sh app/sign-update.sh; do
             zsh -n "$f" && echo "  ok  $f"
           done
 
@@ -79,6 +79,11 @@ jobs:
 
       - name: Build
         run: ./app/build.sh
+
+      - name: App and updater regressions (disposable fixtures)
+        env:
+          PROXYPILOT_TEST_INSTALLER: '1'
+        run: python3 -m unittest discover -s tests -v
 
       - name: Verify bundle
         run: |

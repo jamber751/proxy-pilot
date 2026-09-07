@@ -52,6 +52,11 @@ no terminal.
 
 > Ad-hoc signed, not Developer ID — the first launch needs right-click → Open.
 
+Starting with 1.5.0, Settings can check for and install updates with Sparkle.
+Checks run daily (can be disabled); installation requires confirmation. Updates
+preserve proxy settings and verify a signed feed and archive. Users of older
+versions need one manual install first. See [update setup and signing](docs/updates.md).
+
 <sub>From source: `git clone https://github.com/jamber751/proxy-pilot.git && cd proxy-pilot && ./install.sh`</sub>
 
 ## Use it

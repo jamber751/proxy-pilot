@@ -20,7 +20,7 @@ setopt pipe_fail multibyte
 # Без UTF-8 локали ${#строка} считает байты, и таблицы с кириллицей разъезжаются.
 [[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE=en_US.UTF-8
 
-readonly PP_VERSION="1.4.0"
+readonly PP_VERSION="1.5.0"
 # Путь до самого скрипта. Обязательно на верхнем уровне: внутри функции zsh
 # подставляет в $0 имя функции, и ${0:A} даёт несуществующий путь.
 readonly PP_SELF="${0:A}"
@@ -457,6 +457,7 @@ start_bridge() {  # mode
       mkdir -p "$CFG_DIR"; print -- "$(gateway)" > "$CFG_DIR/bridge-gateway"
       gost_nameservers > "$CFG_DIR/bridge-dns"
       print -- "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"
+      print -- "$PP_VERSION" > "$CFG_DIR/bridge-version"
       return 0
     fi
     sleep 0.1
@@ -484,7 +485,11 @@ cmd_ensure() {
   # Upgrade an existing HTTP-only bridge once, even if the network is unchanged.
   local format=""
   [[ -r "$CFG_DIR/bridge-format" ]] && format=$(< "$CFG_DIR/bridge-format")
-  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" && "$format" == "auto-v1:$BRIDGE_PORT" ]] && return 0
+  local bridge_version=""
+  [[ -r "$CFG_DIR/bridge-version" ]] && bridge_version=$(< "$CFG_DIR/bridge-version")
+  # Keep the old engine alive during app replacement; restart it once on the
+  # first launch of the new release without changing enabled/selected settings.
+  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" && "$format" == "auto-v1:$BRIDGE_PORT" && "$bridge_version" == "$PP_VERSION" ]] && return 0
 
   # Останавливаем по наличию процесса, а не по running_mode: у старого
   # формата запуска режим читается как none, и мост-предшественник остался

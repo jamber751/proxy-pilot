@@ -12,16 +12,29 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: proxypilot-release
+  cancel-in-progress: false
+
 jobs:
   dmg:
     name: Build and publish DMG
     runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Require update signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: test -n "$SPARKLE_PRIVATE_KEY" || { echo "::error::Set SPARKLE_PRIVATE_KEY (see docs/updates.md)"; exit 1; }
 
       - name: Check version matches the tag
         run: |
-          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          TAG="$RELEASE_TAG"
           VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
           echo "  тег: $TAG   PP_VERSION: $VERSION"
           # расхождение здесь = релиз с чужим номером внутри; лучше упасть сейчас
@@ -37,6 +50,19 @@ jobs:
         env:
           PROXYPILOT_TEST_GOST: ${{ github.workspace }}/vendor/gost-universal
         run: python3 -m unittest discover -s tests -v
+
+      - name: Sign update archive and feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: zsh app/sign-update.sh
+
+      - name: Verify signed feed using real Sparkle
+        run: python3 -m unittest discover -s tests -p test_sparkle_feed.py -v
+
+      - name: Test ad-hoc update installation and relaunch (disposable app)
+        env:
+          PROXYPILOT_TEST_INSTALLER: '1'
+        run: python3 -m unittest discover -s tests -p test_sparkle_install.py -v
 
       - name: Verify DMG
         run: |
@@ -56,14 +82,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          TAG="$RELEASE_TAG"
           VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
           DMG="dist/ProxyPilot-$VERSION.dmg"
-          # релиз мог быть создан заранее (или руками) — тогда просто докладываем ассет
+          ZIP="dist/updates/ProxyPilot-$VERSION.zip"
+          FEED="dist/updates/appcast.xml"
+          # Upload everything into a draft before exposing it to /latest.
+          # Published signed releases are immutable; fix forward with a new tag.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$DMG" --clobber
+            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || {
+              echo "::error::Release is already published; use a new version"; exit 1;
+            }
           else
-            gh release create "$TAG" "$DMG" \
+            gh release create "$TAG" --verify-tag --draft \
               --title "ProxyPilot $VERSION" \
               --notes-file .github/release-notes.md
           fi
+          gh release upload "$TAG" "$DMG" "$ZIP" "$FEED" --clobber
+          gh release edit "$TAG" --draft=false --latest

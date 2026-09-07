@@ -76,8 +76,8 @@ else
 fi
 
 # бандл менялся после подписи в build.sh — переподписать (ad-hoc)
-codesign --force --deep --sign - --identifier kz.documentolog.proxypilot \
-  "$STAGE/ProxyPilot.app" 2>/dev/null || print -u2 "предупреждение: не удалось переподписать"
+codesign --force --sign - --identifier kz.documentolog.proxypilot "$STAGE/ProxyPilot.app"
+codesign --verify --deep --strict "$STAGE/ProxyPilot.app"
 
 ln -s /Applications "$STAGE/Applications"
 
@@ -163,6 +163,10 @@ EOF
 
 # 3) образ
 mkdir -p "$DIST"
+# Sparkle replaces the whole bundle, including the matching CLI and GOST.
+# Keep its archive separate from the first-install DMG and Install.command.
+mkdir -p "$DIST/updates"
+ditto -c -k --sequesterRsrc --keepParent "$STAGE/ProxyPilot.app" "$DIST/updates/ProxyPilot-$VERSION.zip"
 OUT="$DIST/ProxyPilot-$VERSION.dmg"
 rm -f "$OUT"
 hdiutil create -volname "ProxyPilot" -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null

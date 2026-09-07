@@ -41,6 +41,7 @@ MODE_FILE="$CFG_DIR/mode"
 ENABLED_FILE="$CFG_DIR/enabled"
 LOG="$CFG_DIR/log"
 BRIDGE_PORT=43129
+PP_VERSION=1.5.0
 SOCKS_UPSTREAM=""
 HTTP_UPSTREAM="old.example:3128"
 OFFICE_GATEWAYS=""
@@ -94,12 +95,40 @@ print same > "$CFG_DIR/bridge-gateway"
 print 1.1.1.1 > "$CFG_DIR/bridge-dns"
 bridge_pid() { print fake; }
 stop_bridge() { print stopped; }
-start_bridge() { print started; print "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"; }
+start_bridge() { print started; print "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"; print "$PP_VERSION" > "$CFG_DIR/bridge-version"; }
 cmd_ensure
 cmd_ensure
 ''')
         self.assertEqual(out.count('started'), 1)
         self.assertEqual(out.count('stopped'), 1)
+
+    def test_app_update_restarts_engine_once_and_preserves_state(self):
+        for enabled, running in [('on', 'socks'), ('off', 'direct')]:
+            with self.subTest(enabled=enabled):
+                out = self.run_zsh(['need_config', 'is_enabled', 'cmd_ensure'], f'''
+print {enabled} > "$ENABLED_FILE"
+print http > "$MODE_FILE"
+print keep-config > "$CFG"
+effective_mode() {{ print {running}; }}
+running_mode() {{ print {running}; }}
+gateway() {{ print same; }}
+gost_nameservers() {{ print 1.1.1.1; }}
+print same > "$CFG_DIR/bridge-gateway"
+print 1.1.1.1 > "$CFG_DIR/bridge-dns"
+print "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"
+print 1.4.0 > "$CFG_DIR/bridge-version"
+bridge_pid() {{ print fake; }}
+stop_bridge() {{ print stopped; }}
+start_bridge() {{ print "start:$1"; print "$PP_VERSION" > "$CFG_DIR/bridge-version"; }}
+cmd_system() {{ print UNEXPECTED_SYSTEM_CHANGE; }}
+cmd_ensure
+cmd_ensure
+print "enabled=$(< "$ENABLED_FILE") mode=$(< "$MODE_FILE") config=$(< "$CFG")"
+''')
+                self.assertEqual(out.count('stopped'), 1)
+                self.assertEqual(out.count(f'start:{running}'), 1)
+                self.assertNotIn('UNEXPECTED', out)
+                self.assertIn(f'enabled={enabled} mode=http config=keep-config', out)
 
     def test_off_shellenv_preserves_other_proxies(self):
         out = self.run_zsh(['is_enabled', 'cmd_shellenv'], '''

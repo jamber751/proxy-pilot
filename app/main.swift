@@ -94,6 +94,7 @@ final class ProxyModel: ObservableObject {
     let preview: Bool
     private let queue = DispatchQueue(label: "proxypilot.commands")
     private var refreshing = false
+    private var preparingUpdate = false
     var onChange: (() -> Void)?
 
     init(preview: Bool = false) {
@@ -148,7 +149,7 @@ final class ProxyModel: ObservableObject {
         return value
     }
     func refresh() {
-        guard !preview, !busy, !refreshing else { return }
+        guard !preview, !busy, !refreshing, !preparingUpdate else { return }
         refreshing = true
         queue.async {
             var result = CLI.state()
@@ -211,7 +212,7 @@ final class ProxyModel: ObservableObject {
         execute(["route", route])
     }
     private func execute(_ args: [String], completion: (() -> Void)? = nil) {
-        guard !busy else { return }
+        guard !busy, !preparingUpdate else { return }
         busy = true; error = ""
         let off = args.first == "disable"
         operation = off ? "Выключаем прокси" : (args.first == "detect" ? "Ищем прокси" : "Подключаемся")
@@ -261,6 +262,23 @@ final class ProxyModel: ObservableObject {
         if preview { NSApp.terminate(nil); return }
         execute(["disable"]) { NSApp.terminate(nil) }
     }
+    func prepareForUpdate(_ completion: @escaping () -> Void) {
+        // Finish any in-flight CLI operation, but preserve enabled/route and the
+        // existing bridge while Sparkle swaps the bundle. New CLI's ensure
+        // replaces an older bridge once, after the updated app has relaunched.
+        preparingUpdate = true; busy = true; operation = "Обновляем приложение…"
+        queue.async {
+            DispatchQueue.main.async {
+                self.busy = true
+                completion()
+            }
+        }
+    }
+    func cancelUpdatePreparation() {
+        guard preparingUpdate else { return }
+        preparingUpdate = false; busy = false
+        refresh()
+    }
 }
 
 struct PowerStyle: ButtonStyle {
@@ -308,8 +326,15 @@ struct RouteRow: View {
     }
 }
 
+private struct SettingsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct PilotView: View {
     @ObservedObject var model: ProxyModel
+    @ObservedObject var updates: UpdateModel
+    @State private var settingsHeight: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     private var ink: Color { colorScheme == .dark ? Color(red: 0.92, green: 0.94, blue: 0.94) : Color(red: 0.12, green: 0.16, blue: 0.15) }
     private var accent: Color { Color(red: 0.12, green: 0.53, blue: 0.39) }
@@ -340,12 +365,16 @@ struct PilotView: View {
                 if !model.setup && !model.choosingRoute {
                     Button { model.editing = true; model.manual = false; model.error = "" } label: {
                         Image(systemName: "gearshape").font(.system(size: 16)).frame(width: 28, height: 28)
+                            .overlay(Group {
+                                if updates.availableVersion != nil { Circle().fill(accent).frame(width: 5, height: 5) }
+                            }, alignment: .topTrailing)
                     }.buttonStyle(PlainButtonStyle()).accessibilityLabel("Настройки")
                         .help("Настройки подключения").disabled(model.busy || model.loading)
                 }
             }.padding(.top, 20)
+                .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
             if model.setup {
-                if model.addingProxy { proxyForm } else { settings }
+                if model.addingProxy { proxyForm } else { settingsPanel }
             } else if model.choosingRoute {
                 routePicker
             } else {
@@ -398,13 +427,19 @@ struct PilotView: View {
                 .padding(.top, 18)
                 .help("Маршрут ProxyPilot для приложений, использующих системный прокси. Другие VPN и прокси могут влиять на трафик отдельно.")
             }
-            Spacer(minLength: 12)
+            if model.setup && !model.addingProxy {
+                UpdatesView(updates: updates, busy: model.busy || model.loading)
+                    .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
+            } else {
+                Spacer(minLength: 12)
+            }
             Divider().opacity(0.5)
             HStack {
                 Text(model.setup ? "HTTP / SOCKS5" : "Маршрут системного прокси")
                 Spacer()
                 Button("Выйти", action: model.quit).disabled(model.busy || model.loading)
             }.buttonStyle(PlainButtonStyle()).font(.system(size: 11)).foregroundColor(.secondary).padding(.vertical, 16)
+                .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
         }
         .padding(.horizontal, 24).frame(width: 344, height: 432)
         .foregroundColor(ink)
@@ -443,9 +478,29 @@ struct PilotView: View {
         default: return "sparkles"
         }
     }
+    private var settingsPanel: some View {
+        GeometryReader { available in
+            Group {
+                // No scroll view (or rubber-banding) when the contents fit.
+                // Longer messages can still scroll without moving the footer.
+                if settingsHeight > available.size.height + 0.5 {
+                    ScrollView(.vertical) { measuredSettings }
+                } else {
+                    measuredSettings
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }.onPreferenceChange(SettingsHeightKey.self) { settingsHeight = $0 }
+    }
+    private var measuredSettings: some View {
+        settings.padding(.bottom, 12)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: SettingsHeightKey.self, value: geometry.size.height)
+            })
+    }
     private var settings: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Ваши прокси").font(.system(size: 22, weight: .semibold)).padding(.top, 20)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Ваши прокси").font(.system(size: 22, weight: .semibold)).padding(.top, 16)
             Text(model.configured ? "Сохранённые адреса для подключения." : "Добавьте адрес через + или найдите автоматически.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
             ForEach(["socks5", "http"], id: \.self) { scheme in
@@ -469,8 +524,11 @@ struct PilotView: View {
                     Image(systemName: "chevron.right").font(.system(size: 10))
                 }.padding(12).background(ink.opacity(0.06)).cornerRadius(10)
             }.buttonStyle(PlainButtonStyle()).disabled(model.busy || model.loading)
-            Text(model.busy ? model.operation : model.error)
-                .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+            if model.busy || !model.error.isEmpty {
+                Text(model.busy ? model.operation : model.error)
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
     private func proxyEntry(_ scheme: String) -> some View {
@@ -538,6 +596,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var activity: NSObjectProtocol?
     private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
+    private let updates = UpdateModel()
     func applicationDidFinishLaunching(_ notification: Notification) {
         if model.preview, let appearance = Bundle.main.object(forInfoDictionaryKey: "PreviewAppearance") as? String {
             NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
@@ -549,7 +608,7 @@ final class App: NSObject, NSApplicationDelegate {
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.target = self; item.button?.action = #selector(toggleWindow)
-        let host = NSHostingController(rootView: PilotView(model: model))
+        let host = NSHostingController(rootView: PilotView(model: model, updates: updates))
         popover = NSPopover()
         popover.contentViewController = host
         popover.contentSize = NSSize(width: 344, height: 432)
@@ -560,6 +619,13 @@ final class App: NSObject, NSApplicationDelegate {
         let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.model.refresh() }
         RunLoop.main.add(t, forMode: .common); timer = t
         renderStatus(); model.refresh()
+        updates.onPresent = { [weak self] in self?.popover.performClose(nil) }
+        updates.prepareRelaunch = { [weak self] completion in
+            guard let self = self else { completion(); return }
+            self.model.prepareForUpdate(completion)
+        }
+        updates.onAbort = { [weak self] in self?.model.cancelUpdatePreparation() }
+        updates.start(preview: model.preview)
         DispatchQueue.main.async { [weak self] in self?.showWindow() }
     }
     private func renderStatus() {

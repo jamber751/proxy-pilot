@@ -1,4 +1,15 @@
-### What's new in 1.4.0
+### What's new in 1.5.0
+
+- Daily automatic update checks, with a quiet indicator in the gear menu.
+- Check or install an update from Settings; no forced background restart.
+- Sparkle verifies the signed update feed and archive before extraction.
+- Updates replace the app, CLI and GOST together and preserve proxy configuration,
+  selected route and enabled state. The bridge may briefly reconnect on relaunch.
+- No Apple Developer subscription required; the first installation is still ad-hoc signed.
+- Settings keep the footer visible and only scroll when content actually overflows.
+- In-app release notes are concise, formatted and separate from first-install instructions.
+
+### Included from 1.4.0
 
 - Minimal menu-bar popover anchored to the ProxyPilot icon; the large power button stays.
 - Route picker: Auto, Direct, SOCKS5 and HTTP, with the actual active route shown separately.
@@ -10,12 +21,15 @@
 
 Download the DMG below → right-click **`Install.command`** → **Open**.
 
-The script copies the app to Applications, clears the quarantine flag, offers to
+The script copies the app to Applications, clears the quarantine flag, attempts to
 add it to Login Items and launches it. Press **Find automatically** in ProxyPilot,
 or use the gear icon and **+** to enter your proxy address.
 
 Self-contained: the CLI and `gost` ship inside the bundle — no Homebrew, no
 terminal. Universal binary (Intel + Apple Silicon), macOS 11 Big Sur and newer.
+
+Existing 1.4.0 users must install this version manually once. Later updates are
+available in the app's Settings. Automatic checks can be turned off there.
 
 > A plain double-click is blocked: the app is ad-hoc signed, not Developer ID.
 > Right-click → Open is the way around it. `READ_ME_FIRST.txt` inside the image
