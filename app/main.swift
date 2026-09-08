@@ -620,6 +620,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var timer: Timer?
     private var activity: NSObjectProtocol?
+    private var pendingPopoverRequest: UUID?
     private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
     private let updates = UpdateModel()
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -644,7 +645,7 @@ final class App: NSObject, NSApplicationDelegate {
         let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.model.refresh() }
         RunLoop.main.add(t, forMode: .common); timer = t
         renderStatus(); model.refresh()
-        updates.onPresent = { [weak self] in self?.popover.performClose(nil) }
+        updates.onPresent = { [weak self] in self?.hideWindow() }
         updates.prepareRelaunch = { [weak self] completion in
             guard let self = self else { completion(); return }
             self.model.prepareForUpdate(completion)
@@ -662,10 +663,31 @@ final class App: NSObject, NSApplicationDelegate {
         item.button?.toolTip = model.preview ? "Тестовый макет — не управляет прокси" : "\(model.title) · \(model.state?.route ?? "Проверяем маршрут")"
     }
     @objc private func toggleWindow() {
-        if popover.isShown { popover.performClose(nil) } else { showWindow(); model.refresh() }
+        if popover.isShown || pendingPopoverRequest != nil { hideWindow() } else { showWindow(); model.refresh() }
+    }
+    private func hideWindow() {
+        pendingPopoverRequest = nil
+        popover.performClose(nil)
     }
     private func showWindow() {
-        guard let button = item.button, button.window != nil else { return }
+        let request = UUID()
+        pendingPopoverRequest = request
+        showWindowWhenReady(request, attemptsLeft: 30)
+    }
+    private func showWindowWhenReady(_ request: UUID, attemptsLeft: Int) {
+        guard pendingPopoverRequest == request else { return }
+        // macOS can attach the status button to a zero-height window during
+        // launch. Showing against that anchor silently fails. Retry briefly,
+        // without reopening after a user closes it or Sparkle presents its UI.
+        guard let button = item.button, let anchor = button.window,
+              anchor.frame.height > 0, !button.bounds.isEmpty else {
+            guard attemptsLeft > 0 else { pendingPopoverRequest = nil; return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.showWindowWhenReady(request, attemptsLeft: attemptsLeft - 1)
+            }
+            return
+        }
+        pendingPopoverRequest = nil
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         if let window = popover.contentViewController?.view.window {
