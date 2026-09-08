@@ -297,3 +297,34 @@ authentication. No real profile or tunnel is needed for this idle-service check.
 The system helper label was still absent after testing; the installed app,
 personal VPN profile, proxy preferences, routes and DNS were not modified.
 No push, tag or public release was performed.
+
+### Unlocked-desktop follow-up
+
+The console subsequently became unlocked. The unchanged five full-App scenarios
+were rerun with the real loopback GOST fixture: **all five passed in 77.097 s**.
+Together with the 425 non-full-App checks, all 430 distinct selected regression
+checks have now passed across runs; this is not one uninterrupted green run.
+The 11 disposable-Keychain checks remain a separate passing suite.
+
+A fresh signing tool was compiled from the production format-2 parser and current
+source at `/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/vpn-release-key`. Its
+`sign` operation for the frozen sequence-4 manifest completed against the
+existing login-Keychain entry. No key generation, replacement or export was
+requested; security dialogs were not automated. Verification against
+`app/vpn-release-public-key.txt` returned `Verified sequence 4 version 1.5.1`;
+the staged app also returned `VPN support package verified.`
+
+The earlier empty-signature state is superseded. All three local packages now
+built successfully, each rechecking the actual engine and corresponding sources:
+
+- `/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/VPN-Support-4-install.pkg`
+- `/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/VPN-Support-4-update.pkg`
+- `/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/VPN-Support-4-remove.pkg`
+
+The native Installer is open for the exact install package at the **Install**
+step (standard installation on Macintosh HD). The final installation action and
+macOS administrative confirmation are handed to the user. Root installation has
+not started, and the system service remains absent. After confirmation, verify
+Installer success and ordinary-user `--vpn-support-status` before continuing
+with retry/update and fixed-package removal. No VPN tunnel is started by this
+package. The installed application in Applications is unchanged.
