@@ -34,6 +34,10 @@ SEAMS = ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING', '-D'
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
 class VPNInstallerTests(unittest.TestCase):
+    service_components = SERVICE
+    service_main = ROOT / 'tests/vpn_helper_service.swift'
+    service_flags = []
+
     @classmethod
     def setUpClass(cls):
         if os.geteuid() == 0:
@@ -46,8 +50,8 @@ class VPNInstallerTests(unittest.TestCase):
         cls.work = Path(cls.build.name)
         for name, sources, flags in [
             ('installer', [HELPER / source for source in COMPONENTS] + [ROOT / 'tests/vpn_installer_checks.swift'], SEAMS),
-            ('server', [HELPER / source for source in SERVICE] + IMPORTER
-             + [ROOT / 'tests/vpn_helper_service.swift'], []),
+            ('server', [HELPER / source for source in cls.service_components] + IMPORTER
+             + [cls.service_main], cls.service_flags),
         ]:
             slices = []
             for arch in ('arm64', 'x86_64'):

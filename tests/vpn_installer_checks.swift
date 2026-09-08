@@ -1,5 +1,6 @@
 import CryptoKit
 import Darwin
+import Dispatch
 import Foundation
 
 // Drives the installation sequence in a disposable base directory and the user's
@@ -24,6 +25,17 @@ enum VPNInstallerChecks {
             var signature = try key.signature(for: VPNReleaseAuthority.signatureDomain + payload)
             if args[1].hasSuffix("-bad-signature") { signature[0] ^= 1 }
             let label = args[6], plists = URL(fileURLWithPath: args[7], isDirectory: true)
+            if args[1] == "probe" {
+                let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
+                defer { close(directory) }
+                let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
+                let selected = try store.loadDeployment()
+                let socket = try VPNEndpointDirectory.connect(directory: directory, owner: geteuid(), shared: false,
+                    deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                let ready = try VPNHelperReadiness.testProbe(takingSocket: socket, release: selected.release)
+                print("ready:\(ready.release.sequence)")
+                return
+            }
             if args[1] == "root-entry" {
                 // The production entries must refuse before touching anything.
                 do { _ = try VPNInstaller.install(payload: payload, signature: signature, helper: helper,

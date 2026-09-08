@@ -10,12 +10,15 @@ enum VPNLifecycleOwnershipError: Error { case unsafeStorage, busy, lost }
 /// The kernel releases the lock when the owning process exits, including a crash.
 final class VPNLifecycleLease {
     static let lockName = "lifecycle.lock"
+    static let runtimeLockName = "runtime.lock"
     private var directory: Int32
     private var lock: Int32
+    private let name: String
 
-    fileprivate init(directory: Int32, lock: Int32) {
+    fileprivate init(directory: Int32, lock: Int32, name: String) {
         self.directory = directory
         self.lock = lock
+        self.name = name
     }
 
     deinit { release() }
@@ -28,7 +31,7 @@ final class VPNLifecycleLease {
         guard lock >= 0, directory >= 0 else { throw VPNLifecycleOwnershipError.lost }
         var held = stat(), named = stat()
         guard fstat(lock, &held) == 0,
-              fstatat(directory, VPNLifecycleLease.lockName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
               held.st_dev == named.st_dev, held.st_ino == named.st_ino else {
             throw VPNLifecycleOwnershipError.lost
         }
@@ -47,28 +50,37 @@ final class VPNLifecycleLease {
 /// descriptor from IPC and never fall back to a user-writable location.
 enum VPNLifecycleOwnership {
     static func acquire(inTrustedDirectory trusted: Int32) throws -> VPNLifecycleLease {
-        let directory = fcntl(trusted, F_DUPFD_CLOEXEC, 0)
+        try acquire(inTrustedDirectory: trusted, name: VPNLifecycleLease.lockName)
+    }
+
+    /// Separate from the installer's lifecycle lease: the running daemon holds
+    /// this for its entire lifetime, including endpoint creation and recovery.
+    static func acquireRuntime(inTrustedDirectory trusted: Int32) throws -> VPNLifecycleLease {
+        try acquire(inTrustedDirectory: trusted, name: VPNLifecycleLease.runtimeLockName)
+    }
+
+    private static func acquire(inTrustedDirectory trusted: Int32, name: String) throws -> VPNLifecycleLease {
+        var directory = fcntl(trusted, F_DUPFD_CLOEXEC, 0)
         guard directory >= 0 else { throw VPNLifecycleOwnershipError.unsafeStorage }
-        do {
-            try checkDirectory(directory)
-            let lock = openat(directory, VPNLifecycleLease.lockName,
-                              O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
-            guard lock >= 0 else { throw VPNLifecycleOwnershipError.unsafeStorage }
-            do {
-                try checkLockFile(lock)
-                guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
-                    throw errno == EWOULDBLOCK ? VPNLifecycleOwnershipError.busy
-                                               : VPNLifecycleOwnershipError.unsafeStorage
-                }
-                // Only after taking the lock: prove the directory still names this
-                // exact file. A racing writer could have replaced it in between,
-                // which would let a second supervisor lock the new file instead.
-                let lease = VPNLifecycleLease(directory: directory, lock: lock)
-                do { try lease.check() }
-                catch { throw VPNLifecycleOwnershipError.busy }
-                return lease
-            } catch { close(lock); throw error }
-        } catch { close(directory); throw error }
+        var lock: Int32 = -1
+        defer {
+            if lock >= 0 { close(lock) }
+            if directory >= 0 { close(directory) }
+        }
+        try checkDirectory(directory)
+        lock = openat(directory, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
+        guard lock >= 0 else { throw VPNLifecycleOwnershipError.unsafeStorage }
+        try checkLockFile(lock)
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            throw errno == EWOULDBLOCK ? VPNLifecycleOwnershipError.busy : VPNLifecycleOwnershipError.unsafeStorage
+        }
+        let lease = VPNLifecycleLease(directory: directory, lock: lock, name: name)
+        // Ownership transfers exactly once, also if the final name check fails.
+        // Do not close a descriptor again after the lease has released it.
+        directory = -1; lock = -1
+        do { try lease.check() }
+        catch { lease.release(); throw VPNLifecycleOwnershipError.busy }
+        return lease
     }
 
     private static func checkDirectory(_ descriptor: Int32) throws {
