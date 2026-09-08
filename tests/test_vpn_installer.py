@@ -60,11 +60,20 @@ class VPNInstallerTests(unittest.TestCase):
             cls.command(['swiftc', '-emit-library', '-target', f'{arch}-apple-macosx11.0',
                          *[str(HELPER / source) for source in COMPONENTS], '-o', str(cls.work / f'production-{arch}.dylib')])
         cls.pins = {}
-        for name, identifier in [('server', 'kz.documentolog.proxypilot.vpn-helper'),
-                                 ('installer', 'kz.documentolog.proxypilot')]:
+        for name, identifier, options in [
+            ('server', 'kz.documentolog.proxypilot.vpn-helper', 'runtime,hard,kill'),
+            ('installer', 'kz.documentolog.proxypilot', 'runtime,hard,kill'),
+            ('installer-next', 'kz.documentolog.proxypilot', 'runtime,hard,kill,restrict'),
+            # Stronger than the real worker: even a hardened worker with signed
+            # matching pins must not acquire the app's installer identity.
+            ('updater', 'kz.documentolog.proxypilot.updater', 'runtime,hard,kill'),
+        ]:
+            if name in ('installer-next', 'updater'):
+                shutil.copyfile(cls.work / 'installer', cls.work / name)
+                cls.command(['codesign', '--remove-signature', str(cls.work / name)])
             (cls.work / name).chmod(0o700)
             cls.command(['codesign', '--force', '--sign', '-', '--identifier', identifier,
-                         '--options', 'runtime,hard,kill', str(cls.work / name)])
+                         '--options', options, str(cls.work / name)])
             cls.pins[name] = {}
             for arch in ('arm64', 'x86_64'):
                 result = cls.command(['codesign', '-d', '--verbose=4', '--arch', arch, str(cls.work / name)])
@@ -96,17 +105,18 @@ class VPNInstallerTests(unittest.TestCase):
         return subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}'],
                               capture_output=True, timeout=60).returncode == 0
 
-    def run_installer(self, action='install', sequence=10, expected=0):
+    def run_installer(self, action='install', sequence=10, expected=0, *, executable='installer', app_build=None):
         artifact = (self.work / 'server').read_bytes()
+        app_pins = self.pins[app_build or executable]
         fields = {'format': 1, 'product': 'kz.documentolog.proxypilot', 'sequence': sequence,
                   'version': '1.6.0', 'protocol': 1,
-                  'app-arm64': self.pins['installer']['arm64'], 'app-x86_64': self.pins['installer']['x86_64'],
+                  'app-arm64': app_pins['arm64'], 'app-x86_64': app_pins['x86_64'],
                   'helper-arm64': self.pins['server']['arm64'], 'helper-x86_64': self.pins['server']['x86_64'],
                   'helper-sha256': hashlib.sha256(artifact).hexdigest(), 'helper-bytes': len(artifact)}
         manifest, candidate = self.base / 'manifest', self.base / 'candidate'
         manifest.write_text(''.join(f'{key}={value}\n' for key, value in fields.items()))
         candidate.write_bytes(artifact)
-        return subprocess.run([str(self.work / 'installer'), action, str(self.support), str(manifest),
+        return subprocess.run([str(self.work / executable), action, str(self.support), str(manifest),
                                str(candidate), str(expected), self.label, str(self.plists)],
                               capture_output=True, text=True, timeout=120)
 
@@ -130,6 +140,53 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertIn('rejected:', result.stdout)
         self.assertFalse((self.storage / 'release.json').exists())
         self.assertFalse(self.loaded())
+        self.assertFalse((self.support / 'ProxyPilot').exists())
+
+    def running_snapshot(self):
+        result = self.command(['/bin/launchctl', 'print', f'{self.domain}/{self.label}'])
+        pid = re.search(r'^\s*pid = (\d+)\s*$', result.stdout, re.M)
+        self.assertIsNotNone(pid, result.stdout)
+        files = {path.name: path.read_bytes() for path in self.storage.iterdir() if path.is_file()}
+        return pid.group(1), files
+
+    def test_unlisted_installer_is_refused_before_provisioning(self):
+        result = self.run_installer(app_build='installer-next')
+        self.assertEqual(result.stdout.strip(), 'rejected:denied', result.stdout + result.stderr)
+        self.assertFalse((self.support / 'ProxyPilot').exists())
+        self.assertFalse(self.loaded())
+
+    def test_old_app_cannot_replace_policy_or_stop_service_for_new_app(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        result = self.run_installer('update', sequence=11, expected=10, app_build='installer-next')
+        self.assertEqual(result.stdout.strip(), 'rejected:denied', result.stdout + result.stderr)
+        self.assertEqual(self.running_snapshot(), before)
+
+    def test_updater_identity_is_refused_even_if_its_hashes_were_signed(self):
+        result = self.run_installer(executable='updater')
+        self.assertEqual(result.stdout.strip(), 'rejected:denied', result.stdout + result.stderr)
+        self.assertFalse((self.support / 'ProxyPilot').exists())
+        self.assertFalse(self.loaded())
+
+    def test_separately_pinned_new_app_can_advance_but_old_app_cannot_follow(self):
+        self.assertNotEqual(self.pins['installer'], self.pins['installer-next'])
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        result = self.run_installer('update', sequence=11, expected=10, executable='installer-next')
+        self.assertEqual(result.stdout.strip(), 'ready:11', result.stdout + result.stderr)
+        after = self.running_snapshot()
+        self.assertNotEqual(before[0], after[0])
+        self.assertNotEqual(before[1]['release.json'], after[1]['release.json'])
+        result = self.run_installer('update', sequence=12, expected=11, app_build='installer-next')
+        self.assertEqual(result.stdout.strip(), 'rejected:denied', result.stdout + result.stderr)
+        self.assertEqual(self.running_snapshot(), after)
+
+    def test_matching_new_app_identity_does_not_bypass_expected_revision(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        result = self.run_installer('update', sequence=11, expected=9, executable='installer-next')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.running_snapshot(), before)
 
     def test_update_replaces_the_installed_release(self):
         self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')

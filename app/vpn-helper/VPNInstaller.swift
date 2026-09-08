@@ -11,8 +11,9 @@ enum VPNInstallerError: Error {
     case removalFailed
 }
 
-/// One authorized installation path, in a fixed order: provision the protected
-/// directory, take the lifecycle lease, verify the signed release, publish the
+/// One authorized installation path, in a fixed order: authenticate the release
+/// and our running app identity, provision the protected directory, take the
+/// lifecycle lease, re-verify the signed release against storage, publish the
 /// policy/binary transaction and only then activate through launchd. It is not
 /// an entry point for IPC, an updater or a user command: the caller must already
 /// hold the user's system installation authorization, and the trusted release
@@ -27,6 +28,7 @@ enum VPNInstaller {
     static func install(payload: Data, signature: Data, helper: Data,
                         authority: VPNReleaseAuthority, trustedOwnerUserID: uid_t) throws -> VPNHelperReady {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        try preflight(payload: payload, signature: signature, authority: authority)
         let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: true)
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
@@ -39,6 +41,7 @@ enum VPNInstaller {
     static func update(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
                        expectedSequence: UInt64, intent: VPNActivationIntent) throws -> VPNHelperReady {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        try preflight(payload: payload, signature: signature, authority: authority)
         let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
@@ -73,6 +76,7 @@ enum VPNInstaller {
     /// builds; it proves the sequence, never a privileged system installation.
     static func testInstall(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
                             base: Int32, label: String, plistDirectory: URL) throws -> VPNHelperReady {
+        try testPreflight(payload: payload, signature: signature, authority: authority)
         let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: true)
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plistDirectory,
@@ -84,6 +88,7 @@ enum VPNInstaller {
     static func testUpdate(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
                            expectedSequence: UInt64, intent: VPNActivationIntent,
                            base: Int32, label: String, plistDirectory: URL) throws -> VPNHelperReady {
+        try testPreflight(payload: payload, signature: signature, authority: authority)
         let directory = try openInstalled { try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false) }
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plistDirectory,
@@ -92,7 +97,25 @@ enum VPNInstaller {
                           expectedSequence: expectedSequence, intent: intent,
                           directory: directory, runtime: runtime)
     }
+
+    private static func testPreflight(payload: Data, signature: Data, authority: VPNReleaseAuthority) throws {
+        guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
+        let release = try authority.verify(payload: payload, signature: signature, previous: nil)
+        try VPNPeerAuthentication.validateCurrentProcess(policy: release.clientPolicy(forTrustedUserID: geteuid()))
+    }
     #endif
+
+    /// Refuse an unlisted/old app or the updater before provisioning, selecting
+    /// policy, charging the activation budget or stopping a working service.
+    /// A new app must be pinned by the independently signed VPN release. Being
+    /// installed by Sparkle conveys no VPN authority. Root alone also does not.
+    /// `previous: nil` here checks ONLY candidate signature/identity; the store
+    /// still enforces durable ownership, expected revision and rollback rules
+    /// under its lock. A failed update never falls back to first installation.
+    private static func preflight(payload: Data, signature: Data, authority: VPNReleaseAuthority) throws {
+        let release = try authority.verify(payload: payload, signature: signature, previous: nil)
+        try VPNPeerAuthentication.validateCurrentProcess(policy: release.installerPolicy())
+    }
 
     private static func install(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
                                 trustedOwnerUserID: uid_t, directory: Int32,

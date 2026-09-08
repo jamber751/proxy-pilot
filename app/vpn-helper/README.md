@@ -1,7 +1,8 @@
 # VPN helper security boundary (not yet integrated)
 
-`VPNPeerAuthentication.swift` is an isolated, fail-closed **connector identity
-gate**, not a daemon, command dispatcher, installer or ready VPN feature. It is
+`VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
+gate** for a connector or the current installer, not a daemon, command dispatcher,
+installer entry point or ready VPN feature. It is
 intentionally absent from `app/build.sh` and from all installation packages.
 The older inert installation probe has no real-operation authorization and must
 not acquire privileged operations merely by adding this file.
@@ -20,6 +21,9 @@ not acquire privileged operations merely by adding this file.
 - Reject malformed/empty policies, failed security queries, dead peers and
   unexpected descriptor types. No fallback to PID, executable path or name.
 - Revalidate for every operation. No successful-authentication cache.
+- Preflight the current install/update process using `SecCodeCopySelf`, real and
+  effective UID, and that same dynamic signature/hardening gate. This never
+  substitutes for system installation authorization or helper-side checks.
 
 `VPNPeerPolicy` is a local trusted input, **not Codable or a network payload**.
 Only a future installer-controlled root-owned policy may supply production pins
@@ -46,8 +50,9 @@ not silently accept every later binary with the same identifier.
    must never be a proxy for privileged VPN commands. An opt-in candidate now
    wires the app's update model/preferences to a bounded worker channel; see
    `../update-worker/README.md`. The ordinary build remains unchanged. Actual
-   installation/relaunch and native-window acceptance are still pending, as is
-   coordination with the root-owned release policy.
+   disposable installation/relaunch, native-window scenarios and full-App
+   loopback lifecycle tests now pass (with the documented native cancellation
+   limit). System acceptance and release-policy/package integration remain open.
 3. The helper-to-client identity/readiness gate below is now integrated on both
    ends, with the endpoint created privately under the protected directory and
    close-on-exec descriptors, but only between unprivileged processes.
@@ -378,10 +383,11 @@ python3 -m unittest discover -s tests -p test_vpn_helper_listener.py -v
 ## Authorized installation sequence
 
 `VPNInstaller` is the one place the pieces are composed, in a fixed order:
-provision the protected directory, take the lifecycle lease, verify the signed
-release, publish the policy/binary transaction, and only then activate through
-launchd. The lease comes before anything else so an installation cannot race a
-running supervisor into stopping or starting the service behind its back. It is
+authenticate the signed candidate and the current app process, provision the
+protected directory, take the lifecycle lease, re-verify against stored policy,
+publish the policy/binary transaction, and only then activate through launchd.
+The lease precedes every selection or activation so an installation cannot race
+a running supervisor into stopping or starting the service behind its back. It is
 not an IPC entry point, an updater or a user command: the caller must already
 hold the user's system installation authorization, and the trusted release key
 must be embedded in this code, never read from storage or the network.
@@ -392,6 +398,45 @@ directory, so an absent one answers "not installed" while an unsafe one still
 surfaces as unsafe and is never silently reprovisioned. Storage errors stay
 themselves: a damaged installation is not reported as an absent one, and neither
 is repaired by an update. Both production entries refuse unless running as root.
+
+### Same-app install/update preflight (8 September)
+
+Before provisioning or opening the installation, both production entries verify
+the candidate's independent VPN release signature and check their **own live code**
+against its installer policy: real/effective UID 0, fixed app identifier, exact
+signed app pin, runtime/hard/kill, valid non-debugged status and no entitlements.
+The self-check reuses the peer gate; it cannot trust a bundle path, version string,
+worker event or claimed hash. A matching hash with the updater's identifier still
+fails. No new permission or enrollment message was added to the updater channel.
+
+Previously, an old/unlisted installer could select the new policy and replace
+the service, only to fail the helper's readiness authentication afterward. It now
+fails before filesystem provisioning, policy/budget changes or service shutdown.
+The preliminary verifier's `previous: nil` checks signature/identity only: it
+does not declare a fresh installation or reset the security floor. The existing
+store still checks owner, expected revision and monotonic release selection under
+its lock, and the helper still authenticates the installer after activation.
+
+Five new self-identity tests and five installation regressions pass. The latter
+use two differently signed app builds and a hardened updater-identified executable
+with an ephemeral release authority. They reject an unlisted first installer,
+leave the old service PID and stored files unchanged on rejected replacement,
+deny the updater even with signed matching pins, accept the explicitly pinned
+new app, reject the old app afterward, and preserve revision checks. The two
+targeted suites total **39 passing tests** (20 identity, 19 installation).
+
+These are non-root tests in a private directory and unique user launchd domain.
+Only the test entry substitutes the current user's client policy for the root
+installer policy; it still enforces exact app identity and hardening. Production
+entries also compile without test seams for arm64/x86_64, target macOS 11.
+Successful cross-UID/root authorization, a packaged same-app installer mode,
+signed release sidecar delivery and actual VPN update recovery remain untested.
+The shipping app/build and release workflow are unchanged; no real key is used.
+
+The final regression with both isolated-update installer opt-ins enabled completed
+310 tests in 367.193 seconds: 309 passed and one legacy Sparkle install test was
+skipped. Nine release-key tests were excluded to avoid Keychain access; native UI
+acceptance was not repeated in this run.
 
 Eight tests run the whole sequence unprivileged, with a disposable base directory
 standing in for `/Library/Application Support` and the user's own launchd domain

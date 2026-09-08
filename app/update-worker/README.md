@@ -50,6 +50,11 @@ The ordinary build and release scripts continue to use the existing updater.
   preparation generation: a queued command cannot complete an old/cancelled
   handoff or freeze the controls again. A worker with an acknowledged
   install handoff can outlive frontend EOF briefly; otherwise EOF exits it.
+- VPN install/update has a separate same-app identity preflight in `VPNInstaller`:
+  the candidate's independent VPN signature must pin the actual running hardened
+  app, before changing service policy or stopping it. This component is not yet
+  wired into the app/package. A Sparkle success or worker message cannot enroll
+  the new app; the worker never calls the root installer. See the helper README.
 
 ## Verified scope
 
