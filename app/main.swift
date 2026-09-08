@@ -703,6 +703,13 @@ final class App: NSObject, NSApplicationDelegate {
     }
 }
 
+#if VPN_INSTALLER_ENTRY
+if let status = VPNInstallationEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
+#else
+if CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--vpn-support") }) { exit(64) }
+if getuid() == 0 || geteuid() == 0 { exit(77) }
+#endif
+
 let app = NSApplication.shared
 let delegate = App()
 app.delegate = delegate

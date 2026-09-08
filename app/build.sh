@@ -18,6 +18,9 @@ PUBLIC_KEY=$(< "$HERE/updater-public-key.txt")
 # Staging only: do not switch release packaging until install/relaunch passes.
 ISOLATED_UPDATER="${PROXYPILOT_ISOLATED_UPDATER:-0}"
 [[ "$ISOLATED_UPDATER" == 0 || "$ISOLATED_UPDATER" == 1 ]] || { print -u2 "Invalid updater build mode"; exit 1; }
+VPN_INSTALLER="${PROXYPILOT_VPN_INSTALLER:-0}"
+[[ "$VPN_INSTALLER" == 0 || "$VPN_INSTALLER" == 1 ]] || { print -u2 "Invalid VPN installer build mode"; exit 1; }
+[[ "$VPN_INSTALLER" == 0 || "$ISOLATED_UPDATER" == 1 ]] || { print -u2 "VPN installer requires the isolated updater"; exit 1; }
 
 command -v swiftc >/dev/null || {
   print -u2 "нет swiftc. Установи: xcode-select --install"; exit 1
@@ -60,6 +63,16 @@ else
   mkdir -p "$APP/Contents/Frameworks"
   ditto "$FRAMEWORK_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
   LINK_FLAGS=(-F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks)
+fi
+
+if [[ "$VPN_INSTALLER" == 1 ]]; then
+  LINK_FLAGS+=(-D VPN_INSTALLER_ENTRY)
+  for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact \
+    VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
+    VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
+    VPNActivationCoordinator VPNLaunchdRuntime VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
+    SOURCES+=("$HERE/vpn-helper/$COMPONENT.swift")
+  done
 fi
 
 # файл называется main.swift, поэтому код верхнего уровня компилируется как есть.
@@ -112,6 +125,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if [[ "$VPN_INSTALLER" == 1 ]]; then
+  /usr/bin/plutil -insert ProxyPilotVPNInstaller -bool YES "$APP/Contents/Info.plist"
+fi
 
 # ad-hoc подпись: без неё macOS не выдаёт стабильный идентификатор,
 # и разрешение Local Network будет спрашиваться заново при каждой пересборке

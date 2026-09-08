@@ -3,7 +3,8 @@ import Foundation
 import Security
 
 /// Static validation only; never starts the candidate. Call only for a file in
-/// a protected, locally provisioned directory while holding the store lock.
+/// a protected, locally provisioned directory while holding the store lock, or
+/// an owner-only-writable installation package with before/after file snapshots.
 /// Security's path-based API is not safe against concurrent file modification.
 enum VPNHelperArtifact {
     static let signingIdentifier = "kz.documentolog.proxypilot.vpn-helper"

@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Prepare separately signed VPN sidecars and build a scripts-only package.
+
+Never installs, launches a GUI/helper, elevates, signs a release or accesses keys.
+Only the candidate app's explicit non-mutating verification mode is executed.
+"""
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import plistlib
+import re
+import shutil
+import subprocess
+import tempfile
+
+HERE = Path(__file__).resolve().parent
+APP_ID = 'kz.documentolog.proxypilot'
+SAFE_ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+
+
+def run(*args):
+    result = subprocess.run(list(map(str, args)), env=SAFE_ENV, capture_output=True, text=True, timeout=180)
+    if result.returncode:
+        raise ValueError(f'{Path(str(args[0])).name} failed: {result.stderr.strip()}')
+    return result.stdout + result.stderr
+
+
+def version_of(app):
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    version = info.get('CFBundleVersion', '')
+    if (info.get('CFBundleIdentifier') != APP_ID or info.get('CFBundleShortVersionString') != version
+            or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version)
+            or any(int(part) > 2**63 - 1 for part in version.split('.'))
+            or info.get('CFBundleExecutable') != 'ProxyPilot' or info.get('LSMinimumSystemVersion') != '11.0'
+            or info.get('ProxyPilotVPNInstaller') is not True):
+        raise ValueError('Unexpected app identity, version or minimum system')
+    return version
+
+
+def pins(path, identifier):
+    run('/usr/bin/codesign', '--verify', '--deep', '--strict', path)
+    result = {}
+    for architecture in ('arm64', 'x86_64'):
+        output = run('/usr/bin/codesign', '-d', '--verbose=4', '--arch', architecture, path)
+        digest = re.search(r'^CDHash=([a-f0-9]{40})$', output, re.M)
+        flags = re.search(r'flags=0x([a-f0-9]+)', output)
+        if (f'Identifier={identifier}\n' not in output or digest is None or flags is None
+                or int(flags.group(1), 16) & 0x10300 != 0x10300):
+            raise ValueError('Expected exact Universal hardened app/helper identity')
+        result[architecture] = digest.group(1)
+    return result
+
+
+def new_path(path):
+    if not path.is_absolute() or path.exists() or path.is_symlink():
+        raise ValueError('Output must be a new absolute path; never overwrite a release')
+
+
+def prepare(app, helper, sequence, output):
+    new_path(output)
+    if (not app.is_absolute() or app.name != 'ProxyPilot.app' or app.is_symlink()
+            or not helper.is_absolute() or not helper.is_file() or helper.is_symlink()):
+        raise ValueError('Expected an app bundle and regular helper file at absolute paths')
+    if not re.fullmatch(r'[1-9][0-9]{0,18}', sequence) or int(sequence) > 2**63 - 1:
+        raise ValueError('Expected a canonical positive release sequence')
+    version = version_of(app)
+    app_pins, helper_pins = pins(app, APP_ID), pins(helper, APP_ID + '.vpn-helper')
+    executable = app / 'Contents/MacOS/ProxyPilot'
+    if 'Sparkle.framework' in run('/usr/bin/otool', '-L', executable):
+        raise ValueError('Installer app must use the isolated updater')
+    data = helper.read_bytes()
+    if not 0 < len(data) <= 32 * 1024 * 1024: raise ValueError('Unexpected helper size')
+    output.mkdir(mode=0o700)
+    payload = output / 'Payload'; payload.mkdir(mode=0o700)
+    run('/usr/bin/ditto', '--noextattr', '--norsrc', app, payload / 'ProxyPilot.app')
+    shutil.copyfile(helper, payload / 'vpn-helper'); (payload / 'vpn-helper').chmod(0o700)
+    # Pin the completed signed app, then keep the manifest outside its seal.
+    if pins(payload / 'ProxyPilot.app', APP_ID) != app_pins: raise ValueError('App changed while copying')
+    if pins(payload / 'vpn-helper', APP_ID + '.vpn-helper') != helper_pins: raise ValueError('Helper changed while copying')
+    if (payload / 'vpn-helper').read_bytes() != data: raise ValueError('Helper bytes changed while copying')
+    fields = dict(format=1, product=APP_ID, sequence=sequence, version=version, protocol=1)
+    fields.update({'app-arm64': app_pins['arm64'], 'app-x86_64': app_pins['x86_64'],
+                   'helper-arm64': helper_pins['arm64'], 'helper-x86_64': helper_pins['x86_64'],
+                   'helper-sha256': hashlib.sha256(data).hexdigest(), 'helper-bytes': len(data)})
+    (payload / 'vpn-release.manifest').write_text(''.join(f'{key}={value}\n' for key, value in fields.items()))
+    (payload / 'vpn-release.manifest').chmod(0o600)
+    (payload / 'vpn-release.sig').touch(mode=0o600)  # Signing tool replaces this fixed file.
+    print('Prepared unsigned sidecars. Sign vpn-release.manifest separately; nothing installed.')
+
+
+def verify(payload):
+    if set(os.listdir(payload)) != {'ProxyPilot.app', 'vpn-helper', 'vpn-release.manifest', 'vpn-release.sig'}:
+        raise ValueError('Unexpected package files; never include profiles or staging leftovers')
+    app = payload / 'ProxyPilot.app'
+    version = version_of(app)
+    pins(app, APP_ID)
+    run(app / 'Contents/MacOS/ProxyPilot', '--vpn-support-verify')
+    return version
+
+
+def build(stage, action, output):
+    new_path(output)
+    if action not in ('install', 'update', 'remove'): raise ValueError('Unknown fixed action')
+    if not stage.is_absolute() or stage.is_symlink(): raise ValueError('Expected an absolute staging directory')
+    payload = stage / 'Payload'
+    version = verify(payload)
+    # Private scratch only; pkgbuild must never copy arbitrary staging siblings.
+    with tempfile.TemporaryDirectory(prefix='pp-vpn-package-') as temporary:
+        scripts = Path(temporary) / 'Scripts'; scripts.mkdir(mode=0o700)
+        copied = scripts / 'Payload'; copied.mkdir(mode=0o700)
+        run('/usr/bin/ditto', '--noextattr', '--norsrc', payload / 'ProxyPilot.app', copied / 'ProxyPilot.app')
+        for name in ('vpn-helper', 'vpn-release.manifest', 'vpn-release.sig'):
+            shutil.copyfile(payload / name, copied / name)
+            (copied / name).chmod(0o700 if name == 'vpn-helper' else 0o600)
+        if verify(copied) != version: raise ValueError('Package changed while copying')
+        shutil.copyfile(HERE / 'preinstall', scripts / 'preinstall')
+        (scripts / 'postinstall').write_text((HERE / 'postinstall.in').read_text().replace('@ACTION@', action))
+        for name in ('preinstall', 'postinstall'): (scripts / name).chmod(0o755)
+        run('/usr/bin/codesign', '--verify', '--deep', '--strict', copied / 'ProxyPilot.app')
+        run('/usr/bin/pkgbuild', '--nopayload', '--identifier', APP_ID + '.vpn-support.' + action,
+            '--version', version, '--compression', 'legacy', '--min-os-version', '11.0',
+            '--scripts', scripts, output)
+    print(f'Built {action} package. Nothing installed: {output}')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_subparsers(dest='mode', required=True)
+    candidate = modes.add_parser('prepare')
+    candidate.add_argument('--app', type=Path, required=True)
+    candidate.add_argument('--helper', type=Path, required=True)
+    candidate.add_argument('--sequence', required=True)
+    candidate.add_argument('--output', type=Path, required=True)
+    package = modes.add_parser('build')
+    package.add_argument('--stage', type=Path, required=True)
+    package.add_argument('--action', choices=('install', 'update', 'remove'), required=True)
+    package.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    if os.geteuid() == 0: parser.error('Build as an ordinary user, never root')
+    try:
+        if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output)
+        else: build(args.stage, args.action, args.output)
+    except (ValueError, OSError, subprocess.SubprocessError) as error: parser.error(str(error))
+
+
+if __name__ == '__main__': main()

@@ -1,0 +1,8 @@
+#!/bin/zsh -f
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[[ $EUID == 0 && $UID == 0 && ${3:-} == / ]] || exit 77
+PACKAGE_ROOT="${0:A:h}/Payload"
+# Scripts-only package: verify before the postinstall changes any system state.
+exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  "$PACKAGE_ROOT/ProxyPilot.app/Contents/MacOS/ProxyPilot" --vpn-support-verify
