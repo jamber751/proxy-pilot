@@ -56,13 +56,22 @@ class VPNInstallerTests(unittest.TestCase):
             slices = []
             for arch in ('arm64', 'x86_64'):
                 output = cls.work / f'{name}-{arch}'
-                cls.command(['swiftc', *flags, '-target', f'{arch}-apple-macosx11.0', *map(str, sources), '-o', str(output)])
+                cls.command(['swiftc', *flags, '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-target', f'{arch}-apple-macosx11.0', *map(str, sources), '-o', str(output)])
                 slices.append(str(output))
             cls.command(['lipo', '-create', *slices, '-output', str(cls.work / name)])
         # The installer must also compile without any of its test seams.
         for arch in ('arm64', 'x86_64'):
             cls.command(['swiftc', '-emit-library', '-target', f'{arch}-apple-macosx11.0',
                          *[str(HELPER / source) for source in COMPONENTS], '-o', str(cls.work / f'production-{arch}.dylib')])
+        for revision in (1, 2):
+            slices = []
+            for arch in ('arm64', 'x86_64'):
+                output = cls.work / f'engine-{revision}-{arch}'
+                cls.command(['clang', '-target', f'{arch}-apple-macosx11.0', f'-DFIXTURE_REVISION={revision}',
+                             str(ROOT / 'tests/vpn-deployment/HelperFixture.c'), '-o', str(output)])
+                slices.append(str(output))
+            cls.command(['lipo', '-create', *slices, '-output', str(cls.work / f'engine-v{revision}')])
+        shutil.copyfile(cls.work / 'engine-v1', cls.work / 'engine-weak')
         cls.pins = {}
         for name, identifier, options in [
             ('server', 'kz.documentolog.proxypilot.vpn-helper', 'runtime,hard,kill'),
@@ -71,6 +80,9 @@ class VPNInstallerTests(unittest.TestCase):
             # Stronger than the real worker: even a hardened worker with signed
             # matching pins must not acquire the app's installer identity.
             ('updater', 'kz.documentolog.proxypilot.updater', 'runtime,hard,kill'),
+            ('engine-v1', 'kz.documentolog.proxypilot.openvpn', 'runtime,hard,kill'),
+            ('engine-v2', 'kz.documentolog.proxypilot.openvpn', 'runtime,hard,kill'),
+            ('engine-weak', 'kz.documentolog.proxypilot.openvpn', 'runtime'),
         ]:
             if name in ('installer-next', 'updater'):
                 shutil.copyfile(cls.work / 'installer', cls.work / name)
@@ -109,7 +121,8 @@ class VPNInstallerTests(unittest.TestCase):
         return subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}'],
                               capture_output=True, timeout=60).returncode == 0
 
-    def run_installer(self, action='install', sequence=10, expected=0, *, executable='installer', app_build=None):
+    def run_installer(self, action='install', sequence=10, expected=0, *, executable='installer', app_build=None,
+                      engine=None, omit_engine=False, tamper_engine=False):
         artifact = (self.work / 'server').read_bytes()
         app_pins = self.pins[app_build or executable]
         fields = {'format': 1, 'product': 'kz.documentolog.proxypilot', 'sequence': sequence,
@@ -117,12 +130,69 @@ class VPNInstallerTests(unittest.TestCase):
                   'app-arm64': app_pins['arm64'], 'app-x86_64': app_pins['x86_64'],
                   'helper-arm64': self.pins['server']['arm64'], 'helper-x86_64': self.pins['server']['x86_64'],
                   'helper-sha256': hashlib.sha256(artifact).hexdigest(), 'helper-bytes': len(artifact)}
+        if engine:
+            data = (self.work / engine).read_bytes()
+            fields['format'] = 2
+            fields.update({'engine-version': '2.7.7', 'engine-crypto-version': '3.5.8',
+                           'engine-arm64': self.pins[engine]['arm64'], 'engine-x86_64': self.pins[engine]['x86_64'],
+                           'engine-sha256': hashlib.sha256(data).hexdigest(), 'engine-bytes': len(data)})
         manifest, candidate = self.base / 'manifest', self.base / 'candidate'
         manifest.write_text(''.join(f'{key}={value}\n' for key, value in fields.items()))
         candidate.write_bytes(artifact)
-        return subprocess.run([str(self.work / executable), action, str(self.support), str(manifest),
-                               str(candidate), str(expected), self.label, str(self.plists)],
-                              capture_output=True, text=True, timeout=120)
+        arguments = [str(self.work / executable), action, str(self.support), str(manifest),
+                     str(candidate), str(expected), self.label, str(self.plists)]
+        if engine and not omit_engine:
+            engine_path = self.base / 'engine-candidate'
+            engine_path.write_bytes(data + b'tampered' if tamper_engine else data)
+            arguments.append(str(engine_path))
+        return subprocess.run(arguments, capture_output=True, text=True, timeout=120)
+
+    def engine_name(self, engine='engine-v1'):
+        return 'engine-' + hashlib.sha256((self.work / engine).read_bytes()).hexdigest()
+
+    def test_engine_installation_selects_complete_set_without_running_engine(self):
+        result = self.run_installer(engine='engine-v1')
+        self.assertEqual(result.stdout.strip(), 'ready:10', result.stdout + result.stderr)
+        selected = self.storage / self.engine_name()
+        self.assertEqual(selected.read_bytes(), (self.work / 'engine-v1').read_bytes())
+        self.assertEqual(selected.stat().st_mode & 0o7777, 0o700)
+        self.assertTrue(self.loaded())
+
+    def test_engine_missing_or_tampered_initial_input_creates_nothing(self):
+        for options in [dict(omit_engine=True), dict(tamper_engine=True)]:
+            result = self.run_installer(engine='engine-v1', **options)
+            self.assertEqual(result.stdout.strip(), 'rejected:invalidEngineArtifact', result.stdout + result.stderr)
+            self.assertFalse((self.support / 'ProxyPilot').exists())
+            self.assertFalse(self.loaded())
+
+    def test_engine_update_refusal_preserves_running_pid_policy_and_budget(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        for options in [dict(engine='engine-v1', omit_engine=True), dict(engine='engine-v1', tamper_engine=True),
+                        dict(engine='engine-weak')]:
+            result = self.run_installer('update', sequence=11, expected=10, **options)
+            self.assertEqual(result.stdout.strip(), 'rejected:invalidEngineArtifact', result.stdout + result.stderr)
+            self.assertEqual(self.running_snapshot(), before)
+
+    def test_engine_upgrade_retry_and_removal_include_retained_versions(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        for sequence, expected, engine in [(11, 10, 'engine-v1'), (11, 11, 'engine-v1'), (12, 11, 'engine-v2')]:
+            result = self.run_installer('update', sequence=sequence, expected=expected, engine=engine)
+            self.assertEqual(result.stdout.strip(), f'ready:{sequence}', result.stdout + result.stderr)
+        self.assertTrue((self.storage / self.engine_name()).exists())
+        self.assertTrue((self.storage / self.engine_name('engine-v2')).exists())
+        result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'uninstalled', result.stdout + result.stderr)
+        self.assertFalse(self.loaded())
+        self.assertFalse((self.support / 'ProxyPilot').exists())
+
+    def test_engine_uninstall_keeps_unknown_lookalike_and_service_running(self):
+        self.assertEqual(self.run_installer(engine='engine-v1').stdout.strip(), 'ready:10')
+        (self.storage / 'engine-not-ours').write_text('keep')
+        before = self.running_snapshot()
+        result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'rejected:unexpectedContent', result.stdout + result.stderr)
+        self.assertEqual(self.running_snapshot(), before)
 
     def test_installation_provisions_storage_and_starts_the_service(self):
         result = self.run_installer()

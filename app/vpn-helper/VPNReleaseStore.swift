@@ -22,10 +22,12 @@ struct VPNAuthorizedDeployment {
     let ownerUserID: uid_t
     let release: VerifiedVPNRelease
     let helperFileName: String
+    let engineFileName: String?
     fileprivate init(_ state: VPNAuthorizedRelease) {
         ownerUserID = state.ownerUserID
         release = state.release
         helperFileName = state.release.helperArtifactName
+        engineFileName = state.release.engine?.artifactName
     }
 }
 
@@ -94,14 +96,14 @@ final class VPNReleaseStore {
 
     /// Validate and stage BEFORE interrupting the running version. This does
     /// not change the selected security floor or imply a successful update.
-    func prepareDeployment(payload: Data, signature: Data, helper: Data,
+    func prepareDeployment(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                            expectedSequence: UInt64) throws -> VPNPreparedDeployment {
         try withLock {
             let (envelope, state) = try readCurrent()
             guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
             guard state.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
             let release = try authority.verify(payload: payload, signature: signature, previous: state.release)
-            try stageArtifact(helper, release: release)
+            try stageArtifacts(helper: helper, engine: engine, release: release)
             return VPNPreparedDeployment(previous: VPNAuthorizedDeployment(state),
                 candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: state.ownerUserID, release: release)),
                 payload: payload, signature: signature)
@@ -116,7 +118,7 @@ final class VPNReleaseStore {
             guard current.ownerUserID == prepared.previous.ownerUserID,
                   current.release.isSameRelease(as: prepared.previous.release) else { throw VPNReleaseStoreError.staleRevision }
             let release = try authority.verify(payload: prepared.payload, signature: prepared.signature, previous: current.release)
-            try validateStoredArtifact(release)
+            try validateStoredArtifacts(release)
             let next = Envelope(schema: 2, owner: current.ownerUserID, payload: prepared.payload, signature: prepared.signature)
             if envelope.payload != next.payload { try replace(recordName, with: encode(next)) }
             else if fsync(directory) != 0 { throw VPNReleaseStoreError.commitUncertain }
@@ -126,9 +128,9 @@ final class VPNReleaseStore {
 
     /// First-install authorization and protected parent provisioning are external.
     /// Both signatures and both architecture pins are checked before publishing
-    /// a single record that selects the policy AND its content-addressed binary.
+    /// a single record selecting the policy AND all content-addressed binaries.
     @discardableResult
-    func bootstrapDeployment(payload: Data, signature: Data, helper: Data,
+    func bootstrapDeployment(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                              trustedOwnerUserID: uid_t) throws -> VPNAuthorizedDeployment {
         try withLock {
             guard try readFile(markerName) == nil, try readFile(recordName) == nil else {
@@ -136,7 +138,7 @@ final class VPNReleaseStore {
             }
             let release = try authority.verify(payload: payload, signature: signature, previous: nil)
             _ = try release.clientPolicy(forTrustedUserID: trustedOwnerUserID)
-            try stageArtifact(helper, release: release)
+            try stageArtifacts(helper: helper, engine: engine, release: release)
             let envelope = Envelope(schema: 2, owner: trustedOwnerUserID, payload: payload, signature: signature)
             try replace(markerName, with: Self.marker)
             try replace(recordName, with: encode(envelope))
@@ -148,14 +150,14 @@ final class VPNReleaseStore {
     /// operations, check the candidate's startup and handle service recovery.
     /// No daemon or installer may interpret this return as "VPN connected".
     @discardableResult
-    func commitDeployment(payload: Data, signature: Data, helper: Data,
+    func commitDeployment(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                           expectedSequence: UInt64) throws -> VPNAuthorizedDeployment {
         try withLock {
             let (previous, current) = try readCurrent()
             guard previous.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
             guard current.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
             let release = try authority.verify(payload: payload, signature: signature, previous: current.release)
-            try stageArtifact(helper, release: release)
+            try stageArtifacts(helper: helper, engine: engine, release: release)
             if previous.payload == payload {
                 guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
                 return VPNAuthorizedDeployment(current)
@@ -175,6 +177,7 @@ final class VPNReleaseStore {
                 throw VPNReleaseStoreError.alreadyInitialized
             }
             let verified = try authority.verify(payload: payload, signature: signature, previous: nil)
+            guard verified.engine == nil else { throw VPNReleaseStoreError.deploymentRequired }
             _ = try verified.clientPolicy(forTrustedUserID: trustedOwnerUserID)
             let envelope = Envelope(schema: 1, owner: trustedOwnerUserID, payload: payload, signature: signature)
             let data = try encode(envelope)
@@ -196,6 +199,7 @@ final class VPNReleaseStore {
             guard previous.schema == 1 else { throw VPNReleaseStoreError.deploymentRequired }
             guard current.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
             let verified = try authority.verify(payload: payload, signature: signature, previous: current.release)
+            guard verified.engine == nil else { throw VPNReleaseStoreError.deploymentRequired }
             // Verification above authenticates the supplied signature. Release
             // identity is the payload, not signature bytes: a signer can produce
             // another valid signature for the same description.
@@ -221,35 +225,60 @@ final class VPNReleaseStore {
             guard [1, 2].contains(envelope.schema), try encode(envelope) == data else { throw VPNReleaseStoreError.invalidState }
             let verified = try authority.verify(payload: envelope.payload, signature: envelope.signature, previous: nil)
             _ = try verified.clientPolicy(forTrustedUserID: envelope.owner)
-            if envelope.schema == 2 { try validateStoredArtifact(verified) }
+            if envelope.schema == 2 { try validateStoredArtifacts(verified) }
+            else if verified.engine != nil { throw VPNReleaseStoreError.deploymentRequired }
             return (envelope, VPNAuthorizedRelease(ownerUserID: envelope.owner, release: verified))
         } catch { throw VPNReleaseStoreError.invalidState }
     }
 
-    private func stageArtifact(_ data: Data, release: VerifiedVPNRelease) throws {
-        try release.validateHelperArtifact(data)
-        let name = release.helperArtifactName
-        if try readFile(name, limit: VPNReleaseAuthority.maximumHelperBytes, permissions: 0o700) == nil {
+    private func stageArtifacts(helper: Data, engine: Data?, release: VerifiedVPNRelease) throws {
+        // Check the complete set before creating even an unselected artifact.
+        try release.validateArtifacts(helper: helper, engine: engine)
+        try stageArtifact(helper, name: release.helperArtifactName, limit: VPNReleaseAuthority.maximumHelperBytes) {
+            try VPNHelperArtifact.validate(protectedFile: $0, data: $1, release: release)
+        }
+        if let identity = release.engine, let engine = engine {
+            try stageArtifact(engine, name: identity.artifactName, limit: VPNReleaseAuthority.maximumEngineBytes) {
+                try VPNEngineArtifact.validate(protectedFile: $0, data: $1, release: release)
+            }
+        }
+        try validateStoredArtifacts(release)
+        guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
+    }
+
+    private func stageArtifact(_ data: Data, name: String, limit: Int,
+                               validate: (Int32, Data) throws -> Void) throws {
+        if try readFile(name, limit: limit, permissions: 0o700) == nil {
             try replace(name, with: data, permissions: 0o700) { file in
-                try VPNHelperArtifact.validate(protectedFile: file, data: data, release: release)
+                try validate(file, data)
             }
         }
         // Also recheck an existing content-addressed file. Never silently repair
         // corrupted/symlinked state or trust a file merely because its name fits.
-        try validateStoredArtifact(release)
-        guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
+        try validateStoredArtifact(name: name, limit: limit, validate: validate)
     }
 
-    private func validateStoredArtifact(_ release: VerifiedVPNRelease) throws {
-        let name = release.helperArtifactName
-        guard let data = try readFile(name, limit: VPNReleaseAuthority.maximumHelperBytes, permissions: 0o700) else {
+    private func validateStoredArtifacts(_ release: VerifiedVPNRelease) throws {
+        try validateStoredArtifact(name: release.helperArtifactName, limit: VPNReleaseAuthority.maximumHelperBytes) {
+            try VPNHelperArtifact.validate(protectedFile: $0, data: $1, release: release)
+        }
+        if let engine = release.engine {
+            try validateStoredArtifact(name: engine.artifactName, limit: VPNReleaseAuthority.maximumEngineBytes) {
+                try VPNEngineArtifact.validate(protectedFile: $0, data: $1, release: release)
+            }
+        }
+    }
+
+    private func validateStoredArtifact(name: String, limit: Int,
+                                        validate: (Int32, Data) throws -> Void) throws {
+        guard let data = try readFile(name, limit: limit, permissions: 0o700) else {
             throw VPNReleaseStoreError.invalidState
         }
         let file = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard file >= 0 else { throw VPNReleaseStoreError.unsafeStorage }
         defer { close(file) }
         try checkFile(file, permissions: 0o700)
-        try VPNHelperArtifact.validate(protectedFile: file, data: data, release: release)
+        try validate(file, data)
     }
 
     private func encode(_ envelope: Envelope) throws -> Data {
@@ -331,7 +360,7 @@ final class VPNReleaseStore {
     }
 
     private func replace(_ name: String, with data: Data, permissions: mode_t = 0o600,
-                         validating: ((Int32) throws -> Void)? = nil) throws {
+                         validating: (Int32) throws -> Void = { _ in }) throws {
         let temporary = ".release-\(UUID().uuidString).tmp"
         let file = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, permissions)
         guard file >= 0 else { throw VPNReleaseStoreError.writeFailed }
@@ -346,7 +375,7 @@ final class VPNReleaseStore {
                 offset += count
             }
         }
-        try validating?(file)
+        try validating(file)
         guard fsync(file) == 0 else { throw VPNReleaseStoreError.writeFailed }
         #if VPN_RELEASE_STORE_TESTING
         Self.checkpoint?(name + ":before-rename")

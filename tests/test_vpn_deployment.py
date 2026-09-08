@@ -28,7 +28,7 @@ class VPNDeploymentTests(unittest.TestCase):
         slices = []
         for arch in ('arm64', 'x86_64'):
             output = cls.work / ('checker-' + arch)
-            cls.command(['swiftc', '-D', 'VPN_RELEASE_STORE_TESTING', '-target', f'{arch}-apple-macosx11.0',
+            cls.command(['swiftc', '-D', 'VPN_RELEASE_STORE_TESTING', '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-target', f'{arch}-apple-macosx11.0',
                          *map(str, sources), str(ROOT / 'tests/vpn_deployment_checks.swift'), '-o', str(output)])
             slices.append(str(output))
         cls.binary = cls.work / 'deployment-checks'
@@ -57,6 +57,13 @@ class VPNDeploymentTests(unittest.TestCase):
             shutil.copyfile(cls.helpers['v1'], output)
             cls.command(['codesign', '--remove-signature', str(output)])
             cls.sign(output, identifier=identifier, options=options, entitlements=entitlements)
+            cls.register(name, output)
+        for name, revision, options in [('engine-v1', 'v1', 'runtime,hard,kill'),
+                                        ('engine-v2', 'v2', 'runtime,hard,kill'), ('engine-weak', 'v1', None)]:
+            output = cls.work / name
+            shutil.copyfile(cls.helpers[revision], output)
+            cls.command(['codesign', '--remove-signature', str(output)])
+            cls.sign(output, identifier='kz.documentolog.proxypilot.openvpn', options=options)
             cls.register(name, output)
         for name, intel_source in [('mixed-weak', 'weak'), ('mixed-id', 'wrong-id')]:
             arm, intel = cls.work / (name + '-arm'), cls.work / (name + '-intel')
@@ -112,24 +119,136 @@ class VPNDeploymentTests(unittest.TestCase):
         return ''.join(f'{key}={value}\n' for key, value in values.items()).encode(), artifact
 
     def run_store(self, operation, helper='v1', sequence=10, expected=10, data=None, fields=None,
-                  checkpoint='none', tamper=False):
+                  checkpoint='none', tamper=False, engine=None, omit_engine=False, tamper_engine=False,
+                  legacy_with_engine=False):
         payload, artifact = self.description(helper, sequence, data, fields)
+        engine_data = self.helpers[engine].read_bytes() if engine else None
+        if engine and not legacy_with_engine:
+            text = payload.decode().replace('format=1\n', 'format=2\n')
+            extra = {'engine-version': '2.7.7', 'engine-crypto-version': '3.5.8',
+                     'engine-arm64': self.pins[engine]['arm64'], 'engine-x86_64': self.pins[engine]['x86_64'],
+                     'engine-sha256': hashlib.sha256(engine_data).hexdigest(), 'engine-bytes': len(engine_data)}
+            payload = (text + ''.join(f'{key}={value}\n' for key, value in extra.items())).encode()
         manifest = Path(self.temp.name) / 'manifest.txt'
         binary = Path(self.temp.name) / 'candidate'
         manifest.write_bytes(payload)
         binary.write_bytes(artifact + b'tampered' if tamper else artifact)
-        return subprocess.run([str(self.binary), operation, str(self.directory), str(manifest), str(binary),
-                               str(expected), checkpoint], capture_output=True, text=True, timeout=15)
+        arguments = [str(self.binary), operation, str(self.directory), str(manifest), str(binary), str(expected), checkpoint]
+        if engine and not omit_engine:
+            engine_path = Path(self.temp.name) / 'engine-candidate'
+            engine_path.write_bytes(engine_data + b'tampered' if tamper_engine else engine_data)
+            arguments.append(str(engine_path))
+        return subprocess.run(arguments, capture_output=True, text=True, timeout=15)
 
     def expect(self, operation, output, **kwargs):
         result = self.run_store(operation, **kwargs)
-        self.assertEqual(result.returncode, 0 if output.startswith(('sequence=', 'metadata-only')) else 77,
+        self.assertEqual(result.returncode, 0 if output.startswith(('sequence=', 'metadata-only', 'engine=')) else 77,
                          result.stdout + result.stderr)
         self.assertIn(output, result.stdout)
         return result
 
     def selected_name(self, helper):
         return 'helper-' + hashlib.sha256(self.helpers[helper].read_bytes()).hexdigest()
+
+    def engine_name(self, engine='engine-v1'):
+        return 'engine-' + hashlib.sha256(self.helpers[engine].read_bytes()).hexdigest()
+
+    def test_engine_bootstrap_persists_complete_private_set(self):
+        self.expect('bootstrap', 'sequence=10', engine='engine-v1')
+        self.expect('load', 'engine=' + self.engine_name())
+        selected = self.directory / self.engine_name()
+        self.assertEqual(selected.read_bytes(), self.helpers['engine-v1'].read_bytes())
+        self.assertEqual(stat.S_IMODE(selected.stat().st_mode), 0o700)
+        self.assertEqual(selected.stat().st_uid, os.geteuid())
+
+    def test_engine_upgrade_from_helper_only_is_atomic(self):
+        self.seed()
+        self.expect('prepare-commit', 'sequence=20', helper='v2', sequence=20, engine='engine-v1')
+        self.expect('load', 'engine=' + self.engine_name())
+        self.assertTrue((self.directory / self.selected_name('v1')).exists())
+        self.assertTrue((self.directory / self.selected_name('v2')).exists())
+        self.expect('commit', 'rejected:rollback', sequence=30, expected=20)
+
+    def test_engine_only_update_and_retry_keep_complete_set(self):
+        self.expect('bootstrap', 'sequence=10', engine='engine-v1')
+        self.expect('commit', 'sequence=20', sequence=20, engine='engine-v2')
+        self.expect('commit', 'sequence=20', sequence=20, expected=20, engine='engine-v2')
+        self.expect('load', 'engine=' + self.engine_name('engine-v2'))
+        self.assertTrue((self.directory / self.engine_name()).exists())
+
+    def test_engine_missing_extra_or_tampered_bytes_never_select(self):
+        for options in [dict(engine='engine-v1', omit_engine=True), dict(engine='engine-v1', tamper_engine=True),
+                        dict(engine='engine-v1', legacy_with_engine=True)]:
+            self.expect('bootstrap', 'rejected:invalidEngineArtifact', **options)
+            self.assertFalse((self.directory / 'initialized').exists())
+            self.assertFalse((self.directory / self.selected_name('v1')).exists())
+        self.seed()
+        before = (self.directory / 'release.json').read_bytes()
+        self.expect('commit', 'rejected:invalidEngineArtifact', sequence=20, engine='engine-v1', omit_engine=True)
+        self.assertEqual((self.directory / 'release.json').read_bytes(), before)
+
+    def test_engine_invalid_signature_keeps_previous_selection(self):
+        self.seed()
+        self.expect('commit', 'rejected:invalidEngineArtifact', sequence=20, engine='engine-weak')
+        self.expect('load', 'sequence=10')
+        self.assertFalse((self.directory / self.engine_name('engine-weak')).exists())
+
+    def test_engine_crash_between_artifacts_keeps_old_selection(self):
+        self.seed()
+        result = self.run_store('commit', helper='v2', sequence=20, engine='engine-v1', checkpoint='helper:after-rename')
+        self.assertEqual(result.returncode, 86, result.stdout + result.stderr)
+        self.expect('load', 'sequence=10')
+        self.assertFalse((self.directory / self.engine_name()).exists())
+        self.expect('commit', 'sequence=20', helper='v2', sequence=20, engine='engine-v1')
+
+    def test_engine_crash_after_staging_keeps_old_record(self):
+        self.seed()
+        result = self.run_store('commit', helper='v2', sequence=20, engine='engine-v1', checkpoint='engine:after-rename')
+        self.assertEqual(result.returncode, 86, result.stdout + result.stderr)
+        self.expect('load', 'sequence=10')
+        self.assertTrue((self.directory / self.engine_name()).exists())
+        self.expect('commit', 'sequence=20', helper='v2', sequence=20, engine='engine-v1')
+
+    def test_engine_crash_after_record_selects_both_new_files(self):
+        self.seed()
+        result = self.run_store('commit', helper='v2', sequence=20, engine='engine-v1', checkpoint='release.json:after-rename')
+        self.assertEqual(result.returncode, 86, result.stdout + result.stderr)
+        self.expect('load', 'sequence=20')
+        self.expect('load', 'engine=' + self.engine_name())
+        self.expect('commit', 'rejected:rollback', expected=20)
+
+    def test_engine_is_rechecked_at_commit_after_prepare(self):
+        self.seed()
+        self.expect('tamper-prepared-engine', 'rejected:invalidEngineArtifact', sequence=20, engine='engine-v1')
+        self.expect('load', 'sequence=10')
+
+    def test_engine_missing_or_corrupt_current_never_downgrades_or_repairs(self):
+        self.expect('bootstrap', 'sequence=10', engine='engine-v1')
+        self.expect('commit', 'sequence=20', sequence=20, engine='engine-v2')
+        selected = self.directory / self.engine_name('engine-v2')
+        selected.write_bytes(b'corrupt')
+        self.expect('load', 'rejected:invalidState')
+        self.expect('commit', 'rejected:invalidState', sequence=20, expected=20, engine='engine-v2')
+        selected.unlink()
+        self.expect('load', 'rejected:invalidState')
+        self.assertTrue((self.directory / self.engine_name()).exists())
+
+    def test_engine_existing_symlink_or_bad_file_is_not_repaired(self):
+        self.seed()
+        target = Path(self.temp.name) / 'untouched'; target.write_bytes(b'keep')
+        candidate = self.directory / self.engine_name(); candidate.symlink_to(target)
+        self.expect('commit', 'rejected:unsafeStorage', sequence=20, engine='engine-v1')
+        self.assertEqual(target.read_bytes(), b'keep')
+        candidate.unlink(); candidate.write_bytes(b'corrupt'); candidate.chmod(0o700)
+        self.expect('commit', 'rejected:invalidEngineArtifact', sequence=20, engine='engine-v1')
+        self.assertEqual(candidate.read_bytes(), b'corrupt')
+        self.expect('load', 'sequence=10')
+
+    def test_engine_metadata_only_api_cannot_record_a_partial_deployment(self):
+        self.expect('bootstrap-metadata', 'rejected:deploymentRequired', engine='engine-v1')
+        self.assertFalse((self.directory / 'initialized').exists())
+        self.expect('bootstrap-metadata', 'metadata-only')
+        self.expect('metadata-only', 'rejected:deploymentRequired', sequence=20, engine='engine-v1')
 
     def seed(self):
         self.expect('bootstrap', 'sequence=10 owner=501 artifact=' + self.selected_name('v1'))

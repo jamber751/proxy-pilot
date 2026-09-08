@@ -11,17 +11,18 @@ enum VPNInstallerChecks {
     static func main() {
         guard geteuid() != 0 else { exit(77) }
         let args = CommandLine.arguments
-        guard args.count == 8, let expected = UInt64(args[5]) else { exit(64) }
+        guard [8, 9].contains(args.count), let expected = UInt64(args[5]) else { exit(64) }
         let base = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard base >= 0 else { exit(77) }
         defer { close(base) }
         var status: Int32 = 0
         do {
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
-            let authority = try VPNReleaseAuthority(trustedPublicKey: key.publicKey.rawRepresentation,
-                                                    minimumSequence: 1, supportedProtocol: 1)
+            let authority = try VPNReleaseAuthority.engineCandidateAuthority(
+                trustedPublicKey: key.publicKey.rawRepresentation, minimumSequence: 1)
             let payload = try Data(contentsOf: URL(fileURLWithPath: args[3]))
             let helper = try Data(contentsOf: URL(fileURLWithPath: args[4]))
+            let engine = args.count == 9 ? try Data(contentsOf: URL(fileURLWithPath: args[8])) : nil
             var signature = try key.signature(for: VPNReleaseAuthority.signatureDomain + payload)
             if args[1].hasSuffix("-bad-signature") { signature[0] ^= 1 }
             let label = args[6], plists = URL(fileURLWithPath: args[7], isDirectory: true)
@@ -51,11 +52,11 @@ enum VPNInstallerChecks {
             }
             let ready: VPNHelperReady
             if args[1].hasPrefix("install") {
-                ready = try VPNInstaller.testInstall(payload: payload, signature: signature, helper: helper,
+                ready = try VPNInstaller.testInstall(payload: payload, signature: signature, helper: helper, engine: engine,
                                                      authority: authority, base: base, label: label,
                                                      plistDirectory: plists)
             } else {
-                ready = try VPNInstaller.testUpdate(payload: payload, signature: signature, helper: helper,
+                ready = try VPNInstaller.testUpdate(payload: payload, signature: signature, helper: helper, engine: engine,
                                                     authority: authority, expectedSequence: expected,
                                                     intent: .explicit, base: base, label: label,
                                                     plistDirectory: plists)

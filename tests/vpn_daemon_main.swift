@@ -18,8 +18,8 @@ import Foundation
             guard directory >= 0 else { exit(77) }
             defer { close(directory) }
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
-            let authority = try VPNReleaseAuthority(trustedPublicKey: key.publicKey.rawRepresentation,
-                                                    minimumSequence: 1, supportedProtocol: 1)
+            let authority = try VPNReleaseAuthority.engineCandidateAuthority(
+                trustedPublicKey: key.publicKey.rawRepresentation, minimumSequence: 1)
             try VPNHelperDaemon.testServe(directory: directory, endpoint: directory, shared: false, authority: authority)
         } catch { print("rejected:\(error)"); exit(77) }
     }

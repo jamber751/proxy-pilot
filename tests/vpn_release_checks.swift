@@ -200,12 +200,13 @@ enum VPNReleaseChecks {
             try release.validateHelperArtifact(helper)
             rejects(.invalidEngineArtifact) { try identity.validateArtifact(helper) }
             rejects(.invalidHelperArtifact) { try release.validateHelperArtifact(engine) }
-        case "engine-disabled":
+        case "engine-production":
             let candidate = fixture(["format": "2"])
-            rejects(.engineDeliveryUnavailable) {
-                _ = try verifier.verify(payload: candidate, signature: signature(candidate), previous: nil)
-            }
-            // Verification still authenticates bytes before exposing format errors.
+            let ordinary = try verifier.verify(payload: candidate, signature: signature(candidate), previous: nil)
+            precondition(ordinary.engine != nil)
+            try ordinary.validateArtifacts(helper: helper, engine: engine)
+            rejects(.invalidEngineArtifact) { try ordinary.validateArtifacts(helper: helper, engine: nil) }
+            // Verification still authenticates every byte before parsing.
             rejects(.invalidSignature) {
                 _ = try verifier.verify(payload: candidate, signature: signed, previous: nil)
             }

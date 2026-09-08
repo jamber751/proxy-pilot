@@ -57,7 +57,7 @@ enum VPNInstallationEntry {
             case .install:
                 let owner = try consoleOwner()
                 _ = try VPNInstaller.install(payload: payload.manifest, signature: payload.signature,
-                                              helper: payload.helper, authority: authority, trustedOwnerUserID: owner)
+                                              helper: payload.helper, engine: payload.engine, authority: authority, trustedOwnerUserID: owner)
                 print("VPN support installed.")
             case .update:
                 let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: false)
@@ -68,7 +68,7 @@ enum VPNInstallationEntry {
                         .loadDeployment().release.sequence
                 }
                 _ = try VPNInstaller.update(payload: payload.manifest, signature: payload.signature,
-                                             helper: payload.helper, authority: authority, expectedSequence: sequence,
+                                             helper: payload.helper, engine: payload.engine, authority: authority, expectedSequence: sequence,
                                              intent: .explicit)
                 print("VPN support updated.")
             case .remove:

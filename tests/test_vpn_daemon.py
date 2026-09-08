@@ -96,3 +96,12 @@ class VPNDaemonTests(installer.VPNInstallerTests):
         result = subprocess.run([str(self.work / 'server'), 'system'], capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 77)
         self.assertEqual(result.stdout.strip(), 'rejected:requiresRoot')
+
+    def test_boot_refuses_missing_engine_without_falling_back_to_retained_version(self):
+        self.assertEqual(self.run_installer(engine='engine-v1').stdout.strip(), 'ready:10')
+        self.assertEqual(self.run_installer('update', sequence=11, expected=10, engine='engine-v2').stdout.strip(), 'ready:11')
+        self.boot_out()
+        (self.storage / self.engine_name('engine-v2')).unlink()
+        self.bootstrap(); self.wait_refused()
+        self.assertTrue((self.storage / self.engine_name()).exists())
+        self.assertNotEqual(self.run_installer('probe').returncode, 0)

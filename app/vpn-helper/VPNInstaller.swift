@@ -25,27 +25,27 @@ enum VPNInstallerError: Error {
 enum VPNInstaller {
     /// First installation. Refuses when a policy already exists — an existing
     /// installation is changed by `update`, never re-bootstrapped over.
-    static func install(payload: Data, signature: Data, helper: Data,
+    static func install(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                         authority: VPNReleaseAuthority, trustedOwnerUserID: uid_t) throws -> VPNHelperReady {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
-        try preflight(payload: payload, signature: signature, authority: authority)
+        try preflight(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority)
         let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: true)
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
-        return try install(payload: payload, signature: signature, helper: helper, authority: authority,
+        return try install(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority,
                            trustedOwnerUserID: trustedOwnerUserID, directory: directory, runtime: runtime)
     }
 
     /// Change an existing installation. The store rejects rollbacks and stale
     /// revisions; the coordinator refuses to leave a service it cannot verify.
-    static func update(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
+    static func update(payload: Data, signature: Data, helper: Data, engine: Data? = nil, authority: VPNReleaseAuthority,
                        expectedSequence: UInt64, intent: VPNActivationIntent) throws -> VPNHelperReady {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
-        try preflight(payload: payload, signature: signature, authority: authority)
+        try preflight(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority)
         let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
-        return try update(payload: payload, signature: signature, helper: helper, authority: authority,
+        return try update(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority,
                           expectedSequence: expectedSequence, intent: intent,
                           directory: directory, runtime: runtime)
     }
@@ -74,34 +74,35 @@ enum VPNInstaller {
     /// Disposable per-user variant: the same order and the same components, in a
     /// private base directory and the user's launchd domain. Absent from normal
     /// builds; it proves the sequence, never a privileged system installation.
-    static func testInstall(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
+    static func testInstall(payload: Data, signature: Data, helper: Data, engine: Data? = nil, authority: VPNReleaseAuthority,
                             base: Int32, label: String, plistDirectory: URL) throws -> VPNHelperReady {
-        try testPreflight(payload: payload, signature: signature, authority: authority)
+        try testPreflight(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority)
         let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: true)
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plistDirectory,
                                                           storageDirectory: directory)
-        return try install(payload: payload, signature: signature, helper: helper, authority: authority,
+        return try install(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority,
                            trustedOwnerUserID: geteuid(), directory: directory, runtime: runtime)
     }
 
-    static func testUpdate(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
+    static func testUpdate(payload: Data, signature: Data, helper: Data, engine: Data? = nil, authority: VPNReleaseAuthority,
                            expectedSequence: UInt64, intent: VPNActivationIntent,
                            base: Int32, label: String, plistDirectory: URL) throws -> VPNHelperReady {
-        try testPreflight(payload: payload, signature: signature, authority: authority)
+        try testPreflight(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority)
         let directory = try openInstalled { try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false) }
         defer { close(directory) }
         let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plistDirectory,
                                                           storageDirectory: directory)
-        return try update(payload: payload, signature: signature, helper: helper, authority: authority,
+        return try update(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority,
                           expectedSequence: expectedSequence, intent: intent,
                           directory: directory, runtime: runtime)
     }
 
-    private static func testPreflight(payload: Data, signature: Data, authority: VPNReleaseAuthority) throws {
+    private static func testPreflight(payload: Data, signature: Data, helper: Data, engine: Data?, authority: VPNReleaseAuthority) throws {
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
         let release = try authority.verify(payload: payload, signature: signature, previous: nil)
         try VPNPeerAuthentication.validateCurrentProcess(policy: release.clientPolicy(forTrustedUserID: geteuid()))
+        try release.validateArtifacts(helper: helper, engine: engine)
     }
     #endif
 
@@ -112,12 +113,13 @@ enum VPNInstaller {
     /// `previous: nil` here checks ONLY candidate signature/identity; the store
     /// still enforces durable ownership, expected revision and rollback rules
     /// under its lock. A failed update never falls back to first installation.
-    private static func preflight(payload: Data, signature: Data, authority: VPNReleaseAuthority) throws {
+    private static func preflight(payload: Data, signature: Data, helper: Data, engine: Data?, authority: VPNReleaseAuthority) throws {
         let release = try authority.verify(payload: payload, signature: signature, previous: nil)
         try VPNPeerAuthentication.validateCurrentProcess(policy: release.installerPolicy())
+        try release.validateArtifacts(helper: helper, engine: engine)
     }
 
-    private static func install(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
+    private static func install(payload: Data, signature: Data, helper: Data, engine: Data?, authority: VPNReleaseAuthority,
                                 trustedOwnerUserID: uid_t, directory: Int32,
                                 runtime: VPNActivationRuntime) throws -> VPNHelperReady {
         // The lease first: an installation must not race a running supervisor
@@ -126,7 +128,7 @@ enum VPNInstaller {
         defer { lease.release() }
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
         do { _ = try store.bootstrapDeployment(payload: payload, signature: signature,
-                                               helper: helper, trustedOwnerUserID: trustedOwnerUserID) }
+                                               helper: helper, engine: engine, trustedOwnerUserID: trustedOwnerUserID) }
         catch VPNReleaseStoreError.alreadyInitialized { throw VPNInstallerError.alreadyInstalled }
         let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
         let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease, budget: budget)
@@ -135,7 +137,7 @@ enum VPNInstaller {
         return try coordinator.recoverSelected(intent: .explicit)
     }
 
-    private static func update(payload: Data, signature: Data, helper: Data, authority: VPNReleaseAuthority,
+    private static func update(payload: Data, signature: Data, helper: Data, engine: Data?, authority: VPNReleaseAuthority,
                                expectedSequence: UInt64, intent: VPNActivationIntent, directory: Int32,
                                runtime: VPNActivationRuntime) throws -> VPNHelperReady {
         let lease = try lifecycleLease(directory)
@@ -145,7 +147,7 @@ enum VPNInstaller {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
         let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
         let coordinator = VPNActivationCoordinator(store: store, runtime: runtime, lease: lease, budget: budget)
-        return try coordinator.update(payload: payload, signature: signature, helper: helper,
+        return try coordinator.update(payload: payload, signature: signature, helper: helper, engine: engine,
                                       expectedSequence: expectedSequence, intent: intent)
     }
 
@@ -162,7 +164,7 @@ enum VPNInstaller {
     }
 
     /// Only names this component creates may be removed, by exact name or by the
-    /// content-addressed helper pattern. Anything else aborts the uninstall.
+    /// content-addressed component patterns. Anything else aborts the uninstall.
     private static func removableNames(_ directory: Int32) throws -> [String] {
         let copy = fcntl(directory, F_DUPFD_CLOEXEC, 0)
         guard copy >= 0, let stream = fdopendir(copy) else {
@@ -195,7 +197,7 @@ enum VPNInstaller {
     private static func removable(_ name: String) -> Bool {
         if ["initialized", "release.json", "release.lock", "activation.json", VPNProfileVault.name,
             VPNLifecycleLease.lockName, VPNLifecycleLease.runtimeLockName, VPNHelperProtocol.socketName].contains(name) { return true }
-        if name.hasPrefix("helper-"), name.count == 71,
+        if name.hasPrefix("helper-") || name.hasPrefix("engine-"), name.count == 71,
            name.dropFirst(7).allSatisfy({ $0.isHexDigit && !$0.isUppercase }) { return true }
         if name.hasSuffix(".tmp"), name.hasPrefix(".release-") || name.hasPrefix(".activation-")
             || name.hasPrefix(".profile-") { return true }

@@ -5,6 +5,12 @@ installation acceptance is complete and that test service was removed. The engin
 is built separately; enrollment in the signed privileged delivery is still open.
 Nothing here connects a VPN.
 
+Current integration increment: format 2 is now understood by the common verifier,
+protected store, installer entry and daemon startup checks. All components are
+required together before activation; the former test-only parsing gate is gone.
+The historical candidate results below describe the earlier boundary. Packaging
+and final system acceptance for this increment are still being completed.
+
 ## Source candidate
 
 OpenVPN **2.7.7**, released 3 September 2026, is the current stable bug-fix release.
@@ -195,3 +201,28 @@ and passed strict ad-hoc signature verification. Its build remains local at
 After testing, the system launchd label, both VPN storage/endpoint directories
 and launch plist were still absent. The installed application, real profile and
 system network settings were not modified. No push, tag or public release.
+
+## Atomic deployment integration
+
+The store verifies the complete component byte set before staging, validates both
+Universal files privately, syncs them and atomically selects one signed release
+record. Helper-only releases reject extra engine bytes. Engine releases reject
+missing bytes; metadata-only APIs cannot persist incomplete engine deployments.
+Prepared updates revalidate both files at commit, and every stored-deployment
+load/start checks both again. Retained older artifacts are never fallback targets.
+
+An interrupted staging step can leave unselected content-addressed files, but
+cannot select a mixed release. Tests kill the writer between artifacts, after
+engine staging and around record selection; retries retain the existing security
+floor. Modified current/candidate files are not silently repaired. Update refusal
+leaves the running PID, selected policy and activation budget unchanged.
+
+The installer passes the engine through the same lifecycle transaction. Uninstall
+recognizes exact content-addressed engine names in the protected component
+directory and removes retained versions; unknown lookalikes abort before stopping
+the service. Daemon startup rejects a missing selected engine even when an older
+engine remains. No engine execution, profile application, route or DNS change.
+
+Targeted results for this increment: 31 deployment tests, 24 installer tests,
+32 daemon tests, 24 payload tests and 21 release-verifier tests passed. These are
+disposable per-user stores/services, not root/system acceptance for format 2.

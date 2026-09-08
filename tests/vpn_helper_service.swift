@@ -17,8 +17,13 @@ enum VPNHelperService {
         guard directory >= 0 else { exit(70) }
         do {
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
+            #if VPN_ENGINE_DELIVERY_TESTING
+            let authority = try VPNReleaseAuthority.engineCandidateAuthority(
+                trustedPublicKey: key.publicKey.rawRepresentation, minimumSequence: 1)
+            #else
             let authority = try VPNReleaseAuthority(trustedPublicKey: key.publicKey.rawRepresentation,
                                                     minimumSequence: 1, supportedProtocol: 1)
+            #endif
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
             if args[1] == "seed" {
                 guard args.count == 5 else { exit(64) }

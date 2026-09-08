@@ -54,7 +54,7 @@ class VPNReleaseAuthorizationTests(unittest.TestCase):
     def test_exact_helper_artifact_bytes(self): self.check('artifact')
     def test_invalid_trust_configuration(self): self.check('trust')
     def test_engine_candidate_binds_separate_component_identity(self): self.check('engine-valid')
-    def test_ordinary_authority_refuses_engine_delivery(self): self.check('engine-disabled')
+    def test_production_authority_requires_complete_engine_set(self): self.check('engine-production')
     def test_engine_format_is_exact_and_has_no_executable_paths(self): self.check('engine-grammar')
     def test_engine_values_and_limits(self): self.check('engine-fields')
     def test_engine_bytes_and_manifest_tampering(self): self.check('engine-tamper')

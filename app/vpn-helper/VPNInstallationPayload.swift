@@ -10,6 +10,7 @@ struct VPNInstallationPayload {
     let manifest: Data
     let signature: Data
     let helper: Data
+    let engine: Data?
     let release: VerifiedVPNRelease
 
     static func load(directory: URL, version: String, authority: VPNReleaseAuthority) throws -> VPNInstallationPayload {
@@ -29,7 +30,19 @@ struct VPNInstallationPayload {
         let helper = try read("vpn-helper", in: parent, limit: VPNReleaseAuthority.maximumHelperBytes) { file, bytes in
             try VPNHelperArtifact.validate(protectedFile: file, data: bytes, release: release)
         }
-        return VPNInstallationPayload(manifest: manifest, signature: signature, helper: helper, release: release)
+        var engine: Data?
+        if release.engine != nil {
+            engine = try read("vpn-engine", in: parent, limit: VPNReleaseAuthority.maximumEngineBytes) { file, bytes in
+                try VPNEngineArtifact.validate(protectedFile: file, data: bytes, release: release)
+            }
+        } else {
+            var unexpected = stat()
+            guard fstatat(parent, "vpn-engine", &unexpected, AT_SYMLINK_NOFOLLOW) == -1, errno == ENOENT else {
+                throw VPNInstallationPayloadError.unsafePackage
+            }
+        }
+        try release.validateArtifacts(helper: helper, engine: engine)
+        return VPNInstallationPayload(manifest: manifest, signature: signature, helper: helper, engine: engine, release: release)
     }
 
     private static func read(_ name: String, in parent: Int32, limit: Int,

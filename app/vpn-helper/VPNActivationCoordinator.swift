@@ -38,12 +38,12 @@ final class VPNActivationCoordinator {
         self.budget = budget
     }
 
-    func update(payload: Data, signature: Data, helper: Data, expectedSequence: UInt64,
+    func update(payload: Data, signature: Data, helper: Data, engine: Data? = nil, expectedSequence: UInt64,
                 intent: VPNActivationIntent) throws -> VPNHelperReady {
         try exclusively {
             // Invalid or obsolete candidates do not stop the working service.
             let prepared = try store.prepareDeployment(payload: payload, signature: signature,
-                                                        helper: helper, expectedSequence: expectedSequence)
+                                                        helper: helper, engine: engine, expectedSequence: expectedSequence)
             // Charged only once the request is worth starting a service for.
             try budget.beginAttempt(intent: intent)
             try stop()

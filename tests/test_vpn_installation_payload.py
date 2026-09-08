@@ -79,7 +79,7 @@ class VPNInstallationPayloadTests(unittest.TestCase):
     def test_signed_universal_package_is_accepted(self): self.verify(expected=0)
     def test_app_version_must_match(self): self.verify(version='1.6.1')
 
-    def test_production_loader_refuses_engine_manifest_until_full_delivery_is_ready(self):
+    def test_production_loader_requires_engine_declared_by_manifest(self):
         path = self.work / 'vpn-release.manifest'
         text = path.read_text().replace('format=1\n', 'format=2\n')
         fields = {'engine-version': '2.7.7', 'engine-crypto-version': '3.5.8',
@@ -88,7 +88,54 @@ class VPNInstallationPayloadTests(unittest.TestCase):
         path.write_text(text + ''.join(f'{key}={value}\n' for key, value in fields.items()))
         self.command([str(self.build / 'checks'), 'sign', str(self.work)])
         result = self.verify()
-        self.assertIn('engineDeliveryUnavailable', result.stdout)
+        self.assertIn('unsafePackage', result.stdout)
+
+    def add_engine(self):
+        path = self.work / 'vpn-engine'
+        shutil.copyfile(self.build / 'helper', path); path.chmod(0o700)
+        self.sign_helper(path, identifier='kz.documentolog.proxypilot.openvpn')
+        data = path.read_bytes()
+        pins = {}
+        for arch in ('arm64', 'x86_64'):
+            result = self.command(['codesign', '-d', '--verbose=4', '--arch', arch, str(path)])
+            pins[arch] = re.search(r'^CDHash=([a-f0-9]{40})$', result.stderr, re.M).group(1)
+        manifest = self.work / 'vpn-release.manifest'
+        extra = {'engine-version': '2.7.7', 'engine-crypto-version': '3.5.8',
+                 'engine-arm64': pins['arm64'], 'engine-x86_64': pins['x86_64'],
+                 'engine-sha256': hashlib.sha256(data).hexdigest(), 'engine-bytes': len(data)}
+        manifest.write_text(manifest.read_text().replace('format=1\n', 'format=2\n')
+                            + ''.join(f'{key}={value}\n' for key, value in extra.items()))
+        self.command([str(self.build / 'checks'), 'sign', str(self.work)])
+        return path
+
+    def test_complete_engine_package_is_accepted(self):
+        self.add_engine(); self.verify(expected=0)
+
+    def test_changed_engine_is_rejected(self):
+        path = self.add_engine()
+        with path.open('ab') as stream: stream.write(b'changed')
+        self.verify()
+
+    def test_extra_engine_without_signed_identity_is_rejected(self):
+        shutil.copyfile(self.build / 'helper', self.work / 'vpn-engine'); self.verify()
+
+    def test_engine_symlink_is_rejected(self):
+        path = self.add_engine(); path.rename(self.work / 'original-engine')
+        path.symlink_to('original-engine'); self.verify()
+
+    def test_engine_hardlink_is_rejected(self):
+        path = self.add_engine(); os.link(path, self.work / 'linked-engine'); self.verify()
+
+    def test_engine_fifo_is_rejected_without_blocking(self):
+        path = self.add_engine(); path.unlink(); os.mkfifo(path); self.verify()
+
+    def test_engine_oversize_is_rejected_before_reading(self):
+        path = self.add_engine()
+        with path.open('r+b') as stream: stream.truncate(64 * 1024 * 1024 + 1)
+        self.verify()
+
+    def test_engine_shared_permissions_are_rejected(self):
+        path = self.add_engine(); path.chmod(0o666); self.verify()
 
     def test_changed_manifest_is_rejected(self):
         with (self.work / 'vpn-release.manifest').open('a') as stream: stream.write('extra=1\n')

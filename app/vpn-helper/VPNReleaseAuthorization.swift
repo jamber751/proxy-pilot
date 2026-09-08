@@ -11,7 +11,6 @@ enum VPNReleaseAuthorizationError: Error {
     case wrongAuthority
     case invalidHelperArtifact
     case invalidEngineArtifact
-    case engineDeliveryUnavailable
 }
 
 /// A signed engine identity, not an executable path or permission to launch it.
@@ -107,6 +106,18 @@ struct VerifiedVPNRelease {
         }
     }
 
+    /// Exact component set: v1 never accepts stray engine bytes; v2 never
+    /// degrades into a helper-only deployment when the engine is missing.
+    func validateArtifacts(helper: Data, engine candidate: Data?) throws {
+        try validateHelperArtifact(helper)
+        if let engine = engine {
+            guard let candidate = candidate else { throw VPNReleaseAuthorizationError.invalidEngineArtifact }
+            try engine.validateArtifact(candidate)
+        } else if candidate != nil {
+            throw VPNReleaseAuthorizationError.invalidEngineArtifact
+        }
+    }
+
     // Content-addressed basename only; never accept an artifact path from IPC.
     var helperArtifactName: String {
         "helper-" + helperSHA256.map { String(format: "%02x", $0) }.joined()
@@ -129,7 +140,6 @@ struct VPNReleaseAuthority {
     private let authorityDigest: Data
     private let minimumSequence: UInt64
     private let supportedProtocol: UInt64
-    private var engineCandidatesEnabled = false
 
     init(trustedPublicKey: Data, minimumSequence: UInt64, supportedProtocol: UInt64) throws {
         guard trustedPublicKey.count == 32, minimumSequence > 0,
@@ -144,13 +154,10 @@ struct VPNReleaseAuthority {
     }
 
     #if VPN_ENGINE_DELIVERY_TESTING
-    /// Verification-only candidate testing. Production callers cannot enable
-    /// v2 until store/package/activation handle the complete artifact set.
+    /// Test convenience using exactly the production parser and rules.
     static func engineCandidateAuthority(trustedPublicKey: Data, minimumSequence: UInt64) throws -> VPNReleaseAuthority {
-        var authority = try VPNReleaseAuthority(trustedPublicKey: trustedPublicKey,
-                                               minimumSequence: minimumSequence, supportedProtocol: 1)
-        authority.engineCandidatesEnabled = true
-        return authority
+        try VPNReleaseAuthority(trustedPublicKey: trustedPublicKey,
+                                minimumSequence: minimumSequence, supportedProtocol: 1)
     }
     #endif
 
@@ -172,9 +179,6 @@ struct VPNReleaseAuthority {
         }
         let lines = text.components(separatedBy: "\n")
         let isEngineManifest = lines.first == "format=2"
-        if isEngineManifest && !engineCandidatesEnabled {
-            throw VPNReleaseAuthorizationError.engineDeliveryUnavailable
-        }
         var keys = ["format", "product", "sequence", "version", "protocol", "app-arm64",
                     "app-x86_64", "helper-arm64", "helper-x86_64", "helper-sha256", "helper-bytes"]
         if isEngineManifest {
