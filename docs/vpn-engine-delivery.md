@@ -321,10 +321,56 @@ built successfully, each rechecking the actual engine and corresponding sources:
 - `/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/VPN-Support-4-update.pkg`
 - `/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/VPN-Support-4-remove.pkg`
 
-The native Installer is open for the exact install package at the **Install**
+At the initial handoff, native Installer was open for the exact install package at the **Install**
 step (standard installation on Macintosh HD). The final installation action and
 macOS administrative confirmation are handed to the user. Root installation has
 not started, and the system service remains absent. After confirmation, verify
 Installer success and ordinary-user `--vpn-support-status` before continuing
 with retry/update and fixed-package removal. No VPN tunnel is started by this
 package. The installed application in Applications is unchanged.
+
+## Format-2 system acceptance — 8 September
+
+The user confirmed installation. Installer's scoped log records successful
+preflight, `VPN support installed.` and the success UI for release 4. The real
+root helper runs from the protected content-addressed path, in `serve` idle mode.
+Ordinary-user status successfully authenticates the root service and returns
+`Release 4`. The private parent is root-owned 0700; the endpoint directory is
+root-owned 0755 and `helper.sock` is 0666 with authenticated IPC. The private
+deployment directory remains unreadable to the ordinary user; no permissions
+were weakened to inspect it.
+
+| System scenario | Evidence |
+| --- | --- |
+| Initial format-2 install 4 | Installer log success; root PID 84787; client 4 returns `Release 4`; previous client 3 exits 77 |
+| Exact retry/update 4 | Installer success UI; PID 86421 replaces 84787; client 4 still succeeds |
+| Candidate 5 before update | Client 5 exits 77; PID 86421 and client 4 remain healthy |
+| Signed update 4 → 5 | Installer success UI; PID 88456; client 5 returns `Release 5`; client 4 exits 77 |
+| Refusal of older package after 5 | Not run: UI control became unavailable before the package was selected |
+| Complete removal | Pending; release 5 remains installed and running idle-only |
+
+Sequence 5 changes only the app pins by adding the restrictive code-signing flag
+to a separate copy of the same test app. Existing hard/kill/runtime protections
+are retained. Helper/engine bytes and versions are unchanged; this is a release
+policy transition with a complete engine set, not an OpenVPN-version upgrade.
+The existing release key signed this local candidate; verification through the
+signing tool and the staged app succeeded before package creation. The app in
+Applications, private profile and system networking were not modified.
+
+Local handoff materials:
+
+- Stage: `/tmp/proxypilot-vpn-format2-upgrade.vspNNk/release-5`
+- Update: `/tmp/proxypilot-vpn-format2-upgrade.vspNNk/VPN-Support-5-update.pkg`
+- Removal: `/tmp/proxypilot-vpn-format2-upgrade.vspNNk/VPN-Support-5-remove.pkg`
+
+After closing the successful update window, UI control of Installer began
+returning `timeoutReached` for actions, observations and app reselection after a
+session reset. A read-only session check reported unlocked/on-console and client
+5 still succeeded. No alternative UI automation, privilege bypass, forced app
+termination or manual deletion was used. Resume with the existing fixed packages:
+optionally complete the root rollback-refusal check, then run the verified
+sequence-5 remove package and verify absence of the helper label, all recorded
+PIDs, launch plist and both directories. Do not claim removal until observed.
+The remaining system acceptance work does not invalidate the earlier
+isolated rollback/tamper/crash/cleanup tests, but those do not replace this check.
+No push, tag or release.
