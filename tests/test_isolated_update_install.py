@@ -67,9 +67,18 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
 
-@unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('PROXYPILOT_TEST_ISOLATED_INSTALLER') == '1',
-                     'opt-in isolated disposable app installation')
-class IsolatedUpdateInstallTests(unittest.TestCase):
+class IsolatedInstallFixture:
+    full_app = False
+
+    @classmethod
+    def frontend_sources(cls, build, proxy_model):
+        return ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(proxy_model), str(ROOT / 'tests/isolated-update-install/Frontend.swift')]
+
+    def prepare_environment(self, work, mode): return None
+    def configure_bundle(self, app, work, mode): pass
+    def observe_running(self, work, events): pass
+    def verify_environment(self, app, work, mode, events): pass
+
     @staticmethod
     def run_command(command, timeout=90):
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
@@ -123,7 +132,7 @@ class IsolatedUpdateInstallTests(unittest.TestCase):
         proxy_model.write_text(inert_proxy_model_source())
         common = [str(ROOT / 'app/update-worker/UpdateWire.swift'), str(ROOT / 'app/update-worker/UpdateChannel.swift')]
         for name, extras in [
-            ('Frontend', ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(proxy_model), str(ROOT / 'tests/isolated-update-install/Frontend.swift')]),
+            ('Frontend', cls.frontend_sources(build, proxy_model)),
             ('Worker', ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
                         '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(source), str(ROOT / 'tests/isolated-update-install/Driver.swift'), str(ROOT / 'tests/isolated-update-install/NativeProbe.swift')]),
             ('LegacyFrontend', ['-D', 'LEGACY_UPDATER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
@@ -135,7 +144,8 @@ class IsolatedUpdateInstallTests(unittest.TestCase):
             slices = []
             for arch in ('arm64', 'x86_64'):
                 binary = build / f'{name}-{arch}'
-                cls.run_command(['swiftc', '-parse-as-library', '-target', f'{arch}-apple-macosx11.0', *common, *extras, '-o', str(binary)])
+                parsing = [] if name == 'Frontend' and cls.full_app else ['-parse-as-library']
+                cls.run_command(['swiftc', *parsing, '-target', f'{arch}-apple-macosx11.0', *common, *extras, '-o', str(binary)])
                 slices.append(str(binary))
             cls.run_command(['lipo', '-create', *slices, '-output', str(build / name)])
         generator = build / 'key.swift'
@@ -167,7 +177,9 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
             server.stop_transfer = threading.Event()
             threading.Thread(target=server.serve_forever, daemon=True).start()
             process = None
+            environment = None
             try:
+                environment = self.prepare_environment(work, mode)
                 versions = ['1.5.1', '1.5.2', '1.5.3'] if mode in ('migration', 'repeat') else ['1.0.0', '2.0.0']
                 is_legacy = mode == 'migration'
                 app = work / 'installed/ProxyPilot Install TEST.app'
@@ -195,6 +207,8 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                                    LSUIElement=True, NSAppTransportSecurity={'NSAllowsArbitraryLoads': True})
                 (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
                 (worker / 'Contents/Info.plist').write_bytes(plistlib.dumps(worker_info))
+                self.configure_bundle(app, work, mode)
+                info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
                 self.run_command(['codesign', '--force', '--sign', '-', str(worker)])
                 self.run_command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill', str(app)])
                 self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
@@ -251,6 +265,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                     deadline = time.monotonic() + (185 if mode.startswith('native') else 65)
                     while time.monotonic() < deadline:
                         events = host_log.read_text() if host_log.exists() else ''
+                        self.observe_running(work, events)
                         if installing and f'relaunched {versions[-1]} preferences-preserved' in events:
                             break
                         if not installing and process.poll() is not None:
@@ -289,7 +304,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                         # and SUInstallationError across the installer boundary.
                         self.assertTrue(any(f'error SUSparkleErrorDomain {code}' in worker_events for code in (3001, 3002)), evidence)
                     if mode.startswith('cancel-'): self.assertIn(mode, worker_events, evidence)
-                    if mode in ('cancel-offer', 'native-cancel-offer', 'native-network', 'native-background'): self.assertNotIn('/update.zip', server.requests)
+                    if mode in ('cancel-offer', 'native-cancel-offer', 'native-network', 'native-background', 'quit'): self.assertNotIn('/update.zip', server.requests)
                     else:
                         for archive in archives: self.assertIn('/' + archive.name, server.requests)
                     self.assertTrue(set(server.requests) <= {'/appcast.xml', *( '/' + archive.name for archive in archives)}, server.requests)
@@ -307,6 +322,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                         self.assertIn('native-focus manual', worker_events, evidence)
                         self.assertIn('present', host_events.splitlines(), evidence)
                     self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
+                    self.verify_environment(app, work, mode, host_events)
                     # Assert natural cleanup before any emergency teardown.
                     deadline = time.monotonic() + 10
                     while self.matching_processes(work, identifier) and time.monotonic() < deadline:
@@ -328,10 +344,17 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                     if process is not None: process.wait(timeout=5)
                     self.assertEqual(self.matching_processes(work, identifier), [], 'Disposable test processes did not stop')
                 finally:
-                    server.stop_transfer.set(); server.shutdown(); server.server_close()
-                    for domain in (identifier, identifier + '.updater'):
-                        subprocess.run(['defaults', 'delete', domain], capture_output=True)
+                    try:
+                        server.stop_transfer.set(); server.shutdown(); server.server_close()
+                        for domain in (identifier, identifier + '.updater'):
+                            subprocess.run(['defaults', 'delete', domain], capture_output=True)
+                    finally:
+                        if environment is not None: environment.close()
 
+
+@unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('PROXYPILOT_TEST_ISOLATED_INSTALLER') == '1',
+                     'opt-in isolated disposable app installation')
+class IsolatedUpdateInstallTests(IsolatedInstallFixture, unittest.TestCase):
     def test_hardened_host_updates_and_relaunches(self): self.scenario('install')
     def test_cancel_before_download_keeps_old_app(self): self.scenario('cancel-offer')
     def test_cancel_before_relaunch_prevents_deferred_install(self): self.scenario('cancel-ready')

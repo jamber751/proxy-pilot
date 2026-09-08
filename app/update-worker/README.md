@@ -13,8 +13,10 @@ PROXYPILOT_ISOLATED_UPDATER=1 zsh app/build.sh "$candidate_dir"
 ```
 
 Do not launch this production-identified bundle alongside the installed app as
-a test. The automated tests build uniquely identified inert hosts instead; they
-never run the proxy CLI, access a real VPN profile or install a system service.
+a test. The automated tests build uniquely identified disposable hosts instead.
+The small hosts use an inert CLI; the full-app fixture below runs selected CLI
+functions with loopback GOST and substituted OS boundaries. Neither launches the
+installed app/full CLI, accesses a real VPN profile or installs a system service.
 The ordinary build and release scripts continue to use the existing updater.
 
 ## Process and trust boundaries
@@ -120,13 +122,15 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
 
 ## Required before default/release integration
 
-1. The complete app's start/stop and live bridge lifecycle. Migration from the
-   pinned 1.5.1 model, repeated update cycles and command-queue preparation now
-   pass in disposable hosts; the installed/released full app was not launched.
+1. Real system/installed-app lifecycle acceptance. The complete App now passes
+   the loopback bridge scenarios below, in addition to pinned-model migration,
+   repeated updates and command-queue preparation. Actual SystemConfiguration,
+   installed CLI discovery/process ownership and live network transitions remain
+   outside these isolated tests; the installed/released app was not launched.
 2. Resolve the final cancellation boundary: the stock Ready to Install window
    has no Cancel or close action, and Escape does nothing. The scripted `.skip`
    test is an API test, not evidence of a native cancellation button. No custom
-   final window is added here. Remaining full-app, sleep and accessibility
+   final window is added here. Remaining system, sleep and accessibility
    acceptance is separate from the native cases below.
 3. Coordinate app replacement with the separately authorized root-helper release
    policy. Never accept a new VPN client pin merely because Sparkle installed it.
@@ -172,3 +176,55 @@ installation, original bundle integrity, and natural process cleanup. The native
 Ready to Install cancellation attempt did not pass and was interrupted with
 scoped cleanup; its missing control is also explicit in the
 [pinned Sparkle source](https://github.com/sparkle-project/Sparkle/blob/2.9.6/Sparkle/SPUStandardUserDriver.m#L477).
+
+## Full App and loopback bridge acceptance (8 September)
+
+```sh
+PROXYPILOT_TEST_FULL_APP=1 PROXYPILOT_TEST_GOST=/absolute/path/to/gost python3 -m unittest discover -s tests -p test_full_app_update.py -v
+```
+
+Five scenarios pass using the complete production `App`, `ProxyModel`,
+`PilotView`, isolated updater and real Sparkle replacement/relaunch:
+
+- Enabled: 1.0.0 → 2.0.0 keeps both proxy endpoints, selected route, enabled
+  state and listener port. Both local HTTP and SOCKS5 requests succeed during
+  preparation and after relaunch; the new version replaces the old engine once.
+- Disabled/stopped: startup and update do not resurrect a stopped bridge.
+- Disabled/running: the existing direct listener remains available, with one
+  engine replacement after update and no system-proxy activation.
+- Cancel the offer: no installation; selecting HTTP through the real model
+  succeeds afterward, and both local protocols still carry requests.
+- Normal Quit: the real quit/disable flow turns off only the fake system proxy,
+  while the listener remains in direct mode for existing clients.
+
+`BridgeBoundary.zsh` supplies a unique private state directory, exact fixture-only
+process matching, and fake `networksetup`/`scutil` functions. Selected production
+CLI functions (config, ensure, route, start/stop, disable, state, GOST config) are
+appended without changes to their logic. There is no production CLI dispatcher,
+user-home fallback, network discovery, launchd or VPN command. Real GOST listeners,
+HTTP/SOCKS5 upstreams, signed feed and echo server bind only to 127.0.0.1. All
+requests stay on loopback; no corporate resource, key or installed app is used.
+
+The test compiles a visibly marked, uniquely identified bundle. App observations
+and scripted update choices are test-only. A 1.5-second observation interval
+before acknowledging preparation allows actual traffic through the old bridge;
+the relaunched App runs beyond its real five-second refresh timer to catch
+repeated restarts. App/worker cleanup must be natural; teardown stops only the
+exact fixture GOST processes after verifying the intentionally retained listener.
+This does not prove uninterrupted existing TCP sessions across an engine restart,
+native settings-button interaction, or real OS proxy configuration.
+
+These tests caught a production startup race: a menu-bar button can already have
+a window whose height is still zero, and presenting its popover silently fails.
+The App now briefly waits for a usable anchor. Closing or showing updater UI
+cancels a pending request; a newer request supersedes the previous one. Four
+`test_popover_startup.py` regressions exercise the actual methods with inert
+window boundaries, including the bounded timeout. Both ordinary and isolated
+Universal builds pass strict signature verification. Execution was on the current
+Apple Silicon Mac, not Intel/macOS 11 runtime acceptance. The isolated updater
+remains opt-in; no public release or default build-mode change is made here.
+
+The combined regression run with both installer opt-ins enabled completed 300
+tests in 358.739 seconds: 299 passed, one legacy opt-in Sparkle installation test
+skipped. Nine release-key tests were deliberately excluded to avoid Keychain
+access. The earlier manual native UI runs are separate from that count.
