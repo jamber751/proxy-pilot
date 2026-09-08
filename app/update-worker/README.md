@@ -60,13 +60,46 @@ tests cover persisted host preferences, preview isolation, child failure/retry,
 and synthetic prepare/abort/duplicate/stale handoffs. Only the current Mac
 executes the binaries; building Intel/macOS 11 is not runtime acceptance there.
 
+`test_isolated_update_install.py` adds an **opt-in real installation** test:
+
+```sh
+PROXYPILOT_TEST_ISOLATED_INSTALLER=1 python3 -m unittest discover -s tests -p test_isolated_update_install.py -v
+```
+
+Four scenarios pass with Universal test hosts: install/relaunch 1.0.0 → 2.0.0
+with preferences preserved, decline before download, cancel after staging, and
+reject a signature-invalid but still readable/CRC-valid ZIP. The real worker,
+frontend, Sparkle downloader/verifier/installer and OS relaunch are exercised;
+only the native user driver is replaced with explicit test choices. No root
+prompt, system service, production key/feed or actual ProxyPilot is involved.
+Each case checks old/new bundle integrity and natural subprocess cleanup before
+emergency teardown. Declines/corruption must never reach frontend preparation.
+The ready-stage cancellation uses Sparkle's documented `.skip` API; `.dismiss`
+at that stage would defer installation until the host quits instead of canceling.
+
+An additional manual pass on 8 September used the **unmodified standard driver**:
+English embedded HTML notes rendered correctly; “Install Update” → “Ready to
+Install” → “Install and Relaunch” replaced the disposable host and launched 2.0.0
+with its preferences intact. No fixture processes remained. To repeat this
+inspection (a visible window; finish within three minutes):
+
+```sh
+python3 tests/test_isolated_update_install.py --native-preview
+```
+
+This builds/updates only a uniquely identified `ProxyPilot Install TEST.app`.
+The preview does not change settings or update the installed ProxyPilot. It
+asserts a successful install/relaunch, so dismissing it instead reports a failed
+preview and cleans up the fixture. Basic native UI acceptance does not establish
+VoiceOver, scheduled focus behavior, or every macOS/language combination.
+
 ## Required before default/release integration
 
-1. Actual disposable update download, signed installation and relaunch with
-   the worker out of process, including cancellation/failure and cleanup of
-   Sparkle subprocesses. Synthetic handoffs are **not** installation acceptance.
-2. Visual/manual acceptance of the separate worker's native windows, focus,
-   release notes, scheduled reminder and user cancellation.
+1. Migration from the current in-process updater to this bundle layout, repeated
+   update cycles, and the complete app's quiescence/restart behavior. The passing
+   installation test starts with an already isolated updater, not the old 1.5.1.
+2. Remaining native UI cases: scheduled gentle reminders/focus, errors and
+   cancellation controls. The basic manual update and notes are now verified.
 3. Coordinate app replacement with the separately authorized root-helper release
    policy. Never accept a new VPN client pin merely because Sparkle installed it.
 4. Package the hardened app's fixed installation mode (or introduce separately
