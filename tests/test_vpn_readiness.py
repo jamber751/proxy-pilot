@@ -69,13 +69,19 @@ class VPNReadinessTests(unittest.TestCase):
             raise AssertionError(result.stdout + result.stderr)
         return result
 
-    def probe(self, mode='valid', server='allowed', pin=None, timeout=1500, production=False):
+    def probe(self, mode='valid', server='allowed', pin=None, timeout=1500, production=False, unreadable=False):
         with tempfile.TemporaryDirectory(prefix='pp-ready-', dir='/tmp') as directory:
             address = str(Path(directory) / 's')
             process = subprocess.Popen([str(self.servers[server]), 'serve', address, mode],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 self.assertEqual(process.stdout.readline().strip(), 'listening')
+                if unreadable:
+                    # Reproduce root-private executable access without root:
+                    # keep the signed process alive but deny opening its file.
+                    self.servers[server].chmod(0)
+                    with self.assertRaises(PermissionError):
+                        self.servers[server].read_bytes()
                 started = time.monotonic()
                 result = subprocess.run([str(self.work / ('production' if production else 'test')), 'probe',
                                          address, pin or self.pins[server], str(timeout)],
@@ -84,6 +90,8 @@ class VPNReadinessTests(unittest.TestCase):
                 self.assertIn('closed', result.stdout, result.stdout + result.stderr)
                 return result
             finally:
+                if unreadable:
+                    self.servers[server].chmod(0o700)
                 if process.poll() is None:
                     process.terminate()
                 process.communicate(timeout=5)
@@ -96,6 +104,17 @@ class VPNReadinessTests(unittest.TestCase):
 
     def test_fragmented_response(self):
         self.assertEqual(self.probe('fragmented').returncode, 0)
+
+    def test_kernel_identity_works_without_reading_the_helper_file(self):
+        result = self.probe(unreadable=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('ready:10', result.stdout)
+
+    def test_unreadable_helper_still_requires_exact_pin_and_hardening(self):
+        for server in ('other-build', 'weak', 'debuggable'):
+            with self.subTest(server=server):
+                pin = self.pins['allowed'] if server == 'other-build' else self.pins[server]
+                self.assertIn('rejected:denied', self.probe(server=server, pin=pin, unreadable=True).stdout)
 
     def test_production_rejects_nonroot_even_with_correct_signature(self):
         self.assertIn('rejected:denied', self.probe(production=True).stdout)

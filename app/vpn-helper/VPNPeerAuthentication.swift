@@ -109,9 +109,19 @@ enum VPNPeerAuthentication {
         guard getsockopt(socket, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &tokenSize) == 0,
               tokenSize == MemoryLayout.size(ofValue: token) else { try deny() }
         let tokenData = withUnsafeBytes(of: token) { Data($0) }
-        let attributes = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
+        var attributes: [String: Any] = [kSecGuestAttributeAudit as String: tokenData]
+        if policy.signingIdentifier == "kz.documentolog.proxypilot.vpn-helper" {
+            // The plain Mach-O helper lives in root-private storage. The default
+            // Security lookup tries to read that path and fails for the user.
+            // Request its kernel-backed code representation, using the SAME
+            // audit token (never a caller-supplied PID/path/Info.plist). The full
+            // live validity, exact pin, hardening and entitlement gate below is
+            // unchanged. Bundle clients/installer still use their sealed disk
+            // representation. Unsupported/failed lookups remain a denial.
+            attributes[kSecGuestAttributeDynamicCode as String] = true
+        }
         var code: SecCode?
-        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess,
+        guard SecCodeCopyGuestWithAttributes(nil, attributes as CFDictionary, [], &code) == errSecSuccess,
               let code = code else { try deny() }
         try validate(code: code, policy: policy)
     }
