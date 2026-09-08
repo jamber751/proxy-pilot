@@ -184,3 +184,32 @@ class VPNPeerAuthenticationTests(unittest.TestCase):
                 result = self.verify(-1, **policy)
                 self.assertEqual(result.returncode, 64)
                 self.assertEqual(result.stdout.strip(), 'invalid-policy')
+
+    def self_decision(self, name='allowed', *, pin=None, identifier=IDENTIFIER, user_id=None, installer=False):
+        return subprocess.run([str(self.clients[name]), 'self-installer' if installer else 'self', '-1',
+                               str(os.geteuid() if user_id is None else user_id), identifier,
+                               self.hashes[name] if pin is None else pin],
+                              capture_output=True, text=True, timeout=10)
+
+    def test_current_process_requires_its_exact_live_pin(self):
+        self.assertEqual(self.self_decision().stdout.strip(), 'allowed')
+        result = self.self_decision(pin=self.hashes['same-name-other-build'])
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+
+    def test_current_process_requires_the_expected_identifier(self):
+        result = self.self_decision('other-identifier')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+
+    def test_current_process_requires_the_expected_uid(self):
+        result = self.self_decision(user_id=os.geteuid() + 1)
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+
+    def test_current_process_cannot_waive_hardening_even_with_its_pin(self):
+        for name in ('unhardened', 'runtime-exception', 'debuggable'):
+            with self.subTest(name=name):
+                result = self.self_decision(name)
+                self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+
+    def test_current_process_installer_role_still_requires_root(self):
+        result = self.self_decision('release-app', installer=True)
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)

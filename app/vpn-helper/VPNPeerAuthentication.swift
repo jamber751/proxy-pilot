@@ -65,6 +65,21 @@ struct VPNPeerPolicy {
 /// on every request; never cache an allow decision across requests or reconnects.
 /// This authenticates the connector, not a process to which it passes the fd.
 enum VPNPeerAuthentication {
+    /// Preflight for the exact app executable entering an already authorized
+    /// installer mode. Read our live code identity, never argv, a bundle path or
+    /// updater metadata. This verifies identity, NOT system authorization, and
+    /// does not replace mutual authentication with the running helper.
+    static func validateCurrentProcess(policy: VPNPeerPolicy) throws {
+        guard getuid() == policy.userID, geteuid() == policy.userID else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code = code else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        try validate(code: code, policy: policy)
+    }
+
     static func validate(connectedSocket socket: Int32, policy: VPNPeerPolicy) throws {
         func deny() throws -> Never { throw VPNPeerAuthenticationError.denied }
 
@@ -97,9 +112,15 @@ enum VPNPeerAuthentication {
         let attributes = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess,
-              let code = code,
-              SecCodeCheckValidity(code, [], nil) == errSecSuccess else { try deny() }
+              let code = code else { try deny() }
+        try validate(code: code, policy: policy)
+    }
 
+    /// Shared live-code gate for our own installer and a kernel-identified peer.
+    /// Keeping one policy avoids weaker self-checks than the helper will apply.
+    private static func validate(code: SecCode, policy: VPNPeerPolicy) throws {
+        func deny() throws -> Never { throw VPNPeerAuthenticationError.denied }
+        guard SecCodeCheckValidity(code, [], nil) == errSecSuccess else { try deny() }
         var information: CFDictionary?
         let informationFlags = SecCSFlags(rawValue: kSecCSSigningInformation | kSecCSDynamicInformation)
         // This C API explicitly accepts either a dynamic or a static reference;
