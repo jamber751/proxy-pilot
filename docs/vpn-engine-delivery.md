@@ -185,7 +185,7 @@ and perform system acceptance. No production release was signed for this format.
    authorized root/user acceptance. Installation still must not start a tunnel;
    restricted engine execution and network rollback belong to later plan work.
 
-## Final regression for this increment
+## Candidate-format regression (before atomic integration)
 
 The post-change general run discovered 395 selected tests: **390 passed, five
 full-App loopback tests skipped in that invocation**, no failures (392.020 s).
@@ -250,3 +250,50 @@ app's fixed entry. These used a disposable signing authority and never launched
 Installer. All 11 signing-tool tests passed in disposable Keychains, including
 format-2 signing/verification and refusal to overwrite a signature for a malformed
 manifest. Existing release keys were not accessed or rotated.
+
+## Atomic delivery regression and acceptance handoff
+
+The general run selected 430 tests with both updater installer opt-ins, the full
+App loopback fixture, and the actual OpenVPN candidate/source artifact enabled.
+**426 passed and four failed** (505.231 s); the 11 disposable-Keychain signing
+tests were excluded from that run and passed separately. All 425 checks outside
+the five full-App scenarios passed. The full-App ordinary-quit scenario passed,
+but its other four scenarios did not:
+
+- Cancel reached worker `cancel-offer` / `dismiss`, then the host timed out.
+- The three install states preserved/relaunched the fixture, but the expected
+  `popover-closed` event was missing.
+
+A read-only CoreGraphics session check confirmed `screenLocked=true` and
+`onConsole=true`. A focused cancel rerun also timed out (66.851 s). These are
+failed UI acceptance results under an invalid interactive-desktop prerequisite,
+not proof that the product is regression-free. The test class now reports an
+explicit skip before fixture setup when the desktop is locked/non-console; it
+does not relax assertions or attempt to unlock macOS. That guard was verified:
+zero tests ran, one class skipped. **Rerun all five scenarios after unlocking**;
+the guard/skip does not replace their acceptance.
+
+The ordinary format-2-capable app and idle helper built successfully as Universal
+with the macOS 11 deployment target and passed strict native signature checks:
+
+- `/tmp/proxypilot-vpn-format2-build.B1RT5m/app/ProxyPilot.app`
+- `/tmp/proxypilot-vpn-format2-build.B1RT5m/helper/vpn-helper`
+
+Prepared release sequence 4, app version 1.5.1, lives at
+`/tmp/proxypilot-vpn-format2-acceptance.wlJ0R2/release-4`. It includes the fixed
+payload plus the verified corresponding sources/licenses outside the payload.
+The helper SHA-256 is
+`f35150ddd388a6c17acffa4423681cfd0ca16704279cc4f40a197bbb0bb753b0`;
+the OpenVPN 2.7.7 / OpenSSL 3.5.8 engine SHA-256 is
+`d0eb52a653ec35b1efa5f63a09b61d64dd1e80356e6b01cf07cfa7f49dbe367b`.
+**Its release signature is empty: no installable production-authority format-2
+package has been built.** Temporary paths may be purged and are not release assets.
+
+Next, with the desktop unlocked: repeat the full-App acceptance, sign the frozen
+manifest with the existing authorized release key (no rotation), build/verify
+the packages, and perform native Installer/root acceptance of the complete
+deployment, retry/update and removal. Do not bypass Keychain or Installer
+authentication. No real profile or tunnel is needed for this idle-service check.
+The system helper label was still absent after testing; the installed app,
+personal VPN profile, proxy preferences, routes and DNS were not modified.
+No push, tag or public release was performed.

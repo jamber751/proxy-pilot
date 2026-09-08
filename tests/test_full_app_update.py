@@ -147,6 +147,25 @@ class FullAppUpdateTests(install.IsolatedInstallFixture, unittest.TestCase):
     initial_state = 'on'
 
     @classmethod
+    def setUpClass(cls):
+        # These cases assert a real status-item popover, not only updater IPC.
+        # A locked desktop invalidates its event lifecycle. Report the missing acceptance
+        # prerequisite explicitly; never count the scenarios as passed or relax
+        # their assertions/timeouts to conceal it. No attempt to unlock macOS.
+        check = subprocess.run(['/usr/bin/swift', '-e', '''
+import CoreGraphics
+import Foundation
+guard let state = CGSessionCopyCurrentDictionary() as? [String: Any],
+      (state["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue == true,
+      (state["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue != true else { exit(78) }
+'''], capture_output=True, text=True, timeout=60)
+        if check.returncode == 78:
+            raise unittest.SkipTest('Full popover acceptance requires an unlocked console desktop')
+        if check.returncode:
+            raise AssertionError('Could not check interactive desktop: ' + check.stderr)
+        super().setUpClass()
+
+    @classmethod
     def frontend_sources(cls, build, proxy_model):
         source = (ROOT / 'app/main.swift').read_text()
         begin = source.index('    static var path: String? {', source.index('\nenum CLI {'))
