@@ -49,6 +49,10 @@ struct VerifiedVPNRelease {
         try VPNPeerPolicy.helper(codeDirectoryHashes: Set(helperHashes.values))
     }
 
+    func installerPolicy() throws -> VPNPeerPolicy {
+        try VPNPeerPolicy.installer(codeDirectoryHashes: appHashes)
+    }
+
     #if VPN_HELPER_READINESS_TESTING
     func testHelperPolicy() throws -> VPNPeerPolicy {
         try VPNPeerPolicy.testHelper(codeDirectoryHashes: Set(helperHashes.values))

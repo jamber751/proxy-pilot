@@ -29,7 +29,9 @@ enum VPNHelperProtocol {
     static let responseMagic = Array("PPVNRS01".utf8)
     /// A request header is magic, operation, revision and payload length.
     static let headerBytes = 8 + 2 + 8 + 4
-    static let maximumPayloadBytes = 64 * 1024
+    // Match the importer's 1 MiB ceiling. Still one bounded frame, never an
+    // unbounded stream; peers reject the length before allocating/reading it.
+    static let maximumPayloadBytes = 1_048_576
     /// One connection is one short conversation, not a session to keep open.
     static let maximumRequestsPerConnection = 8
     /// Per request, because re-authenticating a peer costs real time; the

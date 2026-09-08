@@ -17,7 +17,10 @@ enum VPNInstallerError: Error {
 /// an entry point for IPC, an updater or a user command: the caller must already
 /// hold the user's system installation authorization, and the trusted release
 /// key must be embedded in this code, never read from storage or the network.
-/// Trusted key rotation and uninstall are not implemented.
+/// The installation-mode executable must itself be the exact hardened app build
+/// pinned by this release: the helper authenticates it as root, readiness-only.
+/// A separately built installer needs separately signed manifest pins, not a UID
+/// bypass. Production packaging/authorization entry and key rotation remain open.
 enum VPNInstaller {
     /// First installation. Refuses when a policy already exists — an existing
     /// installation is changed by `update`, never re-bootstrapped over.
@@ -52,6 +55,7 @@ enum VPNInstaller {
         let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
         try uninstall(directory: directory, runtime: runtime)
+        try VPNEndpointDirectory.removeSystem()
         try VPNDirectoryProvisioner.removeSystemDirectories()
     }
 

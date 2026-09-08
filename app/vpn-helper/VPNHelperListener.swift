@@ -4,11 +4,9 @@ import Foundation
 
 enum VPNHelperListenerError: Error { case unsafeStorage, unavailable, invalidTimeout }
 
-/// Server side of the readiness handshake, inside the privileged helper. It is
-/// not a command dispatcher: the only reachable behaviour is answering one fixed
-/// 56-byte challenge with 56 bytes, and there is no path, argument, profile or
-/// operation a caller can name. Every connection is authenticated as the owner's
-/// signed application, bounded by a deadline, and served one at a time.
+/// Authenticated readiness and bounded owner commands inside the helper. The
+/// root installation role gets readiness only. The owner's signed application
+/// may then use the typed protocol; no shell/path/launch arguments are accepted.
 final class VPNHelperListener {
     static let socketName = VPNHelperProtocol.socketName
     private static let request = Array("PPVNRQ01".utf8)
@@ -16,13 +14,26 @@ final class VPNHelperListener {
     private var listener: Int32
     private let release: VerifiedVPNRelease
     private let policy: VPNPeerPolicy
+    private let installerPolicy: VPNPeerPolicy
     private let vault: VPNProfileVault
 
-    /// Creates the fixed endpoint inside an already-protected directory. It never
+    #if VPN_HELPER_LISTENER_TESTING
+    private var fixtureInstaller = false
+    // Exercises the readiness-only dispatch path without elevating a fixture.
+    // Production still authenticates root UID + exact app pin for this role.
+    static func testBindInstaller(inTrustedDirectory directory: Int32, release: VerifiedVPNRelease,
+                                  ownerUserID: uid_t) throws -> VPNHelperListener {
+        let listener = try bind(inTrustedDirectory: directory, release: release, ownerUserID: ownerUserID)
+        listener.fixtureInstaller = true
+        return listener
+    }
+    #endif
+
+    /// Keeps the vault private; root uses the separate fixed IPC directory. It never
     /// unlinks an existing socket: a stale endpoint means the supervisor did not
     /// confirm the previous stop, and quietly stealing it would hide that.
     static func bind(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
-                     ownerUserID: uid_t) throws -> VPNHelperListener {
+                     ownerUserID: uid_t, endpointDirectory: Int32? = nil) throws -> VPNHelperListener {
         let policy = try release.clientPolicy(forTrustedUserID: ownerUserID)
         let directory = fcntl(trusted, F_DUPFD_CLOEXEC, 0)
         guard directory >= 0 else { throw VPNHelperListenerError.unsafeStorage }
@@ -40,7 +51,15 @@ final class VPNHelperListener {
         let folder = String(cString: path)
         guard lstat(folder, &named) == 0, named.st_dev == attributes.st_dev,
               named.st_ino == attributes.st_ino else { throw VPNHelperListenerError.unsafeStorage }
-        let endpoint = folder + "/" + socketName
+        let shared = endpointDirectory != nil || geteuid() == 0
+        let endpointFD: Int32
+        if let supplied = endpointDirectory { endpointFD = fcntl(supplied, F_DUPFD_CLOEXEC, 0) }
+        else if geteuid() == 0 { endpointFD = try VPNEndpointDirectory.openSystem(create: true) }
+        else { endpointFD = fcntl(directory, F_DUPFD_CLOEXEC, 0) }
+        guard endpointFD >= 0 else { throw VPNHelperListenerError.unsafeStorage }
+        defer { Darwin.close(endpointFD) }
+        let endpointFolder = try VPNEndpointDirectory.checkedPath(endpointFD, owner: geteuid(), shared: shared)
+        let endpoint = endpointFolder + "/" + socketName
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
@@ -54,7 +73,7 @@ final class VPNHelperListener {
             if socketDescriptor >= 0 { Darwin.close(socketDescriptor) }
             throw VPNHelperListenerError.unavailable
         }
-        let previous = umask(0o177)
+        let previous = umask(shared ? 0o111 : 0o177)
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.bind(socketDescriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
@@ -63,25 +82,28 @@ final class VPNHelperListener {
         umask(previous)
         var created = stat()
         guard bound == 0, listen(socketDescriptor, 4) == 0,
-              fstatat(directory, socketName, &created, AT_SYMLINK_NOFOLLOW) == 0,
+              fstatat(endpointFD, socketName, &created, AT_SYMLINK_NOFOLLOW) == 0,
               created.st_mode & S_IFMT == S_IFSOCK, created.st_uid == geteuid(),
-              created.st_mode & 0o7777 == 0o600 else {
+              created.st_mode & 0o7777 == (shared ? 0o666 : 0o600) else {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unavailable
         }
         do {
             let vault = try VPNProfileVault(trustedDirectoryDescriptor: directory)
-            return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy, vault: vault)
+            return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy,
+                                     installerPolicy: try release.installerPolicy(), vault: vault)
         } catch {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unsafeStorage
         }
     }
 
-    private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy, vault: VPNProfileVault) {
+    private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy,
+                 installerPolicy: VPNPeerPolicy, vault: VPNProfileVault) {
         self.listener = listener
         self.release = release
         self.policy = policy
+        self.installerPolicy = installerPolicy
         self.vault = vault
     }
 
@@ -110,7 +132,14 @@ final class VPNHelperListener {
         guard setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled,
                          socklen_t(MemoryLayout.size(ofValue: enabled))) == 0 else { return false }
         do {
-            try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
+            var peerUID: uid_t = 0, peerGID: gid_t = 0
+            guard getpeereid(client, &peerUID, &peerGID) == 0 else { return false }
+            var installationProbe = peerUID == 0
+            var connectionPolicy = installationProbe ? installerPolicy : policy
+            #if VPN_HELPER_LISTENER_TESTING
+            if fixtureInstaller { installationProbe = true; connectionPolicy = policy }
+            #endif
+            try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
             let challenge = try VPNHelperProtocol.read(count: 56, socket: client, deadline: deadline)
             guard Array(challenge.prefix(8)) == Self.request,
                   Array(challenge[8..<16]) == Self.encoded(release.protocolVersion),
@@ -118,8 +147,14 @@ final class VPNHelperListener {
             // Answer only for the state at this instant. A running process is
             // not readiness, and a rejected answer must not be a stale success.
             guard isReady() else { return false }
-            try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
+            try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
             try VPNHelperProtocol.write(Self.response + challenge.dropFirst(8), socket: client, deadline: deadline)
+            // The root installation role ends here. It never enters the owner's
+            // command dispatcher, even if extra request bytes are already queued.
+            if installationProbe {
+                _ = try? VPNHelperProtocol.read(count: 1, socket: client, deadline: deadline, allowingClose: true)
+                return true
+            }
             // The peer re-checks our running signature and may then spend a
             // bounded number of typed requests; either way it closes first.
             try serveRequests(client, isReady: isReady)

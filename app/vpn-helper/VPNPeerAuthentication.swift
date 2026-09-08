@@ -26,6 +26,14 @@ struct VPNPeerPolicy {
                           codeDirectoryHashes: codeDirectoryHashes)
     }
 
+    /// The exact signed frontend build running its authorized installation mode.
+    /// Root alone is NOT sufficient. This role may only probe readiness, never
+    /// submit the owner's profile/commands on this connection.
+    static func installer(codeDirectoryHashes: Set<Data>) throws -> VPNPeerPolicy {
+        try VPNPeerPolicy(trustedUserID: 0, signingIdentifier: "kz.documentolog.proxypilot",
+                          codeDirectoryHashes: codeDirectoryHashes)
+    }
+
     #if VPN_HELPER_READINESS_TESTING
     // Only for unprivileged disposable process tests, absent in normal builds.
     static func testHelper(codeDirectoryHashes: Set<Data>) throws -> VPNPeerPolicy {

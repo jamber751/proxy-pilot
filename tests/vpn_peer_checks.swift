@@ -32,7 +32,7 @@ enum VPNPeerChecks {
                 _ = read(socket, &byte, 1)
                 return
             }
-            guard ["verify", "verify-release"].contains(args[1]), args.count == 6,
+            guard ["verify", "verify-release", "verify-installer"].contains(args[1]), args.count == 6,
                   let socket = Int32(args[2]), let userID = uid_t(args[3]) else { exit(64) }
             let hashes: Set<Data> = Set(args[5].split(separator: ",").map { hex in
                 var bytes = Data()
@@ -65,6 +65,8 @@ enum VPNPeerChecks {
                                                         minimumSequence: 1, supportedProtocol: 1)
                 let release = try authority.verify(payload: payload, signature: signature, previous: nil)
                 policy = try release.clientPolicy(forTrustedUserID: userID)
+            } else if args[1] == "verify-installer" {
+                policy = try VPNPeerPolicy.installer(codeDirectoryHashes: hashes)
             } else {
                 policy = try VPNPeerPolicy(userID: userID, signingIdentifier: args[4], codeDirectoryHashes: hashes)
             }

@@ -22,10 +22,10 @@ HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
               'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNLaunchdRuntime.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift']
+              'VPNLaunchdRuntime.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNEndpointDirectory.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
            'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
-           'VPNHelperListener.swift']
+           'VPNHelperListener.swift', 'VPNEndpointDirectory.swift']
 # The helper re-validates profiles with the application's own importer.
 IMPORTER = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
 

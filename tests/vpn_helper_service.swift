@@ -31,8 +31,24 @@ enum VPNHelperService {
                 exit(0)
             }
             let deployment = try store.loadDeployment()
-            let listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: deployment.release,
-                                                      ownerUserID: deployment.ownerUserID)
+            let listener: VPNHelperListener
+            #if VPN_HELPER_LISTENER_TESTING
+            if args.count >= 4, args[3] == "installer-test" {
+                listener = try VPNHelperListener.testBindInstaller(inTrustedDirectory: directory, release: deployment.release,
+                                                                   ownerUserID: deployment.ownerUserID)
+            } else {
+                var endpoint: Int32?
+                if args.count == 5, args[3] == "shared" {
+                    endpoint = open(args[4], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                }
+                defer { if let endpoint = endpoint { close(endpoint) } }
+                listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: deployment.release,
+                                                      ownerUserID: deployment.ownerUserID, endpointDirectory: endpoint)
+            }
+            #else
+            listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: deployment.release,
+                                                  ownerUserID: deployment.ownerUserID)
+            #endif
             print("listening"); fflush(stdout)
             while true { _ = try? listener.serveOnce(isReady: { ready }) }
         } catch {

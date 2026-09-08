@@ -44,7 +44,7 @@ class VPNHelperListenerTests(unittest.TestCase):
         for name, sources, flags in [
             ('service', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
                          'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
-                         'VPNHelperListener.swift'], []),
+                         'VPNHelperListener.swift', 'VPNEndpointDirectory.swift'], ['-D', 'VPN_HELPER_LISTENER_TESTING']),
             # The probe's normal build demands a root server, which no test may
             # run: only the client side uses the narrow test-policy seam here.
             ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
@@ -105,8 +105,8 @@ class VPNHelperListenerTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.stdout.strip(), f'selected:{sequence}', result.stdout + result.stderr)
 
-    def serve(self, ready=True):
-        arguments = [str(self.work / 'service'), 'serve', str(self.storage)] + ([] if ready else ['not-ready'])
+    def serve(self, ready=True, extra=None):
+        arguments = [str(self.work / 'service'), 'serve', str(self.storage)] + (extra or ([] if ready else ['not-ready']))
         service = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         self.addCleanup(service.stdout.close)
         self.addCleanup(service.wait, 30)
@@ -289,5 +289,40 @@ class VPNHelperListenerTests(unittest.TestCase):
     def test_a_profile_larger_than_the_frame_limit_is_never_sent(self):
         self.seed()
         self.serve()
-        self.assertEqual(self.store_profile(PROFILE + '#' + 'x' * 70000), ['request:payloadTooLarge'])
+        self.assertEqual(self.store_profile(PROFILE + '#' + 'x' * 1_048_576), ['request:payloadTooLarge'])
         self.assertFalse((self.storage / 'profile.ovpn').exists())
+
+    def test_profile_above_old_frame_limit_is_accepted(self):
+        self.seed()
+        self.serve()
+        self.assertEqual(self.store_profile(PROFILE + ('# padding\n' * 8000)), ['answer:0 body:0'])
+
+    def test_profile_at_importer_limit_is_accepted(self):
+        self.seed()
+        self.serve()
+        padding = 1_048_576 - len(PROFILE.encode())
+        text = PROFILE + ('#\n' * (padding // 2)) + ('\n' if padding % 2 else '')
+        self.assertEqual(len(text.encode()), 1_048_576)
+        self.assertEqual(self.store_profile(text), ['answer:0 body:0'])
+
+    def test_public_endpoint_keeps_profile_in_private_storage(self):
+        self.seed()
+        ipc = self.base / 'ipc'
+        ipc.mkdir(mode=0o755)
+        self.endpoint = ipc / 'helper.sock'
+        self.serve(extra=['shared', str(ipc)])
+        self.assertEqual(self.endpoint.stat().st_mode & 0o7777, 0o666)
+        self.assertEqual(self.storage.stat().st_mode & 0o7777, 0o700)
+        self.assertEqual(self.store_profile(PROFILE), ['answer:0 body:0'])
+        self.assertEqual(list(ipc.iterdir()), [self.endpoint])
+        self.assertEqual((self.storage / 'profile.ovpn').stat().st_mode & 0o7777, 0o600)
+        self.assertIn('rejected:', self.probe(client='stranger'))
+
+    def test_installation_role_only_gets_readiness(self):
+        self.seed()
+        self.serve(extra=['installer-test'])
+        self.assertEqual(self.probe(), 'ready:10 closed')
+        self.assertNotIn('answer:0 body:0', self.store_profile(PROFILE))
+        self.assertFalse((self.storage / 'profile.ovpn').exists())
+        self.assertNotEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
+        self.assertEqual(self.probe(), 'ready:10 closed')

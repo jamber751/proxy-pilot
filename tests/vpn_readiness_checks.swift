@@ -157,7 +157,7 @@ enum VPNReadinessChecks {
                 frame = VPNHelperProtocol.request(.status, revision: 10, payload: [1, 2, 3])
             case "oversize":
                 frame = VPNHelperProtocol.requestMagic + VPNHelperProtocol.encode(UInt16(1))
-                    + VPNHelperProtocol.encode(UInt64(10)) + VPNHelperProtocol.encode(UInt32(1 << 20))
+                    + VPNHelperProtocol.encode(UInt64(10)) + VPNHelperProtocol.encode(UInt32(VPNHelperProtocol.maximumPayloadBytes + 1))
             default:
                 frame = Array("GARBAGE!".utf8) + [UInt8](repeating: 0, count: 14)
             }

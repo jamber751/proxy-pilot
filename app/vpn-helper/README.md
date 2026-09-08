@@ -336,18 +336,20 @@ python3 -m unittest discover -s tests -p test_vpn_lifecycle.py -v
 
 ## Helper-side transport and readiness answer
 
-`VPNHelperListener` is the server end of the same handshake, inside the helper.
-It is not a command dispatcher: the only reachable behaviour is answering one
-fixed 56-byte challenge with 56 bytes. No path, argument, profile, operation or
-timeout is nameable by a caller. Every connection is authenticated first, with
-the **client** policy built from the signed release: the owner's UID and the
-application's pinned Code Directory hashes, revalidated again immediately before
-the reply. Rejection costs that connection only — the listener keeps serving,
-so a refused, silent or malformed peer cannot deny service to the real one.
+`VPNHelperListener` authenticates a peer before reading the fixed 56-byte
+readiness challenge. The non-root owner must match the application's signed
+release pins and may then use the bounded typed protocol. The root installation
+role must match the same exact hardened app build, not just UID 0; it receives
+readiness only and never enters the command dispatcher. Packaging must execute
+that pinned build in installation mode. A different installer executable would
+need explicit separate signed pins; no identifier-only or root-only exception
+exists. Production app hardening/updater separation and packaging are still open.
 
-The endpoint is created inside the already-protected directory, resolved from a
-checked descriptor, and bound under a `0177` umask; the listener then verifies it
-really produced a `0600` socket owned by us. It **never** unlinks an existing
+Root binds in a separate fixed IPC directory (below), not the 0700 profile vault.
+The older private 0600 endpoint is retained only for unprivileged test harnesses.
+Every reply revalidates the peer. Rejection costs one bounded connection, but
+this is not a proof of immunity to sustained local connection flooding.
+The listener **never** unlinks an existing
 socket: a stale endpoint means the supervisor did not confirm the previous stop,
 and quietly stealing it would hide that. The reply is bound to the release: a
 challenge naming another protocol version or sequence is refused, and the receipt
@@ -428,7 +430,8 @@ Adding an operation is a deliberate change in that file, never something a clien
 can request or a payload can imply. Today the list holds exactly one operation,
 `status`, which answers with the running release's sequence and protocol version.
 
-The limits are part of the format: at most 64 KiB per payload, at most eight
+The limits are part of the format: at most 1 MiB per payload (matching the
+profile importer), at most eight
 requests per connection, a deadline per request (re-authenticating a peer costs
 real time) and a separate cap on the whole conversation, so a slow or idle client
 cannot hold the single-threaded helper for the sum of every deadline. Oversized
@@ -528,6 +531,43 @@ group-readable record refused. Mutation runs confirm that dropping either rule,
 or charging after the attempt, fails those tests.
 
 ## launchd service adapter (production activation mechanics)
+
+### IPC versus private storage (8 September correction)
+
+`VPNEndpointDirectory` keeps the public endpoint at the fixed canonical path
+`/Library/Application Support/kz.documentolog.proxypilot.vpn/helper.sock`. Its directory is
+root-owned 0755 and contains only a root-owned 0666 socket. Permission to connect
+does not grant permission to send commands: kernel UID, signed CDHash, identifier,
+runtime hardening and per-request checks remain mandatory. Other users/builds
+are rejected before their challenge/payload is read. The protected policy,
+executable and profile directory stays 0700 and its records stay 0600.
+
+The fixed no-follow parent walk verifies ownership, local filesystem, modes and
+absence of ACL entries. Only root can create the IPC directory; an application
+uses the read-only `connectSystem` entry and authenticates the resulting socket
+through `VPNHelperSession`. The connector checks the socket's type, owner and
+permissions, returns close-on-exec/nonblocking descriptors, and shares the
+caller's monotonic deadline. It is not yet called by the app UI. Directory and
+socket creation occur during authorized setup/helper startup, not a UI preview.
+
+The root launchd runtime uses the separate endpoint for connection and cleanup;
+uninstall removes the endpoint directory only when empty. Existing unexpected
+directories/files are not repaired or recursively removed. Tests use disposable
+directories and ordinary UIDs: root-to-user traversal and positive root
+installation authentication still require authorized live acceptance.
+
+On this Mac `/private/var/run` is group-writable, so it is deliberately not used;
+the chosen `/Library/Application Support` ancestors were inspected read-only.
+The endpoint directory is persistent: a crash/reboot can leave a stale socket.
+The existing coordinator's confirmed stop removes it, but unattended boot-time
+recovery still needs integration. The listener does not silently steal a socket.
+
+The readiness-only installation role is exercised through an isolated compile
+flag in listener tests; normal builds cannot substitute the owner for root.
+A separate test verifies the normal installer policy rejects a correctly pinned
+non-root app. No production trust key is read/rotated by these tests. The 1 MiB
+profile boundary is tested end-to-end, including files above the previous 64 KiB
+limit and refusal before sending/allocating an oversized frame.
 
 `VPNLaunchdRuntime` is the `VPNActivationRuntime` the coordinator was missing:
 launchd is the only thing that starts, supervises and stops the fixed service.

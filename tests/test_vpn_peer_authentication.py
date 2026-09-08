@@ -79,9 +79,9 @@ class VPNPeerAuthenticationTests(unittest.TestCase):
             raise AssertionError(result.stderr)
         return result
 
-    def verify(self, descriptor, *, hashes=None, identifier=IDENTIFIER, user_id=None, signed_release=False):
+    def verify(self, descriptor, *, hashes=None, identifier=IDENTIFIER, user_id=None, signed_release=False, installer=False):
         return subprocess.run(
-            [str(self.verifier), 'verify-release' if signed_release else 'verify', str(descriptor),
+            [str(self.verifier), 'verify-installer' if installer else ('verify-release' if signed_release else 'verify'), str(descriptor),
              str(os.geteuid() if user_id is None else user_id), identifier,
              self.hashes['allowed'] if hashes is None else hashes],
             pass_fds=(descriptor,) if descriptor >= 0 else (), capture_output=True,
@@ -126,6 +126,9 @@ class VPNPeerAuthenticationTests(unittest.TestCase):
 
     def test_wrong_account_rejected(self):
         self.assert_decision('allowed', 77, user_id=os.geteuid() + 1)
+
+    def test_installer_role_requires_root_even_for_the_pinned_app(self):
+        self.assert_decision('release-app', 77, hashes=self.hashes['release-app'], installer=True)
 
     def test_unhardened_pinned_binary_rejected(self):
         self.assert_decision('unhardened', 77, hashes=self.hashes['unhardened'])

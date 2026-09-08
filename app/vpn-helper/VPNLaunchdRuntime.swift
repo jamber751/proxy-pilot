@@ -25,14 +25,18 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
     private let plist: URL
     private let storage: URL
     private var directory: Int32
+    private var endpointDirectory: Int32
+    private let sharedEndpoint: Bool
 
     /// Production entry point. Root is required before touching anything, and
     /// the daemon description lives in the fixed system LaunchDaemons directory.
     static func system(storageDirectory: Int32) throws -> VPNLaunchdRuntime {
         guard geteuid() == 0 else { throw VPNLaunchdError.requiresRoot }
+        let endpoint = try VPNEndpointDirectory.openSystem(create: true)
+        defer { close(endpoint) }
         return try VPNLaunchdRuntime(domain: "system", label: productionLabel,
                                      plistDirectory: URL(fileURLWithPath: "/Library/LaunchDaemons", isDirectory: true),
-                                     storageDirectory: storageDirectory)
+                                     storageDirectory: storageDirectory, endpointDirectory: endpoint)
     }
 
     #if VPN_LAUNCHD_TESTING
@@ -44,7 +48,8 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
     }
     #endif
 
-    private init(domain: String, label: String, plistDirectory: URL, storageDirectory: Int32) throws {
+    private init(domain: String, label: String, plistDirectory: URL, storageDirectory: Int32,
+                 endpointDirectory: Int32? = nil) throws {
         guard !label.isEmpty, label.utf8.count <= 128,
               label.utf8.allSatisfy({
                   (48...57).contains($0) || (65...90).contains($0) ||
@@ -52,6 +57,9 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
               }) else { throw VPNLaunchdError.invalidConfiguration }
         directory = fcntl(storageDirectory, F_DUPFD_CLOEXEC, 0)
         guard directory >= 0 else { throw VPNLaunchdError.unsafeStorage }
+        self.endpointDirectory = fcntl(endpointDirectory ?? storageDirectory, F_DUPFD_CLOEXEC, 0)
+        guard self.endpointDirectory >= 0 else { close(directory); throw VPNLaunchdError.unsafeStorage }
+        sharedEndpoint = endpointDirectory != nil
         self.domain = domain
         self.label = label
         self.plist = plistDirectory.appendingPathComponent("\(label).plist")
@@ -70,10 +78,14 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
                   storage.path.utf8.count + 1 + Self.socketName.utf8.count < 104 else {
                 throw VPNLaunchdError.unsafeStorage
             }
-        } catch { close(directory); directory = -1; throw error }
+            _ = try VPNEndpointDirectory.checkedPath(self.endpointDirectory, owner: geteuid(), shared: sharedEndpoint)
+        } catch { close(directory); close(self.endpointDirectory); directory = -1; self.endpointDirectory = -1; throw error }
     }
 
-    deinit { if directory >= 0 { close(directory) } }
+    deinit {
+        if directory >= 0 { close(directory) }
+        if endpointDirectory >= 0 { close(endpointDirectory) }
+    }
 
     /// Unload the service, then positively confirm it: launchd no longer knows
     /// the label and nothing answers the socket. An unconfirmed stop is an
@@ -87,17 +99,17 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
             try pause(deadline: deadline)
         }
         while true {
-            let socket = connectToHelper()
+            let socket = try connectToHelper(deadline: deadline)
             guard socket >= 0 else { break }
             close(socket)
             try pause(deadline: deadline)
         }
         var endpoint = stat()
-        if fstatat(directory, Self.socketName, &endpoint, AT_SYMLINK_NOFOLLOW) == 0 {
+        if fstatat(endpointDirectory, Self.socketName, &endpoint, AT_SYMLINK_NOFOLLOW) == 0 {
             // Only ever remove a socket: a replaced regular file or symlink here
             // means the protected directory is not in the state we require.
             guard endpoint.st_mode & S_IFMT == S_IFSOCK, endpoint.st_uid == geteuid(),
-                  unlinkat(directory, Self.socketName, 0) == 0 else { throw VPNLaunchdError.unsafeStorage }
+                  unlinkat(endpointDirectory, Self.socketName, 0) == 0 else { throw VPNLaunchdError.unsafeStorage }
         }
     }
 
@@ -107,7 +119,7 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
     func startIdleAndConnect(_ deployment: VPNAuthorizedDeployment, deadline: UInt64) throws -> Int32 {
         let executable = try checkedHelperPath(deployment)
         var endpoint = stat()
-        guard fstatat(directory, Self.socketName, &endpoint, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
+        guard fstatat(endpointDirectory, Self.socketName, &endpoint, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
             throw VPNLaunchdError.cleanupNotConfirmed
         }
         try writeServiceDescription(executable: executable)
@@ -115,7 +127,7 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
             throw VPNLaunchdError.launchFailed
         }
         while true {
-            let socket = connectToHelper()
+            let socket = try connectToHelper(deadline: deadline)
             if socket >= 0 {
                 guard fcntl(socket, F_SETFD, FD_CLOEXEC) == 0 else { close(socket); throw VPNLaunchdError.launchFailed }
                 return socket
@@ -193,22 +205,11 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
               fsync(parent) == 0 else { throw VPNLaunchdError.unsafeStorage }
     }
 
-    private func connectToHelper() -> Int32 {
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        let bytes = Array(storage.appendingPathComponent(Self.socketName).path.utf8) + [0]
-        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else { return -1 }
-        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
-        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { return -1 }
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard result == 0 else { close(descriptor); return -1 }
-        return descriptor
+    private func connectToHelper(deadline: UInt64) throws -> Int32 {
+        do {
+            return try VPNEndpointDirectory.connect(directory: endpointDirectory, owner: geteuid(),
+                                                    shared: sharedEndpoint, deadline: deadline)
+        } catch VPNEndpointError.unavailable { return -1 }
     }
 
     /// launchctl runs with no shell, no inherited environment payload and no
