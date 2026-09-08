@@ -347,7 +347,7 @@ were weakened to inspect it.
 | Candidate 5 before update | Client 5 exits 77; PID 86421 and client 4 remain healthy |
 | Signed update 4 → 5 | Installer success UI; PID 88456; client 5 returns `Release 5`; client 4 exits 77 |
 | Refusal of older package after 5 | Not run: UI control became unavailable before the package was selected |
-| Complete removal | Pending; release 5 remains installed and running idle-only |
+| Complete removal | Sequence-5 remove package: Installer success; label, all three PIDs, launch plist and both directories absent; clients 4/5 exit 77 |
 
 Sequence 5 changes only the app pins by adding the restrictive code-signing flag
 to a separate copy of the same test app. Existing hard/kill/runtime protections
@@ -374,3 +374,37 @@ PIDs, launch plist and both directories. Do not claim removal until observed.
 The remaining system acceptance work does not invalidate the earlier
 isolated rollback/tamper/crash/cleanup tests, but those do not replace this check.
 No push, tag or release.
+
+### Removal completed — 8 September, 16:07 local time
+
+The user opened the exact sequence-5 removal package. UI access recovered;
+before removal the staged app verified its payload and successfully read
+`Release 5` from PID 88456. The fixed remove action ran through native Installer,
+which showed its standard success screen. The scoped installation log records
+`VPN support package verified.`, then `VPN support removed.` at 16:07:16 and
+the success UI at 16:07:17 (Asia/Almaty).
+
+Independent post-removal checks confirmed:
+
+- The system launchd label is absent (`launchctl` returns 113).
+- PIDs 84787, 86421 and 88456 are all absent.
+- `/Library/Application Support/ProxyPilot` and its `VPN` child are absent
+  with explicit `No such file or directory`, not a permission-denied inference.
+- `/Library/Application Support/kz.documentolog.proxypilot.vpn` and the launch
+  plist are absent as well; therefore the protected helper/engine/policy and
+  public socket no longer remain installed.
+- Both staged clients 4 and 5 fail status with exit 77; neither claims a
+  working service. There are no VPN-support package receipts.
+
+Only the known test component was removed, using the packaged lifecycle path;
+no manual recursive deletion, permission changes, forced process termination or
+cleanup of Installer history was used. The signed temporary packages remain
+available for reinstalling the test component. The app in Applications, personal
+configuration/profile, system proxies, routes and DNS were not changed. The engine
+was never executed by the root helper and no VPN tunnel was established.
+
+This completes delivery block **1.6 (4/4)**, not all of stage 1 or a working VPN
+feature. Root rollback refusal and an actual OpenVPN-version transition were not
+tested in this system run; isolated coverage is recorded above. Real reboot,
+Intel/macOS 11 execution, updater/helper coordination, restricted engine launch
+and live tunnel/network acceptance remain separate work. No push, tag or release.
