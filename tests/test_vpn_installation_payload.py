@@ -79,6 +79,17 @@ class VPNInstallationPayloadTests(unittest.TestCase):
     def test_signed_universal_package_is_accepted(self): self.verify(expected=0)
     def test_app_version_must_match(self): self.verify(version='1.6.1')
 
+    def test_production_loader_refuses_engine_manifest_until_full_delivery_is_ready(self):
+        path = self.work / 'vpn-release.manifest'
+        text = path.read_text().replace('format=1\n', 'format=2\n')
+        fields = {'engine-version': '2.7.7', 'engine-crypto-version': '3.5.8',
+                  'engine-arm64': '55' * 20, 'engine-x86_64': '66' * 20,
+                  'engine-sha256': hashlib.sha256(b'engine').hexdigest(), 'engine-bytes': 6}
+        path.write_text(text + ''.join(f'{key}={value}\n' for key, value in fields.items()))
+        self.command([str(self.build / 'checks'), 'sign', str(self.work)])
+        result = self.verify()
+        self.assertIn('engineDeliveryUnavailable', result.stdout)
+
     def test_changed_manifest_is_rejected(self):
         with (self.work / 'vpn-release.manifest').open('a') as stream: stream.write('extra=1\n')
         self.verify()

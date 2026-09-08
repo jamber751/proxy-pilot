@@ -11,14 +11,35 @@ enum VPNHelperArtifact {
 
     static func validate(protectedFile file: Int32, data: Data, release: VerifiedVPNRelease) throws {
         try release.validateHelperArtifact(data)
-        try validateUniversalExecutable(data)
+        try VPNUniversalArtifact.validate(protectedFile: file, data: data, identifier: signingIdentifier,
+                                          hash: release.helperHash, error: .invalidHelperArtifact)
+    }
+}
+
+/// Static candidate checks only, with the same protected-file requirement as the
+/// helper validator. No launch, PATH lookup or authorization to change the store.
+enum VPNEngineArtifact {
+    static let signingIdentifier = "kz.documentolog.proxypilot.openvpn"
+
+    static func validate(protectedFile file: Int32, data: Data, release: VerifiedVPNRelease) throws {
+        guard let engine = release.engine else { throw VPNReleaseAuthorizationError.invalidEngineArtifact }
+        try engine.validateArtifact(data)
+        try VPNUniversalArtifact.validate(protectedFile: file, data: data, identifier: signingIdentifier,
+                                          hash: engine.hash, error: .invalidEngineArtifact)
+    }
+}
+
+private enum VPNUniversalArtifact {
+    static func validate(protectedFile file: Int32, data: Data, identifier: String,
+                         hash: (String) -> Data?, error: VPNReleaseAuthorizationError) throws {
+        try validateUniversalExecutable(data, error: error)
         var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard fcntl(file, F_GETPATH, &path) == 0 else { throw VPNReleaseAuthorizationError.invalidHelperArtifact }
+        guard fcntl(file, F_GETPATH, &path) == 0 else { throw error }
         let url = URL(fileURLWithPath: String(cString: path))
         var opened = stat(), named = stat()
         guard fstat(file, &opened) == 0, lstat(url.path, &named) == 0,
               opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
-              named.st_mode & S_IFMT == S_IFREG else { throw VPNReleaseAuthorizationError.invalidHelperArtifact }
+              named.st_mode & S_IFMT == S_IFREG else { throw error }
 
         let required = SecCodeSignatureFlags.runtime.rawValue | SecCodeSignatureFlags.forceHard.rawValue | SecCodeSignatureFlags.forceKill.rawValue
         let checks = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate).union(.noNetworkAccess)
@@ -28,28 +49,28 @@ enum VPNHelperArtifact {
             guard SecStaticCodeCreateWithPathAndAttributes(url as CFURL, [], attributes, &code) == errSecSuccess,
                   let code = code,
                   SecStaticCodeCheckValidity(code, checks, nil) == errSecSuccess else {
-                throw VPNReleaseAuthorizationError.invalidHelperArtifact
+                throw error
             }
             var information: CFDictionary?
             guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
                   let info = information as? [String: Any],
-                  info[kSecCodeInfoIdentifier as String] as? String == signingIdentifier,
-                  let hash = info[kSecCodeInfoUnique as String] as? Data,
-                  hash == release.helperHash(forArchitecture: architecture),
+                  info[kSecCodeInfoIdentifier as String] as? String == identifier,
+                  let actualHash = info[kSecCodeInfoUnique as String] as? Data,
+                  actualHash == hash(architecture),
                   let flags = info[kSecCodeInfoFlags as String] as? NSNumber,
                   flags.uint32Value & required == required else {
-                throw VPNReleaseAuthorizationError.invalidHelperArtifact
+                throw error
             }
             if let entitlements = info[kSecCodeInfoEntitlementsDict as String] {
                 guard let dictionary = entitlements as? [String: Any], dictionary.isEmpty else {
-                    throw VPNReleaseAuthorizationError.invalidHelperArtifact
+                    throw error
                 }
             }
         }
     }
 
-    private static func validateUniversalExecutable(_ data: Data) throws {
-        func reject() throws -> Never { throw VPNReleaseAuthorizationError.invalidHelperArtifact }
+    private static func validateUniversalExecutable(_ data: Data, error: VPNReleaseAuthorizationError) throws {
+        func reject() throws -> Never { throw error }
         let bytes = Array(data.prefix(48))
         guard bytes.count == 48 else { try reject() }
         func big(_ offset: Int) -> UInt32 {

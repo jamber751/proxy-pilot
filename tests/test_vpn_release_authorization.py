@@ -22,7 +22,7 @@ class VPNReleaseAuthorizationTests(unittest.TestCase):
         slices = []
         for arch in ('arm64', 'x86_64'):
             output = directory / arch
-            result = subprocess.run(['swiftc', '-target', f'{arch}-apple-macosx11.0',
+            result = subprocess.run(['swiftc', '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-target', f'{arch}-apple-macosx11.0',
                                      *map(str, sources), '-o', str(output)],
                                     capture_output=True, text=True, timeout=90)
             if result.returncode:
@@ -53,3 +53,11 @@ class VPNReleaseAuthorizationTests(unittest.TestCase):
     def test_previous_release_must_have_same_authority(self): self.check('authority')
     def test_exact_helper_artifact_bytes(self): self.check('artifact')
     def test_invalid_trust_configuration(self): self.check('trust')
+    def test_engine_candidate_binds_separate_component_identity(self): self.check('engine-valid')
+    def test_ordinary_authority_refuses_engine_delivery(self): self.check('engine-disabled')
+    def test_engine_format_is_exact_and_has_no_executable_paths(self): self.check('engine-grammar')
+    def test_engine_values_and_limits(self): self.check('engine-fields')
+    def test_engine_bytes_and_manifest_tampering(self): self.check('engine-tamper')
+    def test_engine_upgrade_retry_and_component_rollback(self): self.check('engine-transitions')
+    def test_engine_changes_require_new_sequence(self): self.check('engine-conflict')
+    def test_engine_requires_release_authority_and_signature_domain(self): self.check('engine-domain')

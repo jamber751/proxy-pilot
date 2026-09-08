@@ -10,6 +10,39 @@ enum VPNReleaseAuthorizationError: Error {
     case conflictingRelease
     case wrongAuthority
     case invalidHelperArtifact
+    case invalidEngineArtifact
+    case engineDeliveryUnavailable
+}
+
+/// A signed engine identity, not an executable path or permission to launch it.
+/// Only the release authority can construct this after signature verification.
+struct VerifiedVPNEngine {
+    let version: String
+    let cryptoVersion: String
+    fileprivate let hashes: [String: Data]
+    fileprivate let sha256: Data
+    fileprivate let byteCount: Int
+
+    fileprivate init(version: String, cryptoVersion: String, hashes: [String: Data],
+                     sha256: Data, byteCount: Int) {
+        self.version = version
+        self.cryptoVersion = cryptoVersion
+        self.hashes = hashes
+        self.sha256 = sha256
+        self.byteCount = byteCount
+    }
+
+    func validateArtifact(_ data: Data) throws {
+        guard data.count == byteCount, Data(SHA256.hash(data: data)) == sha256 else {
+            throw VPNReleaseAuthorizationError.invalidEngineArtifact
+        }
+    }
+
+    var artifactName: String {
+        "engine-" + sha256.map { String(format: "%02x", $0) }.joined()
+    }
+
+    func hash(forArchitecture architecture: String) -> Data? { hashes[architecture] }
 }
 
 /// An authenticated release description, not installation success or live VPN
@@ -18,6 +51,7 @@ struct VerifiedVPNRelease {
     let sequence: UInt64
     let version: String
     let protocolVersion: UInt64
+    let engine: VerifiedVPNEngine?
     fileprivate let appHashes: Set<Data>
     fileprivate let helperHashes: [String: Data]
     fileprivate let helperSHA256: Data
@@ -27,7 +61,7 @@ struct VerifiedVPNRelease {
 
     fileprivate init(sequence: UInt64, version: String, protocolVersion: UInt64,
                      appHashes: Set<Data>, helperHashes: [String: Data], helperSHA256: Data,
-                     helperByteCount: Int, payloadDigest: Data, authorityDigest: Data) {
+                     helperByteCount: Int, engine: VerifiedVPNEngine?, payloadDigest: Data, authorityDigest: Data) {
         self.sequence = sequence
         self.version = version
         self.protocolVersion = protocolVersion
@@ -35,6 +69,7 @@ struct VerifiedVPNRelease {
         self.helperHashes = helperHashes
         self.helperSHA256 = helperSHA256
         self.helperByteCount = helperByteCount
+        self.engine = engine
         self.payloadDigest = payloadDigest
         self.authorityDigest = authorityDigest
     }
@@ -89,10 +124,12 @@ struct VPNReleaseAuthority {
     static let signatureDomain = Data("kz.documentolog.proxypilot/vpn-release-authorization/v1\0".utf8)
     static let maximumPayloadBytes = 4096
     static let maximumHelperBytes = 32 * 1024 * 1024
+    static let maximumEngineBytes = 64 * 1024 * 1024
     private let publicKey: Curve25519.Signing.PublicKey
     private let authorityDigest: Data
     private let minimumSequence: UInt64
     private let supportedProtocol: UInt64
+    private var engineCandidatesEnabled = false
 
     init(trustedPublicKey: Data, minimumSequence: UInt64, supportedProtocol: UInt64) throws {
         guard trustedPublicKey.count == 32, minimumSequence > 0,
@@ -105,6 +142,17 @@ struct VPNReleaseAuthority {
         self.minimumSequence = minimumSequence
         self.supportedProtocol = supportedProtocol
     }
+
+    #if VPN_ENGINE_DELIVERY_TESTING
+    /// Verification-only candidate testing. Production callers cannot enable
+    /// v2 until store/package/activation handle the complete artifact set.
+    static func engineCandidateAuthority(trustedPublicKey: Data, minimumSequence: UInt64) throws -> VPNReleaseAuthority {
+        var authority = try VPNReleaseAuthority(trustedPublicKey: trustedPublicKey,
+                                               minimumSequence: minimumSequence, supportedProtocol: 1)
+        authority.engineCandidatesEnabled = true
+        return authority
+    }
+    #endif
 
     /// `previous == nil` is ONLY for a separately authorized first installation,
     /// never a fallback after corrupt/missing installed state. Production must
@@ -123,8 +171,16 @@ struct VPNReleaseAuthority {
             throw VPNReleaseAuthorizationError.invalidManifest
         }
         let lines = text.components(separatedBy: "\n")
-        let keys = ["format", "product", "sequence", "version", "protocol", "app-arm64",
+        let isEngineManifest = lines.first == "format=2"
+        if isEngineManifest && !engineCandidatesEnabled {
+            throw VPNReleaseAuthorizationError.engineDeliveryUnavailable
+        }
+        var keys = ["format", "product", "sequence", "version", "protocol", "app-arm64",
                     "app-x86_64", "helper-arm64", "helper-x86_64", "helper-sha256", "helper-bytes"]
+        if isEngineManifest {
+            keys += ["engine-version", "engine-crypto-version", "engine-arm64", "engine-x86_64",
+                     "engine-sha256", "engine-bytes"]
+        }
         guard lines.count == keys.count + 1, lines.last == "" else {
             throw VPNReleaseAuthorizationError.invalidManifest
         }
@@ -133,7 +189,7 @@ struct VPNReleaseAuthority {
             guard line.hasPrefix(key + "=") else { throw VPNReleaseAuthorizationError.invalidManifest }
             values.append(String(line.dropFirst(key.count + 1)))
         }
-        guard values[0] == "1", values[1] == "kz.documentolog.proxypilot",
+        guard values[0] == (isEngineManifest ? "2" : "1"), values[1] == "kz.documentolog.proxypilot",
               let sequence = Self.number(values[2]), sequence > 0,
               Self.versionParts(values[3]) != nil,
               let protocolVersion = Self.number(values[4]),
@@ -145,6 +201,19 @@ struct VPNReleaseAuthority {
               let helperBytes = Self.number(values[10]), helperBytes > 0,
               helperBytes <= UInt64(Self.maximumHelperBytes) else {
             throw VPNReleaseAuthorizationError.invalidManifest
+        }
+        var engine: VerifiedVPNEngine?
+        if isEngineManifest {
+            guard Self.versionParts(values[11]) != nil, Self.versionParts(values[12]) != nil,
+                  let arm = Self.hex(values[13], byteCount: 20),
+                  let intel = Self.hex(values[14], byteCount: 20),
+                  let hash = Self.hex(values[15], byteCount: 32),
+                  let count = Self.number(values[16]), count > 0,
+                  count <= UInt64(Self.maximumEngineBytes) else {
+                throw VPNReleaseAuthorizationError.invalidManifest
+            }
+            engine = VerifiedVPNEngine(version: values[11], cryptoVersion: values[12],
+                                       hashes: ["arm64": arm, "x86_64": intel], sha256: hash, byteCount: Int(count))
         }
         guard protocolVersion == supportedProtocol else {
             throw VPNReleaseAuthorizationError.incompatibleProtocol
@@ -159,6 +228,15 @@ struct VPNReleaseAuthority {
                   !Self.versionIsOlder(values[3], than: previous.version) else {
                 throw VPNReleaseAuthorizationError.rollback
             }
+            // A higher app release must not silently drop the engine or roll
+            // either embedded component back to an older signed version.
+            if let old = previous.engine {
+                guard let next = engine,
+                      !Self.versionIsOlder(next.version, than: old.version),
+                      !Self.versionIsOlder(next.cryptoVersion, than: old.cryptoVersion) else {
+                    throw VPNReleaseAuthorizationError.rollback
+                }
+            }
             // Retry the same release idempotently, but never reuse its sequence
             // for different bytes (even if both descriptions were signed).
             guard sequence != previous.sequence || digest == previous.payloadDigest else {
@@ -168,7 +246,7 @@ struct VPNReleaseAuthority {
         return VerifiedVPNRelease(
             sequence: sequence, version: values[3], protocolVersion: protocolVersion,
             appHashes: [appARM, appIntel], helperHashes: ["arm64": helperARM, "x86_64": helperIntel],
-            helperSHA256: helperHash, helperByteCount: Int(helperBytes),
+            helperSHA256: helperHash, helperByteCount: Int(helperBytes), engine: engine,
             payloadDigest: digest, authorityDigest: authorityDigest)
     }
 

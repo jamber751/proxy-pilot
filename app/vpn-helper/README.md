@@ -1,5 +1,18 @@
 # VPN helper security boundary (not yet integrated)
 
+Latest status (8 September 2026): the opt-in idle helper's root/user installation,
+pin rotation, reapplication and removal have passed system acceptance. The test
+service is now removed; the ordinary app and VPN networking are not enabled.
+Earlier sections below retain the history of isolated checks; current acceptance
+and open gates are tracked in `docs/vpn-implementation-plan.md`.
+
+The new format-2 engine identity is verification-only and enabled exclusively by
+the `VPN_ENGINE_DELIVERY_TESTING` compiler flag. Ordinary authorities reject it,
+including the package loader and signing tool. See `docs/vpn-engine-delivery.md`
+for the canonical fields, actual engine-build evidence and remaining atomic
+storage/package/activation work. Never enable production parsing before those
+consumers validate and retain the complete artifact set.
+
 `VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
 gate** for a connector or the current installer, not a daemon, command dispatcher,
 installer entry point or ready VPN feature. It is

@@ -111,3 +111,87 @@ compiler/SDK. Intel/macOS 11 execution, the complete OpenSSL upstream test suite
 TLS/server compatibility, privileged enrollment and actual VPN networking remain
 unverified. The earlier general regression was 362 tests (361 passed, one skip);
 the 14 new builder tests were run separately, not included in that total.
+
+## Signed delivery format candidate
+
+The release verifier now has a **test-only** format-2 candidate. It retains the
+format-1 fields in their exact order and appends six ordered fields:
+`engine-version`, `engine-crypto-version`, `engine-arm64`, `engine-x86_64`,
+`engine-sha256`, `engine-bytes`. Engine/crypto versions use the existing canonical
+three-component version grammar; the executable is bounded to 64 MiB. The entire
+payload remains bounded to 4096 bytes. No path, URL, shell command or executable
+argument can be supplied by a manifest.
+
+The existing release-signature purpose/domain is unchanged: it signs every byte,
+including the format discriminator and appended fields. App/helper/engine hashes
+remain separate. A format-1 release has no engine identity. Verified engine bytes
+must match their length and SHA-256, and their content-addressed basename is
+derived internally, not supplied by a client.
+
+The transition checks allow format 1 → 2 only with a new sequence, permit exact
+retries, reject sequence reuse with different engine data, and prevent dropping
+the engine or decreasing either OpenVPN/OpenSSL version after a format-2 release.
+These are pure verification rules, not durable rollback protection or successful
+installation.
+
+`VPNEngineArtifact` shares static Mach-O/signature validation with the helper:
+exactly two executable slices, fixed component-specific identifier, exact CDHash
+for each architecture, runtime/hard/kill protections and no entitlements. Neither
+validator executes the candidate. Existing protected-file/lock and before/after
+snapshot requirements still apply; a path in a writable client directory must
+never be used for privileged execution.
+
+Results: 21 release-verifier tests (eight new engine groups), 10 static-engine
+tests including the actual locally built OpenVPN, 19 existing deployment tests
+and 16 installation-payload tests all passed. The tests use disposable keys and
+inert executable fixtures; the actual OpenVPN check was static only. Real-engine
+crypto execution was separately verified by the unprivileged builder above.
+
+**Production format 2 is intentionally unavailable.** The only enabling factory
+is compiled under `VPN_ENGINE_DELIVERY_TESTING`; ordinary app/helper/key-tool
+builds cannot enable it. A production-compiled payload test confirms rejection
+before reading/staging a helper. The current signed packages therefore remain
+format 1, with no engine. Next: atomic storage of both artifacts, package transfer,
+startup revalidation and safe update/removal; only then remove this test-only gate
+and perform system acceptance. No production release was signed for this format.
+
+### Next integration boundary (not implemented)
+
+1. Extend the protected deployment transaction to stage **both** helper and
+   engine, validate each complete file, sync them, then atomically select the
+   single signed release record. Missing/bad engine bytes must leave the old
+   record, running PID and attempt budget untouched. A prepared update must
+   revalidate both files again before committing after service stop.
+2. On every stored-release load/recovery, format 2 requires its engine as well
+   as its helper. Format 1 remains helper-only; no automatic PATH lookup,
+   download, repair, fallback to older components or unsafely mixed release.
+3. Transfer the engine as a fixed-name sidecar next to the sealed application,
+   covered by the release manifest. Validate the bounded protected package
+   snapshot before provisioning/stopping anything. Corresponding sources and
+   license notices remain part of the eventual public release distribution.
+4. Update/removal must account for selected and retained content-addressed
+   engine files using the existing verified ownership/lease rules. Do not add
+   broad recursive deletion or allow callers to choose executable locations.
+5. Exercise first install, retry, format-1 upgrade, tampering, crash points,
+   damaged current state and removal in disposable user-owned stores. Then
+   enable format 2 consistently in verifier/key tool/package/daemon and repeat
+   authorized root/user acceptance. Installation still must not start a tunnel;
+   restricted engine execution and network rollback belong to later plan work.
+
+## Final regression for this increment
+
+The post-change general run discovered 395 selected tests: **390 passed, five
+full-App loopback tests skipped in that invocation**, no failures (392.020 s).
+The five full-App tests were then run explicitly with the local GOST fixture:
+**all five passed** (76.518 s). Thus all 395 distinct selected checks passed
+across the two invocations, not as one skip-free run. The nine disposable-Keychain
+release-key tests were excluded; this increment did not access the release key.
+Both updater installer opt-ins and the actual OpenVPN static candidate were
+enabled in the general run.
+
+The ordinary, non-test idle helper also built successfully as Universal/macOS 11
+and passed strict ad-hoc signature verification. Its build remains local at
+`/tmp/proxypilot-vpn-candidate-build.VbBr8y/helper/vpn-helper`; it was not installed.
+After testing, the system launchd label, both VPN storage/endpoint directories
+and launch plist were still absent. The installed application, real profile and
+system network settings were not modified. No push, tag or public release.
