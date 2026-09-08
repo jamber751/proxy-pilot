@@ -95,6 +95,7 @@ final class ProxyModel: ObservableObject {
     private let queue = DispatchQueue(label: "proxypilot.commands")
     private var refreshing = false
     private var preparingUpdate = false
+    private var updatePreparationID: UUID?
     var onChange: (() -> Void)?
 
     init(preview: Bool = false) {
@@ -266,9 +267,15 @@ final class ProxyModel: ObservableObject {
         // Finish any in-flight CLI operation, but preserve enabled/route and the
         // existing bridge while Sparkle swaps the bundle. New CLI's ensure
         // replaces an older bridge once, after the updated app has relaunched.
+        let preparation = UUID()
+        updatePreparationID = preparation
         preparingUpdate = true; busy = true; operation = "Обновляем приложение…"
         queue.async {
             DispatchQueue.main.async {
+                // Cancellation/retry can happen while a command is still
+                // draining. An old completion must not freeze controls again
+                // or give a superseded update permission to relaunch.
+                guard self.preparingUpdate, self.updatePreparationID == preparation else { return }
                 self.busy = true
                 completion()
             }
@@ -276,6 +283,7 @@ final class ProxyModel: ObservableObject {
     }
     func cancelUpdatePreparation() {
         guard preparingUpdate else { return }
+        updatePreparationID = nil
         preparingUpdate = false; busy = false
         refresh()
     }
