@@ -81,7 +81,7 @@ final class InstallDriver: NSObject, SPUUserDriver {
         app.setActivationPolicy(.accessory)
         let worker = UpdateWorker()
         try worker.start(host: host)
-        let timeout = host.object(forInfoDictionaryKey: "TestMode") as? String == "native" ? 190.0 : 50.0
+        let timeout = (host.object(forInfoDictionaryKey: "TestMode") as? String)?.hasPrefix("native") == true ? 190.0 : 50.0
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { exit(3) }
         withExtendedLifetime(worker) { app.run() }
     }

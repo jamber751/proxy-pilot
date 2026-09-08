@@ -33,6 +33,23 @@ FRAMEWORK = SPARKLE / 'Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework'
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         self.server.requests.append(self.path)
+        if self.path == '/appcast.xml' and self.server.mode == 'native-network' and self.server.requests.count(self.path) == 1:
+            self.send_error(503, 'Disposable test network failure')
+            return
+        if self.path == '/update.zip' and self.server.mode == 'native-cancel-download':
+            payload = (Path(self.directory) / 'update.zip').read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            try:
+                self.wfile.write(payload[:1024]); self.wfile.flush()
+                # Keep the actual download window available for a human/CUA
+                # cancellation. Cleanup can interrupt this fixture-only delay.
+                self.server.stop_transfer.wait(120)
+                self.wfile.write(payload[1024:])
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if self.path == '/appcast.xml' and getattr(self.server, 'release_feeds', None):
             feeds = self.server.release_feeds
             events = self.server.host_events.read_text() if self.server.host_events.exists() else ''
@@ -73,6 +90,25 @@ class IsolatedUpdateInstallTests(unittest.TestCase):
                                         'driver = InstallDriver(host: host, delegate: self)')
             if cls_source == original or 'driver = SPUStandardUserDriver(' in cls_source:
                 raise AssertionError('Test UI driver was not substituted')
+        else:
+            probes = {
+                'try updater.start()': '''NativeProbe.observeActivation()
+        try updater.start()
+        if host.object(forInfoDictionaryKey: "TestMode") as? String == "native-background" {
+            precondition(updater.automaticallyChecksForUpdates)
+            NativeProbe.record("background-start")
+            updater.checkForUpdatesInBackground()
+        }''',
+                'availableVersion = update.displayVersionString; publish()': '''NativeProbe.record("found user=\\(state.userInitiated) shown=\\(handleShowingUpdate)")
+        if !state.userInitiated { NativeProbe.quietWindowCheck() }
+        availableVersion = update.displayVersionString; publish()''',
+                'func standardUserDriverWillFinishUpdateSession() {': 'func standardUserDriverWillFinishUpdateSession() {\n        NativeProbe.record("native-finished")',
+                'func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {': 'func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {\n        NativeProbe.error(error)',
+                'case .check:': 'case .check:\n            NativeProbe.manualCheck = true',
+            }
+            for needle, replacement in probes.items():
+                if cls_source.count(needle) != 1: raise AssertionError('Native observation hook changed: ' + needle)
+                cls_source = cls_source.replace(needle, replacement)
         source = build / 'Worker.swift'
         source.write_text(cls_source)
         # The released model is an immutable regression fixture, not a rewrite
@@ -89,7 +125,7 @@ class IsolatedUpdateInstallTests(unittest.TestCase):
         for name, extras in [
             ('Frontend', ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(proxy_model), str(ROOT / 'tests/isolated-update-install/Frontend.swift')]),
             ('Worker', ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
-                        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(source), str(ROOT / 'tests/isolated-update-install/Driver.swift')]),
+                        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(source), str(ROOT / 'tests/isolated-update-install/Driver.swift'), str(ROOT / 'tests/isolated-update-install/NativeProbe.swift')]),
             ('LegacyFrontend', ['-D', 'LEGACY_UPDATER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
                                 '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(legacy),
                                 str(ROOT / 'tests/isolated-update-install/LegacyUIAdapter.swift'),
@@ -127,6 +163,8 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
             identifier = 'kz.documentolog.proxypilot.workercheck.' + uuid.uuid4().hex
             server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(work)))
             server.requests = []
+            server.mode = mode
+            server.stop_transfer = threading.Event()
             threading.Thread(target=server.serve_forever, daemon=True).start()
             process = None
             try:
@@ -193,7 +231,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                     self.run_command(['ditto', str(FRAMEWORK), str(app / 'Contents/Frameworks/Sparkle.framework')])
                     self.run_command(['codesign', '--force', '--sign', '-', '--options', '0', str(app)])
                     self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
-                if mode == 'corrupt':
+                if mode in ('corrupt', 'native-corrupt'):
                     archive = archives[0]
                     data = bytearray(archive.read_bytes())
                     self.assertEqual(data[:4], b'PK\x03\x04')
@@ -207,10 +245,10 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                 with (work / 'console.log').open('w+') as log:
                     process = subprocess.Popen([str(binary)], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                     installing = mode in ('install', 'native', 'migration', 'repeat')
-                    if mode == 'native':
+                    if mode.startswith('native'):
                         print(f'NATIVE PREVIEW WORKER: {worker}', flush=True)
                         print(f'HOST: {app}\nIDENTIFIER: {identifier}', flush=True)
-                    deadline = time.monotonic() + (185 if mode == 'native' else 65)
+                    deadline = time.monotonic() + (185 if mode.startswith('native') else 65)
                     while time.monotonic() < deadline:
                         events = host_log.read_text() if host_log.exists() else ''
                         if installing and f'relaunched {versions[-1]} preferences-preserved' in events:
@@ -246,22 +284,35 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                         self.assertNotIn('prepare', host_events, evidence)
                         self.assertNotIn('relaunched 2.0.0', host_events, evidence)
                         self.assertEqual(hashlib.sha256((app / 'Contents/Info.plist').read_bytes()).hexdigest(), original_info)
-                    if mode == 'corrupt':
+                    if mode in ('corrupt', 'native-corrupt'):
                         # Sparkle may wrap SUSignatureError in SUValidationError
                         # and SUInstallationError across the installer boundary.
                         self.assertTrue(any(f'error SUSparkleErrorDomain {code}' in worker_events for code in (3001, 3002)), evidence)
                     if mode.startswith('cancel-'): self.assertIn(mode, worker_events, evidence)
-                    if mode == 'cancel-offer': self.assertNotIn('/update.zip', server.requests)
+                    if mode in ('cancel-offer', 'native-cancel-offer', 'native-network', 'native-background'): self.assertNotIn('/update.zip', server.requests)
                     else:
                         for archive in archives: self.assertIn('/' + archive.name, server.requests)
                     self.assertTrue(set(server.requests) <= {'/appcast.xml', *( '/' + archive.name for archive in archives)}, server.requests)
+                    if mode == 'native-network':
+                        self.assertIn('retry-enabled', host_events, evidence)
+                        self.assertEqual(host_events.splitlines().count('check'), 2, evidence)
+                        self.assertGreaterEqual(server.requests.count('/appcast.xml'), 2)
+                        self.assertIn('error ', worker_events, evidence)
+                    if mode == 'native-background':
+                        self.assertIn('background-state badge=2.0.0 no-presentation', host_events, evidence)
+                        self.assertIn('manual-background-check', host_events, evidence)
+                        self.assertIn('found user=false shown=false', worker_events, evidence)
+                        self.assertIn('background-visible-windows=0 active=false', worker_events, evidence)
+                        self.assertNotIn('native-focus background', worker_events, evidence)
+                        self.assertIn('native-focus manual', worker_events, evidence)
+                        self.assertIn('present', host_events.splitlines(), evidence)
                     self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
                     # Assert natural cleanup before any emergency teardown.
                     deadline = time.monotonic() + 10
                     while self.matching_processes(work, identifier) and time.monotonic() < deadline:
                         time.sleep(0.1)
                     self.assertEqual(self.matching_processes(work, identifier), [], evidence)
-                    if mode == 'native': print('NATIVE INSTALL/RELAUNCH PASSED; no test processes remain', flush=True)
+                    if mode.startswith('native'): print(f'{mode}: PASSED; no test processes remain\n{evidence}', flush=True)
             finally:
                 # Only processes belonging to this unique disposable path/id.
                 # Never broad killall/pkill against Sparkle or ProxyPilot.
@@ -277,7 +328,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                     if process is not None: process.wait(timeout=5)
                     self.assertEqual(self.matching_processes(work, identifier), [], 'Disposable test processes did not stop')
                 finally:
-                    server.shutdown(); server.server_close()
+                    server.stop_transfer.set(); server.shutdown(); server.server_close()
                     for domain in (identifier, identifier + '.updater'):
                         subprocess.run(['defaults', 'delete', domain], capture_output=True)
 
@@ -293,10 +344,14 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Disposable native update window; complete within three minutes.')
     parser.add_argument('--native-preview', action='store_true', required=True)
-    parser.parse_args()
+    # The stock native ready window has no cancellation control. Use `install`
+    # to inspect that stage and finish via Install and Relaunch. The separate
+    # automated cancel-ready test exercises the API, not a native button.
+    parser.add_argument('--scenario', choices=['install', 'cancel-offer', 'cancel-download', 'network', 'corrupt', 'background'], default='install')
+    args = parser.parse_args()
     IsolatedUpdateInstallTests.native_preview = True
     IsolatedUpdateInstallTests.setUpClass()
     try:
-        IsolatedUpdateInstallTests().scenario('native')
+        IsolatedUpdateInstallTests().scenario('native' if args.scenario == 'install' else 'native-' + args.scenario)
     finally:
         IsolatedUpdateInstallTests.doClassCleanups()

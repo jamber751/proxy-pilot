@@ -14,8 +14,19 @@ final class InstallHost: NSObject, NSApplicationDelegate {
     let proxy = ProxyModel(preview: false) // This fixture links only the inert CLI.
     var requested = false
     var timer: Timer?
+    var attempts = 0
+    var presentations = 0
+    var backgroundObserved = false
+    var testWindow: NSWindow?
+    var updateButton: NSButton?
+
+    @objc func showBackgroundUpdate() {
+        guard backgroundObserved, model.canCheck, !requested else { return }
+        requested = true; record("manual-background-check"); model.check()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let mode = Bundle.main.object(forInfoDictionaryKey: "TestMode") as! String
         record("launched \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")!) pid=\(getpid())")
         let initial = Bundle.main.object(forInfoDictionaryKey: "TestInitialVersion") as? String ?? "1.0.0"
         let final = Bundle.main.object(forInfoDictionaryKey: "TestFinalVersion") as? String ?? "2.0.0"
@@ -28,7 +39,9 @@ final class InstallHost: NSObject, NSApplicationDelegate {
         } else {
             UserDefaults.standard.set("socks", forKey: "TestRoute")
             UserDefaults.standard.set(true, forKey: "TestEnabled")
-            UserDefaults.standard.set(false, forKey: "SUEnableAutomaticChecks")
+            UserDefaults.standard.set(mode == "native-background", forKey: "SUEnableAutomaticChecks")
+            // The separate test worker must see the seed before Sparkle starts.
+            UserDefaults.standard.synchronize()
         }
         proxy.state = CLI.state(); proxy.loading = false
         model.prepareRelaunch = { [self] completion in
@@ -47,19 +60,49 @@ final class InstallHost: NSObject, NSApplicationDelegate {
             }
         }
         model.onAbort = { [self] in proxy.cancelUpdatePreparation(); record("abort") }
+        model.onPresent = { [self] in presentations += 1; record("present") }
+        if mode == "native-background" {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 150), styleMask: [.titled], backing: .buffered, defer: false)
+            window.title = "ProxyPilot Background TEST"
+            let label = NSTextField(labelWithString: "Disposable update test — no proxy or VPN changes")
+            label.frame = NSRect(x: 24, y: 98, width: 400, height: 24)
+            let button = NSButton(title: "Waiting for background check…", target: self, action: #selector(showBackgroundUpdate))
+            button.frame = NSRect(x: 24, y: 32, width: 390, height: 44); button.bezelStyle = .rounded; button.isEnabled = false
+            window.contentView?.addSubview(label); window.contentView?.addSubview(button)
+            testWindow = window; updateButton = button
+            window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        }
         model.start(preview: false)
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] _ in
             if model.checkTitle == "Повторить проверку" { record("worker-unavailable"); NSApp.terminate(nil); return }
+            if mode == "native-background" && !requested {
+                if model.availableVersion == "2.0.0" && model.canCheck && !backgroundObserved {
+                    backgroundObserved = true
+                    precondition(presentations == 0 && model.automaticChecks)
+                    precondition(model.checkTitle == "Обновить до 2.0.0")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
+                        precondition(presentations == 0, "Background update requested presentation")
+                        // Focus is observed in the worker for the whole phase,
+                        // not inferred from whether macOS activated this host.
+                        record("background-state badge=2.0.0 no-presentation")
+                        updateButton?.title = "Show update 2.0.0"; updateButton?.isEnabled = true
+                    }
+                }
+                return
+            }
             if model.canCheck && !requested {
                 precondition(!model.automaticChecks, "Update migration reset automatic checks")
-                requested = true; record("check"); model.check()
+                requested = true; attempts += 1; record("check"); model.check()
             } else if requested && model.canCheck && !model.sessionInProgress {
+                if mode == "native-network" && attempts == 1 {
+                    record("retry-enabled"); requested = false; return
+                }
                 // The driver has finished a declined/failed update. Exit only
                 // after state has propagated back through the real channel.
                 record("idle"); NSApp.terminate(nil)
             }
         }
-        let timeout = Bundle.main.object(forInfoDictionaryKey: "TestMode") as? String == "native" ? 180.0 : 40.0
+        let timeout = mode.hasPrefix("native") ? 180.0 : 40.0
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { record("timeout"); NSApp.terminate(nil) }
     }
 

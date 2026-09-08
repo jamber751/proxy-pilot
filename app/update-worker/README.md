@@ -123,10 +123,52 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
 1. The complete app's start/stop and live bridge lifecycle. Migration from the
    pinned 1.5.1 model, repeated update cycles and command-queue preparation now
    pass in disposable hosts; the installed/released full app was not launched.
-2. Remaining native UI cases: scheduled gentle reminders/focus, errors and
-   cancellation controls. The basic manual update and notes are now verified.
+2. Resolve the final cancellation boundary: the stock Ready to Install window
+   has no Cancel or close action, and Escape does nothing. The scripted `.skip`
+   test is an API test, not evidence of a native cancellation button. No custom
+   final window is added here. Remaining full-app, sleep and accessibility
+   acceptance is separate from the native cases below.
 3. Coordinate app replacement with the separately authorized root-helper release
    policy. Never accept a new VPN client pin merely because Sparkle installed it.
 4. Package the hardened app's fixed installation mode (or introduce separately
    signed installer pins) and perform explicitly authorized cross-UID acceptance.
    Neither an installer entry point nor an OpenVPN tunnel is added here.
+
+## Additional native acceptance (8 September)
+
+The runner now supports these explicit visible scenarios:
+
+```sh
+python3 tests/test_isolated_update_install.py --native-preview --scenario cancel-offer
+python3 tests/test_isolated_update_install.py --native-preview --scenario cancel-download
+python3 tests/test_isolated_update_install.py --native-preview --scenario network
+python3 tests/test_isolated_update_install.py --native-preview --scenario corrupt
+python3 tests/test_isolated_update_install.py --native-preview --scenario background
+```
+
+All five were passed using the actual native buttons through computer use.
+Close the offer; start and Cancel the throttled download; acknowledge the network
+error then close the successful retried offer; start the corrupt download then
+acknowledge the signature error; or click Show update in the background test host
+and choose Remind Me Later. These are manual acceptance runs, not silently added
+UI automation in unittest discovery. The original `install` scenario remains
+the default and requires a complete disposable installation/relaunch.
+
+`NativeProbe.swift` only records real worker callbacks and its activation events;
+it does not replace the standard driver or choose actions. The background case
+invokes Sparkle's real background-check path immediately after startup, verifies
+the existing model's available version/action title without presentation, zero
+visible worker windows, and no worker activation before a manual check. It then
+requires activation after the explicit click. This does not simulate waiting a
+day for the production scheduler, and the small host window is test UI only.
+An earlier assertion that the host itself must be frontmost was invalid (macOS
+need not activate it); worker-wide activation observation replaced it.
+
+The network case injects one loopback feed failure and checks that the model can
+retry after the real error dialog closes. It calls `UpdateModel.check` again;
+it does not exercise the full ProxyPilot settings button. Corruption remains a
+valid ZIP with an invalid signature. All passing cases assert no preparation or
+installation, original bundle integrity, and natural process cleanup. The native
+Ready to Install cancellation attempt did not pass and was interrupted with
+scoped cleanup; its missing control is also explicit in the
+[pinned Sparkle source](https://github.com/sparkle-project/Sparkle/blob/2.9.6/Sparkle/SPUStandardUserDriver.m#L477).
