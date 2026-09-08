@@ -43,8 +43,11 @@ not silently accept every later binary with the same identifier.
    A separate relay is not sufficient unless its own callers are authenticated.
    An isolated test now demonstrates a different approach: keep the frontend
    hardened and move Sparkle to an **unprivileged updater worker**. The worker
-   must never be a proxy for privileged VPN commands. Production migration,
-   update UI/preferences, shutdown, cancellation and install/relaunch are pending.
+   must never be a proxy for privileged VPN commands. An opt-in candidate now
+   wires the app's update model/preferences to a bounded worker channel; see
+   `../update-worker/README.md`. The ordinary build remains unchanged. Actual
+   installation/relaunch and native-window acceptance are still pending, as is
+   coordination with the root-owned release policy.
 3. The helper-to-client identity/readiness gate below is now integrated on both
    ends, with the endpoint created privately under the protected directory and
    close-on-exec descriptors, but only between unprivileged processes.

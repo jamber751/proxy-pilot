@@ -15,6 +15,9 @@ SPARKLE=$(zsh "$HERE/fetch-sparkle.sh")
 FRAMEWORK_DIR="$SPARKLE/Sparkle.xcframework/macos-arm64_x86_64"
 PUBLIC_KEY=$(< "$HERE/updater-public-key.txt")
 [[ ${#PUBLIC_KEY} == 44 ]] || { print -u2 "Invalid Sparkle public key"; exit 1; }
+# Staging only: do not switch release packaging until install/relaunch passes.
+ISOLATED_UPDATER="${PROXYPILOT_ISOLATED_UPDATER:-0}"
+[[ "$ISOLATED_UPDATER" == 0 || "$ISOLATED_UPDATER" == 1 ]] || { print -u2 "Invalid updater build mode"; exit 1; }
 
 command -v swiftc >/dev/null || {
   print -u2 "нет swiftc. Установи: xcode-select --install"; exit 1
@@ -24,22 +27,48 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/Resources/bin"
 mkdir -p "$OUT/ModuleCache"
-mkdir -p "$APP/Contents/Frameworks"
-ditto "$FRAMEWORK_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 cp "$SPARKLE/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE.txt"
 cp "${HERE:h}/bin/proxypilot" "$APP/Contents/Resources/bin/proxypilot"
+
+SOURCES=("$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
+  "$HERE/VPNConfiguration.swift" "$HERE/VPNProfileImporter.swift" "$HERE/VPNStore.swift")
+LINK_FLAGS=()
+SIGN_FLAGS=()
+if [[ "$ISOLATED_UPDATER" == 1 ]]; then
+  WORKER="$APP/Contents/Helpers/ProxyPilot Updater.app"
+  mkdir -p "$WORKER/Contents/MacOS" "$WORKER/Contents/Frameworks"
+  ditto "$FRAMEWORK_DIR/Sparkle.framework" "$WORKER/Contents/Frameworks/Sparkle.framework"
+  for ARCH in arm64 x86_64; do
+    swiftc -O -parse-as-library -module-cache-path "$OUT/ModuleCache" -target "$ARCH-apple-macosx11.0" \
+      -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+      "$HERE/update-worker/UpdateWire.swift" "$HERE/update-worker/UpdateChannel.swift" \
+      "$HERE/update-worker/UpdateWorker.swift" -o "$OUT/Updater-$ARCH"
+  done
+  lipo -create "$OUT/Updater-arm64" "$OUT/Updater-x86_64" -output "$WORKER/Contents/MacOS/ProxyPilotUpdater"
+  /usr/bin/plutil -create xml1 "$WORKER/Contents/Info.plist"
+  for PAIR in "CFBundleIdentifier=kz.documentolog.proxypilot.updater" "CFBundleExecutable=ProxyPilotUpdater" \
+      "CFBundleName=ProxyPilot Updater" "CFBundlePackageType=APPL" "CFBundleVersion=$VERSION" \
+      "CFBundleShortVersionString=$VERSION" "LSMinimumSystemVersion=11.0"; do
+    /usr/bin/plutil -insert "${PAIR%%=*}" -string "${PAIR#*=}" "$WORKER/Contents/Info.plist"
+  done
+  /usr/bin/plutil -insert LSUIElement -bool YES "$WORKER/Contents/Info.plist"
+  codesign --force --sign - --identifier kz.documentolog.proxypilot.updater "$WORKER"
+  SOURCES+=("$HERE/update-worker/IsolatedUpdates.swift" "$HERE/update-worker/UpdateWire.swift" "$HERE/update-worker/UpdateChannel.swift")
+  LINK_FLAGS=(-D ISOLATED_UPDATER)
+  SIGN_FLAGS=(--options runtime,hard,kill)
+else
+  mkdir -p "$APP/Contents/Frameworks"
+  ditto "$FRAMEWORK_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+  LINK_FLAGS=(-F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks)
+fi
 
 # файл называется main.swift, поэтому код верхнего уровня компилируется как есть.
 # Universal (Intel + Apple Silicon): две компиляции + lipo — DMG должен
 # запускаться и на x86_64-маках.
 swiftc -O -module-cache-path "$OUT/ModuleCache" -target "arm64-apple-macosx11.0" \
-  -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  -o "$APP/Contents/MacOS/ProxyPilot-arm64" "$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift" \
-  "$HERE/VPNConfiguration.swift" "$HERE/VPNProfileImporter.swift" "$HERE/VPNStore.swift"
+  "${LINK_FLAGS[@]}" -o "$APP/Contents/MacOS/ProxyPilot-arm64" "${SOURCES[@]}"
 swiftc -O -module-cache-path "$OUT/ModuleCache" -target "x86_64-apple-macosx11.0" \
-  -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  -o "$APP/Contents/MacOS/ProxyPilot-x86_64" "$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift" \
-  "$HERE/VPNConfiguration.swift" "$HERE/VPNProfileImporter.swift" "$HERE/VPNStore.swift"
+  "${LINK_FLAGS[@]}" -o "$APP/Contents/MacOS/ProxyPilot-x86_64" "${SOURCES[@]}"
 lipo -create "$APP/Contents/MacOS/ProxyPilot-arm64" "$APP/Contents/MacOS/ProxyPilot-x86_64" \
   -output "$APP/Contents/MacOS/ProxyPilot"
 rm -f "$APP/Contents/MacOS/ProxyPilot-arm64" "$APP/Contents/MacOS/ProxyPilot-x86_64"
@@ -86,7 +115,7 @@ PLIST
 
 # ad-hoc подпись: без неё macOS не выдаёт стабильный идентификатор,
 # и разрешение Local Network будет спрашиваться заново при каждой пересборке
-codesign --force --sign - --identifier kz.documentolog.proxypilot "$APP"
+codesign --force --sign - "${SIGN_FLAGS[@]}" --identifier kz.documentolog.proxypilot "$APP"
 codesign --verify --deep --strict "$APP"
 
 print -- "собрано: $APP"

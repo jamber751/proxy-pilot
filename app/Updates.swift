@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+#if !ISOLATED_UPDATER
 import Sparkle
 
 /// Sparkle owns downloading, signature verification and installation. Never run
@@ -16,6 +17,7 @@ final class UpdateModel: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStan
     var prepareRelaunch: ((@escaping () -> Void) -> Void)?
     private var controller: SPUStandardUpdaterController?
     private var observations: [NSKeyValueObservation] = []
+    var canChangeAutomaticChecks: Bool { !isPreview }
 
     func start(preview: Bool) {
         isPreview = preview
@@ -70,6 +72,7 @@ final class UpdateModel: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStan
         return true
     }
 }
+#endif
 
 struct UpdatesView: View {
     @ObservedObject var updates: UpdateModel
@@ -93,7 +96,7 @@ struct UpdatesView: View {
                 .toggleStyle(PilotCheckboxStyle())
                 .accessibilityIdentifier("automaticUpdates")
                 .help(updates.isPreview ? "В тестовом макете автопроверка отключена." : "Раз в сутки. Установка и перезапуск — только после подтверждения.")
-                .disabled(busy || updates.isPreview)
+                .disabled(busy || !updates.canChangeAutomaticChecks)
         }.font(.system(size: 10)).buttonStyle(PilotButtonStyle()).padding(.bottom, 4)
     }
 }
