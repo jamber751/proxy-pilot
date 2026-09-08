@@ -13,7 +13,7 @@ final class InstallDriver: NSObject, SPUUserDriver {
         mode = host.object(forInfoDictionaryKey: "TestMode") as! String
         self.delegate = delegate
         super.init()
-        record("worker-start \(getpid())")
+        record("driver-start pid=\(getpid()) version=\(host.object(forInfoDictionaryKey: "CFBundleVersion")!)")
     }
 
     func record(_ event: String) {
@@ -71,6 +71,7 @@ final class InstallDriver: NSObject, SPUUserDriver {
     }
 }
 
+#if !LEGACY_UPDATER_TESTING
 @main enum TestWorker {
     static func main() throws {
         guard geteuid() != 0, let host = UpdateWorker.enclosingHost(),
@@ -85,3 +86,4 @@ final class InstallDriver: NSObject, SPUUserDriver {
         withExtendedLifetime(worker) { app.run() }
     }
 }
+#endif

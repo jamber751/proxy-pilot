@@ -44,7 +44,9 @@ The ordinary build and release scripts continue to use the existing updater.
 - Update preparation uses one random token for the current session. Duplicate,
   unsolicited and stale completion messages are rejected. The callback only
   quiesces the existing **unprivileged** proxy update lifecycle. Cancellation or
-  worker failure releases that preparation. A worker with an acknowledged
+  worker failure releases that preparation. `ProxyModel` also invalidates the
+  preparation generation: a queued command cannot complete an old/cancelled
+  handoff or freeze the controls again. A worker with an acknowledged
   install handoff can outlive frontend EOF briefly; otherwise EOF exits it.
 
 ## Verified scope
@@ -66,7 +68,7 @@ executes the binaries; building Intel/macOS 11 is not runtime acceptance there.
 PROXYPILOT_TEST_ISOLATED_INSTALLER=1 python3 -m unittest discover -s tests -p test_isolated_update_install.py -v
 ```
 
-Four scenarios pass with Universal test hosts: install/relaunch 1.0.0 → 2.0.0
+Six scenarios pass with Universal test hosts: install/relaunch 1.0.0 → 2.0.0
 with preferences preserved, decline before download, cancel after staging, and
 reject a signature-invalid but still readable/CRC-valid ZIP. The real worker,
 frontend, Sparkle downloader/verifier/installer and OS relaunch are exercised;
@@ -76,6 +78,29 @@ Each case checks old/new bundle integrity and natural subprocess cleanup before
 emergency teardown. Declines/corruption must never reach frontend preparation.
 The ready-stage cancellation uses Sparkle's documented `.skip` API; `.dismiss`
 at that stage would defer installation until the host quits instead of canceling.
+
+The two additional cases cover migration and successive updates using test-only
+versions 1.5.1 → 1.5.2 → 1.5.3 (not public release artifacts). Migration starts
+with the exact `UpdateModel` source from release `0518754`, an in-process Sparkle
+framework and ordinary ad-hoc signing. The historical model is checked into the
+fixture with a verified SHA-256, so shallow clones do not need Git history.
+Only its UI controller adapter is substituted for scripted choices. Both new
+versions use the hardened frontend and isolated worker. The test verifies three
+distinct host processes, transition from in-process to worker-owned Sparkle,
+removal of the old framework layout, and preservation of the disabled automatic
+check preference and test proxy preferences across both replacements.
+
+Installation also calls the real `ProxyModel.prepareForUpdate` behind a delayed
+inert command, verifying that preparation drains the command queue and preserves
+enabled state, selected route and both endpoint strings. The **entire** CLI is
+replaced at compilation, so no real CLI path/command or network operation is
+available to this fixture. This is not acceptance of a live bridge or the full
+app's start/stop lifecycle.
+
+`test_update_quiescence.py` separately exercises that production model with the
+same inert CLI: wait for an in-flight command, cancellation, replacement after
+cancellation, and replacement of a pending preparation. These regressions caught
+and now guard against a late completion re-freezing controls after cancellation.
 
 An additional manual pass on 8 September used the **unmodified standard driver**:
 English embedded HTML notes rendered correctly; “Install Update” → “Ready to
@@ -95,9 +120,9 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
 
 ## Required before default/release integration
 
-1. Migration from the current in-process updater to this bundle layout, repeated
-   update cycles, and the complete app's quiescence/restart behavior. The passing
-   installation test starts with an already isolated updater, not the old 1.5.1.
+1. The complete app's start/stop and live bridge lifecycle. Migration from the
+   pinned 1.5.1 model, repeated update cycles and command-queue preparation now
+   pass in disposable hosts; the installed/released full app was not launched.
 2. Remaining native UI cases: scheduled gentle reminders/focus, errors and
    cancellation controls. The basic manual update and notes are now verified.
 3. Coordinate app replacement with the separately authorized root-helper release

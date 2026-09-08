@@ -12,6 +12,7 @@ from pathlib import Path
 import hashlib
 import os
 import plistlib
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,7 @@ import time
 import unittest
 import uuid
 import zipfile
+from test_update_quiescence import inert_proxy_model_source
 
 ROOT = Path(__file__).resolve().parents[1]
 SPARKLE = ROOT / 'vendor/sparkle-2.9.6'
@@ -31,6 +33,17 @@ FRAMEWORK = SPARKLE / 'Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework'
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         self.server.requests.append(self.path)
+        if self.path == '/appcast.xml' and getattr(self.server, 'release_feeds', None):
+            feeds = self.server.release_feeds
+            events = self.server.host_events.read_text() if self.server.host_events.exists() else ''
+            index = 1 if len(feeds) > 1 and self.server.next_feed_trigger in events else 0
+            payload = feeds[index].read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/xml')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         super().do_GET()
 
     def log_message(self, *args):
@@ -62,11 +75,27 @@ class IsolatedUpdateInstallTests(unittest.TestCase):
                 raise AssertionError('Test UI driver was not substituted')
         source = build / 'Worker.swift'
         source.write_text(cls_source)
+        # The released model is an immutable regression fixture, not a rewrite
+        # of the current code pretending to be the previous version.
+        snapshot = (ROOT / 'tests/isolated-update-install/LegacyUpdates-1.5.1.swift').read_text()
+        old_source = snapshot.split('// ORIGINAL_SOURCE\n', 1)[1].rstrip() + '\n'
+        if hashlib.sha256(old_source.encode()).hexdigest() != '7e28f62a0b9a7bc4bde5bf66ec5e87e239f66c2f9ea5de99fe9f057847731539':
+            raise AssertionError('Pinned 1.5.1 updater fixture changed')
+        legacy = build / 'LegacyUpdates.swift'
+        legacy.write_text(old_source.replace('SPUStandardUpdaterController', 'LegacyUIAdapter'))
+        proxy_model = build / 'ProxyModel.swift'
+        proxy_model.write_text(inert_proxy_model_source())
         common = [str(ROOT / 'app/update-worker/UpdateWire.swift'), str(ROOT / 'app/update-worker/UpdateChannel.swift')]
         for name, extras in [
-            ('Frontend', ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(ROOT / 'tests/isolated-update-install/Frontend.swift')]),
+            ('Frontend', ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(proxy_model), str(ROOT / 'tests/isolated-update-install/Frontend.swift')]),
             ('Worker', ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
-                        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(source), str(ROOT / 'tests/isolated-update-install/Driver.swift')])]:
+                        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(source), str(ROOT / 'tests/isolated-update-install/Driver.swift')]),
+            ('LegacyFrontend', ['-D', 'LEGACY_UPDATER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
+                                '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(legacy),
+                                str(ROOT / 'tests/isolated-update-install/LegacyUIAdapter.swift'),
+                                str(ROOT / 'tests/isolated-update-install/Driver.swift'),
+                                str(proxy_model),
+                                str(ROOT / 'tests/isolated-update-install/Frontend.swift')])]:
             slices = []
             for arch in ('arm64', 'x86_64'):
                 binary = build / f'{name}-{arch}'
@@ -101,6 +130,8 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
             threading.Thread(target=server.serve_forever, daemon=True).start()
             process = None
             try:
+                versions = ['1.5.1', '1.5.2', '1.5.3'] if mode in ('migration', 'repeat') else ['1.0.0', '2.0.0']
+                is_legacy = mode == 'migration'
                 app = work / 'installed/ProxyPilot Install TEST.app'
                 worker = app / 'Contents/Helpers/ProxyPilot Updater.app'
                 (app / 'Contents/MacOS').mkdir(parents=True)
@@ -108,18 +139,18 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                 (worker / 'Contents/Frameworks').mkdir()
                 self.run_command(['ditto', str(FRAMEWORK), str(worker / 'Contents/Frameworks/Sparkle.framework')])
                 binary = app / 'Contents/MacOS/Frontend'
-                shutil.copy2(Path(self.compiled.name) / 'Frontend', binary)
+                shutil.copy2(Path(self.compiled.name) / ('LegacyFrontend' if is_legacy else 'Frontend'), binary)
                 shutil.copy2(Path(self.compiled.name) / 'Worker', worker / 'Contents/MacOS/ProxyPilotUpdater')
                 seed = work / 'ephemeral-key'
                 seed.touch(mode=0o600)
                 public = self.run_command([str(Path(self.compiled.name) / 'key'), str(seed)]).strip()
                 info = dict(CFBundleIdentifier=identifier, CFBundleExecutable='Frontend', CFBundleName='ProxyPilot Install TEST',
-                            CFBundlePackageType='APPL', CFBundleVersion='1.0.0', CFBundleShortVersionString='1.0.0',
+                            CFBundlePackageType='APPL', CFBundleVersion=versions[0], CFBundleShortVersionString=versions[0],
                             LSMinimumSystemVersion='11.0', LSUIElement=True,
                             SUFeedURL=f'http://127.0.0.1:{server.server_port}/appcast.xml', SUPublicEDKey=public,
                             SUEnableAutomaticChecks=False, SUAutomaticallyUpdate=False, SUAllowsAutomaticUpdates=False,
                             SURequireSignedFeed=True, SUVerifyUpdateBeforeExtraction=True, SUSignedFeedFailureExpirationInterval=0,
-                            TestDirectory=str(work), TestMode=mode)
+                            TestDirectory=str(work), TestMode=mode, TestInitialVersion=versions[0], TestFinalVersion=versions[-1])
                 worker_info = dict(CFBundleIdentifier=identifier + '.updater', CFBundleExecutable='ProxyPilotUpdater',
                                    CFBundleName='ProxyPilot Updater TEST', CFBundlePackageType='APPL',
                                    CFBundleVersion='999.0.0', CFBundleShortVersionString='999.0.0', LSMinimumSystemVersion='11.0',
@@ -129,23 +160,41 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                 self.run_command(['codesign', '--force', '--sign', '-', str(worker)])
                 self.run_command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill', str(app)])
                 self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
-                self.assertNotIn('Sparkle.framework', self.run_command(['otool', '-L', str(binary)]))
-                new_app = work / 'new/ProxyPilot Install TEST.app'
-                new_app.parent.mkdir()
-                shutil.copytree(app, new_app, symlinks=True)
-                (new_app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(info, CFBundleVersion='2.0.0', CFBundleShortVersionString='2.0.0')))
-                self.run_command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill', str(new_app)])
-                archive = work / 'update.zip'
-                self.run_command(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(new_app), str(archive)])
-                signature = self.run_command([str(SPARKLE / 'bin/sign_update'), '--ed-key-file', str(seed), str(archive)]).strip()
-                feed = work / 'appcast.xml'
-                feed.write_text(f'''<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Disposable TEST</title><item>
-<title>2.0.0</title><sparkle:version>2.0.0</sparkle:version><sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>
+                if is_legacy: self.assertIn('Sparkle.framework', self.run_command(['otool', '-L', str(binary)]))
+                else: self.assertNotIn('Sparkle.framework', self.run_command(['otool', '-L', str(binary)]))
+                server.release_feeds = []
+                server.host_events = work / 'host.events'
+                server.next_feed_trigger = f'relaunched {versions[1]} preferences-preserved'
+                archives = []
+                for version in versions[1:]:
+                    new_app = work / f'new-{version}/ProxyPilot Install TEST.app'
+                    new_app.parent.mkdir()
+                    shutil.copytree(app, new_app, symlinks=True)
+                    shutil.copy2(Path(self.compiled.name) / 'Frontend', new_app / 'Contents/MacOS/Frontend')
+                    (new_app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(info, CFBundleVersion=version, CFBundleShortVersionString=version)))
+                    self.run_command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill', str(new_app)])
+                    archive = work / (f'update-{version}.zip' if len(versions) > 2 else 'update.zip')
+                    archives.append(archive)
+                    self.run_command(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(new_app), str(archive)])
+                    signature = self.run_command([str(SPARKLE / 'bin/sign_update'), '--ed-key-file', str(seed), str(archive)]).strip()
+                    feed = work / f'appcast-{version}.xml'
+                    feed.write_text(f'''<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Disposable TEST</title><item>
+<title>{version}</title><sparkle:version>{version}</sparkle:version><sparkle:shortVersionString>{version}</sparkle:shortVersionString>
 <description><![CDATA[<h2>Test update</h2><p>English release notes for a disposable test only.</p>]]></description>
-<enclosure url="http://127.0.0.1:{server.server_port}/update.zip" type="application/octet-stream" {signature}/>
+<enclosure url="http://127.0.0.1:{server.server_port}/{archive.name}" type="application/octet-stream" {signature}/>
 </item></channel></rss>''')
-                self.run_command([str(SPARKLE / 'bin/sign_update'), '--ed-key-file', str(seed), str(feed)])
+                    self.run_command([str(SPARKLE / 'bin/sign_update'), '--ed-key-file', str(seed), str(feed)])
+                    server.release_feeds.append(feed)
+                if is_legacy:
+                    # Reproduce the old layout/signing without launching the
+                    # real 1.5.1 app, its CLI, or any production preferences.
+                    shutil.rmtree(app / 'Contents/Helpers')
+                    (app / 'Contents/Frameworks').mkdir()
+                    self.run_command(['ditto', str(FRAMEWORK), str(app / 'Contents/Frameworks/Sparkle.framework')])
+                    self.run_command(['codesign', '--force', '--sign', '-', '--options', '0', str(app)])
+                    self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
                 if mode == 'corrupt':
+                    archive = archives[0]
                     data = bytearray(archive.read_bytes())
                     self.assertEqual(data[:4], b'PK\x03\x04')
                     # Change only a local-header DOS timestamp: keep the ZIP
@@ -157,14 +206,14 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                 host_log, worker_log = work / 'host.events', work / 'worker.events'
                 with (work / 'console.log').open('w+') as log:
                     process = subprocess.Popen([str(binary)], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                    installing = mode in ('install', 'native')
+                    installing = mode in ('install', 'native', 'migration', 'repeat')
                     if mode == 'native':
                         print(f'NATIVE PREVIEW WORKER: {worker}', flush=True)
                         print(f'HOST: {app}\nIDENTIFIER: {identifier}', flush=True)
-                    deadline = time.monotonic() + (185 if mode == 'native' else 48)
+                    deadline = time.monotonic() + (185 if mode == 'native' else 65)
                     while time.monotonic() < deadline:
                         events = host_log.read_text() if host_log.exists() else ''
-                        if installing and 'relaunched 2.0.0 preferences-preserved' in events:
+                        if installing and f'relaunched {versions[-1]} preferences-preserved' in events:
                             break
                         if not installing and process.poll() is not None:
                             break
@@ -178,9 +227,20 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                     self.assertNotIn('timeout', host_events, evidence)
                     self.assertNotIn('worker-unavailable', host_events, evidence)
                     if installing:
-                        self.assertIn('relaunched 2.0.0 preferences-preserved', host_events, evidence)
-                        self.assertEqual(host_events.splitlines().count('prepare'), 1, evidence)
-                        self.assertEqual(plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'], '2.0.0')
+                        for version in versions[1:]: self.assertIn(f'relaunched {version} preferences-preserved', host_events, evidence)
+                        self.assertEqual(host_events.splitlines().count('prepare'), len(versions) - 1, evidence)
+                        self.assertEqual(host_events.splitlines().count('commands-drained state-preserved'), len(versions) - 1, evidence)
+                        self.assertEqual(plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'], versions[-1])
+                        self.assertFalse((app / 'Contents/Frameworks').exists())
+                        self.assertTrue((app / 'Contents/Helpers/ProxyPilot Updater.app').is_dir())
+                        self.assertNotIn('Sparkle.framework', self.run_command(['otool', '-L', str(binary)]))
+                        if len(versions) > 2:
+                            hosts = [int(pid) for pid in re.findall(r'launched [0-9.]+ pid=(\d+)', host_events)]
+                            drivers = [int(pid) for pid in re.findall(r'driver-start pid=(\d+)', worker_events)]
+                            self.assertEqual(len(set(hosts)), 3, evidence)
+                            self.assertEqual(len(drivers), 2, evidence)
+                            self.assertEqual(drivers[0] == hosts[0], is_legacy, evidence)
+                            self.assertNotEqual(drivers[1], hosts[1], evidence)
                     else:
                         self.assertIn('idle', host_events, evidence)
                         self.assertNotIn('prepare', host_events, evidence)
@@ -192,8 +252,9 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                         self.assertTrue(any(f'error SUSparkleErrorDomain {code}' in worker_events for code in (3001, 3002)), evidence)
                     if mode.startswith('cancel-'): self.assertIn(mode, worker_events, evidence)
                     if mode == 'cancel-offer': self.assertNotIn('/update.zip', server.requests)
-                    else: self.assertIn('/update.zip', server.requests)
-                    self.assertTrue(all(path in ('/appcast.xml', '/update.zip') for path in server.requests), server.requests)
+                    else:
+                        for archive in archives: self.assertIn('/' + archive.name, server.requests)
+                    self.assertTrue(set(server.requests) <= {'/appcast.xml', *( '/' + archive.name for archive in archives)}, server.requests)
                     self.run_command(['codesign', '--verify', '--deep', '--strict', str(app)])
                     # Assert natural cleanup before any emergency teardown.
                     deadline = time.monotonic() + 10
@@ -224,6 +285,8 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
     def test_cancel_before_download_keeps_old_app(self): self.scenario('cancel-offer')
     def test_cancel_before_relaunch_prevents_deferred_install(self): self.scenario('cancel-ready')
     def test_modified_archive_is_rejected_before_prepare(self): self.scenario('corrupt')
+    def test_migrate_released_model_then_update_again(self): self.scenario('migration')
+    def test_two_successive_isolated_updates(self): self.scenario('repeat')
 
 
 if __name__ == '__main__':
