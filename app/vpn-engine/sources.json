@@ -1,0 +1,14 @@
+{
+  "openvpn": {
+    "version": "2.7.7",
+    "url": "https://swupdate.openvpn.org/community/releases/openvpn-2.7.7.tar.gz",
+    "sha256": "3ab8f48fd6c26d49ba2333a092433949afdb5c85c0e6a1ff265784fbc04a2463",
+    "signingPrimary": "F554A3687412CFFEBDEFE0A312F5F7B42F2B01E7"
+  },
+  "openssl": {
+    "version": "3.5.8",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz",
+    "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2",
+    "signingPrimary": "B146647E45A7B33947AB226B2A2C87D161692D40"
+  }
+}
