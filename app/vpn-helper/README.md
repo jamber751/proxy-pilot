@@ -6,12 +6,13 @@ service is now removed; the ordinary app and VPN networking are not enabled.
 Earlier sections below retain the history of isolated checks; current acceptance
 and open gates are tracked in `docs/vpn-implementation-plan.md`.
 
-The new format-2 engine identity is verification-only and enabled exclusively by
-the `VPN_ENGINE_DELIVERY_TESTING` compiler flag. Ordinary authorities reject it,
-including the package loader and signing tool. See `docs/vpn-engine-delivery.md`
-for the canonical fields, actual engine-build evidence and remaining atomic
-storage/package/activation work. Never enable production parsing before those
-consumers validate and retain the complete artifact set.
+Format 2 is now supported by the common verifier, protected store, package loader,
+installer and daemon startup. Both component files must validate together;
+missing engine data cannot become a helper-only deployment. Tests cover atomic
+selection, update/retry, corruption and removal; system acceptance of format 2
+is still pending. The `VPN_ENGINE_DELIVERY_TESTING` factory is now only a test
+convenience, with the same parser/rules as production. No engine is executed.
+See `docs/vpn-engine-delivery.md` for the current evidence and remaining gates.
 
 `VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
 gate** for a connector or the current installer, not a daemon, command dispatcher,

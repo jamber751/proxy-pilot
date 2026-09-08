@@ -6,17 +6,86 @@ Only the candidate app's explicit non-mutating verification mode is executed.
 """
 import argparse
 import hashlib
+import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
+import tarfile
 import tempfile
 
 HERE = Path(__file__).resolve().parent
 APP_ID = 'kz.documentolog.proxypilot'
 SAFE_ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+
+
+def regular_bytes(path, limit):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+            raise ValueError('Expected a bounded regular artifact file')
+        data = stream.read(limit + 1)
+    if len(data) != info.st_size or len(data) > limit: raise ValueError('Artifact changed while reading')
+    return data
+
+
+def source_material(directory):
+    """Exact corresponding sources and license bytes, never arbitrary siblings."""
+    if (not directory.is_absolute() or directory.is_symlink() or not directory.is_dir()
+            or (directory / 'sources').is_symlink() or not (directory / 'sources').is_dir()):
+        raise ValueError('Expected a local engine artifact/source directory')
+    recipe = HERE.parent / 'vpn-engine'
+    lock_bytes = regular_bytes(directory / 'sources/sources.json', 16384)
+    if lock_bytes != (recipe / 'sources.json').read_bytes(): raise ValueError('Unreviewed engine source lock')
+    lock = json.loads(lock_bytes)
+    build_bytes = regular_bytes(directory / 'sources/build.py', 1024 * 1024)
+    if build_bytes != (recipe / 'build.py').read_bytes(): raise ValueError('Unexpected engine build recipe')
+    files = {'sources/sources.json': lock_bytes, 'sources/build.py': build_bytes}
+    licenses = {'openvpn': [('COPYING', 'OpenVPN-COPYING.txt'), ('COPYRIGHT.GPL', 'OpenVPN-GPL-2.0.txt')],
+                'openssl': [('LICENSE.txt', 'OpenSSL-LICENSE.txt')]}
+    for name, item in lock.items():
+        archive_name = f'{name}-{item["version"]}.tar.gz'
+        data = regular_bytes(directory / 'sources' / archive_name, 100 * 1024 * 1024)
+        if hashlib.sha256(data).hexdigest() != item['sha256']: raise ValueError('Engine source checksum mismatch')
+        files['sources/' + archive_name] = data
+        # Archives match the reviewed hash before parsing; nothing is extracted
+        # to the filesystem or executed. Notices must match their upstream text.
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+            for source_name, notice_name in licenses[name]:
+                member = archive.getmember(f'{name}-{item["version"]}/{source_name}')
+                if not member.isfile() or not 0 < member.size <= 1024 * 1024: raise ValueError('Invalid license member')
+                with archive.extractfile(member) as source: expected = source.read()
+                notice = regular_bytes(directory / notice_name, 1024 * 1024)
+                if notice != expected: raise ValueError('License notice does not match corresponding source')
+                files[notice_name] = notice
+    provenance = regular_bytes(directory / 'provenance.json', 16384)
+    record = json.loads(provenance)
+    if (not isinstance(record, dict) or record.get('sources') != lock or record.get('minimumOS') != '11.0'
+            or record.get('architectures') != ['arm64', 'x86_64']):
+        raise ValueError('Engine provenance does not match reviewed inputs')
+    files['provenance.json'] = provenance
+    return lock, record, files
+
+
+def engine_candidate(directory):
+    lock, record, sources = source_material(directory)
+    data = regular_bytes(directory / 'openvpn', 64 * 1024 * 1024)
+    if record.get('binarySHA256') != hashlib.sha256(data).hexdigest(): raise ValueError('Engine provenance checksum mismatch')
+    return data, lock, sources
+
+
+def check_engine_binary(path):
+    # Only the repository's reviewed static checker is loaded. Never execute the
+    # candidate's own version command or any script carried in its source bundle.
+    spec = importlib.util.spec_from_file_location('vpn_engine_builder', HERE.parent / 'vpn-engine/build.py')
+    builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+    builder.check_binary(path)
 
 
 def run(*args):
@@ -57,7 +126,7 @@ def new_path(path):
         raise ValueError('Output must be a new absolute path; never overwrite a release')
 
 
-def prepare(app, helper, sequence, output):
+def prepare(app, helper, sequence, output, engine_artifact=None):
     new_path(output)
     if (not app.is_absolute() or app.name != 'ProxyPilot.app' or app.is_symlink()
             or not helper.is_absolute() or not helper.is_file() or helper.is_symlink()):
@@ -69,8 +138,8 @@ def prepare(app, helper, sequence, output):
     executable = app / 'Contents/MacOS/ProxyPilot'
     if 'Sparkle.framework' in run('/usr/bin/otool', '-L', executable):
         raise ValueError('Installer app must use the isolated updater')
-    data = helper.read_bytes()
-    if not 0 < len(data) <= 32 * 1024 * 1024: raise ValueError('Unexpected helper size')
+    data = regular_bytes(helper, 32 * 1024 * 1024)
+    engine = engine_candidate(engine_artifact) if engine_artifact is not None else None
     output.mkdir(mode=0o700)
     payload = output / 'Payload'; payload.mkdir(mode=0o700)
     run('/usr/bin/ditto', '--noextattr', '--norsrc', app, payload / 'ProxyPilot.app')
@@ -83,6 +152,21 @@ def prepare(app, helper, sequence, output):
     fields.update({'app-arm64': app_pins['arm64'], 'app-x86_64': app_pins['x86_64'],
                    'helper-arm64': helper_pins['arm64'], 'helper-x86_64': helper_pins['x86_64'],
                    'helper-sha256': hashlib.sha256(data).hexdigest(), 'helper-bytes': len(data)})
+    if engine is not None:
+        binary, lock, sources = engine
+        path = payload / 'vpn-engine'; path.write_bytes(binary); path.chmod(0o700)
+        check_engine_binary(path)
+        engine_pins = pins(path, APP_ID + '.openvpn')
+        fields['format'] = 2
+        fields.update({'engine-version': lock['openvpn']['version'], 'engine-crypto-version': lock['openssl']['version'],
+                       'engine-arm64': engine_pins['arm64'], 'engine-x86_64': engine_pins['x86_64'],
+                       'engine-sha256': hashlib.sha256(binary).hexdigest(), 'engine-bytes': len(binary)})
+        # Separate distribution material; never copied to /Library or into the
+        # app's seal, and never mixed with personal staging files.
+        for name, content in sources.items():
+            target = output / 'EngineSources' / name
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target.write_bytes(content); target.chmod(0o600)
     (payload / 'vpn-release.manifest').write_text(''.join(f'{key}={value}\n' for key, value in fields.items()))
     (payload / 'vpn-release.manifest').chmod(0o600)
     (payload / 'vpn-release.sig').touch(mode=0o600)  # Signing tool replaces this fixed file.
@@ -90,7 +174,9 @@ def prepare(app, helper, sequence, output):
 
 
 def verify(payload):
-    if set(os.listdir(payload)) != {'ProxyPilot.app', 'vpn-helper', 'vpn-release.manifest', 'vpn-release.sig'}:
+    expected = {'ProxyPilot.app', 'vpn-helper', 'vpn-release.manifest', 'vpn-release.sig'}
+    if (payload / 'vpn-engine').exists() or (payload / 'vpn-engine').is_symlink(): expected.add('vpn-engine')
+    if set(os.listdir(payload)) != expected:
         raise ValueError('Unexpected package files; never include profiles or staging leftovers')
     app = payload / 'ProxyPilot.app'
     version = version_of(app)
@@ -105,14 +191,24 @@ def build(stage, action, output):
     if not stage.is_absolute() or stage.is_symlink(): raise ValueError('Expected an absolute staging directory')
     payload = stage / 'Payload'
     version = verify(payload)
+    if (payload / 'vpn-engine').exists():
+        lock, record, _ = source_material(stage / 'EngineSources')
+        engine_data = regular_bytes(payload / 'vpn-engine', 64 * 1024 * 1024)
+        values = dict(line.split('=', 1) for line in regular_bytes(payload / 'vpn-release.manifest', 4096).decode().splitlines())
+        if (record.get('binarySHA256') != hashlib.sha256(engine_data).hexdigest()
+                or values.get('engine-version') != lock['openvpn']['version']
+                or values.get('engine-crypto-version') != lock['openssl']['version']):
+            raise ValueError('Signed engine does not match corresponding source material')
     # Private scratch only; pkgbuild must never copy arbitrary staging siblings.
     with tempfile.TemporaryDirectory(prefix='pp-vpn-package-') as temporary:
         scripts = Path(temporary) / 'Scripts'; scripts.mkdir(mode=0o700)
         copied = scripts / 'Payload'; copied.mkdir(mode=0o700)
         run('/usr/bin/ditto', '--noextattr', '--norsrc', payload / 'ProxyPilot.app', copied / 'ProxyPilot.app')
-        for name in ('vpn-helper', 'vpn-release.manifest', 'vpn-release.sig'):
+        sidecars = ['vpn-helper', 'vpn-release.manifest', 'vpn-release.sig']
+        if (payload / 'vpn-engine').exists(): sidecars.append('vpn-engine')
+        for name in sidecars:
             shutil.copyfile(payload / name, copied / name)
-            (copied / name).chmod(0o700 if name == 'vpn-helper' else 0o600)
+            (copied / name).chmod(0o700 if name in ('vpn-helper', 'vpn-engine') else 0o600)
         if verify(copied) != version: raise ValueError('Package changed while copying')
         shutil.copyfile(HERE / 'preinstall', scripts / 'preinstall')
         (scripts / 'postinstall').write_text((HERE / 'postinstall.in').read_text().replace('@ACTION@', action))
@@ -130,6 +226,7 @@ def main():
     candidate = modes.add_parser('prepare')
     candidate.add_argument('--app', type=Path, required=True)
     candidate.add_argument('--helper', type=Path, required=True)
+    candidate.add_argument('--engine-artifact', type=Path, help='Complete pinned engine builder artifact directory')
     candidate.add_argument('--sequence', required=True)
     candidate.add_argument('--output', type=Path, required=True)
     package = modes.add_parser('build')
@@ -139,9 +236,9 @@ def main():
     args = parser.parse_args()
     if os.geteuid() == 0: parser.error('Build as an ordinary user, never root')
     try:
-        if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output)
+        if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output, args.engine_artifact)
         else: build(args.stage, args.action, args.output)
-    except (ValueError, OSError, subprocess.SubprocessError) as error: parser.error(str(error))
+    except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error: parser.error(str(error))
 
 
 if __name__ == '__main__': main()

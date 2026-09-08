@@ -4,6 +4,7 @@ The complete App uses a disposable embedded public key and an inert/trapping CLI
 entering normal GUI bootstrap is a test failure. All keys are fixture-only.
 """
 import os
+import hashlib
 from pathlib import Path
 import plistlib
 import shutil
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'app/vpn-helper'
 PACKAGER = ROOT / 'app/vpn-package/package.py'
 ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+ENGINE_ARTIFACT = os.environ.get('PROXYPILOT_VPN_ENGINE_ARTIFACT')
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
@@ -178,3 +180,63 @@ final class ProxyModel:''' + model
         info = plistlib.loads(path.read_bytes()); del info['ProxyPilotVPNInstaller']
         path.write_bytes(plistlib.dumps(info))
         self.package(success=False)
+
+    def prepare_engine(self):
+        self.stage = self.work / 'engine-stage'
+        self.command([sys.executable, str(PACKAGER), 'prepare', '--app', str(self.app),
+                      '--helper', str(self.build / 'helper'), '--sequence', '2', '--output', str(self.stage),
+                      '--engine-artifact', ENGINE_ARTIFACT])
+        self.payload = self.stage / 'Payload'
+        self.command([str(self.build / 'signer'), 'sign', str(self.payload)])
+
+    def test_engine_sources_are_required_before_creating_stage(self):
+        artifact = self.work / 'unreviewed'; (artifact / 'sources').mkdir(parents=True)
+        (artifact / 'sources/sources.json').write_text('{}')
+        for invalid in ['relative-artifact', str(self.work / 'missing'), str(artifact)]:
+            output = self.work / 'refused'
+            result = subprocess.run([sys.executable, str(PACKAGER), 'prepare', '--app', str(self.app),
+                                     '--helper', str(self.build / 'helper'), '--sequence', '2', '--output', str(output),
+                                     '--engine-artifact', invalid], env=ENV, capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(output.exists())
+
+    @unittest.skipUnless(ENGINE_ARTIFACT, 'Optional complete pinned engine build artifact')
+    def test_actual_engine_is_preserved_in_all_packages_with_separate_sources(self):
+        self.prepare_engine()
+        original = (Path(ENGINE_ARTIFACT) / 'openvpn').read_bytes()
+        self.assertEqual((self.payload / 'vpn-engine').read_bytes(), original)
+        manifest = (self.payload / 'vpn-release.manifest').read_text()
+        self.assertTrue(manifest.startswith('format=2\n'))
+        self.assertIn('engine-sha256=' + hashlib.sha256(original).hexdigest(), manifest)
+        self.assertEqual(self.app_run('--vpn-support-verify').returncode, 0)
+        for action in ('install', 'update', 'remove'):
+            package = self.package(action)
+            expanded = self.work / ('engine-expanded-' + action)
+            self.command(['/usr/sbin/pkgutil', '--expand-full', str(package), str(expanded)])
+            copied = expanded / 'Scripts/Payload'
+            self.assertEqual((copied / 'vpn-engine').read_bytes(), original)
+            self.assertEqual(set(os.listdir(copied)), {'ProxyPilot.app', 'vpn-helper', 'vpn-engine', 'vpn-release.manifest', 'vpn-release.sig'})
+            self.command([str(copied / 'ProxyPilot.app/Contents/MacOS/ProxyPilot'), '--vpn-support-verify'])
+        sources = self.stage / 'EngineSources'
+        self.assertEqual((sources / 'sources/sources.json').read_bytes(), (ROOT / 'app/vpn-engine/sources.json').read_bytes())
+        self.assertEqual((sources / 'OpenVPN-COPYING.txt').read_bytes(), (Path(ENGINE_ARTIFACT) / 'OpenVPN-COPYING.txt').read_bytes())
+
+    @unittest.skipUnless(ENGINE_ARTIFACT, 'Optional complete pinned engine build artifact')
+    def test_engine_tampering_fails_actual_app_and_package_before_installation(self):
+        self.prepare_engine()
+        with (self.payload / 'vpn-engine').open('ab') as stream: stream.write(b'tampered')
+        self.assertEqual(self.app_run('--vpn-support-verify').returncode, 77)
+        self.package(success=False)
+
+    @unittest.skipUnless(ENGINE_ARTIFACT, 'Optional complete pinned engine build artifact')
+    def test_corresponding_source_and_license_tampering_prevents_distribution(self):
+        self.prepare_engine()
+        root = self.stage / 'EngineSources'
+        paths = [root / 'OpenVPN-COPYING.txt', root / 'OpenSSL-LICENSE.txt', root / 'sources/build.py',
+                 next((root / 'sources').glob('openssl-*.tar.gz'))]
+        for path in paths:
+            with self.subTest(path=path.name):
+                original = path.read_bytes(); path.write_bytes(b'changed')
+                try: self.package(success=False)
+                finally: path.write_bytes(original)
+        self.assertEqual(self.app_run('--vpn-support-verify').returncode, 0)

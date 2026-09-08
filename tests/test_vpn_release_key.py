@@ -91,6 +91,29 @@ class VPNReleaseKeyTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
         self.assertIn('Verified sequence 7', verified.stdout)
 
+    def test_engine_manifest_sign_and_verify_round_trip(self):
+        self.generate()
+        fields = {'engine-version': '2.7.7', 'engine-crypto-version': '3.5.8',
+                  'engine-arm64': '66' * 20, 'engine-x86_64': '77' * 20,
+                  'engine-sha256': '88' * 32, 'engine-bytes': 4096}
+        self.manifest.write_text(MANIFEST.replace('format=1\n', 'format=2\n')
+                                 + ''.join(f'{key}={value}\n' for key, value in fields.items()))
+        signed = self.run_tool('sign', str(self.manifest), str(self.signature))
+        self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
+        verified = self.run_tool('verify', str(self.manifest), str(self.signature), str(self.public), keychain=False)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
+    def test_sign_refuses_malformed_manifest_without_overwriting_signature(self):
+        self.generate()
+        self.signature.write_text('keep previous signature')
+        for malformed in (MANIFEST + 'unknown=1\n', MANIFEST.replace('format=1\n', 'format=2\n'),
+                          MANIFEST.replace('helper-bytes=4096', 'helper-bytes=0')):
+            self.manifest.write_text(malformed)
+            result = self.run_tool('sign', str(self.manifest), str(self.signature))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('signature not written', result.stderr)
+            self.assertEqual(self.signature.read_text(), 'keep previous signature')
+
     def test_a_changed_release_description_fails_verification(self):
         self.generate()
         self.run_tool('sign', str(self.manifest), str(self.signature))

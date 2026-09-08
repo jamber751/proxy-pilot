@@ -112,6 +112,13 @@ enum VPNReleaseKeyTool {
             guard let signature = try? key.signature(for: VPNReleaseAuthority.signatureDomain + payload) else {
                 fail("Signing failed.")
             }
+            // Refuse to publish a signature for malformed or unsupported code
+            // authorization, using the same canonical parser as the installer.
+            guard let authority = try? VPNReleaseAuthority(trustedPublicKey: key.publicKey.rawRepresentation,
+                                                           minimumSequence: 1, supportedProtocol: 1),
+                  (try? authority.verify(payload: payload, signature: signature, previous: nil)) != nil else {
+                fail("Release description rejected; signature not written.")
+            }
             write(signature.base64EncodedString() + "\n", to: arguments[3])
             print("Signed \(arguments[2])")
         case "verify":

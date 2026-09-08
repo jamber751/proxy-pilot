@@ -2,8 +2,10 @@
 
 This builder does not install a service, enroll code, read a VPN profile, change
 system settings or create a tunnel. The existing ProxyPilot release is unchanged.
-The candidate still needs integration into the independently signed VPN delivery
-format before a privileged helper may execute it.
+The separate VPN packager now accepts this complete artifact directory, verifies
+its sources/notices and binds the engine into the independently signed delivery.
+The builder itself does not enroll it. Neither installation nor the idle helper
+executes OpenVPN; restricted execution and live acceptance remain separate work.
 
 ## Inputs and build
 

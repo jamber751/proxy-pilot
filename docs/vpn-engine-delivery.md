@@ -9,7 +9,8 @@ Current integration increment: format 2 is now understood by the common verifier
 protected store, installer entry and daemon startup checks. All components are
 required together before activation; the former test-only parsing gate is gone.
 The historical candidate results below describe the earlier boundary. Packaging
-and final system acceptance for this increment are still being completed.
+now includes the engine and separately verified source/license material; final
+system acceptance for this increment is still pending.
 
 ## Source candidate
 
@@ -118,7 +119,7 @@ TLS/server compatibility, privileged enrollment and actual VPN networking remain
 unverified. The earlier general regression was 362 tests (361 passed, one skip);
 the 14 new builder tests were run separately, not included in that total.
 
-## Signed delivery format candidate
+## Signed delivery format: initial candidate (superseded by integration below)
 
 The release verifier now has a **test-only** format-2 candidate. It retains the
 format-1 fields in their exact order and appends six ordered fields:
@@ -161,7 +162,7 @@ format 1, with no engine. Next: atomic storage of both artifacts, package transf
 startup revalidation and safe update/removal; only then remove this test-only gate
 and perform system acceptance. No production release was signed for this format.
 
-### Next integration boundary (not implemented)
+### Integration checklist (implemented below; system acceptance pending)
 
 1. Extend the protected deployment transaction to stage **both** helper and
    engine, validate each complete file, sync them, then atomically select the
@@ -226,3 +227,26 @@ engine remains. No engine execution, profile application, route or DNS change.
 Targeted results for this increment: 31 deployment tests, 24 installer tests,
 32 daemon tests, 24 payload tests and 21 release-verifier tests passed. These are
 disposable per-user stores/services, not root/system acceptance for format 2.
+
+## Package and signing integration
+
+The packager accepts a complete builder artifact via `--engine-artifact`. It
+rechecks the source lock/recipe, exact archive hashes, license text against those
+archives and the binary's provenance digest. Static architecture, minimum-OS,
+dependency and signature checks run on the copied engine. Its versions/pins/hash
+and size enter the same canonical signed manifest as the app and helper.
+
+The scripts-only package carries fixed sidecars; no engine command, source script
+or arbitrary staging sibling is executed. The loader checks both binaries and
+passes their byte snapshots to the atomic installer. Missing/extra engines,
+symlinks/hardlinks/FIFOs, changed bytes, oversized files or shared permissions are
+rejected before system operations. `EngineSources` stays outside the app and
+system payload as corresponding-source distribution material. Builds fail when
+those archives, recipe or license notices are missing/changed.
+
+All 13 package tests passed, including the actual OpenVPN engine in install,
+update and remove packages, with successful verification through the complete
+app's fixed entry. These used a disposable signing authority and never launched
+Installer. All 11 signing-tool tests passed in disposable Keychains, including
+format-2 signing/verification and refusal to overwrite a signature for a malformed
+manifest. Existing release keys were not accessed or rotated.
