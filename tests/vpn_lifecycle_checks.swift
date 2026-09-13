@@ -28,6 +28,14 @@ enum VPNLifecycleChecks {
         guard args.count == 3 else { exit(64) }
         let directory = open(args[2])
         defer { close(directory) }
+        if args[1] == "race" {
+            say("race:ready")
+            guard readLine(strippingNewline: true) == "go" else { exit(64) }
+            guard let lease = attempt(directory, label: "race") else { exit(77) }
+            guard readLine(strippingNewline: true) == "release" else { exit(64) }
+            lease.release()
+            exit(0)
+        }
         if args[1] == "try" {
             exit(attempt(directory, label: "try") == nil ? 77 : 0)
         }

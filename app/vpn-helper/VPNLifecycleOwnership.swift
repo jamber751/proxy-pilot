@@ -68,11 +68,12 @@ enum VPNLifecycleOwnership {
             if directory >= 0 { close(directory) }
         }
         try checkDirectory(directory)
-        lock = openat(directory, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
-        guard lock >= 0 else { throw VPNLifecycleOwnershipError.unsafeStorage }
+        lock = try openLock(directory: directory, name: name)
         try checkLockFile(lock)
-        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
-            throw errno == EWOULDBLOCK ? VPNLifecycleOwnershipError.busy : VPNLifecycleOwnershipError.unsafeStorage
+        let lockResult = flock(lock, LOCK_EX | LOCK_NB)
+        let lockError = errno
+        guard lockResult == 0 else {
+            throw lockError == EWOULDBLOCK ? VPNLifecycleOwnershipError.busy : VPNLifecycleOwnershipError.unsafeStorage
         }
         let lease = VPNLifecycleLease(directory: directory, lock: lock, name: name)
         // Ownership transfers exactly once, also if the final name check fails.
@@ -92,6 +93,25 @@ enum VPNLifecycleOwnership {
             throw VPNLifecycleOwnershipError.unsafeStorage
         }
         try checkNoACL(descriptor)
+    }
+
+    private static func openLock(directory: Int32, name: String) throws -> Int32 {
+        let flags = O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        // Separate opening from first publication. Two simultaneous O_CREAT
+        // opens produced ENOENT on the test host; never treat that as contention
+        // or repair/replace an existing lock. Only a confirmed EEXIST from an
+        // exclusive creation permits another ordinary open.
+        for _ in 0..<4 {
+            let existing = openat(directory, name, flags)
+            let existingError = errno
+            if existing >= 0 { return existing }
+            guard existingError == ENOENT else { throw VPNLifecycleOwnershipError.unsafeStorage }
+            let created = openat(directory, name, flags | O_CREAT | O_EXCL, 0o600)
+            let creationError = errno
+            if created >= 0 { return created }
+            guard creationError == EEXIST else { throw VPNLifecycleOwnershipError.unsafeStorage }
+        }
+        throw VPNLifecycleOwnershipError.unsafeStorage
     }
 
     fileprivate static func checkLockFile(_ file: Int32) throws {

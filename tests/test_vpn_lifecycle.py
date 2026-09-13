@@ -85,6 +85,52 @@ class VPNLifecycleTests(unittest.TestCase):
         self.hold()
         self.assertEqual(self.take(), 'try:busy')
 
+    def test_repeated_concurrent_first_publication_has_one_owner(self):
+        for attempt in range(12):
+            directory = Path(self.temp.name) / f'race-{attempt}'
+            directory.mkdir(mode=0o700)
+            processes = [subprocess.Popen([str(self.executable), 'race', str(directory)],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT, text=True, bufsize=1)
+                         for _ in range(8)]
+            try:
+                for process in processes:
+                    ready, _, _ = select.select([process.stdout], [], [], 15)
+                    self.assertTrue(ready, 'race process did not become ready')
+                    self.assertEqual(process.stdout.readline().strip(), 'race:ready')
+                for process in processes:
+                    process.stdin.write('go\n')
+                    process.stdin.flush()
+                outputs = []
+                for process in processes:
+                    ready, _, _ = select.select([process.stdout], [], [], 15)
+                    self.assertTrue(ready, 'race process did not report an outcome')
+                    outputs.append(process.stdout.readline().strip())
+                self.assertEqual(outputs.count('race:acquired'), 1, outputs)
+                self.assertEqual(outputs.count('race:busy'), 7, outputs)
+                winner = processes[outputs.index('race:acquired')]
+                winner.stdin.write('release\n')
+                winner.stdin.flush()
+                for process in processes:
+                    process.communicate(timeout=15)
+                self.assertEqual(sorted(process.returncode for process in processes),
+                                 [0] + [77] * 7)
+                lock = directory / 'lifecycle.lock'
+                self.assertEqual(lock.stat().st_mode & 0o7777, 0o600)
+                self.assertEqual(lock.stat().st_nlink, 1)
+                self.assertEqual(lock.stat().st_uid, os.geteuid())
+                self.assertEqual(subprocess.run([str(self.executable), 'try', str(directory)],
+                                                capture_output=True, text=True,
+                                                timeout=15).stdout.strip(), 'try:acquired')
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=15)
+                    for stream in (process.stdin, process.stdout):
+                        if stream:
+                            stream.close()
+
     def test_release_hands_ownership_to_the_next_process(self):
         holder = self.hold()
         self.assertEqual(holder.send('release'), 'released')
