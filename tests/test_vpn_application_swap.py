@@ -18,7 +18,7 @@ class VPNApplicationSwapTests(VPNStagedApplicationTests):
         cls.command(['swiftc', *sanitize, '-D', 'VPN_APPLICATION_SWAP_TESTING',
                      *[str(HELPER / name) for name in ('VPNPeerAuthentication.swift',
                        'VPNReleaseAuthorization.swift', 'VPNLifecycleOwnership.swift',
-                       'VPNStagedApplication.swift', 'VPNProtectedApplicationSwap.swift')],
+                       'VPNStagedApplication.swift', 'VPNReplacementExecutor.swift', 'VPNProtectedApplicationSwap.swift')],
                      str(ROOT / 'tests/vpn_application_swap_checks.swift'), '-o', str(cls.swap_checker)])
 
     def setUp(self):

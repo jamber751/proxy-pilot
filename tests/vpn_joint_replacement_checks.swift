@@ -18,6 +18,13 @@ import Foundation
             if mode == "mutate-tree" {
                 try Data("changed".utf8).write(to: URL(fileURLWithPath: appPath + "/candidate/ProxyPilot.app/Contents/Resources/data.txt"))
             }
+            if mode == "executor-corrupt" {
+                try Data("changed".utf8).write(to: URL(fileURLWithPath: appPath + "/executor/ProxyPilot.app/Contents/Resources/data.txt"))
+            }
+            if mode == "executor-replace" {
+                guard rename(appPath + "/executor", appPath + "/executor-displaced") == 0,
+                      mkdir(appPath + "/executor", 0o700) == 0 else { throw VPNLaunchdError.unsafeStorage }
+            }
         }
         func startIdleAndConnect(_ deployment: VPNAuthorizedDeployment, deadline: UInt64) throws -> Int32 {
             try? Data("started".utf8).write(to: URL(fileURLWithPath: appPath + "/start-marker"))
@@ -81,6 +88,25 @@ import Foundation
             defer { close(service) }
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
             let journal = try store.loadUpdateJournal()!
+            if operation.hasPrefix("raw-after-executor-") {
+                let outcome = try VPNProtectedApplicationSwap.testExchange(
+                    inTrustedDirectory: appFD, previous: journal.previous.release,
+                    candidate: journal.candidate.release, transition: journal.transition,
+                    requireProtectedExecutor: true, checkpoint: { point in
+                        guard point == "afterExchange" else { return }
+                        if operation == "raw-after-executor-corrupt" {
+                            try Data("changed".utf8).write(to: URL(fileURLWithPath:
+                                apps + "/executor/ProxyPilot.app/Contents/Resources/data.txt"))
+                        } else if operation == "raw-after-executor-replace" {
+                            guard rename(apps + "/executor", apps + "/executor-displaced") == 0,
+                                  mkdir(apps + "/executor", 0o700) == 0 else {
+                                throw VPNLaunchdError.unsafeStorage
+                            }
+                        }
+                    })
+                print("raw-result:\(outcome == .exchanged ? "exchanged" : "already")")
+                return
+            }
             var held: VPNLifecycleLease?
             if operation == "service-busy" { held = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service) }
             if operation == "namespace-busy" { held = try VPNLifecycleOwnership.acquire(inTrustedDirectory: appFD) }

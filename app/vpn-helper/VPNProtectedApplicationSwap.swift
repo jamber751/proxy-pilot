@@ -21,15 +21,17 @@ enum VPNProtectedApplicationSwap {
                          authorizeMutation: () throws -> Void) throws -> Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNApplicationSwapError.requiresRoot }
         return try perform(base: base, previous: previous, candidate: candidate, transition: transition,
-                           authorizeMutation: authorizeMutation, checkpoint: { _ in })
+                           requireProtectedExecutor: true, authorizeMutation: authorizeMutation, checkpoint: { _ in })
     }
 
     #if VPN_APPLICATION_SWAP_TESTING
     static func testExchange(inTrustedDirectory base: Int32, previous: VerifiedVPNRelease,
                              candidate: VerifiedVPNRelease, transition: VerifiedVPNUpdateTransition,
+                             requireProtectedExecutor: Bool = false,
                              authorizeMutation: () throws -> Void = {},
                              checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
         try perform(base: base, previous: previous, candidate: candidate, transition: transition,
+                    requireProtectedExecutor: requireProtectedExecutor,
                     authorizeMutation: authorizeMutation, checkpoint: checkpoint)
     }
     #endif
@@ -42,6 +44,7 @@ enum VPNProtectedApplicationSwap {
 
     private static func perform(base: Int32, previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
                                 transition: VerifiedVPNUpdateTransition,
+                                requireProtectedExecutor: Bool,
                                 authorizeMutation: () throws -> Void,
                                 checkpoint: (String) throws -> Void) throws -> Outcome {
         guard transition.matchesSource(previous), transition.matchesDestination(candidate),
@@ -60,11 +63,18 @@ enum VPNProtectedApplicationSwap {
         let staged = openat(base, "candidate", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard staged >= 0 else { throw VPNApplicationSwapError.unsafeStorage }
         defer { close(staged) }
+        // Production always binds the running A to a separate protected slot.
+        // The opt-out exists only for the primitive's inert test fixtures.
+        try lease.check()
+        try checkSlots(base: base, current: current, staged: staged)
+        let executor = requireProtectedExecutor
+            ? try VPNReplacementExecutor.inspect(inTrustedDirectory: base, release: previous) : nil
 
         func check() throws {
             try lease.check()
             try checkSlots(base: base, current: current, staged: staged)
             try excludeCurrentExecutor(current: current, staged: staged)
+            try executor?.revalidate()
         }
         try check()
         let before = matches(current, previous) && matches(staged, candidate)

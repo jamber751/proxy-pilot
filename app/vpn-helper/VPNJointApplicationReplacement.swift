@@ -3,7 +3,7 @@ import Foundation
 
 /// Journal-authorized exchange of protected COPIES, not an Applications
 /// installer. No CLI/IPC calls this boundary. The executor must be exact A,
-/// outside both slots, with protected ancestry supplied by a trusted caller.
+/// in the separate fixed executor slot, with protected ancestry supplied by a trusted caller.
 /// Success does not prove installed/live B and never advances the selector,
 /// journal, activation budget or the user's desired-on/off state.
 enum VPNJointApplicationReplacement {
@@ -95,7 +95,7 @@ enum VPNJointApplicationReplacement {
         if testPolicy {
             outcome = try VPNProtectedApplicationSwap.testExchange(inTrustedDirectory: applicationDirectory,
                 previous: initial.previous.release, candidate: initial.candidate.release,
-                transition: initial.transition, authorizeMutation: authorizeMutation)
+                transition: initial.transition, requireProtectedExecutor: true, authorizeMutation: authorizeMutation)
         } else {
             outcome = try VPNProtectedApplicationSwap.exchange(inTrustedDirectory: applicationDirectory,
                 previous: initial.previous.release, candidate: initial.candidate.release,

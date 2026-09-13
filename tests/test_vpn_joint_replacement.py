@@ -23,7 +23,7 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNProfileVault.swift',
             'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNInstaller.swift',
             'VPNStagedApplication.swift', 'VPNProtectedApplicationSwap.swift',
-            'VPNJointApplicationReplacement.swift')]
+            'VPNReplacementExecutor.swift', 'VPNJointApplicationReplacement.swift')]
         slices = []
         for arch in ('arm64', 'x86_64'):
             output = cls.build / f'joint-{arch}'
@@ -62,9 +62,14 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.replace_main_and_sign(self.app)
         self.a = self.code_pins(self.current / 'ProxyPilot.app')
         self.b = self.code_pins(self.app)
-        runner_a_bundle = self.work / 'RunnerA.app'
-        shutil.copytree(self.current / 'ProxyPilot.app', runner_a_bundle, symlinks=True)
-        self.runner_a = runner_a_bundle / 'Contents/MacOS/ProxyPilot'
+        self.executor = self.apps / 'executor'
+        self.executor.mkdir(mode=0o700)
+        executor_bundle = self.executor / 'ProxyPilot.app'
+        shutil.copytree(self.current / 'ProxyPilot.app', executor_bundle, symlinks=True)
+        self.runner_a = executor_bundle / 'Contents/MacOS/ProxyPilot'
+        external_bundle = self.work / 'ExternalA.app'
+        shutil.copytree(executor_bundle, external_bundle, symlinks=True)
+        self.runner_external_a = external_bundle / 'Contents/MacOS/ProxyPilot'
         runner_b_bundle = self.work / 'RunnerB.app'
         shutil.copytree(self.app, runner_b_bundle, symlinks=True)
         self.runner_b = runner_b_bundle / 'Contents/MacOS/ProxyPilot'
@@ -76,6 +81,9 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.sign(updater_bundle, 'kz.documentolog.proxypilot.updater')
         self.runner_updater = updater_main
         self.initial = self.identities()
+        self.executor_identity = (self.executor.stat().st_ino,
+                                  executor_bundle.stat().st_ino,
+                                  self.runner_a.read_bytes())
 
     def replace_main_and_sign(self, app):
         executable = app / 'Contents/MacOS/ProxyPilot'
@@ -131,6 +139,10 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertTrue((self.apps / 'factory-marker').exists())
         self.assertTrue((self.apps / 'drain-marker').exists())
         self.assertFalse((self.apps / 'start-marker').exists())
+        self.assertEqual(self.executor_identity,
+                         (self.executor.stat().st_ino,
+                          (self.executor / 'ProxyPilot.app').stat().st_ino,
+                          self.runner_a.read_bytes()))
         failed_retry = self.invoke('drain-fail')
         self.assert_rejected(failed_retry, 'commitUncertain')
         self.assertEqual(self.identities(), self.initial[::-1])
@@ -157,6 +169,34 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assert_rejected(invalid, 'invalidLayout')
         self.assert_no_effect()
 
+    def test_external_exact_a_and_unsafe_executor_slots_are_refused_before_factory(self):
+        self.setup_journal()
+        external = self.invoke('exchange', executable=self.runner_external_a)
+        self.assert_rejected(external, 'unsafeExecutor')
+        self.assert_no_effect()
+        self.executor.chmod(0o755)
+        unsafe = self.invoke('exchange')
+        self.assert_rejected(unsafe, 'unsafeExecutor')
+        self.assert_no_effect()
+
+    def test_missing_symlink_and_corrupt_executor_are_refused_before_factory(self):
+        for mutation, error in (('missing', 'unsafeExecutor'), ('symlink', 'unsafeExecutor'),
+                                ('corrupt', 'invalidSignature')):
+            with self.subTest(mutation=mutation):
+                self.setUp(); self.setup_journal()
+                executable = self.runner_external_a
+                if mutation == 'missing':
+                    shutil.rmtree(self.executor)
+                elif mutation == 'symlink':
+                    target = self.work / 'executor-target'
+                    self.executor.rename(target); self.executor.symlink_to(target, target_is_directory=True)
+                else:
+                    (self.executor / 'ProxyPilot.app/Contents/Resources/data.txt').write_text('corrupt')
+                    executable = self.runner_a
+                result = self.invoke('exchange', executable=executable)
+                self.assert_rejected(result, error)
+                self.assert_no_effect()
+
     def test_lifecycle_namespace_and_production_guards_precede_effects(self):
         self.setup_journal()
         for operation, error in (('service-busy', 'busy'), ('namespace-busy', 'busy'),
@@ -167,17 +207,32 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
                 self.assert_no_effect()
 
     def test_drain_failure_and_post_drain_rechecks_do_not_swap(self):
-        for operation in ('drain-fail', 'lose-lease', 'corrupt-journal', 'mutate-tree'):
+        for operation in ('drain-fail', 'lose-lease', 'corrupt-journal', 'mutate-tree',
+                          'executor-corrupt', 'executor-replace'):
             with self.subTest(operation=operation):
                 self.setUp(); self.setup_journal()
                 result = self.invoke(operation)
                 expected = {'drain-fail': 'cleanupNotConfirmed', 'lose-lease': 'lost',
                             'corrupt-journal': 'invalidUpdateJournal',
-                            'mutate-tree': 'invalidSignature'}[operation]
+                            'mutate-tree': 'invalidSignature',
+                            'executor-corrupt': 'invalidSignature',
+                            'executor-replace': 'unsafeExecutor'}[operation]
                 self.assert_rejected(result, expected)
                 self.assertEqual(self.identities(), self.initial)
                 self.assertTrue((self.apps / 'factory-marker').exists())
                 self.assertTrue((self.apps / 'drain-marker').exists())
+                self.assertFalse((self.apps / 'start-marker').exists())
+
+    def test_post_exchange_executor_failure_is_uncertain_without_rollback(self):
+        for operation in ('raw-after-executor-corrupt', 'raw-after-executor-replace'):
+            with self.subTest(operation=operation):
+                self.setUp(); self.setup_journal()
+                result = self.invoke(operation)
+                self.assert_rejected(result, 'commitUncertain')
+                self.assertEqual(self.identities(), self.initial[::-1])
+                self.assertFalse((self.apps / 'factory-marker').exists())
+                self.assertFalse((self.apps / 'drain-marker').exists())
+                self.assertFalse((self.apps / 'start-marker').exists())
 
 
 def load_tests(loader, tests, pattern):
