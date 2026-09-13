@@ -65,7 +65,9 @@ class IsolatedUpdatesTests(unittest.TestCase):
             SUPublicEDKey=(ROOT / 'app/updater-public-key.txt').read_text().strip(),
             SUEnableAutomaticChecks=False, SUAutomaticallyUpdate=False, SUAllowsAutomaticUpdates=False,
             SURequireSignedFeed=True, SUVerifyUpdateBeforeExtraction=True, SUSignedFeedFailureExpirationInterval=0,
-            TestMarker=str(cls.work / 'first-crash'))
+            TestMarker=str(cls.work / 'first-crash'), TestDirectory=str(cls.work))
+        (cls.work / 'admission/support').mkdir(parents=True)
+        (cls.work / 'admission/daemons').mkdir()
         worker_info = dict(CFBundleIdentifier=cls.identifier + '.updater', CFBundleExecutable='ProxyPilotUpdater',
                            CFBundleName='ProxyPilot Updater TEST', CFBundlePackageType='APPL',
                            CFBundleVersion='999.0.0', CFBundleShortVersionString='999.0.0', LSMinimumSystemVersion='11.0',
@@ -75,6 +77,11 @@ class IsolatedUpdatesTests(unittest.TestCase):
         # release notes or package can be fetched. The real manual-check path,
         # signatures, model, preference storage and transport remain in use.
         source = (ROOT / 'app/update-worker/UpdateWorker.swift').read_text()
+        admission = 'VPNUpdateAdmission.inspectSystem()'
+        if source.count(admission) != 1: raise AssertionError('Admission boundary changed')
+        source = source.replace(admission, '''VPNUpdateAdmission.inspect(
+            applicationSupport: (UpdateWorker.enclosingHost()!.object(forInfoDictionaryKey: "TestDirectory") as! String) + "/admission/support",
+            launchDaemons: (UpdateWorker.enclosingHost()!.object(forInfoDictionaryKey: "TestDirectory") as! String) + "/admission/daemons")''')
         source = source.replace('if handleShowingUpdate { channel.send(.present) }',
                                 'if handleShowingUpdate { precondition(state.userInitiated); channel.send(.present); usleep(150_000); exit(0) }')
         source = source.replace('func standardUserDriverWillShowModalAlert() { channel.send(.present) }',
@@ -112,14 +119,16 @@ extension UpdateWorker {
 '''
         test_worker = cls.work / 'Worker.swift'
         test_worker.write_text(source)
-        common = [str(ROOT / 'app/update-worker/UpdateWire.swift'), str(ROOT / 'app/update-worker/UpdateChannel.swift')]
+        common = [str(ROOT / 'app/update-worker/UpdateWire.swift'), str(ROOT / 'app/update-worker/UpdateChannel.swift'),
+                  str(ROOT / 'app/update-worker/VPNUpdateAdmission.swift')]
         for name, output, extra in [
             ('Frontend', cls.binary, ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(ROOT / 'tests/isolated_updates_frontend.swift')]),
             ('Worker', cls.worker_binary, ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(test_worker), str(ROOT / 'tests/isolated_updates_handoff_worker.swift')])]:
             slices = []
             for arch in ('arm64', 'x86_64'):
                 binary = cls.work / f'{name}-{arch}'
-                cls.run_command(['swiftc', '-parse-as-library', '-target', f'{arch}-apple-macosx11.0', *common, *extra, '-o', str(binary)])
+                cls.run_command(['swiftc', '-parse-as-library', '-target', f'{arch}-apple-macosx11.0',
+                                 '-module-cache-path', str(cls.work / 'ModuleCache'), *common, *extra, '-o', str(binary)])
                 slices.append(str(binary))
             cls.run_command(['lipo', '-create', *slices, '-output', str(output)])
         cls.run_command(['codesign', '--force', '--sign', '-', str(cls.worker)])

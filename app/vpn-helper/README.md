@@ -1,16 +1,21 @@
 # VPN helper security boundary (not yet integrated)
 
-Latest status (8 September 2026): the opt-in idle helper's root/user installation,
-pin rotation, reapplication and removal have passed system acceptance. The test
-service is now removed; the ordinary app and VPN networking are not enabled.
-Earlier sections below retain the history of isolated checks; current acceptance
-and open gates are tracked in `docs/vpn-implementation-plan.md`.
+Latest status (12 September 2026): the opt-in idle helper's root/user installation,
+pin rotation, reapplication and removal have passed system acceptance, including
+the format-2 helper/engine deployment. The test service is now removed; the
+ordinary app and VPN networking are not enabled. The staging updater now refuses
+an ordinary app-only update early when VPN markers are present or inspection
+fails; this is not joint app/helper replacement or late-stage race protection.
+See `../update-worker/README.md`. Earlier sections below retain the chronological
+history of isolated checks, including requirements that were subsequently met;
+current acceptance and open gates are tracked in `docs/vpn-implementation-plan.md`.
 
 Format 2 is now supported by the common verifier, protected store, package loader,
 installer and daemon startup. Both component files must validate together;
 missing engine data cannot become a helper-only deployment. Tests cover atomic
-selection, update/retry, corruption and removal; system acceptance of format 2
-is still pending. The `VPN_ENGINE_DELIVERY_TESTING` factory is now only a test
+selection, update/retry, corruption and removal. System acceptance of format 2
+completed on 8 September (install 4, retry 4, app-pin rotation 4 → 5 and removal).
+The `VPN_ENGINE_DELIVERY_TESTING` factory is now only a test
 convenience, with the same parser/rules as production. No engine is executed.
 See `docs/vpn-engine-delivery.md` for the current evidence and remaining gates.
 
@@ -46,7 +51,7 @@ itself, or hash whatever currently exists at a user-writable application path.
 An update must explicitly authorize new architecture-specific hashes; it must
 not silently accept every later binary with the same identifier.
 
-## Still required before any privileged operation
+## Initial security gates (historical; current status above)
 
 1. Production bootstrap and pin activation. The release verifier authenticates
    descriptions; the descriptor-relative store below persists and rechecks them.

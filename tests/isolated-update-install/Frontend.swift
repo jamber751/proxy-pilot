@@ -48,7 +48,7 @@ final class InstallHost: NSObject, NSApplicationDelegate {
             record("prepare")
             let finished = CLI.finishedRoutes
             proxy.selectRoute("socks")
-            proxy.prepareForUpdate {
+            proxy.prepareForUpdate { [self] in
                 precondition(CLI.finishedRoutes == finished + 1, "Relaunch raced an in-flight command")
                 precondition(proxy.busy && proxy.state?.enabled == true && proxy.state?.selected == "socks")
                 precondition(proxy.state?.socks_endpoint == "192.0.2.47:1080" && proxy.state?.http_endpoint == "192.0.2.48:3128")
@@ -94,7 +94,12 @@ final class InstallHost: NSObject, NSApplicationDelegate {
                 precondition(!model.automaticChecks, "Update migration reset automatic checks")
                 requested = true; attempts += 1; record("check"); model.check()
             } else if requested && model.canCheck && !model.sessionInProgress {
-                if mode == "native-network" && attempts == 1 {
+                if (mode == "native-network" || mode == "vpn-retry") && attempts == 1 {
+                    if mode == "vpn-retry" {
+                        // Only a fixture-owned marker, never a real VPN.
+                        let base = Bundle.main.object(forInfoDictionaryKey: "TestDirectory") as! String
+                        try! FileManager.default.removeItem(atPath: base + "/admission/support/ProxyPilot")
+                    }
                     record("retry-enabled"); requested = false; return
                 }
                 // The driver has finished a declined/failed update. Exit only

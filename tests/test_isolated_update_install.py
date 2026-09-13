@@ -92,9 +92,13 @@ class IsolatedInstallFixture:
         cls.addClassCleanup(cls.compiled.cleanup)
         build = Path(cls.compiled.name)
         original = (ROOT / 'app/update-worker/UpdateWorker.swift').read_text()
-        cls_source = original
+        admission = 'VPNUpdateAdmission.inspectSystem()'
+        if original.count(admission) != 1: raise AssertionError('Admission boundary changed')
+        cls_source = original.replace(admission, '''VPNUpdateAdmission.inspect(
+            applicationSupport: (UpdateWorker.enclosingHost()!.object(forInfoDictionaryKey: "TestDirectory") as! String) + "/admission/support",
+            launchDaemons: (UpdateWorker.enclosingHost()!.object(forInfoDictionaryKey: "TestDirectory") as! String) + "/admission/daemons")''')
         if not getattr(cls, 'native_preview', False):
-            cls_source = original.replace('private var driver: SPUStandardUserDriver!', 'private var driver: SPUUserDriver!')
+            cls_source = cls_source.replace('private var driver: SPUStandardUserDriver!', 'private var driver: SPUUserDriver!')
             cls_source = cls_source.replace('driver = SPUStandardUserDriver(hostBundle: host, delegate: self)',
                                         'driver = InstallDriver(host: host, delegate: self)')
             if cls_source == original or 'driver = SPUStandardUserDriver(' in cls_source:
@@ -130,7 +134,8 @@ class IsolatedInstallFixture:
         legacy.write_text(old_source.replace('SPUStandardUpdaterController', 'LegacyUIAdapter'))
         proxy_model = build / 'ProxyModel.swift'
         proxy_model.write_text(inert_proxy_model_source())
-        common = [str(ROOT / 'app/update-worker/UpdateWire.swift'), str(ROOT / 'app/update-worker/UpdateChannel.swift')]
+        common = [str(ROOT / 'app/update-worker/UpdateWire.swift'), str(ROOT / 'app/update-worker/UpdateChannel.swift'),
+                  str(ROOT / 'app/update-worker/VPNUpdateAdmission.swift')]
         for name, extras in [
             ('Frontend', cls.frontend_sources(build, proxy_model)),
             ('Worker', ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
@@ -145,7 +150,8 @@ class IsolatedInstallFixture:
             for arch in ('arm64', 'x86_64'):
                 binary = build / f'{name}-{arch}'
                 parsing = [] if name == 'Frontend' and cls.full_app else ['-parse-as-library']
-                cls.run_command(['swiftc', *parsing, '-target', f'{arch}-apple-macosx11.0', *common, *extras, '-o', str(binary)])
+                cls.run_command(['swiftc', *parsing, '-target', f'{arch}-apple-macosx11.0',
+                                 '-module-cache-path', str(build / 'ModuleCache'), *common, *extras, '-o', str(binary)], timeout=180)
                 slices.append(str(binary))
             cls.run_command(['lipo', '-create', *slices, '-output', str(build / name)])
         generator = build / 'key.swift'
@@ -155,7 +161,7 @@ let key = Curve25519.Signing.PrivateKey()
 try key.rawRepresentation.base64EncodedString().write(toFile: CommandLine.arguments[1], atomically: false, encoding: .utf8)
 print(key.publicKey.rawRepresentation.base64EncodedString())
 ''')
-        cls.run_command(['swiftc', str(generator), '-o', str(build / 'key')])
+        cls.run_command(['swiftc', '-module-cache-path', str(build / 'ModuleCache'), str(generator), '-o', str(build / 'key')])
 
     @staticmethod
     def matching_processes(work, identifier):
@@ -179,6 +185,8 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
             process = None
             environment = None
             try:
+                (work / 'admission/support').mkdir(parents=True)
+                (work / 'admission/daemons').mkdir()
                 environment = self.prepare_environment(work, mode)
                 versions = ['1.5.1', '1.5.2', '1.5.3'] if mode in ('migration', 'repeat') else ['1.0.0', '2.0.0']
                 is_legacy = mode == 'migration'
@@ -258,7 +266,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                 host_log, worker_log = work / 'host.events', work / 'worker.events'
                 with (work / 'console.log').open('w+') as log:
                     process = subprocess.Popen([str(binary)], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                    installing = mode in ('install', 'native', 'migration', 'repeat')
+                    installing = mode in ('install', 'native', 'migration', 'repeat', 'vpn-retry')
                     if mode.startswith('native'):
                         print(f'NATIVE PREVIEW WORKER: {worker}', flush=True)
                         print(f'HOST: {app}\nIDENTIFIER: {identifier}', flush=True)
@@ -304,10 +312,23 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
                         # and SUInstallationError across the installer boundary.
                         self.assertTrue(any(f'error SUSparkleErrorDomain {code}' in worker_events for code in (3001, 3002)), evidence)
                     if mode.startswith('cancel-'): self.assertIn(mode, worker_events, evidence)
-                    if mode in ('cancel-offer', 'native-cancel-offer', 'native-network', 'native-background', 'quit'): self.assertNotIn('/update.zip', server.requests)
+                    admission_mode = mode.removeprefix('native-')
+                    if mode in ('cancel-offer', 'native-cancel-offer', 'native-network', 'native-background', 'quit') or admission_mode in ('vpn-present', 'vpn-unknown'): self.assertNotIn('/update.zip', server.requests)
                     else:
                         for archive in archives: self.assertIn('/' + archive.name, server.requests)
                     self.assertTrue(set(server.requests) <= {'/appcast.xml', *( '/' + archive.name for archive in archives)}, server.requests)
+                    if admission_mode.startswith('vpn-'):
+                        code = 2 if admission_mode == 'vpn-unknown' else 1
+                        self.assertIn(f'error kz.documentolog.proxypilot.update-admission {code}', worker_events, evidence)
+                        self.assertIn('/appcast.xml', server.requests)
+                        if admission_mode == 'vpn-retry':
+                            self.assertEqual(host_events.splitlines().count('check'), 2, evidence)
+                            self.assertIn('retry-enabled', host_events, evidence)
+                            self.assertLess(worker_events.index('error kz.documentolog'), worker_events.index('found 2.0.0'))
+                        else:
+                            self.assertFalse(any(line.startswith('found ') for line in worker_events.splitlines()), evidence)
+                            self.assertNotIn('download', worker_events, evidence)
+                            self.assertNotIn('ready', worker_events, evidence)
                     if mode == 'native-network':
                         self.assertIn('retry-enabled', host_events, evidence)
                         self.assertEqual(host_events.splitlines().count('check'), 2, evidence)

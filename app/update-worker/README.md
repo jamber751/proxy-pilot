@@ -52,9 +52,81 @@ The ordinary build and release scripts continue to use the existing updater.
   install handoff can outlive frontend EOF briefly; otherwise EOF exits it.
 - VPN install/update has a separate same-app identity preflight in `VPNInstaller`:
   the candidate's independent VPN signature must pin the actual running hardened
-  app, before changing service policy or stopping it. This component is not yet
-  wired into the app/package. A Sparkle success or worker message cannot enroll
-  the new app; the worker never calls the root installer. See the helper README.
+  app, before changing service policy or stopping it. The opt-in fixed installer
+  entry and separately authorized support packages have passed system acceptance;
+  they are not coordinated with Sparkle app replacement. A Sparkle success or
+  worker message cannot enroll the new app; the worker never calls the root
+  installer. See the helper README.
+
+## Early VPN update veto (12 September)
+
+An ordinary app-only update can strand an installed VPN helper with pins for the
+previous app. Until joint replacement is implemented, the staging worker uses
+Sparkle's supported `shouldProceedWithUpdate` delegate to refuse a selected update
+**before its offer or download** when a VPN installation marker is present or
+inspection cannot establish absence. The ordinary/default updater is unchanged.
+
+`VPNUpdateAdmission` only opens the fixed `/Library/Application Support` and
+`/Library/LaunchDaemons` directories and checks the three fixed private/public
+installation and launch-plist names without following their symlinks. It does not
+enter private storage, read profiles, contact the helper, change permissions,
+repair/remove components, or request administration. A partial, stale or dangling
+marker is not treated as absence; an unreadable or malformed parent is an error.
+The existing Sparkle error path explains why checking stopped and permits retry.
+Each selected update gets a fresh inspection; no allow decision is cached.
+
+This is a conservative compatibility check, **not an atomic update protocol or
+security authorization**. Installing a helper after this early check, or resuming
+an already staged update, is not protected by this veto. The updater must remain
+opt-in until late installation, restart and failure recovery are coordinated with
+the independently signed root policy. Do not remove a live VPN installation to
+work around this guard.
+
+Verified with 10 disposable filesystem tests and 3 actual Sparkle integration
+tests (all passed on this Mac):
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_update_admission.py -v
+PROXYPILOT_TEST_ISOLATED_INSTALLER=1 python3 -m unittest discover -s tests -p test_vpn_update_install.py -v
+```
+
+Present and unknown state both refuse before ZIP download or proxy preparation,
+preserve the old app/preferences and leave the fixture untouched. Retry after
+removing only a disposable test marker installs/relaunches the test app 1.0.0 →
+2.0.0, proving the previous decision is not reused. Integration fixtures substitute
+only the probe's base directories and use ephemeral signing keys, signed loopback
+feeds and scripted user-driver choices; they never inspect real VPN storage or
+update the installed app. Both architecture slices target macOS 11; runtime
+acceptance on Intel/macOS 11 remains separate.
+
+Native acceptance on 13 September: the present-component error rendered its
+description and recovery text in the unmodified Sparkle alert. Clicking **Cancel
+Update** returned the host to idle without download/preparation; the old signed
+app/preferences and marker were unchanged and no fixture processes remained.
+An earlier attempt timed out while computer control was unavailable; it was not
+counted as a pass. The unknown-state alert still needs visual acceptance: computer
+control stalled again and that fixture timed out and cleaned up. Its automated
+error/no-download test passed, but does not establish native presentation.
+
+Repeat one visible scenario at a time, acknowledging the alert within three
+minutes (only disposable apps; no real VPN state):
+
+```sh
+python3 tests/test_vpn_update_install.py --native-preview --scenario present
+python3 tests/test_vpn_update_install.py --native-preview --scenario unknown
+```
+
+The 12 September broader regression selected 443 tests: **439 passed, 4 skipped,
+0 failures** (886.969 seconds), including all five full-App/loopback cases and
+the existing installers/updaters. Four opt-in real OpenVPN artifact/package tests
+were skipped because their earlier temporary artifact was no longer available;
+11 separate Keychain tests were intentionally excluded. Both the default app and
+the isolated-updater/VPN-installer candidate built Universal and passed strict
+deep signature verification. Neither production-identified build was launched.
+After adding the native preview runner, all three automated VPN-update scenarios
+passed again on 13 September (111.946 seconds) with the final fixture sources.
+An intermediate compile was discarded because the fixture was edited while the
+compiler was reading it; it ran zero tests and was not counted as a passing run.
 
 ## Verified scope
 
@@ -138,10 +210,13 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
    final window is added here. Remaining system, sleep and accessibility
    acceptance is separate from the native cases below.
 3. Coordinate app replacement with the separately authorized root-helper release
-   policy. Never accept a new VPN client pin merely because Sparkle installed it.
-4. Package the hardened app's fixed installation mode (or introduce separately
-   signed installer pins) and perform explicitly authorized cross-UID acceptance.
-   Neither an installer entry point nor an OpenVPN tunnel is added here.
+   policy, including a late-stage helper installation race, cancellation and
+   restart recovery. The early veto above does not complete this boundary. Never
+   accept a new VPN client pin merely because Sparkle installed it.
+4. Integrate the opt-in hardened app's fixed installation mode and authorized
+   support package into that joint update flow. Standalone cross-UID acceptance
+   of install/retry/pin rotation/removal is complete, but not an app/helper update
+   transaction. No OpenVPN tunnel has been started.
 
 ## Additional native acceptance (8 September)
 

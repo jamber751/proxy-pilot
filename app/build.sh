@@ -45,6 +45,7 @@ if [[ "$ISOLATED_UPDATER" == 1 ]]; then
     swiftc -O -parse-as-library -module-cache-path "$OUT/ModuleCache" -target "$ARCH-apple-macosx11.0" \
       -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
       "$HERE/update-worker/UpdateWire.swift" "$HERE/update-worker/UpdateChannel.swift" \
+      "$HERE/update-worker/VPNUpdateAdmission.swift" \
       "$HERE/update-worker/UpdateWorker.swift" -o "$OUT/Updater-$ARCH"
   done
   lipo -create "$OUT/Updater-arm64" "$OUT/Updater-x86_64" -output "$WORKER/Contents/MacOS/ProxyPilotUpdater"

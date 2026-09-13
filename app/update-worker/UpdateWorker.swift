@@ -24,6 +24,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     private var pendingInstall: (UUID, () -> Void)?
     private var handingOff = false
     private var orphaned = false
+    private let updateAdmission: () -> VPNUpdateAdmission.Decision = { VPNUpdateAdmission.inspectSystem() }
 
     func start(host: Bundle) throws {
         channel = try UpdateChannel(read: STDIN_FILENO, write: STDOUT_FILENO, receivesCommands: true,
@@ -98,6 +99,12 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
         pendingInstall = nil; handingOff = false
         channel.send(.aborted); publish()
         if orphaned { exit(0) }
+    }
+    func updater(_ updater: SPUUpdater, shouldProceedWithUpdate updateItem: SUAppcastItem, updateCheck: SPUUpdateCheck) throws {
+        // Sparkle's supported veto occurs before showing/downloading the chosen
+        // update. No helper command, policy change or administrative prompt.
+        // This is only an early veto, not an atomic app/helper update protocol.
+        if let error = updateAdmission().error { throw error }
     }
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         guard pendingInstall == nil, !handingOff, !orphaned else { exit(65) }
