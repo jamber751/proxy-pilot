@@ -65,6 +65,15 @@ class VPNInstallerTests(unittest.TestCase):
         for arch in ('arm64', 'x86_64'):
             cls.command(['swiftc', '-emit-library', '-target', f'{arch}-apple-macosx11.0',
                          *[str(HELPER / source) for source in COMPONENTS], '-o', str(cls.work / f'production-{arch}.dylib')])
+        asan_slices = []
+        for arch in ('arm64', 'x86_64'):
+            output = cls.work / f'installer-asan-{arch}'
+            cls.command(['swiftc', *SEAMS, '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-sanitize=address',
+                         '-target', f'{arch}-apple-macosx11.0',
+                         *[str(HELPER / source) for source in COMPONENTS],
+                         str(ROOT / 'tests/vpn_installer_checks.swift'), '-o', str(output)])
+            asan_slices.append(str(output))
+        cls.command(['lipo', '-create', *asan_slices, '-output', str(cls.work / 'installer-asan')])
         for revision in (1, 2):
             slices = []
             for arch in ('arm64', 'x86_64'):
@@ -78,6 +87,7 @@ class VPNInstallerTests(unittest.TestCase):
         for name, identifier, options in [
             ('server', 'kz.documentolog.proxypilot.vpn-helper', 'runtime,hard,kill'),
             ('installer', 'kz.documentolog.proxypilot', 'runtime,hard,kill'),
+            ('installer-asan', 'kz.documentolog.proxypilot', 'runtime,hard,kill'),
             ('installer-next', 'kz.documentolog.proxypilot', 'runtime,hard,kill,restrict'),
             # Stronger than the real worker: even a hardened worker with signed
             # matching pins must not acquire the app's installer identity.
@@ -480,6 +490,19 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertFalse((self.plists / f'{self.label}.plist').exists())
         self.assertFalse((self.support / 'ProxyPilot').exists())
         self.assertEqual(sorted(os.listdir(self.support)), [])
+
+    def test_asan_directory_enumeration_handles_many_variable_dirent_records(self):
+        (self.support / 'ProxyPilot').mkdir(mode=0o700)
+        self.storage.mkdir(mode=0o700)
+        for index in range(600):
+            (self.storage / f'.release-{index:04d}.tmp').write_bytes(b'x')
+        result = self.run_installer('enumerate-removable', executable='installer-asan')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'enumerated:600:600', result.stdout + result.stderr)
+        self.assertNotIn('AddressSanitizer', result.stderr)
+        self.assertFalse(self.loaded())
+        self.assertFalse((self.plists / f'{self.label}.plist').exists())
+        self.assertEqual(len(list(self.storage.iterdir())), 600)
 
     def test_uninstall_without_an_installation_is_refused(self):
         result = self.run_installer('uninstall')

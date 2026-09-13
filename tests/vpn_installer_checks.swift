@@ -115,6 +115,18 @@ enum VPNInstallerChecks {
                 catch { print("root-entry:\(error)") }
                 exit(0)
             }
+            if args[1] == "enumerate-removable" {
+                let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
+                defer { close(directory) }
+                let shared = fcntl(directory, F_DUPFD_CLOEXEC, 0)
+                guard shared >= 0, let stream = fdopendir(shared) else { exit(77) }
+                while readdir(stream) != nil { }
+                closedir(stream)
+                let first = try VPNInstaller.testRemovableNames(directory: directory)
+                let second = try VPNInstaller.testRemovableNames(directory: directory)
+                print("enumerated:\(first.count):\(second.count)")
+                exit(0)
+            }
             if args[1] == "uninstall" {
                 try VPNInstaller.testUninstall(base: base, label: label, plistDirectory: plists)
                 print("uninstalled")

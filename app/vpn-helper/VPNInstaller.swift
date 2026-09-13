@@ -108,6 +108,10 @@ enum VPNInstaller {
         try VPNDirectoryProvisioner.removeBelowTrustedBase(base)
     }
 
+    static func testRemovableNames(directory: Int32) throws -> [String] {
+        try removableNames(directory)
+    }
+
     /// Disposable per-user variant: the same order and the same components, in a
     /// private base directory and the user's launchd domain. Absent from normal
     /// builds; it proves the sequence, never a privileged system installation.
@@ -301,16 +305,37 @@ enum VPNInstaller {
     /// Only names this component creates may be removed, by exact name or by the
     /// content-addressed component patterns. Anything else aborts the uninstall.
     private static func removableNames(_ directory: Int32) throws -> [String] {
-        let copy = fcntl(directory, F_DUPFD_CLOEXEC, 0)
+        // A duplicated directory fd shares its enumeration offset with the
+        // original open file description. Use a fresh cursor instead.
+        let copy = openat(directory, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard copy >= 0, let stream = fdopendir(copy) else {
             if copy >= 0 { close(copy) }
             throw VPNInstallerError.removalFailed
         }
         defer { closedir(stream) }
         var names: [String] = []
-        while let entry = readdir(stream) {
-            let name = withUnsafeBytes(of: entry.pointee.d_name) {
-                String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
+        let nameOffset = MemoryLayout<dirent>.offset(of: \.d_name)!
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw VPNInstallerError.removalFailed }
+                break
+            }
+            // `readdir` returns a variable-size record. Taking bytes of the
+            // imported 1024-byte tuple can read beyond d_reclen under ASan.
+            // Decode only the bytes present in this record, including its NUL.
+            let recordLength = Int(entry.pointee.d_reclen)
+            let nameLength = Int(entry.pointee.d_namlen)
+            guard nameLength > 0, nameLength <= 1023,
+                  nameOffset <= recordLength, nameLength < recordLength - nameOffset else {
+                throw VPNInstallerError.removalFailed
+            }
+            let bytes = UnsafeRawPointer(entry).advanced(by: nameOffset).assumingMemoryBound(to: UInt8.self)
+            guard bytes[nameLength] == 0 else { throw VPNInstallerError.removalFailed }
+            let nameBytes = UnsafeBufferPointer(start: bytes, count: nameLength)
+            guard !nameBytes.contains(0), !nameBytes.contains(47),
+                  let name = String(bytes: nameBytes, encoding: .utf8) else {
+                throw VPNInstallerError.removalFailed
             }
             if name == "." || name == ".." { continue }
             guard removable(name) else { throw VPNInstallerError.unexpectedContent }
