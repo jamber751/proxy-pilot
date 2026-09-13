@@ -75,6 +75,31 @@ class VPNDaemonTests(installer.VPNInstallerTests):
         self.bootstrap(); self.wait_refused()
         self.assertEqual((self.storage / 'activation.json').read_text(), expected)
 
+    def test_boot_refuses_a_corrupt_update_journal_without_spending_attempt(self):
+        self.install_ready(); self.boot_out()
+        expected = self.budget(True, 0)
+        endpoint = self.storage / 'helper.sock'
+        before = endpoint.lstat()
+        journal = self.storage / 'update.json'
+        journal.write_bytes(b'corrupt'); journal.chmod(0o600)
+        self.bootstrap(); self.wait_refused()
+        self.assertEqual((self.storage / 'activation.json').read_text(), expected)
+        after = endpoint.lstat()
+        self.assertEqual((after.st_dev, after.st_ino, after.st_mode),
+                         (before.st_dev, before.st_ino, before.st_mode))
+
+    def test_running_daemon_stays_ready_when_an_update_journal_appears(self):
+        self.install_ready()
+        before = self.running_snapshot()
+        journal = self.storage / 'update.json'
+        journal.write_bytes(b'corrupt'); journal.chmod(0o600)
+        self.assertEqual(self.run_installer('probe').stdout.strip(), 'ready:10')
+        after_pid, after_files = self.running_snapshot()
+        # The fixture intentionally added the journal. Everything that existed
+        # before it, and the running process identity, must remain unchanged.
+        self.assertEqual(after_files.pop('update.json'), b'corrupt')
+        self.assertEqual((after_pid, after_files), before)
+
     def test_boot_does_not_delete_a_foreign_file(self):
         self.install_ready(); self.boot_out()
         endpoint = self.storage / 'helper.sock'

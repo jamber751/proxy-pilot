@@ -44,6 +44,10 @@ final class VPNActivationCoordinator {
             // Invalid or obsolete candidates do not stop the working service.
             let prepared = try store.prepareDeployment(payload: payload, signature: signature,
                                                         helper: helper, engine: engine, expectedSequence: expectedSequence)
+            // Preparation and activation are separate protected transactions.
+            // A journal may have appeared after validation; ordinary activation
+            // must leave reconciliation to the future journal-aware path.
+            try store.requireNoPendingUpdate()
             // Charged only once the request is worth starting a service for.
             try budget.beginAttempt(intent: intent)
             try stop()
@@ -64,6 +68,9 @@ final class VPNActivationCoordinator {
     /// After a committed update, only the new security floor may be restarted.
     func recoverSelected(intent: VPNActivationIntent) throws -> VPNHelperReady {
         try exclusively {
+            // A journal can describe an interrupted replacement. Do not spend an
+            // attempt or stop the currently selected service by guessing at it.
+            try store.requireNoPendingUpdate()
             try budget.beginAttempt(intent: intent)
             try stop()
             let selected: VPNAuthorizedDeployment
@@ -148,6 +155,9 @@ final class VPNActivationCoordinator {
     }
 
     private func requireSelected(_ expected: VPNAuthorizedDeployment) throws {
+        // Covers a journal created after initial validation, including while a
+        // candidate is starting or its readiness response is being checked.
+        try store.requireNoPendingUpdate()
         let actual = try store.loadDeployment()
         guard actual.ownerUserID == expected.ownerUserID,
               actual.release.isSameRelease(as: expected.release) else { throw VPNActivationCoordinatorError.selectionChanged }

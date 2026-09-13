@@ -254,6 +254,38 @@ class VPNActivationTests(unittest.TestCase):
         self.assertEqual(self.run_coordinator(mode='bad-signature').returncode, 77)
         self.assertEqual(self.budget(), ('on', 0))
 
+    def test_corrupt_journal_blocks_recovery_before_budget_stop_or_start(self):
+        (self.directory / 'update.json').write_bytes(b'corrupt')
+        (self.directory / 'update.json').chmod(0o600)
+        result = self.run_coordinator('recover')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertNotIn('stop:', result.stdout)
+        self.assertNotIn('start:', result.stdout)
+        self.assertEqual(self.budget(), ('on', 0))
+
+    def test_corrupt_journal_blocks_ordinary_update_without_touching_service(self):
+        (self.directory / 'update.json').write_bytes(b'corrupt')
+        (self.directory / 'update.json').chmod(0o600)
+        result = self.run_coordinator()
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertNotIn('stop:', result.stdout)
+        self.assertNotIn('start:', result.stdout)
+        self.assertEqual(self.budget(), ('on', 0))
+
+    def test_manual_turn_off_remains_available_with_a_corrupt_journal(self):
+        (self.directory / 'update.json').write_bytes(b'corrupt')
+        (self.directory / 'update.json').chmod(0o600)
+        result = self.run_coordinator('turn-off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['stop:1', 'turned-off'])
+        self.assertEqual(self.budget(), ('off', 0))
+
+    def test_journal_appearing_during_start_prevents_ready_and_cleans_up(self):
+        result = self.run_coordinator(mode='journal-after-start')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertIn('failure:selection cleanup:true', result.stdout)
+        self.assertNotIn('ready:', result.stdout)
+
     def test_automatic_attempts_stop_after_repeated_failures(self):
         # One update commits the new selection; the retries are recoveries of it.
         self.assertIn('failure:', self.run_coordinator('update-auto', mode='start-fails').stdout)

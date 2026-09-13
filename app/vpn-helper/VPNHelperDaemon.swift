@@ -32,6 +32,11 @@ enum VPNHelperDaemon {
                               authority: VPNReleaseAuthority,
                               policy: (VerifiedVPNRelease) throws -> VPNPeerPolicy) throws {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
+        // Boot recovery is deliberately not journal-aware yet. Refuse before
+        // charging its attempt or touching the endpoint; a running daemon does
+        // not repeat this check and is not stopped merely because a journal
+        // later appears.
+        try store.requireNoPendingUpdate()
         let stamp = try selectionStamp(directory)
         let selected = try store.loadDeployment()
         guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
@@ -44,7 +49,14 @@ enum VPNHelperDaemon {
         catch VPNLifecycleOwnershipError.busy { }
         defer { bootLease?.release() }
         let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
-        if bootLease != nil { try budget.beginAttempt(intent: .automatic) }
+        // Recheck even when a coordinator owns the lease: ordinary coordinator
+        // startup is also forbidden from launching through a journal window.
+        try store.requireNoPendingUpdate()
+        if bootLease != nil {
+            // Close the window between the preflight above and lifecycle
+            // acquisition: journal preparation can legitimately win that race.
+            try budget.beginAttempt(intent: .automatic)
+        }
         try runtime.prepareEndpoint(directory: endpoint, shared: shared)
         let listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: selected.release,
                                                   ownerUserID: selected.ownerUserID,

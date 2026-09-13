@@ -141,6 +141,15 @@ enum VPNActivationChecks {
                     try Data("tampered fixture".utf8).write(to: url)
                 }
             }
+            if args[6] == "journal-after-start" {
+                runtime.onStart = {
+                    let journal = runtime.directory.appendingPathComponent("update.json")
+                    guard FileManager.default.createFile(atPath: journal.path, contents: Data("corrupt".utf8),
+                                                         attributes: [.posixPermissions: 0o600]) else {
+                        throw FixtureFailure.injected
+                    }
+                }
+            }
             #if VPN_RELEASE_STORE_TESTING
             if args[6] == "crash-selector" {
                 VPNReleaseStore.checkpoint = { if $0 == "release.json:after-rename" { _exit(86) } }
