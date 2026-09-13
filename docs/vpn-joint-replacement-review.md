@@ -62,3 +62,7 @@ Keychain, system service, push or release operation was performed.
 Design the independently authenticated executor and writable Applications
 destination contract, then installed/live-B verification and journal-aware
 activation. Do not select B just because protected copies exchanged.
+
+Subsequent increment: the copy exchange now enforces a fixed protected running-A
+executor binding under its namespace lease. Provisioning and launching that
+executor remain pending; see `vpn-executor-review.md` and `vpn-executor-tests.md`.

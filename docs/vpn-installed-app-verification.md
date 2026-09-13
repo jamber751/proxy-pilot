@@ -108,3 +108,17 @@ This closes the internal sequencing gap for protected copies, not the independen
 executor or writable Applications destination boundary above. There remains no
 production entry point or installed/live-B proof. Details and test scope:
 `vpn-joint-replacement-review.md`, `vpn-joint-replacement-tests.md`.
+
+## Protected executor binding
+
+Production protected-copy exchange now requires the running A to match the
+fixed `executor/ProxyPilot.app` under the same private transaction base.
+The separate directory, entire exact-A bundle and fixed main executable are
+descriptor-bound and revalidated under the app namespace lease before/after
+drain and exchange. Same-signature A launched elsewhere is insufficient.
+Dynamic A authentication remains in the coordinator; executor files are never
+part of the exchange. Details: `vpn-executor-review.md`, `vpn-executor-tests.md`.
+
+Provisioning/launch/recovery of this executor is still missing. This strengthens
+the internal copy boundary, not the writable Applications installation contract
+or installed/live-B proof. The existing user installation is unchanged.
