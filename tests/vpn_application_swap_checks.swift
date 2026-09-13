@@ -55,7 +55,7 @@ import Foundation
             let result: VPNProtectedApplicationSwap.Outcome
             if operation == "production" {
                 result = try VPNProtectedApplicationSwap.exchange(inTrustedDirectory: base,
-                    previous: previous.2, candidate: candidate.2, transition: transition)
+                    previous: previous.2, candidate: candidate.2, transition: transition, authorizeMutation: {})
             } else {
                 result = try VPNProtectedApplicationSwap.testExchange(inTrustedDirectory: base,
                     previous: previous.2, candidate: candidate.2, transition: transition) { point in

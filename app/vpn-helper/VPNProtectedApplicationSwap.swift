@@ -10,23 +10,27 @@ enum VPNApplicationSwapError: Error {
 /// installer or an installed/live-B proof. The caller must provision durable,
 /// root-private staging under protected ancestors and authenticate its separate
 /// executor. It must also retain real service ownership, check the journal and
-/// drain before calling. This namespace lease does not supply those guarantees.
+/// drain at the authorization boundary. This namespace lease does not supply those guarantees.
 /// No IPC, CLI, Sparkle, selector or service entry calls this primitive.
 enum VPNProtectedApplicationSwap {
     enum Outcome { case exchanged, alreadyExchanged }
     private static let app = "ProxyPilot.app"
 
     static func exchange(inTrustedDirectory base: Int32, previous: VerifiedVPNRelease,
-                         candidate: VerifiedVPNRelease, transition: VerifiedVPNUpdateTransition) throws -> Outcome {
+                         candidate: VerifiedVPNRelease, transition: VerifiedVPNUpdateTransition,
+                         authorizeMutation: () throws -> Void) throws -> Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNApplicationSwapError.requiresRoot }
-        return try perform(base: base, previous: previous, candidate: candidate, transition: transition, checkpoint: { _ in })
+        return try perform(base: base, previous: previous, candidate: candidate, transition: transition,
+                           authorizeMutation: authorizeMutation, checkpoint: { _ in })
     }
 
     #if VPN_APPLICATION_SWAP_TESTING
     static func testExchange(inTrustedDirectory base: Int32, previous: VerifiedVPNRelease,
                              candidate: VerifiedVPNRelease, transition: VerifiedVPNUpdateTransition,
+                             authorizeMutation: () throws -> Void = {},
                              checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
-        try perform(base: base, previous: previous, candidate: candidate, transition: transition, checkpoint: checkpoint)
+        try perform(base: base, previous: previous, candidate: candidate, transition: transition,
+                    authorizeMutation: authorizeMutation, checkpoint: checkpoint)
     }
     #endif
 
@@ -38,6 +42,7 @@ enum VPNProtectedApplicationSwap {
 
     private static func perform(base: Int32, previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
                                 transition: VerifiedVPNUpdateTransition,
+                                authorizeMutation: () throws -> Void,
                                 checkpoint: (String) throws -> Void) throws -> Outcome {
         guard transition.matchesSource(previous), transition.matchesDestination(candidate),
               !previous.isSameRelease(as: candidate) else { throw VPNApplicationSwapError.invalidTransition }
@@ -68,11 +73,12 @@ enum VPNProtectedApplicationSwap {
         if after {
             // A previous call may have died after rename. Never exchange back.
             do {
-                try sync(current, staged)
+                try authorizeMutation()
                 try check()
                 guard matches(current, candidate), matches(staged, previous) else {
                     throw VPNApplicationSwapError.invalidLayout
                 }
+                try sync(current, staged)
             } catch { throw VPNApplicationSwapError.commitUncertain }
             return .alreadyExchanged
         }
@@ -81,6 +87,12 @@ enum VPNProtectedApplicationSwap {
         let oldObservation = try VPNStagedApplication.inspect(inTrustedDirectory: current, release: previous)
         let newObservation = try VPNStagedApplication.inspect(inTrustedDirectory: staged, release: candidate)
         try checkpoint("beforeExchange")
+        try check()
+        try VPNStagedApplication.revalidate(oldObservation, inTrustedDirectory: current)
+        try VPNStagedApplication.revalidate(newObservation, inTrustedDirectory: staged)
+        try authorizeMutation()
+        // Draining can take time. Recheck both namespace ownership and the
+        // complete trees after authorization, not just before the callback.
         try check()
         try VPNStagedApplication.revalidate(oldObservation, inTrustedDirectory: current)
         try VPNStagedApplication.revalidate(newObservation, inTrustedDirectory: staged)

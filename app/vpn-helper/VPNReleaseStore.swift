@@ -31,11 +31,14 @@ struct VPNUpdateJournalSnapshot {
     let recovery: VPNUpdateRecovery
     let previous: VPNAuthorizedDeployment
     let candidate: VPNAuthorizedDeployment
+    let transition: VerifiedVPNUpdateTransition
     fileprivate init(_ record: VPNReleaseStore.UpdateJournal, previous: VPNAuthorizedDeployment,
-                     candidate: VPNAuthorizedDeployment, recovery: VPNUpdateRecovery) {
+                     candidate: VPNAuthorizedDeployment, recovery: VPNUpdateRecovery,
+                     transition: VerifiedVPNUpdateTransition) {
         transactionID = record.transactionID; revision = record.revision
         phase = record.phase; self.previous = previous; self.candidate = candidate
         self.recovery = recovery
+        self.transition = transition
     }
 }
 
@@ -282,7 +285,7 @@ final class VPNReleaseStore {
             throw VPNReleaseStoreError.invalidUpdateJournal
         }
         let previous = try authority.verify(payload: record.previousPayload, signature: record.previousSignature, previous: nil)
-        _ = try authority.verifyUpdateTransition(payload: record.transitionPayload, signature: record.transitionSignature,
+        let transition = try authority.verifyUpdateTransition(payload: record.transitionPayload, signature: record.transitionSignature,
             previous: previous, candidatePayload: record.candidatePayload, candidateSignature: record.candidateSignature)
         let candidate = try authority.verify(payload: record.candidatePayload, signature: record.candidateSignature, previous: previous)
         try validateStoredArtifacts(previous)
@@ -303,7 +306,8 @@ final class VPNReleaseStore {
         }
         return VPNUpdateJournalSnapshot(record,
             previous: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: previous)),
-            candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: candidate)), recovery: recovery)
+            candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: candidate)),
+            recovery: recovery, transition: transition)
     }
 
     private func advanceJournal(_ record: inout UpdateJournal, to phase: VPNUpdateJournalPhase) throws {

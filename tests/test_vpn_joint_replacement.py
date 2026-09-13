@@ -1,0 +1,189 @@
+"""Journal-authorized protected copy exchange with no launchd or live helper."""
+import re
+import shutil
+import subprocess
+import sys
+import unittest
+
+try:
+    from tests.test_vpn_staged_application import VPNStagedApplicationTests, ROOT, HELPER, ENV
+except ModuleNotFoundError:
+    from test_vpn_staged_application import VPNStagedApplicationTests, ROOT, HELPER, ENV
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
+class VPNJointReplacementTests(VPNStagedApplicationTests):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        sources = [HELPER / name for name in (
+            'VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
+            'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift', 'VPNDirectoryProvisioner.swift',
+            'VPNHelperProtocol.swift', 'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
+            'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNProfileVault.swift',
+            'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNInstaller.swift',
+            'VPNStagedApplication.swift', 'VPNProtectedApplicationSwap.swift',
+            'VPNJointApplicationReplacement.swift')]
+        slices = []
+        for arch in ('arm64', 'x86_64'):
+            output = cls.build / f'joint-{arch}'
+            cls.command(['swiftc', '-D', 'VPN_INSTALLER_TESTING', '-D', 'VPN_APPLICATION_SWAP_TESTING',
+                         '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-D', 'VPN_LAUNCHD_TESTING',
+                         '-D', 'VPN_HELPER_READINESS_TESTING', '-target', f'{arch}-apple-macosx11.0',
+                         *map(str, sources), str(ROOT / 'tests/vpn_joint_replacement_checks.swift'),
+                         '-o', str(output)])
+            slices.append(str(output))
+        cls.joint = cls.build / 'joint'
+        cls.command(['lipo', '-create', *slices, '-output', str(cls.joint)])
+        cls.helper = cls.build / 'helper'
+        shutil.copyfile(cls.universal, cls.helper)
+        cls.command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill',
+                     '--identifier', 'kz.documentolog.proxypilot.vpn-helper', str(cls.helper)])
+        cls.helper_pins = cls.code_pins(cls.helper)
+
+    @classmethod
+    def code_pins(cls, path):
+        result = {}
+        for arch in ('arm64', 'x86_64'):
+            text = cls.command(['codesign', '-d', '--verbose=4', '--arch', arch, str(path)]).stderr
+            result[arch] = re.search(r'^CDHash=([a-f0-9]{40})$', text, re.M).group(1)
+        return result
+
+    def setUp(self):
+        super().setUp()
+        self.support = self.work / 'support'; self.support.mkdir(mode=0o755)
+        self.apps = self.work / 'apps'; self.apps.mkdir(mode=0o700)
+        self.current = self.apps / 'current'; self.candidate = self.apps / 'candidate'
+        self.stage.rename(self.current)
+        self.replace_main_and_sign(self.current / 'ProxyPilot.app')
+        self.candidate.mkdir(mode=0o700)
+        self.stage = self.candidate; self.app = self.candidate / 'ProxyPilot.app'
+        self.make_app(version='1.7.0')
+        self.replace_main_and_sign(self.app)
+        self.a = self.code_pins(self.current / 'ProxyPilot.app')
+        self.b = self.code_pins(self.app)
+        runner_a_bundle = self.work / 'RunnerA.app'
+        shutil.copytree(self.current / 'ProxyPilot.app', runner_a_bundle, symlinks=True)
+        self.runner_a = runner_a_bundle / 'Contents/MacOS/ProxyPilot'
+        runner_b_bundle = self.work / 'RunnerB.app'
+        shutil.copytree(self.app, runner_b_bundle, symlinks=True)
+        self.runner_b = runner_b_bundle / 'Contents/MacOS/ProxyPilot'
+        updater_bundle = self.work / 'Updater.app'
+        shutil.copytree(self.current / 'ProxyPilot.app', updater_bundle, symlinks=True)
+        updater_main = updater_bundle / 'Contents/MacOS/ProxyPilot'
+        self.command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill',
+                      '--identifier', 'kz.documentolog.proxypilot.updater', str(updater_main)])
+        self.sign(updater_bundle, 'kz.documentolog.proxypilot.updater')
+        self.runner_updater = updater_main
+        self.initial = self.identities()
+
+    def replace_main_and_sign(self, app):
+        executable = app / 'Contents/MacOS/ProxyPilot'
+        shutil.copyfile(self.joint, executable)
+        executable.chmod(0o755)
+        self.command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill',
+                      '--identifier', 'kz.documentolog.proxypilot', str(executable)])
+        self.sign(app, 'kz.documentolog.proxypilot')
+
+    def identities(self):
+        return tuple((self.apps / slot / 'ProxyPilot.app').stat().st_ino
+                     for slot in ('current', 'candidate'))
+
+    def invoke(self, operation, executable=None):
+        args = [str(executable or self.runner_a), operation, str(self.support), str(self.apps),
+                str(self.helper), self.a['arm64'], self.a['x86_64'], self.b['arm64'],
+                self.b['x86_64'], self.helper_pins['arm64'], self.helper_pins['x86_64']]
+        return subprocess.run(args, env=ENV, capture_output=True, text=True, timeout=60)
+
+    def setup_journal(self, operation='setup'):
+        result = self.invoke(operation)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith('setup:'), result.stdout)
+        return result.stdout.strip().split(':')[1]
+
+    def assert_no_effect(self):
+        self.assertEqual(self.identities(), self.initial)
+        self.assertFalse((self.apps / 'factory-marker').exists())
+        self.assertFalse((self.apps / 'drain-marker').exists())
+        self.assertFalse((self.apps / 'start-marker').exists())
+
+    def assert_rejected(self, result, error):
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith('rejected:'), result.stdout)
+        self.assertIn(error, result.stdout)
+
+    def test_valid_exchange_and_retry_preserve_protected_state(self):
+        self.setup_journal()
+        service = self.support / 'ProxyPilot/VPN'
+        before = {name: (service / name).read_bytes() for name in
+                  ('release.json', 'update.json', 'activation.json')}
+        first = self.invoke('exchange')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertIn('result:exchanged:phase=replacementPending:revision=1:selected=10', first.stdout)
+        self.assertEqual(self.identities(), self.initial[::-1])
+        self.assertTrue((self.apps / 'factory-marker').exists())
+        self.assertTrue((self.apps / 'drain-marker').exists())
+        self.assertFalse((self.apps / 'start-marker').exists())
+        (self.apps / 'factory-marker').unlink(); (self.apps / 'drain-marker').unlink()
+        retry = self.invoke('exchange')
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertIn('result:already:phase=replacementPending:revision=1:selected=10', retry.stdout)
+        self.assertTrue((self.apps / 'factory-marker').exists())
+        self.assertTrue((self.apps / 'drain-marker').exists())
+        self.assertFalse((self.apps / 'start-marker').exists())
+        failed_retry = self.invoke('drain-fail')
+        self.assert_rejected(failed_retry, 'commitUncertain')
+        self.assertEqual(self.identities(), self.initial[::-1])
+        self.assertEqual(before, {name: (service / name).read_bytes() for name in before})
+
+    def test_context_refusals_precede_runtime_and_namespace_effects(self):
+        for setup, operation in (('setup', 'wrong-uuid'), ('setup', 'wrong-revision'),
+                                 ('setup-prepared', 'exchange'), ('setup-selected', 'exchange')):
+            with self.subTest(setup=setup, operation=operation):
+                self.setUp(); self.setup_journal(setup)
+                result = self.invoke(operation)
+                expected = 'staleRevision' if operation.startswith('wrong-') else 'invalidUpdateJournal'
+                self.assert_rejected(result, expected)
+                self.assert_no_effect()
+
+    def test_wrong_process_and_invalid_candidate_never_drain(self):
+        self.setup_journal()
+        for executable in (self.runner_b, self.runner_updater):
+            denied = self.invoke('exchange', executable=executable)
+            self.assert_rejected(denied, 'denied')
+            self.assert_no_effect()
+        (self.candidate / 'ProxyPilot.app/Contents/Resources/data.txt').write_text('corrupt')
+        invalid = self.invoke('exchange')
+        self.assert_rejected(invalid, 'invalidLayout')
+        self.assert_no_effect()
+
+    def test_lifecycle_namespace_and_production_guards_precede_effects(self):
+        self.setup_journal()
+        for operation, error in (('service-busy', 'busy'), ('namespace-busy', 'busy'),
+                                 ('production', 'requiresRoot')):
+            with self.subTest(operation=operation):
+                result = self.invoke(operation)
+                self.assert_rejected(result, error)
+                self.assert_no_effect()
+
+    def test_drain_failure_and_post_drain_rechecks_do_not_swap(self):
+        for operation in ('drain-fail', 'lose-lease', 'corrupt-journal', 'mutate-tree'):
+            with self.subTest(operation=operation):
+                self.setUp(); self.setup_journal()
+                result = self.invoke(operation)
+                expected = {'drain-fail': 'cleanupNotConfirmed', 'lose-lease': 'lost',
+                            'corrupt-journal': 'invalidUpdateJournal',
+                            'mutate-tree': 'invalidSignature'}[operation]
+                self.assert_rejected(result, expected)
+                self.assertEqual(self.identities(), self.initial)
+                self.assertTrue((self.apps / 'factory-marker').exists())
+                self.assertTrue((self.apps / 'drain-marker').exists())
+
+
+def load_tests(loader, tests, pattern):
+    names = [name for name in loader.getTestCaseNames(VPNJointReplacementTests)
+             if name in VPNJointReplacementTests.__dict__]
+    return unittest.TestSuite(VPNJointReplacementTests(name) for name in names)
+
+
+if __name__ == '__main__': unittest.main()
