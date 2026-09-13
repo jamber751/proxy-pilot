@@ -11,6 +11,33 @@ enum VPNReleaseAuthorizationError: Error {
     case wrongAuthority
     case invalidHelperArtifact
     case invalidEngineArtifact
+    case invalidUpdateTransition
+}
+
+/// Authenticated direction between two exact releases, not permission to change
+/// a peer policy, stop a service or replace an app. Production use must reload
+/// protected current state under lifecycle ownership and match `previous` again.
+/// Persist signed inputs, never treat a serialized result as authorization.
+struct VerifiedVPNUpdateTransition {
+    let fromSequence: UInt64
+    let toSequence: UInt64
+    private let previous: VerifiedVPNRelease
+    private let candidate: VerifiedVPNRelease
+
+    fileprivate init(previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease) {
+        self.previous = previous
+        self.candidate = candidate
+        fromSequence = previous.sequence
+        toSequence = candidate.sequence
+    }
+
+    func matchesSource(_ current: VerifiedVPNRelease) -> Bool {
+        previous.isSameRelease(as: current)
+    }
+
+    func matchesDestination(_ current: VerifiedVPNRelease) -> Bool {
+        candidate.isSameRelease(as: current)
+    }
 }
 
 /// A signed engine identity, not an executable path or permission to launch it.
@@ -133,6 +160,8 @@ struct VPNReleaseAuthority {
     // Domain separation prevents a signature over an update archive, appcast or
     // arbitrary text from being interpreted as authorization for root code.
     static let signatureDomain = Data("kz.documentolog.proxypilot/vpn-release-authorization/v1\0".utf8)
+    static let updateTransitionDomain = Data("kz.documentolog.proxypilot/vpn-update-transition/v1\0".utf8)
+    static let maximumUpdateTransitionBytes = 512
     static let maximumPayloadBytes = 4096
     static let maximumHelperBytes = 32 * 1024 * 1024
     static let maximumEngineBytes = 64 * 1024 * 1024
@@ -252,6 +281,40 @@ struct VPNReleaseAuthority {
             appHashes: [appARM, appIntel], helperHashes: ["arm64": helperARM, "x86_64": helperIntel],
             helperSHA256: helperHash, helperByteCount: Int(helperBytes), engine: engine,
             payloadDigest: digest, authorityDigest: authorityDigest)
+    }
+
+    /// A release signature authorizes its endpoint, not arbitrary transitions
+    /// from older app builds. Require a separate signature over the exact A→B
+    /// edge, then independently verify B with all existing rollback/component
+    /// rules. A must come from authenticated protected storage, not worker IPC.
+    /// This pure check neither enrolls A in B's peer policy nor bypasses the
+    /// same-app installer check. Journal/recovery/late-stage coordination remain
+    /// separate; an identical B→B retry is not a new forward transition.
+    func verifyUpdateTransition(payload: Data, signature: Data,
+                                previous: VerifiedVPNRelease,
+                                candidatePayload: Data, candidateSignature: Data) throws -> VerifiedVPNUpdateTransition {
+        guard !payload.isEmpty, payload.count <= Self.maximumUpdateTransitionBytes,
+              signature.count == 64,
+              publicKey.isValidSignature(signature, for: Self.updateTransitionDomain + payload) else {
+            throw VPNReleaseAuthorizationError.invalidSignature
+        }
+        guard previous.authorityDigest == authorityDigest else {
+            throw VPNReleaseAuthorizationError.wrongAuthority
+        }
+        let candidate = try verify(payload: candidatePayload, signature: candidateSignature, previous: previous)
+        guard candidate.sequence > previous.sequence else {
+            throw VPNReleaseAuthorizationError.invalidUpdateTransition
+        }
+        func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+        // Comparing the entire canonical record also rejects extra/duplicate
+        // fields, alternate numeric encodings, CRLF and unbounded path inputs.
+        let expected = "format=1\nproduct=kz.documentolog.proxypilot\n"
+            + "from-sequence=\(previous.sequence)\nfrom-sha256=\(hex(previous.payloadDigest))\n"
+            + "to-sequence=\(candidate.sequence)\nto-sha256=\(hex(candidate.payloadDigest))\n"
+        guard payload == Data(expected.utf8) else {
+            throw VPNReleaseAuthorizationError.invalidUpdateTransition
+        }
+        return VerifiedVPNUpdateTransition(previous: previous, candidate: candidate)
     }
 
     private static func number(_ value: String) -> UInt64? {

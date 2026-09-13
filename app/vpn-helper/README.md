@@ -19,6 +19,40 @@ The `VPN_ENGINE_DELIVERY_TESTING` factory is now only a test
 convenience, with the same parser/rules as production. No engine is executed.
 See `docs/vpn-engine-delivery.md` for the current evidence and remaining gates.
 
+## Directed joint-update authorization (13 September, verification only)
+
+`VPNReleaseAuthority.verifyUpdateTransition` checks a separate Ed25519 signature
+over one exact forward release transition. This is a foundation for the joint
+app/helper coordinator, not a new installer command or an enabled update path.
+The same embedded release authority signs/verifies both endpoint manifests and
+the transition, with a distinct signature domain:
+`kz.documentolog.proxypilot/vpn-update-transition/v1` followed by one NUL byte.
+
+The bounded (512-byte maximum), UTF-8, LF-terminated payload has exactly six
+ordered fields: `format=1`, `product=kz.documentolog.proxypilot`, `from-sequence`,
+`from-sha256`, `to-sequence`, `to-sha256`. Digests cover exact canonical manifest
+payload bytes, not filenames, archives, signature representations or only app
+hashes. The candidate is independently verified with `previous:` and all existing
+version/protocol/engine rollback rules; the transition must strictly advance its
+sequence. A signed malformed or mismatched record is still rejected.
+
+The immutable result exposes only endpoint sequence numbers and exact source/
+destination matching. It does not expose a combined peer policy, acquire a lease,
+write a journal, change the release floor, authenticate an installer process or
+prove readiness. Existing same-app/root authorization checks are unchanged.
+The old release must eventually be loaded from protected storage and rechecked
+under lifecycle ownership immediately before use. A saved result or worker event
+cannot replace that check. Identical A→B proof verification may be repeated while
+A remains selected, but B→B is not a new transition; durable retry after selection
+and crash recovery still need a journal. First install and key rotation are not
+authorized by this contract. No signing key, package or root service is changed.
+
+Focused disposable verification:
+
+```sh
+python3 -m unittest discover -s tests -p test_vpn_update_transition.py -v
+```
+
 `VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
 gate** for a connector or the current installer, not a daemon, command dispatcher,
 installer entry point or ready VPN feature. It is
