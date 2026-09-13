@@ -10,6 +10,33 @@ enum VPNReleaseStoreError: Error {
     case writeFailed
     case commitUncertain
     case deploymentRequired
+    case updateInProgress
+    case invalidUpdateJournal
+}
+
+enum VPNUpdateJournalPhase: String, Codable {
+    case prepared, replacementPending, selected, completed, cancelled
+}
+
+/// Recovery instructions for a future trusted coordinator, NOT runtime evidence
+/// or authorization to replace an app/start a service.
+enum VPNUpdateRecovery: String {
+    case canCancelOrReplace, inspectApplication, recoverCandidate, completed, cancelled
+}
+
+struct VPNUpdateJournalSnapshot {
+    let transactionID: UUID
+    let revision: UInt64
+    let phase: VPNUpdateJournalPhase
+    let recovery: VPNUpdateRecovery
+    let previous: VPNAuthorizedDeployment
+    let candidate: VPNAuthorizedDeployment
+    fileprivate init(_ record: VPNReleaseStore.UpdateJournal, previous: VPNAuthorizedDeployment,
+                     candidate: VPNAuthorizedDeployment, recovery: VPNUpdateRecovery) {
+        transactionID = record.transactionID; revision = record.revision
+        phase = record.phase; self.previous = previous; self.candidate = candidate
+        self.recovery = recovery
+    }
 }
 
 struct VPNAuthorizedRelease {
@@ -53,6 +80,19 @@ struct VPNPreparedDeployment {
 /// test process's UID and a private disposable directory. Never accept this fd
 /// from IPC or use the unprivileged app's profile/preferences directory.
 final class VPNReleaseStore {
+    fileprivate struct UpdateJournal: Codable {
+        let schema: Int
+        let transactionID: UUID
+        var revision: UInt64
+        var phase: VPNUpdateJournalPhase
+        let owner: uid_t
+        let previousPayload: Data
+        let previousSignature: Data
+        let candidatePayload: Data
+        let candidateSignature: Data
+        let transitionPayload: Data
+        let transitionSignature: Data
+    }
     private struct Envelope: Codable {
         let schema: Int
         let owner: uid_t
@@ -66,6 +106,8 @@ final class VPNReleaseStore {
     private static let maximumRecordBytes = 8192
     private let recordName = "release.json"
     private let markerName = "initialized"
+    private let journalName = "update.json"
+    private static let maximumJournalBytes = 32768
 
     #if VPN_RELEASE_STORE_TESTING
     // Compiled only into the crash-test executable, never into a release build.
@@ -94,11 +136,196 @@ final class VPNReleaseStore {
         }
     }
 
+    /// Also rejects terminal/corrupt journals: retirement is a separate durable
+    /// action. Read-only selection remains available for diagnosis/reconciliation.
+    func requireNoPendingUpdate() throws {
+        try withLock { try requireNoJournal() }
+    }
+
+    func loadUpdateJournal() throws -> VPNUpdateJournalSnapshot? {
+        try withLock { try readJournal()?.1 }
+    }
+
+    /// Disk-only preparation. The production caller must first authenticate the
+    /// source app and hold lifecycle ownership. No IPC/installer entry calls this
+    /// yet. Staging and journal persistence do not advance the selected floor.
+    @discardableResult
+    func prepareUpdateJournal(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
+                              transitionPayload: Data, transitionSignature: Data,
+                              expectedSequence: UInt64) throws -> VPNUpdateJournalSnapshot {
+        try withLock {
+            try requireNoJournal()
+            let (currentEnvelope, current) = try readCurrent()
+            guard currentEnvelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
+            guard current.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
+            _ = try authority.verifyUpdateTransition(payload: transitionPayload, signature: transitionSignature,
+                previous: current.release, candidatePayload: payload, candidateSignature: signature)
+            let candidate = try authority.verify(payload: payload, signature: signature, previous: current.release)
+            try stageArtifacts(helper: helper, engine: engine, release: candidate)
+            let record = UpdateJournal(schema: 1, transactionID: UUID(), revision: 0, phase: .prepared,
+                owner: current.ownerUserID, previousPayload: currentEnvelope.payload,
+                previousSignature: currentEnvelope.signature, candidatePayload: payload,
+                candidateSignature: signature, transitionPayload: transitionPayload,
+                transitionSignature: transitionSignature)
+            try replace(journalName, with: encodeJournal(record))
+            return try validateJournal(record)
+        }
+    }
+
+    /// Write-ahead boundary: after this succeeds cancellation is no longer safe.
+    /// The future coordinator must confirm drain and app identity under its lease
+    /// before allowing replacement. This method grants no system/IPC authority.
+    @discardableResult
+    func markUpdateReplacementPending(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
+        try withLock {
+            var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == .prepared else { throw VPNReleaseStoreError.invalidUpdateJournal }
+            try advanceJournal(&record, to: .replacementPending)
+            return try validateJournal(record)
+        }
+    }
+
+    /// Disk selection only. BEFORE calling, the future coordinator must freshly
+    /// verify installed candidate app identity and confirmed service drain while
+    /// holding lifecycle ownership. The journal alone never proves either fact.
+    /// A crash between selector and phase writes is recovered only forward to B.
+    @discardableResult
+    func selectUpdateCandidate(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
+        try withLock {
+            var (record, snapshot) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == .replacementPending else { throw VPNReleaseStoreError.invalidUpdateJournal }
+            let (_, current) = try readCurrent()
+            if current.release.isSameRelease(as: snapshot.previous.release) {
+                let envelope = Envelope(schema: 2, owner: record.owner,
+                    payload: record.candidatePayload, signature: record.candidateSignature)
+                try replace(recordName, with: encode(envelope))
+            } else {
+                // readJournal validated exact B, never a same-sequence substitute.
+                guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
+            }
+            try advanceJournal(&record, to: .selected)
+            return try validateJournal(record)
+        }
+    }
+
+    /// Historical completion only, never a ready receipt. Caller must establish
+    /// fresh candidate readiness (or explicit desired-off outcome) before this.
+    @discardableResult
+    func completeUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
+        try withLock {
+            var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == .selected else { throw VPNReleaseStoreError.invalidUpdateJournal }
+            try advanceJournal(&record, to: .completed)
+            return try validateJournal(record)
+        }
+    }
+
+    @discardableResult
+    func cancelUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
+        try withLock {
+            var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == .prepared else { throw VPNReleaseStoreError.invalidUpdateJournal }
+            try advanceJournal(&record, to: .cancelled)
+            return try validateJournal(record)
+        }
+    }
+
+    func retireUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws {
+        try withLock {
+            let (record, _) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == .completed || record.phase == .cancelled else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+            #if VPN_RELEASE_STORE_TESTING
+            Self.checkpoint?("update.json:before-unlink")
+            #endif
+            guard unlinkat(directory, journalName, 0) == 0 else { throw VPNReleaseStoreError.writeFailed }
+            #if VPN_RELEASE_STORE_TESTING
+            Self.checkpoint?("update.json:after-unlink")
+            #endif
+            guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
+        }
+    }
+
+    private func requireNoJournal() throws {
+        guard try readFile(journalName, limit: Self.maximumJournalBytes) == nil else {
+            throw VPNReleaseStoreError.updateInProgress
+        }
+    }
+
+    private func requireJournal(_ transactionID: UUID, revision: UInt64) throws -> (UpdateJournal, VPNUpdateJournalSnapshot) {
+        guard let (record, snapshot) = try readJournal() else { throw VPNReleaseStoreError.invalidUpdateJournal }
+        guard record.transactionID == transactionID, record.revision == revision else {
+            throw VPNReleaseStoreError.staleRevision
+        }
+        return (record, snapshot)
+    }
+
+    private func readJournal() throws -> (UpdateJournal, VPNUpdateJournalSnapshot)? {
+        guard let data = try readFile(journalName, limit: Self.maximumJournalBytes) else { return nil }
+        do {
+            let record = try JSONDecoder().decode(UpdateJournal.self, from: data)
+            guard try encodeJournal(record) == data else { throw VPNReleaseStoreError.invalidUpdateJournal }
+            return (record, try validateJournal(record))
+        } catch { throw VPNReleaseStoreError.invalidUpdateJournal }
+    }
+
+    private func validateJournal(_ record: UpdateJournal) throws -> VPNUpdateJournalSnapshot {
+        let expectedRevision: UInt64
+        switch record.phase {
+        case .prepared: expectedRevision = 0
+        case .replacementPending, .cancelled: expectedRevision = 1
+        case .selected: expectedRevision = 2
+        case .completed: expectedRevision = 3
+        }
+        guard record.schema == 1, record.revision == expectedRevision else {
+            throw VPNReleaseStoreError.invalidUpdateJournal
+        }
+        let previous = try authority.verify(payload: record.previousPayload, signature: record.previousSignature, previous: nil)
+        _ = try authority.verifyUpdateTransition(payload: record.transitionPayload, signature: record.transitionSignature,
+            previous: previous, candidatePayload: record.candidatePayload, candidateSignature: record.candidateSignature)
+        let candidate = try authority.verify(payload: record.candidatePayload, signature: record.candidateSignature, previous: previous)
+        try validateStoredArtifacts(previous)
+        try validateStoredArtifacts(candidate)
+        let (envelope, current) = try readCurrent()
+        guard envelope.schema == 2, current.ownerUserID == record.owner else { throw VPNReleaseStoreError.invalidUpdateJournal }
+        let sourceSelected = current.release.isSameRelease(as: previous)
+        let destinationSelected = current.release.isSameRelease(as: candidate)
+        let recovery: VPNUpdateRecovery
+        switch record.phase {
+        case .prepared where sourceSelected: recovery = .canCancelOrReplace
+        case .replacementPending where sourceSelected: recovery = .inspectApplication
+        case .replacementPending where destinationSelected: recovery = .recoverCandidate
+        case .selected where destinationSelected: recovery = .recoverCandidate
+        case .completed where destinationSelected: recovery = .completed
+        case .cancelled where sourceSelected: recovery = .cancelled
+        default: throw VPNReleaseStoreError.invalidUpdateJournal
+        }
+        return VPNUpdateJournalSnapshot(record,
+            previous: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: previous)),
+            candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: candidate)), recovery: recovery)
+    }
+
+    private func advanceJournal(_ record: inout UpdateJournal, to phase: VPNUpdateJournalPhase) throws {
+        guard record.revision < UInt64.max else { throw VPNReleaseStoreError.invalidUpdateJournal }
+        record.revision += 1; record.phase = phase
+        _ = try validateJournal(record)
+        try replace(journalName, with: encodeJournal(record))
+    }
+
+    private func encodeJournal(_ record: UpdateJournal) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(record)
+        guard data.count <= Self.maximumJournalBytes else { throw VPNReleaseStoreError.invalidUpdateJournal }
+        return data
+    }
+
     /// Validate and stage BEFORE interrupting the running version. This does
     /// not change the selected security floor or imply a successful update.
     func prepareDeployment(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                            expectedSequence: UInt64) throws -> VPNPreparedDeployment {
         try withLock {
+            try requireNoJournal()
             let (envelope, state) = try readCurrent()
             guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
             guard state.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
@@ -113,6 +340,7 @@ final class VPNReleaseStore {
     @discardableResult
     func commitPreparedDeployment(_ prepared: VPNPreparedDeployment) throws -> VPNAuthorizedDeployment {
         try withLock {
+            try requireNoJournal()
             let (envelope, current) = try readCurrent()
             guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
             guard current.ownerUserID == prepared.previous.ownerUserID,
@@ -133,6 +361,7 @@ final class VPNReleaseStore {
     func bootstrapDeployment(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                              trustedOwnerUserID: uid_t) throws -> VPNAuthorizedDeployment {
         try withLock {
+            try requireNoJournal()
             guard try readFile(markerName) == nil, try readFile(recordName) == nil else {
                 throw VPNReleaseStoreError.alreadyInitialized
             }
@@ -153,6 +382,7 @@ final class VPNReleaseStore {
     func commitDeployment(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
                           expectedSequence: UInt64) throws -> VPNAuthorizedDeployment {
         try withLock {
+            try requireNoJournal()
             let (previous, current) = try readCurrent()
             guard previous.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
             guard current.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
@@ -173,6 +403,7 @@ final class VPNReleaseStore {
     @discardableResult
     func bootstrap(payload: Data, signature: Data, trustedOwnerUserID: uid_t) throws -> VPNAuthorizedRelease {
         try withLock {
+            try requireNoJournal()
             guard try readFile(markerName) == nil, try readFile(recordName) == nil else {
                 throw VPNReleaseStoreError.alreadyInitialized
             }
@@ -195,6 +426,7 @@ final class VPNReleaseStore {
     @discardableResult
     func accept(payload: Data, signature: Data, expectedSequence: UInt64) throws -> VPNAuthorizedRelease {
         try withLock {
+            try requireNoJournal()
             let (previous, current) = try readCurrent()
             guard previous.schema == 1 else { throw VPNReleaseStoreError.deploymentRequired }
             guard current.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }

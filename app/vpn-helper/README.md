@@ -53,6 +53,42 @@ Focused disposable verification:
 python3 -m unittest discover -s tests -p test_vpn_update_transition.py -v
 ```
 
+## Durable joint-update journal (disk layer; no production update entry)
+
+`VPNReleaseStore` now records a single exact signed A→B transaction in protected
+`update.json`, using the existing descriptor-relative I/O, private permissions,
+nonblocking store lock, canonical encoding and file/parent-directory syncs.
+Both endpoint manifests/signatures and the separate transition signature are
+reverified on every journal load; the owner and both sets of staged artifacts
+must still match protected storage. The journal contains no profile or secrets.
+
+The graph is `prepared → replacementPending → selected → completed`, with only
+`prepared → cancelled` allowing cancellation. Expected UUID/revision checks reject
+stale callers; they are correlation, not authority. The selected release remains
+A during preparation. Before app replacement, the trusted future coordinator
+must record `replacementPending`. `selectUpdateCandidate` changes the selector
+to B before recording `selected`: if the process dies between these writes,
+`replacementPending` + exact B classifies as forward recovery, never rollback.
+Impossible phase/selector combinations and corrupt journals fail closed.
+
+Terminal records remain until explicit retirement and a directory sync. Ordinary
+deployment preparation/commit, bootstrap and legacy policy mutations are blocked
+by any journal, even a terminal or corrupt one; old in-memory preparation tokens
+cannot bypass this. The journal API does not prune artifacts. A failed sync after
+rename/unlink is an uncertain commit requiring reload, not a promise of no change.
+Process-crash tests are not evidence of physical power-loss/filesystem behavior.
+
+These are internal disk operations, not an installer command. A future coordinator
+must authenticate the source app, hold lifecycle ownership, confirm drain, verify
+the actual installed destination app before selecting B, and establish readiness
+or an explicit desired-off result before completion. Neither a journal phase nor
+a Sparkle callback proves any of those facts. `loadDeployment` remains read-only
+selection; `loadUpdateJournal` gives recovery classification, not a ready receipt.
+The ordinary runtime path is guarded separately; no journal-aware activation is
+enabled. Installer removal does not silently discard an interrupted transaction.
+
+Detailed recovery matrix and test evidence: `docs/vpn-update-journal-review.md`.
+
 `VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
 gate** for a connector or the current installer, not a daemon, command dispatcher,
 installer entry point or ready VPN feature. It is
