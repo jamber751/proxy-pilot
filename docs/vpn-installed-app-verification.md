@@ -74,3 +74,23 @@ are recorded in `vpn-staged-app-review.md`.
 Actual app replacement, installed-B inspection, live-B proof and journal-aware
 activation are still absent from production entry points. This document prevents
 those missing guarantees from being inferred from the completed earlier layers.
+
+## Protected exchange primitive (next increment)
+
+`VPNProtectedApplicationSwap` now implements and tests an internal atomic
+`RENAME_SWAP` between fixed `current/ProxyPilot.app` and
+`candidate/ProxyPilot.app` children under one already-protected private base.
+These are staging/test slots, not a migration of the user's installation layout.
+Both signed artifacts and their exact signed transition are verified under a
+namespace lease. Only A/B exchanges; only B/A is accepted as an idempotent retry.
+Indistinguishable app pins (including helper-only updates) require a different
+future path and are refused. Parent syncing, inode inversion and full post-swap
+inspection follow the rename. Post-rename failure is uncertain, never rollback.
+
+It deliberately refuses a mutable Applications parent and self-replacement.
+Executor-path/inode exclusion is a safety check, not live authentication.
+The real installer must still establish an independent authenticated executor,
+hold the real service lifecycle lease, recheck the exact journal and drain, and
+solve mutable-destination installation/live-B proof before selecting B. No
+production entry point calls the swap, and no service or selector is changed by
+it. Acceptance details: `vpn-application-swap-tests.md`.
