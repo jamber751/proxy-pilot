@@ -94,3 +94,17 @@ hold the real service lifecycle lease, recheck the exact journal and drain, and
 solve mutable-destination installation/live-B proof before selecting B. No
 production entry point calls the swap, and no service or selector is changed by
 it. Acceptance details: `vpn-application-swap-tests.md`.
+
+## Journal and drain integration (protected copies only)
+
+`VPNJointApplicationReplacement` now supplies the real service lease, fresh
+pending-journal checks, exact live-A authentication and drain callback for the
+protected-copy primitive. The callback runs after copy validation, before
+rename, and on exact B/A retry; trees are revalidated after draining. The verified
+transition is retained in the journal snapshot without changing its disk format.
+No selector/journal/budget/desired-state write or service start is performed.
+
+This closes the internal sequencing gap for protected copies, not the independent
+executor or writable Applications destination boundary above. There remains no
+production entry point or installed/live-B proof. Details and test scope:
+`vpn-joint-replacement-review.md`, `vpn-joint-replacement-tests.md`.
