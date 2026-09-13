@@ -40,6 +40,7 @@ class VPNCoreTests(unittest.TestCase):
 
     def test_resources(self): self.run_group('resources')
     def test_configuration(self): self.run_group('configuration')
+    def test_authentication_metadata_and_migration(self): self.run_group('authentication')
     def test_import(self): self.run_group('import')
     def test_reject_unsafe_profiles(self): self.run_group('unsafe')
     def test_picker_and_drop_files(self): self.run_group('files')

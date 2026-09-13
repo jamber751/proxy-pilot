@@ -35,6 +35,11 @@ struct VPNImportedProfile: CustomStringConvertible, CustomDebugStringConvertible
 
     // Kept internal: only the protected store should persist these bytes.
     var protectedContents: Data { validatedData }
+
+    func supports(authentication: VPNAuthentication?) -> Bool {
+        guard let authentication = authentication else { return true }
+        return requiresCredentials ? authentication.mode != .certificate : authentication.mode == .certificate
+    }
 }
 
 enum VPNProfileImporter {

@@ -109,6 +109,47 @@ struct VPNResource: Codable, Equatable, Identifiable {
     }
 }
 
+/// Non-secret login policy. Passwords and one-time codes deliberately do not
+/// belong to the Codable configuration; a future Keychain adapter is separate.
+enum VPNAuthenticationMode: String, Codable, Equatable {
+    case certificate
+    case password
+    case oneTimePassword
+}
+
+enum VPNCredentialPersistence: String, Codable, Equatable {
+    case none
+    case keychain
+}
+
+struct VPNAuthentication: Codable, Equatable {
+    let mode: VPNAuthenticationMode
+    let login: String?
+    /// User consent for a future Keychain-backed static password. This flag is
+    /// never permission to persist a password in this Codable object.
+    let credentialPersistence: VPNCredentialPersistence
+
+    init(mode: VPNAuthenticationMode, login: String? = nil,
+         credentialPersistence: VPNCredentialPersistence = .none) throws {
+        let normalized = login?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized?.utf8.count ?? 0 <= 255,
+              normalized?.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) != true,
+              mode != .certificate || normalized == nil,
+              mode == .certificate || normalized?.isEmpty == false,
+              mode == .password || credentialPersistence == .none
+        else { throw VPNValidationError.invalidConfiguration }
+        self.mode = mode
+        self.login = normalized
+        self.credentialPersistence = credentialPersistence
+    }
+
+    func validate() throws {
+        guard try Self(mode: mode, login: login,
+                       credentialPersistence: credentialPersistence) == self
+        else { throw VPNValidationError.invalidConfiguration }
+    }
+}
+
 /// Saved intent only. This is never evidence that a tunnel is connected.
 struct VPNConfiguration: Codable, Equatable {
     let schemaVersion: Int
@@ -117,10 +158,13 @@ struct VPNConfiguration: Codable, Equatable {
     private(set) var resources: [VPNResource]
     private(set) var desiredEnabled: Bool
     private(set) var corporateDNS: [String]
+    /// Nil is a migration-safe legacy/unselected state. In particular, an old
+    /// auth-user-pass profile cannot be guessed to use a static password or OTP.
+    private(set) var authentication: VPNAuthentication?
 
     init() {
         schemaVersion = 1; revision = 0; profileName = nil
-        resources = []; desiredEnabled = false; corporateDNS = []
+        resources = []; desiredEnabled = false; corporateDNS = []; authentication = nil
     }
 
     mutating func setProfile(name: String) throws {
@@ -128,6 +172,9 @@ struct VPNConfiguration: Codable, Equatable {
               name.utf8.count <= 255, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         else { throw VPNValidationError.invalidConfiguration }
         try advance(); profileName = name
+        // Authentication consent is bound to the imported profile instance, not
+        // its display filename. Replacement must require an explicit new choice.
+        authentication = nil
     }
 
     mutating func saveResource(_ resource: VPNResource, replacing id: UUID? = nil) throws {
@@ -165,18 +212,27 @@ struct VPNConfiguration: Codable, Equatable {
         try advance(); corporateDNS = normalized.map { $0.0 }
     }
 
+    mutating func setAuthentication(_ value: VPNAuthentication?) throws {
+        try value?.validate()
+        guard value == nil || profileName != nil else { throw VPNValidationError.missingProfile }
+        guard authentication != value else { return }
+        try advance(); authentication = value
+    }
+
     /// The controller must stop and verify cleanup before persisting this change.
     mutating func removeProfile() throws {
-        try advance(); profileName = nil; resources = []; corporateDNS = []; desiredEnabled = false
+        try advance(); profileName = nil; resources = []; corporateDNS = []; desiredEnabled = false; authentication = nil
     }
 
     func validate() throws {
         guard schemaVersion == 1, resources.count <= 1000, corporateDNS.count <= 4,
               !desiredEnabled || (profileName != nil && !resources.isEmpty),
+              authentication == nil || profileName != nil,
               Set(resources.map { $0.id }).count == resources.count,
               Set(resources.map { $0.address }).count == resources.count
         else { throw VPNValidationError.invalidConfiguration }
         for resource in resources { try resource.validate() }
+        try authentication?.validate()
         var probe = VPNConfiguration()
         if let name = profileName { try probe.setProfile(name: name) }
         try probe.setDNS(corporateDNS)

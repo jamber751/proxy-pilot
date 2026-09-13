@@ -20,7 +20,7 @@ struct VPNSnapshot: Codable, Equatable, CustomDebugStringConvertible {
 
     fileprivate func validate() throws {
         try configuration.validate()
-        _ = try inspectProfile()
+        let profile = try inspectProfile()
         var dnsCheck = VPNConfiguration()
         try dnsCheck.setDNS(suggestedDNS)
         for resource in suggestedResources { try resource.validate() }
@@ -29,7 +29,8 @@ struct VPNSnapshot: Codable, Equatable, CustomDebugStringConvertible {
               Set(suggestedResources.map { $0.address }).count == suggestedResources.count,
               Set(suggestedResources.map { $0.id }).count == suggestedResources.count,
               suggestedResources.allSatisfy({ $0.kind != .domain }),
-              configuration.profileName != nil || (suggestedDNS.isEmpty && suggestedResources.isEmpty && !hasIgnoredProfileRoutes)
+              configuration.profileName != nil || (suggestedDNS.isEmpty && suggestedResources.isEmpty && !hasIgnoredProfileRoutes),
+              (profile?.supports(authentication: configuration.authentication) ?? (configuration.authentication == nil))
         else { throw VPNValidationError.invalidConfiguration }
     }
 }
@@ -86,6 +87,14 @@ final class VPNStore {
             let contents: Data?
             if let profile = profile {
                 guard profile.name == configuration.profileName else { throw VPNValidationError.invalidConfiguration }
+                // Do not carry login/persistence consent to different profile
+                // bytes through a direct store call, even with the same name.
+                // Import the replacement with a cleared selection first.
+                if let oldContents = previous?.saved.profileContents,
+                   oldContents != profile.protectedContents,
+                   configuration.authentication != nil {
+                    throw VPNValidationError.invalidConfiguration
+                }
                 contents = profile.protectedContents
             } else if configuration.profileName != nil {
                 guard previous?.saved.configuration.profileName == configuration.profileName else { throw VPNValidationError.missingProfile }

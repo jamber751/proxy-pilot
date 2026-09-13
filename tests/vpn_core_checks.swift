@@ -36,6 +36,7 @@ QUJDRA==
         switch group {
         case "resources": try resources()
         case "configuration": try configuration()
+        case "authentication": try authentication(directory)
         case "import": try importing()
         case "unsafe": try unsafeProfiles()
         case "files": try files(directory)
@@ -45,6 +46,112 @@ QUJDRA==
         default: fatalError("Unknown test group")
         }
         print("\(group): \(count) checks passed")
+    }
+    static func authentication(_ directory: URL) throws {
+        let certificate = try VPNAuthentication(mode: .certificate)
+        let password = try VPNAuthentication(mode: .password, login: " employee ", credentialPersistence: .keychain)
+        let otp = try VPNAuthentication(mode: .oneTimePassword, login: "employee")
+        try check(certificate.login == nil && certificate.credentialPersistence == .none, "certificate mode has no login or persistence")
+        try check(password.login == "employee" && password.credentialPersistence == .keychain, "static-password metadata can opt into future Keychain storage")
+        try check(otp.credentialPersistence == .none, "OTP metadata is never persistent")
+        for invalid in [
+            { try VPNAuthentication(mode: .certificate, login: "employee") },
+            { try VPNAuthentication(mode: .password, login: "") },
+            { try VPNAuthentication(mode: .oneTimePassword, login: "employee", credentialPersistence: .keychain) },
+            { try VPNAuthentication(mode: .password, login: "bad\nlogin") }
+        ] { try rejects("invalid authentication metadata") { _ = try invalid() } }
+
+        var config = VPNConfiguration()
+        try config.setProfile(name: "company.ovpn")
+        try config.saveResource(VPNResource(address: "gitlab.company.example"))
+        try config.setAuthentication(password)
+        let data = try JSONEncoder().encode(config)
+        let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let authenticationObject = object["authentication"] as! [String: Any]
+        try check(Set(authenticationObject.keys) == ["mode", "login", "credentialPersistence"],
+                  "Codable authentication contains metadata fields only")
+        let decoded = try JSONDecoder().decode(VPNConfiguration.self, from: data)
+        try decoded.validate()
+        try check(decoded.authentication == password, "login, mode and persistence round trip")
+
+        var legacyObject = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        legacyObject.removeValue(forKey: "authentication")
+        let legacy = try JSONDecoder().decode(VPNConfiguration.self, from: JSONSerialization.data(withJSONObject: legacyObject))
+        try legacy.validate()
+        try check(legacy.authentication == nil && legacy.resources == config.resources && legacy.profileName == config.profileName,
+                  "auth-less saved configurations retain profile and resources without guessing a mode")
+
+        for mutation in [
+            { (row: inout [String: Any]) in row["login"] = "bad\nlogin" },
+            { (row: inout [String: Any]) in row["mode"] = "oneTimePassword"; row["credentialPersistence"] = "keychain" }
+        ] {
+            var forged = object
+            var row = forged["authentication"] as! [String: Any]
+            mutation(&row); forged["authentication"] = row
+            let decoded = try JSONDecoder().decode(VPNConfiguration.self, from: JSONSerialization.data(withJSONObject: forged))
+            try rejects("forged decoded authentication metadata") { try decoded.validate() }
+        }
+        var unknown = object
+        var unknownAuth = unknown["authentication"] as! [String: Any]
+        unknownAuth["mode"] = "challenge"; unknown["authentication"] = unknownAuth
+        try rejects("unknown decoded authentication mode") {
+            _ = try JSONDecoder().decode(VPNConfiguration.self, from: JSONSerialization.data(withJSONObject: unknown))
+        }
+
+        let beforeReplacement = config
+        try config.setProfile(name: "company.ovpn")
+        try check(config.authentication == nil && config.resources == beforeReplacement.resources,
+                  "even same-name profile replacement clears login and persistence consent")
+        try config.setAuthentication(password)
+
+        let credentials = try profile()
+        let certificateOnly = try profile(fixture.replacingOccurrences(of: "auth-user-pass\n", with: "") + "\n<cert>\n-----BEGIN CERTIFICATE-----\nQUJDRA==\n-----END CERTIFICATE-----\n</cert>\n<key>\n-----BEGIN PRIVATE KEY-----\nQUJDRA==\n-----END PRIVATE KEY-----\n</key>")
+        try check(credentials.supports(authentication: nil) && credentials.supports(authentication: password) && credentials.supports(authentication: otp),
+                  "credential profile stays undecided until password or OTP is explicitly selected")
+        try check(!credentials.supports(authentication: certificate), "credential profile rejects certificate-only selection")
+        try check(certificateOnly.supports(authentication: certificate) && !certificateOnly.supports(authentication: password) && !certificateOnly.supports(authentication: otp),
+                  "certificate-only profile rejects credential modes")
+
+        let store = VPNStore(directory: directory.appendingPathComponent("Authentication"))
+        try store.save(config, importing: credentials, expectedRevision: nil)
+        let saved = try store.load()!
+        try check(saved.saved.configuration.authentication == password && saved.saved.inspectProfile()?.requiresCredentials == true,
+                  "store preserves explicit auth metadata alongside protected profile bytes")
+        var incompatible = config
+        try incompatible.setAuthentication(certificate)
+        try rejects("store rejects auth mode incompatible with imported profile") {
+            try store.save(incompatible, expectedRevision: config.revision)
+        }
+        try check(try store.load() == saved, "rejected auth change leaves saved profile and resources intact")
+
+        var reimport = config
+        try reimport.setDNS(["192.0.2.53"])
+        let identical = try store.save(reimport, importing: credentials, expectedRevision: config.revision)
+        try check(identical.saved.configuration.authentication == password,
+                  "byte-identical reimport may retain explicit authentication")
+        let changedProfile = try profile(fixture + "\nremote backup.company.example 1194\n")
+        var replacement = reimport
+        try replacement.setDNS([])
+        try rejects("direct changed-content import cannot carry authentication under the same filename") {
+            try store.save(replacement, importing: changedProfile, expectedRevision: reimport.revision)
+        }
+        try check(try store.load() == identical, "rejected replacement preserves the entire old snapshot")
+        try replacement.setAuthentication(nil)
+        let cleared = try store.save(replacement, importing: changedProfile, expectedRevision: reimport.revision)
+        let inspectedReplacement = try cleared.saved.inspectProfile()
+        try check(cleared.saved.configuration.authentication == nil && inspectedReplacement?.protectedContents == changedProfile.protectedContents,
+                  "changed profile imports after clearing the old selection")
+        let clearedRevision = replacement.revision
+        try replacement.setAuthentication(otp)
+        let selected = try store.save(replacement, expectedRevision: clearedRevision)
+        try check(selected.saved.configuration.authentication == otp, "replacement can get a fresh explicit choice")
+
+        var noProfile = VPNConfiguration()
+        try rejects("authentication selection requires a profile") { try noProfile.setAuthentication(password) }
+        var noProfileObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(noProfile)) as! [String: Any]
+        noProfileObject["authentication"] = authenticationObject
+        noProfile = try JSONDecoder().decode(VPNConfiguration.self, from: JSONSerialization.data(withJSONObject: noProfileObject))
+        try rejects("authentication cannot exist without a profile") { try noProfile.validate() }
     }
     static func migration() throws {
         func migrated(_ text: String) -> [String] {
@@ -225,6 +332,12 @@ QUJDRA==
         var config = initial
         var loaded = try store.load()!
         try check(loaded.saved.configuration == config && loaded.applied == nil, "save is not connect")
+        try check(loaded.saved.configuration.authentication == nil, "legacy/unselected authentication is not guessed from auth-user-pass")
+        let legacyEnvelope = try JSONSerialization.jsonObject(with: Data(contentsOf: store.directory.appendingPathComponent("state.json"))) as! [String: Any]
+        let legacySaved = legacyEnvelope["saved"] as! [String: Any]
+        let legacyConfiguration = legacySaved["configuration"] as! [String: Any]
+        try check(legacyConfiguration["authentication"] == nil && loaded.saved.configuration.resources == config.resources && loaded.saved.inspectProfile()?.name == "company.ovpn",
+                  "auth-less store envelope retains resources and protected profile")
         try check(loaded.saved.inspectProfile()?.name == "company.ovpn", "profile round trip")
         try check(loaded.saved.suggestedDNS == ["10.20.0.53"] && loaded.saved.hasIgnoredProfileRoutes, "import notices survive reload")
         try check(loaded.saved.suggestedResources.map { $0.address } == ["10.0.0.0/8"], "route suggestions survive reload without replacing configured resources")
