@@ -81,6 +81,19 @@ enum VPNReleaseChecks {
                 _ = try release.clientPolicy(forTrustedUserID: 0)
                 fatalError("root client policy was accepted")
             } catch VPNPeerAuthenticationError.invalidPolicy {}
+        case "app-pins":
+            let release = try verified()
+            precondition(release.appHash(forArchitecture: "arm64") == Data(repeating: 0x11, count: 20))
+            precondition(release.appHash(forArchitecture: "x86_64") == Data(repeating: 0x22, count: 20))
+            precondition(release.appHash(forArchitecture: "other") == nil)
+            let swapped = try verified([
+                "app-arm64": String(repeating: "22", count: 20),
+                "app-x86_64": String(repeating: "11", count: 20)
+            ])
+            precondition(swapped.appHash(forArchitecture: "arm64") == Data(repeating: 0x22, count: 20))
+            precondition(swapped.appHash(forArchitecture: "x86_64") == Data(repeating: 0x11, count: 20))
+            _ = try swapped.clientPolicy(forTrustedUserID: 501)
+            _ = try swapped.installerPolicy()
         case "signatures":
             for invalid in [Data(), Data(repeating: 0, count: 64), signed.dropLast(), signed + Data([0])] {
                 rejects(.invalidSignature) { _ = try verifier.verify(payload: payload, signature: Data(invalid), previous: nil) }

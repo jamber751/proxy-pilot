@@ -78,7 +78,7 @@ struct VerifiedVPNRelease {
     let version: String
     let protocolVersion: UInt64
     let engine: VerifiedVPNEngine?
-    fileprivate let appHashes: Set<Data>
+    fileprivate let appHashes: [String: Data]
     fileprivate let helperHashes: [String: Data]
     fileprivate let helperSHA256: Data
     fileprivate let helperByteCount: Int
@@ -86,7 +86,7 @@ struct VerifiedVPNRelease {
     fileprivate let authorityDigest: Data
 
     fileprivate init(sequence: UInt64, version: String, protocolVersion: UInt64,
-                     appHashes: Set<Data>, helperHashes: [String: Data], helperSHA256: Data,
+                     appHashes: [String: Data], helperHashes: [String: Data], helperSHA256: Data,
                      helperByteCount: Int, engine: VerifiedVPNEngine?, payloadDigest: Data, authorityDigest: Data) {
         self.sequence = sequence
         self.version = version
@@ -103,7 +103,7 @@ struct VerifiedVPNRelease {
     /// The UID must come from trusted installation/session ownership, not IPC.
     func clientPolicy(forTrustedUserID userID: UInt32) throws -> VPNPeerPolicy {
         try VPNPeerPolicy(userID: userID, signingIdentifier: "kz.documentolog.proxypilot",
-                          codeDirectoryHashes: appHashes)
+                          codeDirectoryHashes: Set(appHashes.values))
     }
 
     func helperPolicy() throws -> VPNPeerPolicy {
@@ -111,7 +111,7 @@ struct VerifiedVPNRelease {
     }
 
     func installerPolicy() throws -> VPNPeerPolicy {
-        try VPNPeerPolicy.installer(codeDirectoryHashes: appHashes)
+        try VPNPeerPolicy.installer(codeDirectoryHashes: Set(appHashes.values))
     }
 
     #if VPN_HELPER_READINESS_TESTING
@@ -151,6 +151,7 @@ struct VerifiedVPNRelease {
     }
 
     func helperHash(forArchitecture architecture: String) -> Data? { helperHashes[architecture] }
+    func appHash(forArchitecture architecture: String) -> Data? { appHashes[architecture] }
 }
 
 /// Verification-only building block; not linked to the app or an installer.
@@ -278,7 +279,8 @@ struct VPNReleaseAuthority {
         }
         return VerifiedVPNRelease(
             sequence: sequence, version: values[3], protocolVersion: protocolVersion,
-            appHashes: [appARM, appIntel], helperHashes: ["arm64": helperARM, "x86_64": helperIntel],
+            appHashes: ["arm64": appARM, "x86_64": appIntel],
+            helperHashes: ["arm64": helperARM, "x86_64": helperIntel],
             helperSHA256: helperHash, helperByteCount: Int(helperBytes), engine: engine,
             payloadDigest: digest, authorityDigest: authorityDigest)
     }

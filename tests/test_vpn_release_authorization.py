@@ -41,6 +41,7 @@ class VPNReleaseAuthorizationTests(unittest.TestCase):
         self.assertIn('checks passed', result.stdout)
 
     def test_valid_release_and_owner_policy(self): self.check('valid')
+    def test_app_pins_retain_signed_architecture_mapping(self): self.check('app-pins')
     def test_bad_signatures_keys_and_tampering(self): self.check('signatures')
     def test_cross_protocol_signature_reuse(self): self.check('domain')
     def test_canonical_format_and_duplicate_fields(self): self.check('grammar')
