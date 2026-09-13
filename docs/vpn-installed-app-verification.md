@@ -28,9 +28,9 @@ turn a writable filesystem namespace into a protected one.
   nested updater/framework code. Check identifier, hardening and entitlements;
   do not reuse the helper's bare Mach-O check as full bundle validation.
 - Retain exact per-architecture app pins from the signed release rather than
-  relying on a version label. The current release model retains the app pin set
-  for dynamic peer authentication; static bundle verification needs the explicit
-  architecture mapping as well.
+  relying on a version label. Implemented on 13 September: the release model
+  retains the explicit architecture mapping; dynamic peer authentication still
+  consumes the same set of values. This alone proves no installed object.
 - Define a bounded, privileged replacement operation with descriptor-bound
   inputs and an exact destination. Recheck lifecycle ownership, journal and drain
   immediately before modifying the application. Never treat a previously
@@ -56,6 +56,21 @@ turn a writable filesystem namespace into a protected one.
 The A-authorized begin/cancel/cancelled-retirement methods implement only the
 pre-replacement boundary. Beginning confirms drain and records the forward-only
 phase under one lifecycle lease. Cancellation/retirement do not start a service.
+
+`VPNStagedApplication` adds a read-only observation of the fixed `ProxyPilot.app`
+child of a private local staging-directory descriptor. It checks the physical
+tree and safe internal framework links, fixed bundle metadata, both exact
+architecture pins, strict nested resource/code seals, hardening and entitlements,
+then repeats the tree observation. Revalidation repeats the whole inspection.
+The caller must establish protected ancestry and exclusive staging/lifecycle
+ownership; this API does not provide those or accept paths from IPC. It is
+compiled only into the opt-in installer candidate and has no production caller.
+
+This result is deliberately not an installed-app proof, a live-process proof,
+a retained lease, or authorization to replace/select/launch anything. It must
+not be serialized into a durable receipt. Runtime acceptance and limitations
+are recorded in `vpn-staged-app-review.md`.
+
 Actual app replacement, installed-B inspection, live-B proof and journal-aware
 activation are still absent from production entry points. This document prevents
 those missing guarantees from being inferred from the completed earlier layers.
