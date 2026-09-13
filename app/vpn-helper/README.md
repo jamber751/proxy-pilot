@@ -94,9 +94,25 @@ boundary: open existing storage, hold lifecycle ownership, authenticate the live
 current A app against A's pins, recheck the lease, then prepare the exact signed
 transition. A candidate-only process or updater cannot prepare it. This leaves
 A's PID, selected release and activation budget unchanged. There is no production
-CLI/Sparkle entry and no wrapper for replacement/selection/completion yet.
+CLI/Sparkle entry or actual application replacement/selection/completion path yet.
 See `docs/vpn-update-preparation.md` and `docs/vpn-update-runtime-gates.md` for
 the per-user process tests and remaining integration boundaries.
+
+`VPNInstaller.managePreparedJointUpdate` adds source-A-only actions under a fresh
+lifecycle lease: confirm service drain before recording `replacementPending`,
+cancel while still `prepared`, and explicitly retire only `cancelled + A`.
+Every action reauthenticates the current A process and checks the journal's exact
+UUID/revision/phase. Invalid requests never construct the runtime. Cancel and
+retirement do not stop/start a service or change activation intent. If drain
+succeeds but journal advancement fails, A may remain stopped and prepared;
+cancellation still does not automatically restart it.
+
+The returned snapshot is not ongoing drain proof: the lease has been released.
+The actual future replacer must reacquire lifecycle ownership and repeat the
+state/drain checks immediately before changing app bytes. No action here
+authorizes completed/B retirement or skips the installed-B verification gate.
+See `docs/vpn-replacement-boundary-review.md` for tests and
+`docs/vpn-installed-app-verification.md` for the next trust boundary.
 
 `VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
 gate** for a connector or the current installer, not a daemon, command dispatcher,

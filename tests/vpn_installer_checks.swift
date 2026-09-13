@@ -8,6 +8,32 @@ import Foundation
 // The fixture key is disposable; production must embed its own trusted key.
 @main
 enum VPNInstallerChecks {
+    private final class BoundaryRuntime: VPNActivationRuntime {
+        enum Mode { case real(VPNLaunchdRuntime), stopThenFail(VPNLaunchdRuntime), fail, loseLease(Int32) }
+        let mode: Mode
+        init(_ mode: Mode) { self.mode = mode }
+        func stopAndDrain(deadline: UInt64) throws {
+            switch mode {
+            case .real(let runtime): try runtime.stopAndDrain(deadline: deadline)
+            case .stopThenFail(let runtime):
+                try runtime.stopAndDrain(deadline: deadline)
+                throw VPNLaunchdError.cleanupNotConfirmed
+            case .fail: throw VPNLaunchdError.cleanupNotConfirmed
+            case .loseLease(let directory):
+                guard unlinkat(directory, VPNLifecycleLease.lockName, 0) == 0 else {
+                    throw VPNLaunchdError.unsafeStorage
+                }
+                let replacement = openat(directory, VPNLifecycleLease.lockName,
+                    O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+                guard replacement >= 0 else { throw VPNLaunchdError.unsafeStorage }
+                close(replacement)
+            }
+        }
+        func startIdleAndConnect(_ deployment: VPNAuthorizedDeployment, deadline: UInt64) throws -> Int32 {
+            throw VPNLaunchdError.launchFailed
+        }
+    }
+
     static func main() {
         guard geteuid() != 0 else { exit(77) }
         let args = CommandLine.arguments
@@ -28,6 +54,37 @@ enum VPNInstallerChecks {
             var signature = try key.signature(for: VPNReleaseAuthority.signatureDomain + payload)
             if args[1].hasSuffix("-bad-signature") { signature[0] ^= 1 }
             let label = args[6], plists = URL(fileURLWithPath: args[7], isDirectory: true)
+            if args[1].hasPrefix("journal-") {
+                let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
+                defer { close(directory) }
+                let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
+                // Even absent/corrupt records must reach the installer wrapper;
+                // do not let this fixture become the gate under test.
+                let journal = (try? store.loadUpdateJournal()) ?? nil
+                let action: VPNInstaller.JointUpdateSourceAction
+                if args[1].contains("cancel") { action = .cancel }
+                else if args[1].contains("retire") { action = .retireCancelled }
+                else { action = .beginReplacement }
+                let actualID = journal?.transactionID ?? UUID()
+                let actualRevision = journal?.revision ?? 0
+                let transactionID = args[1].contains("wrong-uuid") ? UUID() : actualID
+                let revision = args[1].contains("wrong-revision") ? actualRevision &+ 1 : actualRevision
+                let result = try VPNInstaller.testManagePreparedJointUpdate(action,
+                    transactionID: transactionID, expectedRevision: revision,
+                    authority: authority, base: base) { trustedDirectory in
+                        let marker = URL(fileURLWithPath: args[2]).appendingPathComponent("runtime-built")
+                        try Data("built".utf8).write(to: marker)
+                        if args[1].contains("fail-stop") { return BoundaryRuntime(.fail) }
+                        if args[1].contains("lose-lease") { return BoundaryRuntime(.loseLease(trustedDirectory)) }
+                        let runtime = try VPNLaunchdRuntime.testUserDomain(label: label,
+                            plistDirectory: plists, storageDirectory: trustedDirectory)
+                        if args[1].contains("stop-then-fail") { return BoundaryRuntime(.stopThenFail(runtime)) }
+                        return BoundaryRuntime(.real(runtime))
+                    }
+                if let result = result { print("journal:\(result.phase.rawValue):\(result.revision)") }
+                else { print("journal:retired") }
+                return
+            }
             if preparing {
                 let transition = try Data(contentsOf: URL(fileURLWithPath: args[8]))
                 var transitionSignature = try key.signature(for: VPNReleaseAuthority.updateTransitionDomain + transition)

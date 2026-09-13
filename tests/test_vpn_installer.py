@@ -328,6 +328,129 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertEqual(self.running_snapshot(), before)
         self.assertFalse((self.storage / 'update.json').exists())
 
+    def prepare_joint_update(self):
+        result = self.run_installer('prepare', sequence=11, expected=10, app_build='installer-next')
+        self.assertEqual(result.stdout.strip(), 'prepared:10->11 phase:prepared', result.stdout + result.stderr)
+
+    def journal_action(self, action, executable='installer'):
+        return self.run_installer(action, sequence=11, expected=10, executable=executable)
+
+    def journal_record(self):
+        return json.loads((self.storage / 'update.json').read_text())
+
+    def test_authenticated_a_begin_drains_without_selecting_or_charging_budget(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        self.prepare_joint_update()
+        release = (self.storage / 'release.json').read_bytes()
+        budget = (self.storage / 'activation.json').read_bytes()
+        result = self.journal_action('journal-begin')
+        self.assertEqual(result.stdout.strip(), 'journal:replacementPending:1', result.stdout + result.stderr)
+        self.assertFalse(self.loaded())
+        self.assertEqual((self.storage / 'release.json').read_bytes(), release)
+        self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
+        self.assertEqual(self.journal_record()['phase'], 'replacementPending')
+
+    def test_cancel_and_retire_prepared_do_not_stop_or_restart_a(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        self.prepare_joint_update()
+        before = self.running_snapshot()
+        result = self.journal_action('journal-cancel')
+        self.assertEqual(result.stdout.strip(), 'journal:cancelled:1', result.stdout + result.stderr)
+        self.assertFalse((self.support / 'runtime-built').exists())
+        after_cancel = self.running_snapshot()
+        self.assertEqual(after_cancel[0], before[0])
+        self.assertEqual(after_cancel[1]['release.json'], before[1]['release.json'])
+        self.assertEqual(after_cancel[1]['activation.json'], before[1]['activation.json'])
+        result = self.journal_action('journal-retire')
+        self.assertEqual(result.stdout.strip(), 'journal:retired', result.stdout + result.stderr)
+        self.assertFalse((self.support / 'runtime-built').exists())
+        self.assertFalse((self.storage / 'update.json').exists())
+        after_retire = self.running_snapshot()
+        self.assertEqual(after_retire[0], before[0])
+        self.assertEqual(after_retire[1]['activation.json'], before[1]['activation.json'])
+
+    def test_pending_refuses_cancel_repeat_begin_and_cancelled_retirement(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        self.prepare_joint_update()
+        self.assertEqual(self.journal_action('journal-begin').stdout.strip(), 'journal:replacementPending:1')
+        marker = self.support / 'runtime-built'
+        marker.unlink()
+        preserved = (self.storage / 'update.json').read_bytes()
+        for action in ('journal-cancel', 'journal-begin', 'journal-retire'):
+            with self.subTest(action=action):
+                result = self.journal_action(action)
+                self.assertEqual(result.stdout.strip(), 'rejected:invalidUpdateJournal', result.stdout + result.stderr)
+                self.assertEqual((self.storage / 'update.json').read_bytes(), preserved)
+        self.assertFalse(marker.exists(), 'repeat begin must be refused before runtime construction')
+
+    def test_management_refuses_wrong_identity_revision_uuid_and_held_lease_before_runtime(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        self.prepare_joint_update()
+        before = self.running_snapshot()
+        marker = self.support / 'runtime-built'
+        cases = [('journal-begin', 'installer-next', 'denied'),
+                 ('journal-begin', 'updater', 'denied'),
+                 ('journal-begin-wrong-uuid', 'installer', 'staleRevision'),
+                 ('journal-begin-wrong-revision', 'installer', 'staleRevision')]
+        for action, executable, error in cases:
+            with self.subTest(action=action, executable=executable):
+                result = self.journal_action(action, executable=executable)
+                self.assertEqual(result.stdout.strip(), f'rejected:{error}', result.stdout + result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertEqual(self.running_snapshot(), before)
+        with open(self.storage / 'lifecycle.lock', 'r+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.journal_action('journal-begin')
+        self.assertEqual(result.stdout.strip(), 'rejected:busy', result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.running_snapshot(), before)
+
+    def test_failed_or_unconfirmed_drain_does_not_advance_prepared(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        self.prepare_joint_update()
+        result = self.journal_action('journal-begin-fail-stop')
+        self.assertEqual(result.stdout.strip(), 'rejected:cleanupNotConfirmed', result.stdout + result.stderr)
+        self.assertEqual(self.journal_record()['phase'], 'prepared')
+        self.assertTrue(self.loaded())
+        (self.support / 'runtime-built').unlink()
+        result = self.journal_action('journal-begin-lose-lease')
+        self.assertEqual(result.stdout.strip(), 'rejected:lost', result.stdout + result.stderr)
+        self.assertEqual(self.journal_record()['phase'], 'prepared')
+
+    def test_stopped_before_journal_advance_remains_prepared_and_cancellation_does_not_restart(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        self.prepare_joint_update()
+        budget = (self.storage / 'activation.json').read_bytes()
+        result = self.journal_action('journal-begin-stop-then-fail')
+        self.assertEqual(result.stdout.strip(), 'rejected:cleanupNotConfirmed', result.stdout + result.stderr)
+        self.assertFalse(self.loaded())
+        self.assertEqual(self.journal_record()['phase'], 'prepared')
+        self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
+        (self.support / 'runtime-built').unlink()
+        self.assertEqual(self.journal_action('journal-cancel').stdout.strip(), 'journal:cancelled:1')
+        self.assertFalse(self.loaded())
+        self.assertFalse((self.support / 'runtime-built').exists())
+        self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
+        self.assertEqual(self.journal_action('journal-retire').stdout.strip(), 'journal:retired')
+        self.assertFalse(self.loaded())
+        self.assertFalse((self.support / 'runtime-built').exists())
+        self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
+
+    def test_missing_or_corrupt_journal_is_refused_before_runtime(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        marker = self.support / 'runtime-built'
+        result = self.journal_action('journal-begin')
+        self.assertEqual(result.stdout.strip(), 'rejected:invalidUpdateJournal', result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.running_snapshot(), before)
+        (self.storage / 'update.json').write_text('{broken')
+        (self.storage / 'update.json').chmod(0o600)
+        result = self.journal_action('journal-begin')
+        self.assertEqual(result.stdout.strip(), 'rejected:invalidUpdateJournal', result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.running_snapshot()[:1], before[:1])
+
     def test_update_without_an_installation_is_refused(self):
         result = self.run_installer('update', sequence=11, expected=10)
         self.assertEqual(result.stdout.strip(), 'rejected:notInstalled', result.stdout + result.stderr)
