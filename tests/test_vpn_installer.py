@@ -5,7 +5,9 @@ user's own launchd domain for the system domain. Every test boots its label out.
 Proving the order and the refusals is not proof of a privileged system install.
 """
 import fcntl
+import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -145,6 +147,17 @@ class VPNInstallerTests(unittest.TestCase):
             engine_path = self.base / 'engine-candidate'
             engine_path.write_bytes(data + b'tampered' if tamper_engine else data)
             arguments.append(str(engine_path))
+        if action.startswith('prepare'):
+            previous_envelope = json.loads((self.storage / 'release.json').read_text())
+            previous = base64.b64decode(previous_envelope['payload'])
+            edge_fields = {
+                'format': 1, 'product': 'kz.documentolog.proxypilot',
+                'from-sequence': expected, 'from-sha256': hashlib.sha256(previous).hexdigest(),
+                'to-sequence': sequence, 'to-sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            }
+            transition = self.base / 'transition'
+            transition.write_text(''.join(f'{key}={value}\n' for key, value in edge_fields.items()))
+            arguments.insert(8, str(transition))
         return subprocess.run(arguments, capture_output=True, text=True, timeout=120)
 
     def engine_name(self, engine='engine-v1'):
@@ -267,6 +280,53 @@ class VPNInstallerTests(unittest.TestCase):
         result = self.run_installer('update', sequence=11, expected=10)
         self.assertEqual(result.stdout.strip(), 'ready:11', result.stdout + result.stderr)
         self.assertTrue(self.loaded())
+
+    def test_old_app_prepares_candidate_only_pins_without_touching_running_a(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        result = self.run_installer('prepare', sequence=11, expected=10, app_build='installer-next')
+        self.assertEqual(result.stdout.strip(), 'prepared:10->11 phase:prepared', result.stdout + result.stderr)
+        after = self.running_snapshot()
+        self.assertEqual(after[0], before[0])
+        self.assertEqual(after[1]['release.json'], before[1]['release.json'])
+        self.assertEqual(after[1]['activation.json'], before[1]['activation.json'])
+        self.assertIn('update.json', after[1])
+        self.assertEqual(self.run_installer('probe').stdout.strip(), 'ready:10')
+        ordinary = self.run_installer('update', sequence=11, expected=10, app_build='installer-next')
+        self.assertEqual(ordinary.stdout.strip(), 'rejected:denied', ordinary.stdout + ordinary.stderr)
+
+    def test_candidate_and_updater_identities_cannot_prepare_when_not_selected_a(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        for executable in ('installer-next', 'updater'):
+            with self.subTest(executable=executable):
+                result = self.run_installer('prepare', sequence=11, expected=10,
+                                            executable=executable, app_build=executable)
+                self.assertEqual(result.stdout.strip(), 'rejected:denied', result.stdout + result.stderr)
+                self.assertEqual(self.running_snapshot(), before)
+                self.assertFalse((self.storage / 'update.json').exists())
+
+    def test_invalid_edge_and_stale_sequence_leave_installation_untouched(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        for action, expected in [('prepare-bad-edge', 10), ('prepare', 9)]:
+            with self.subTest(action=action):
+                result = self.run_installer(action, sequence=11, expected=expected,
+                                            app_build='installer-next')
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.running_snapshot(), before)
+                self.assertFalse((self.storage / 'update.json').exists())
+
+    def test_held_lifecycle_lease_blocks_preparation_without_changes(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        before = self.running_snapshot()
+        with open(self.storage / 'lifecycle.lock', 'r+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_installer('prepare', sequence=11, expected=10,
+                                        app_build='installer-next')
+        self.assertEqual(result.stdout.strip(), 'rejected:busy', result.stdout + result.stderr)
+        self.assertEqual(self.running_snapshot(), before)
+        self.assertFalse((self.storage / 'update.json').exists())
 
     def test_update_without_an_installation_is_refused(self):
         result = self.run_installer('update', sequence=11, expected=10)

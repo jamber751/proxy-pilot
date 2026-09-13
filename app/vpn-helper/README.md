@@ -89,6 +89,15 @@ enabled. Installer removal does not silently discard an interrupted transaction.
 
 Detailed recovery matrix and test evidence: `docs/vpn-update-journal-review.md`.
 
+`VPNInstaller.prepareJointUpdate` now supplies the first trusted integration
+boundary: open existing storage, hold lifecycle ownership, authenticate the live
+current A app against A's pins, recheck the lease, then prepare the exact signed
+transition. A candidate-only process or updater cannot prepare it. This leaves
+A's PID, selected release and activation budget unchanged. There is no production
+CLI/Sparkle entry and no wrapper for replacement/selection/completion yet.
+See `docs/vpn-update-preparation.md` and `docs/vpn-update-runtime-gates.md` for
+the per-user process tests and remaining integration boundaries.
+
 `VPNPeerAuthentication.swift` is an isolated, fail-closed **process identity
 gate** for a connector or the current installer, not a daemon, command dispatcher,
 installer entry point or ready VPN feature. It is

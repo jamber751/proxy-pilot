@@ -50,6 +50,22 @@ enum VPNInstaller {
                           directory: directory, runtime: runtime)
     }
 
+    /// Authenticate the currently selected application and durably stage an
+    /// exact signed A→B transition. This does not stop, select or start either
+    /// release and never creates an absent installation.
+    static func prepareJointUpdate(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
+                                   transitionPayload: Data, transitionSignature: Data,
+                                   authority: VPNReleaseAuthority,
+                                   expectedSequence: UInt64) throws -> VPNUpdateJournalSnapshot {
+        guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
+        defer { close(directory) }
+        return try prepareJointUpdate(payload: payload, signature: signature, helper: helper, engine: engine,
+                                      transitionPayload: transitionPayload, transitionSignature: transitionSignature,
+                                      authority: authority, expectedSequence: expectedSequence,
+                                      directory: directory, testPolicy: false)
+    }
+
     /// Stop the service, take its launchd description away so no boot brings it
     /// back, then remove exactly the files this component created. Anything else
     /// in the directory aborts the removal instead of being deleted.
@@ -98,6 +114,19 @@ enum VPNInstaller {
                           directory: directory, runtime: runtime)
     }
 
+    static func testPrepareJointUpdate(payload: Data, signature: Data, helper: Data, engine: Data? = nil,
+                                       transitionPayload: Data, transitionSignature: Data,
+                                       authority: VPNReleaseAuthority, expectedSequence: UInt64,
+                                       base: Int32) throws -> VPNUpdateJournalSnapshot {
+        guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
+        let directory = try openInstalled { try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false) }
+        defer { close(directory) }
+        return try prepareJointUpdate(payload: payload, signature: signature, helper: helper, engine: engine,
+                                      transitionPayload: transitionPayload, transitionSignature: transitionSignature,
+                                      authority: authority, expectedSequence: expectedSequence,
+                                      directory: directory, testPolicy: true)
+    }
+
     private static func testPreflight(payload: Data, signature: Data, helper: Data, engine: Data?, authority: VPNReleaseAuthority) throws {
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
         let release = try authority.verify(payload: payload, signature: signature, previous: nil)
@@ -105,6 +134,35 @@ enum VPNInstaller {
         try release.validateArtifacts(helper: helper, engine: engine)
     }
     #endif
+
+    private static func prepareJointUpdate(payload: Data, signature: Data, helper: Data, engine: Data?,
+                                           transitionPayload: Data, transitionSignature: Data,
+                                           authority: VPNReleaseAuthority, expectedSequence: UInt64,
+                                           directory: Int32, testPolicy: Bool) throws -> VPNUpdateJournalSnapshot {
+        let lease = try lifecycleLease(directory)
+        defer { lease.release() }
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
+        let current = try store.loadDeployment()
+        guard current.release.sequence == expectedSequence else { throw VPNReleaseStoreError.staleRevision }
+        #if VPN_INSTALLER_TESTING
+        if testPolicy {
+            try VPNPeerAuthentication.validateCurrentProcess(
+                policy: current.release.clientPolicy(forTrustedUserID: current.ownerUserID))
+        } else {
+            try VPNPeerAuthentication.validateCurrentProcess(policy: current.release.installerPolicy())
+        }
+        #else
+        _ = testPolicy
+        try VPNPeerAuthentication.validateCurrentProcess(policy: current.release.installerPolicy())
+        #endif
+        // Authentication may be expensive; ensure lifecycle ownership was not
+        // replaced before publishing the journal and staged artifacts.
+        try lease.check()
+        return try store.prepareUpdateJournal(payload: payload, signature: signature, helper: helper, engine: engine,
+                                              transitionPayload: transitionPayload,
+                                              transitionSignature: transitionSignature,
+                                              expectedSequence: expectedSequence)
+    }
 
     /// Refuse an unlisted/old app or the updater before provisioning, selecting
     /// policy, charging the activation budget or stopping a working service.

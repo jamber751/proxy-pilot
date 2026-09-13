@@ -11,7 +11,7 @@ enum VPNInstallerChecks {
     static func main() {
         guard geteuid() != 0 else { exit(77) }
         let args = CommandLine.arguments
-        guard [8, 9].contains(args.count), let expected = UInt64(args[5]) else { exit(64) }
+        guard [8, 9, 10].contains(args.count), let expected = UInt64(args[5]) else { exit(64) }
         let base = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard base >= 0 else { exit(77) }
         defer { close(base) }
@@ -22,10 +22,23 @@ enum VPNInstallerChecks {
                 trustedPublicKey: key.publicKey.rawRepresentation, minimumSequence: 1)
             let payload = try Data(contentsOf: URL(fileURLWithPath: args[3]))
             let helper = try Data(contentsOf: URL(fileURLWithPath: args[4]))
-            let engine = args.count == 9 ? try Data(contentsOf: URL(fileURLWithPath: args[8])) : nil
+            let preparing = args[1].hasPrefix("prepare")
+            let engineIndex = preparing ? (args.count == 10 ? 9 : nil) : (args.count == 9 ? 8 : nil)
+            let engine = try engineIndex.map { try Data(contentsOf: URL(fileURLWithPath: args[$0])) }
             var signature = try key.signature(for: VPNReleaseAuthority.signatureDomain + payload)
             if args[1].hasSuffix("-bad-signature") { signature[0] ^= 1 }
             let label = args[6], plists = URL(fileURLWithPath: args[7], isDirectory: true)
+            if preparing {
+                let transition = try Data(contentsOf: URL(fileURLWithPath: args[8]))
+                var transitionSignature = try key.signature(for: VPNReleaseAuthority.updateTransitionDomain + transition)
+                if args[1].hasSuffix("-bad-edge") { transitionSignature[0] ^= 1 }
+                let journal = try VPNInstaller.testPrepareJointUpdate(
+                    payload: payload, signature: signature, helper: helper, engine: engine,
+                    transitionPayload: transition, transitionSignature: transitionSignature,
+                    authority: authority, expectedSequence: expected, base: base)
+                print("prepared:\(journal.previous.release.sequence)->\(journal.candidate.release.sequence) phase:\(journal.phase.rawValue)")
+                return
+            }
             if args[1] == "probe" {
                 let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
                 defer { close(directory) }
