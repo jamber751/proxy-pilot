@@ -64,3 +64,29 @@ Next: connect the fixed hidden child role to the protected release journal and
 `VPNJointApplicationReplacement`, then build the writable Applications
 destination and installed/live-B proof. Selector B remains forbidden until that
 proof exists.
+
+## Production journal composition
+
+The fixed hidden role is now dispatched before AppKit/UI initialization by
+`VPNReplacementExecutorEntry`. It is accepted only as the sole exact internal
+argument and only with real/effective root. Before opening the inherited channel,
+the child obtains the release authority from the compiled trust root and loads
+the previous-A policy from the protected update journal. It refuses every phase
+except `replacementPending / inspectApplication`.
+
+After mutual authentication, the fixed request goes directly to
+`VPNJointApplicationReplacement.exchangePreparedCopies`. That boundary reloads
+the journal under service lifecycle ownership, matches transaction UUID and
+revision, authenticates the child against the fresh previous-A policy, drains
+the service and performs the protected swap. Thus the preliminary policy load
+cannot authorize a stale request. The internal role remains absent from the
+ordinary UI path; malformed or extra internal arguments fail before AppKit.
+
+Both architecture slices of the full installer-enabled app composition compile.
+Runtime package acceptance is still required after the host's ad-hoc code-signing
+service recovers; an attempted AddressSanitizer live-code run instrumented the
+very identity under test and subsequently left fresh ad-hoc executable launches
+blocked in the macOS signing service. No product/system files were changed.
+
+Next: implement and prove the writable Applications destination plus exact
+installed/live-B verification. Selector B remains forbidden until that proof.

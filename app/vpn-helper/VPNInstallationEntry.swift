@@ -16,8 +16,13 @@ enum VPNInstallationEntry {
     }
 
     static func runIfRequested(arguments: [String]) -> Int32? {
+        if let status = VPNReplacementExecutorEntry.runIfRequested(arguments: arguments) {
+            return status
+        }
         let options = Array(arguments.dropFirst())
-        guard options.contains(where: { $0.hasPrefix("--vpn-support") }) else {
+        guard options.contains(where: {
+            $0.hasPrefix("--vpn-support") || $0.hasPrefix("--vpn-protected")
+        }) else {
             // Running the normal proxy UI/worker as root is never supported.
             return getuid() == 0 || geteuid() == 0 ? 77 : nil
         }

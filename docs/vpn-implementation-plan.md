@@ -2074,3 +2074,20 @@ IP/сети можно использовать как внутренний пр
 Следующий узел: подключить скрытый режим A к защищённому журналу и
 `VPNJointApplicationReplacement`. Затем реализовать destination в Applications и
 доказательство installed/live B; до этого selector B не переключать.
+
+### Продолжение 1.5i — production journal entry executor A (20 сентября)
+
+- [x] Скрытый режим обрабатывается до AppKit и только как единственный точный
+  внутренний аргумент; malformed/extra варианты не попадают в обычный UI.
+- [x] Режим требует real/effective root, получает authority только из встроенного
+  trust root, а policy предыдущей A — только из защищённого update journal.
+- [x] Допускается только `replacementPending / inspectApplication`; после handoff
+  UUID/revision снова проверяются свежим журналом внутри
+  `VPNJointApplicationReplacement`, затем выполняются drain и protected swap.
+- [x] Полная installer-enabled композиция компилируется для arm64 и x86_64.
+  Runtime package-приёмку нужно повторить после восстановления macOS code-signing
+  service: ASan-инструментирование live-code теста изменило проверяемую identity и
+  после него запуск свежих ad-hoc binaries на хосте зависает до входа в main.
+
+Следующий узел: destination в Applications и строгое доказательство installed/live
+B. До этого не менять selector, не запускать B и не удалять executor A.

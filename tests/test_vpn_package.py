@@ -49,6 +49,11 @@ final class ProxyModel:''' + model
         if text.count(production_public) != 1: raise AssertionError('Trust source changed')
         trust.write_text(text.replace(production_public, 'IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI='))
         app_sources = [main, trust] + [HELPER / name for name in COMPONENTS]
+        app_sources += [HELPER / f'{name}.swift' for name in
+                        ('VPNStagedApplication', 'VPNReplacementExecutor',
+                         'VPNReplacementExecutorProvisioner', 'VPNProtectedApplicationSwap',
+                         'VPNReplacementExecutorHandoff', 'VPNJointApplicationReplacement',
+                         'VPNReplacementExecutorEntry')]
         app_sources += [HELPER / f'{name}.swift' for name in ('VPNInstallationPayload', 'VPNInstallationEntry')]
         app_sources += [ROOT / 'app' / f'{name}.swift' for name in
                         ('Controls', 'Updates', 'VPNConfiguration', 'VPNProfileImporter', 'VPNStore')]
@@ -122,10 +127,14 @@ final class ProxyModel:''' + model
             result = self.app_run('--vpn-support-' + mode)
             self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
             self.assertEqual(result.stderr, '')
+        result = self.app_run('--vpn-protected-replacement-executor')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual(result.stderr, '')
 
     def test_unknown_or_extra_arguments_do_not_fall_through_to_gui(self):
         for args in [('--vpn-support-bogus',), ('--vpn-support-install', '/tmp/other'),
-                     ('--vpn-support-verify', '--owner', '0')]:
+                     ('--vpn-support-verify', '--owner', '0'),
+                     ('--vpn-protected-replacement-executor', '/tmp/other')]:
             self.assertEqual(self.app_run(*args).returncode, 64)
 
     def test_changed_sidecar_fails_in_the_actual_entry(self):
