@@ -2091,3 +2091,23 @@ IP/сети можно использовать как внутренний пр
 
 Следующий узел: destination в Applications и строгое доказательство installed/live
 B. До этого не менять selector, не запускать B и не удалять executor A.
+
+### Продолжение 1.5j — staging B у Applications (21 сентября)
+
+- [x] Реализован отдельный шаг, который ещё не трогает установленный app:
+  exact B клонируется в фиксированный приватный `.ProxyPilot.vpn-update` под
+  literal `/Applications`, без argv/IPC-пути и без recursive-copy fallback.
+- [x] На всём шаге удерживается namespace lease; источник и копия проходят полную
+  проверку, синхронизацию и повторную проверку. `/Applications` и staging name
+  повторно связываются по device/inode; foreign или повреждённый stage не чинится
+  удалением.
+- [x] Написаны 7 изолированных сценариев, включая recovery, mutation, hostile
+  names, lock/root guards и доказательство, что существующий `ProxyPilot.app`
+  остаётся нетронутым. Production/test код компилируется без warnings для arm64
+  и x86_64.
+- [ ] Runtime-сценарии выполнить после перезапуска хоста: macOS сейчас блокирует
+  любой свежий ad-hoc Mach-O в `_dyld_start` ещё до `main`, включая минимальный C
+  smoke test. Зелёный результат не подменять статической компиляцией.
+
+После зелёной приёмки: атомарный exchange с установленной A, затем связанная
+проверка exact installed B + live B. Selector B до этого запрещён.
