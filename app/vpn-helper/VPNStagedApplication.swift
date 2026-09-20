@@ -74,9 +74,90 @@ enum VPNStagedApplication {
         return VPNStagedApplicationInspection(release: release, snapshot: before)
     }
 
+    /// Stronger parent contract for transaction slots: exactly the fixed app
+    /// and no sibling files. Callers must repeat this at mutation boundaries.
+    static func requireExclusiveBundle(inTrustedDirectory parent: Int32) throws {
+        try checkParent(parent)
+        let copy = openat(parent, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard copy >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
+        guard let stream = fdopendir(copy) else {
+            close(copy); throw VPNStagedApplicationError.unsafeStorage
+        }
+        defer { closedir(stream) }
+        let offset = MemoryLayout<dirent>.offset(of: \.d_name)!
+        var found = false
+        while true {
+            errno = 0
+            guard let row = readdir(stream) else {
+                guard errno == 0, found else { throw VPNStagedApplicationError.unsafeStorage }
+                return
+            }
+            let length = Int(row.pointee.d_namlen)
+            guard length > 0, length < Int(MAXPATHLEN),
+                  offset + length < Int(row.pointee.d_reclen) else {
+                throw VPNStagedApplicationError.invalidBundle
+            }
+            let address = UnsafeRawPointer(row).advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+            let bytes = UnsafeBufferPointer(start: address, count: length)
+            guard address[length] == 0, let name = String(bytes: bytes, encoding: .utf8) else {
+                throw VPNStagedApplicationError.invalidBundle
+            }
+            if name == "." || name == ".." { continue }
+            guard name == bundleName, !found else { throw VPNStagedApplicationError.invalidBundle }
+            found = true
+        }
+    }
+
     static func revalidate(_ inspection: VPNStagedApplicationInspection, inTrustedDirectory parent: Int32) throws {
         let current = try inspect(inTrustedDirectory: parent, release: inspection.release)
         guard current.snapshot == inspection.snapshot else { throw VPNStagedApplicationError.changed }
+    }
+
+    /// Flush every physical regular file and directory represented by an exact
+    /// observation, then repeat the full validation. This establishes an
+    /// ordered publication boundary for a newly cloned protected copy; it is
+    /// not a permanent-storage or power-loss guarantee.
+    static func synchronize(_ inspection: VPNStagedApplicationInspection,
+                            inTrustedDirectory parent: Int32) throws {
+        try revalidate(inspection, inTrustedDirectory: parent)
+        let bundle = openat(parent, bundleName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard bundle >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
+        defer { close(bundle) }
+
+        func openPhysical(_ relative: String, directory expectedDirectory: Bool) throws -> Int32 {
+            var current = fcntl(bundle, F_DUPFD_CLOEXEC, 0)
+            guard current >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
+            if relative.isEmpty { return current }
+            let components = relative.split(separator: "/").map(String.init)
+            for (index, name) in components.enumerated() {
+                let isLast = index == components.count - 1
+                let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                    | ((isLast ? expectedDirectory : true) ? O_DIRECTORY : 0)
+                let next = openat(current, name, flags)
+                close(current)
+                guard next >= 0 else { throw VPNStagedApplicationError.changed }
+                current = next
+            }
+            return current
+        }
+
+        let regulars = inspection.snapshot.entries.filter { $0.value.type == S_IFREG }.map(\.key).sorted()
+        for path in regulars {
+            let file = try openPhysical(path, directory: false)
+            let result = fsync(file)
+            close(file)
+            guard result == 0 else { throw VPNStagedApplicationError.unsafeStorage }
+        }
+        let directories = inspection.snapshot.entries.filter { $0.value.type == S_IFDIR }.map(\.key)
+            .sorted { $0.split(separator: "/").count > $1.split(separator: "/").count }
+        for path in directories {
+            let directory = try openPhysical(path, directory: true)
+            let result = fsync(directory)
+            close(directory)
+            guard result == 0 else { throw VPNStagedApplicationError.unsafeStorage }
+        }
+        guard fsync(parent) == 0 else { throw VPNStagedApplicationError.unsafeStorage }
+        try revalidate(inspection, inTrustedDirectory: parent)
     }
 
     private static func checkSignature(url: URL, release: VerifiedVPNRelease) throws {

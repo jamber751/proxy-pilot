@@ -28,6 +28,7 @@ final class VPNReplacementExecutor {
             directory = openat(base, "executor", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard directory >= 0 else { throw VPNApplicationSwapError.unsafeExecutor }
             try checkBinding(base: base, directory: directory)
+            try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: directory)
             let observation = try VPNStagedApplication.inspect(inTrustedDirectory: directory, release: release)
             executable = try openExecutable(directory)
             // Complete all throwing checks before transferring fd ownership.
@@ -45,6 +46,7 @@ final class VPNReplacementExecutor {
 
     func revalidate() throws {
         try Self.checkBinding(base: base, directory: directory)
+        try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: directory)
         try VPNStagedApplication.revalidate(observation, inTrustedDirectory: directory)
         let named = try Self.openExecutable(directory)
         defer { close(named) }
@@ -52,6 +54,7 @@ final class VPNReplacementExecutor {
         guard fstat(executable, &held) == 0, fstat(named, &fresh) == 0,
               Self.same(held, fresh), held.st_nlink == 1 else { throw VPNApplicationSwapError.unsafeExecutor }
         try Self.checkProcess(executable)
+        try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: directory)
         try Self.checkBinding(base: base, directory: directory)
     }
 
