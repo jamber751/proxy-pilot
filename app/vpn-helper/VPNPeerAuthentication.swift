@@ -65,6 +65,28 @@ struct VPNPeerPolicy {
 /// on every request; never cache an allow decision across requests or reconnects.
 /// This authenticates the connector, not a process to which it passes the fd.
 enum VPNPeerAuthentication {
+    #if VPN_EXECUTOR_HANDOFF_TESTING
+    /// Test-only exact policy for the currently executing disposable fixture.
+    /// Production policies still come exclusively from a verified release.
+    static func testCurrentPolicy(userID: uid_t) throws -> VPNPeerPolicy {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        var raw: CFDictionary?
+        let dynamic = unsafeBitCast(code, to: SecStaticCode.self)
+        guard SecCodeCopySigningInformation(dynamic,
+                SecCSFlags(rawValue: kSecCSSigningInformation), &raw) == errSecSuccess,
+              let info = raw as? [String: Any],
+              let identifier = info[kSecCodeInfoIdentifier as String] as? String,
+              let hash = info[kSecCodeInfoUnique as String] as? Data else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        return try VPNPeerPolicy(userID: userID, signingIdentifier: identifier,
+                                 codeDirectoryHashes: Set([hash]))
+    }
+    #endif
+
     /// Preflight for the exact app executable entering an already authorized
     /// installer mode. Read our live code identity, never argv, a bundle path or
     /// updater metadata. This verifies identity, NOT system authorization, and

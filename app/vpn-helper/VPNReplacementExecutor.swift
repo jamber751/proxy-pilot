@@ -21,6 +21,15 @@ final class VPNReplacementExecutor {
     deinit { close(executable); close(directory); close(base) }
 
     static func inspect(inTrustedDirectory source: Int32, release: VerifiedVPNRelease) throws -> VPNReplacementExecutor {
+        let result = try inspectPrepared(inTrustedDirectory: source, release: release)
+        try result.checkProcess(getpid())
+        return result
+    }
+
+    /// Static binding used by the authenticated parent before spawning A.
+    /// It does not claim that the prepared executable is running yet.
+    static func inspectPrepared(inTrustedDirectory source: Int32,
+                                release: VerifiedVPNRelease) throws -> VPNReplacementExecutor {
         let base = fcntl(source, F_DUPFD_CLOEXEC, 0)
         guard base >= 0 else { throw VPNApplicationSwapError.unsafeExecutor }
         var directory: Int32 = -1, executable: Int32 = -1
@@ -31,8 +40,6 @@ final class VPNReplacementExecutor {
             try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: directory)
             let observation = try VPNStagedApplication.inspect(inTrustedDirectory: directory, release: release)
             executable = try openExecutable(directory)
-            // Complete all throwing checks before transferring fd ownership.
-            try checkProcess(executable)
             try checkBinding(base: base, directory: directory)
             return VPNReplacementExecutor(base: base, directory: directory,
                 executable: executable, observation: observation)
@@ -45,6 +52,11 @@ final class VPNReplacementExecutor {
     }
 
     func revalidate() throws {
+        try revalidatePrepared()
+        try checkProcess(getpid())
+    }
+
+    func revalidatePrepared() throws {
         try Self.checkBinding(base: base, directory: directory)
         try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: directory)
         try VPNStagedApplication.revalidate(observation, inTrustedDirectory: directory)
@@ -53,9 +65,31 @@ final class VPNReplacementExecutor {
         var held = stat(), fresh = stat()
         guard fstat(executable, &held) == 0, fstat(named, &fresh) == 0,
               Self.same(held, fresh), held.st_nlink == 1 else { throw VPNApplicationSwapError.unsafeExecutor }
-        try Self.checkProcess(executable)
         try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: directory)
         try Self.checkBinding(base: base, directory: directory)
+    }
+
+    func validateProcess(_ processID: pid_t) throws {
+        try revalidatePrepared()
+        try checkProcess(processID)
+    }
+
+    func path() throws -> String {
+        try revalidatePrepared()
+        var bytes = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(executable, F_GETPATH, &bytes) == 0 else {
+            throw VPNApplicationSwapError.unsafeExecutor
+        }
+        let value = String(cString: bytes)
+        let named = open(value, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard named >= 0 else { throw VPNApplicationSwapError.unsafeExecutor }
+        defer { close(named) }
+        var held = stat(), actual = stat()
+        guard fstat(executable, &held) == 0, fstat(named, &actual) == 0,
+              Self.same(held, actual), actual.st_nlink == 1 else {
+            throw VPNApplicationSwapError.unsafeExecutor
+        }
+        return value
     }
 
     private static func same(_ a: stat, _ b: stat) -> Bool {
@@ -104,9 +138,9 @@ final class VPNReplacementExecutor {
         return file
     }
 
-    private static func checkProcess(_ expected: Int32) throws {
+    private func checkProcess(_ processID: pid_t) throws {
         var bytes = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        let length = bytes.withUnsafeMutableBytes { proc_pidpath(getpid(), $0.baseAddress!, UInt32($0.count)) }
+        let length = bytes.withUnsafeMutableBytes { proc_pidpath(processID, $0.baseAddress!, UInt32($0.count)) }
         guard length > 0, let end = bytes.firstIndex(of: 0), end > 0,
               let path = String(bytes: bytes[..<end], encoding: .utf8), path.hasPrefix("/") else {
             throw VPNApplicationSwapError.unsafeExecutor
@@ -115,8 +149,8 @@ final class VPNReplacementExecutor {
         guard processFile >= 0 else { throw VPNApplicationSwapError.unsafeExecutor }
         defer { close(processFile) }
         var actual = stat(), wanted = stat()
-        guard fstat(processFile, &actual) == 0, fstat(expected, &wanted) == 0,
+        guard fstat(processFile, &actual) == 0, fstat(executable, &wanted) == 0,
               actual.st_mode & S_IFMT == S_IFREG, actual.st_nlink == 1,
-              same(actual, wanted) else { throw VPNApplicationSwapError.unsafeExecutor }
+              Self.same(actual, wanted) else { throw VPNApplicationSwapError.unsafeExecutor }
     }
 }

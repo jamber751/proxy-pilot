@@ -67,6 +67,8 @@ deep, all-architecture signature validation (arm64 and x86_64). Static staged
 inspection of its protected copy passed **14/14 in 7.480 seconds**, with no
 skips. The candidate was not launched or installed; no push/release occurred.
 
-Next: a mutually authenticated fixed-mode handoff that launches this exact
-executor without user paths or arbitrary arguments. After that, implement the
-writable Applications destination and installed/live-B proof before selector B.
+The next handoff is now implemented and recorded in
+[Protected executor handoff](vpn-executor-handoff.md). It launches this exact
+copy without user paths or arbitrary arguments. Remaining work is production
+journal wiring, then the writable Applications destination and installed/live-B
+proof before selector B.
