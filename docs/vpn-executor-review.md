@@ -72,3 +72,7 @@ source; define its bounded cleanup/recovery. Then implement the writable
 Applications destination contract and installed/live-B verification before
 advancing the selector. No system installation or network change is performed
 by this increment.
+
+The subsequent provisioning increment now creates/resumes the exact protected
+A copy atomically, but still does not launch or remove it. See
+`vpn-executor-provisioning.md`.
