@@ -211,7 +211,7 @@ Only after the selected deployment and observable on/off outcome are confirmed
 does recovery retire the terminal journal. Failure never selects A or removes
 the journal based on an assumption.
 
-The joint suite now passes 17/17 scenarios. It covers forward recovery from both
+The joint suite now passes 18/18 scenarios. It covers forward recovery from both
 late phases, terminal retirement, refusal of an earlier journal before runtime
 effects, and start failures that preserve the appropriate retry phase. The
 production package suite passes all 10 required cases; 3 optional external
@@ -248,3 +248,11 @@ journal check. Consequently a successful update does not leave the helper in
 recovery-only mode. The recovery entry retains the same primitive for a later
 forward retry; neither path can retire a non-completed or differently selected
 transaction.
+
+Recovery also covers the selector's internal crash window. If `release.json`
+already selects exact B while the journal still says `replacementPending`, the
+store derives `recoverCandidate`; the coordinator idempotently completes the
+journal's `selected` transition and continues forward. It never interprets the
+same on-disk phase with selector A (`inspectApplication`) as candidate recovery.
+The joint suite forces process exit immediately after the selector rename and
+then proves completed/off plus terminal retirement in a fresh process.

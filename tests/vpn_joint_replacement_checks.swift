@@ -85,19 +85,27 @@ import Foundation
                 _ = try store.bootstrapDeployment(payload: ap, signature: asig, helper: helper, trustedOwnerUserID: geteuid())
                 let journal = try store.prepareUpdateJournal(payload: bp, signature: bsig, helper: helper,
                     transitionPayload: edge, transitionSignature: edgeSig, expectedSequence: 10)
+                let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
+                if operation != "setup-selected-on" && operation != "setup-completed-on" {
+                    try budget.recordManualOff()
+                }
                 var result = journal
                 if operation != "setup-prepared" { result = try store.markUpdateReplacementPending(transactionID: journal.transactionID, expectedRevision: 0) }
-                if operation.hasPrefix("setup-selected") || operation.hasPrefix("setup-completed") {
+                if operation.hasPrefix("setup-selected") || operation.hasPrefix("setup-completed")
+                    || operation == "setup-selector-crash" {
+                    #if VPN_RELEASE_STORE_TESTING
+                    if operation == "setup-selector-crash" {
+                        VPNReleaseStore.checkpoint = { point in
+                            if point == "release.json:after-rename" { _exit(86) }
+                        }
+                    }
+                    #endif
                     result = try store.selectUpdateCandidate(
                         transactionID: result.transactionID, expectedRevision: 1)
                 }
                 if operation.hasPrefix("setup-completed") {
                     result = try store.completeUpdateJournal(
                         transactionID: result.transactionID, expectedRevision: 2)
-                }
-                let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
-                if operation != "setup-selected-on" && operation != "setup-completed-on" {
-                    try budget.recordManualOff()
                 }
                 print("setup:\(result.transactionID.uuidString):\(result.revision)")
                 return

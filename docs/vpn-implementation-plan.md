@@ -2270,3 +2270,19 @@ staging-остатки. До этого они сохраняются как д�
 
 Следующий узел: unattended root-discovery позднего journal после crash/reboot,
 затем идемпотентная cleanup-транзакция для retained A/executor/stage.
+
+### Продолжение 1.5t — crash внутри selector commit (26 сентября)
+
+- [x] Recovery принимает `replacementPending / recoverCandidate`, которое
+  возможно, если durable selector B уже записан, а phase ещё не успела перейти
+  в `selected`.
+- [x] Под тем же lifecycle lease повторный `selectUpdateCandidate` идемпотентно
+  завершает только journal-фазу, затем выполняются обычные readiness/off,
+  completed и terminal retire. `replacementPending / inspectApplication` с
+  selector A этой веткой не принимается.
+- [x] Отдельный crash-test завершает процесс сразу после atomic rename
+  `release.json`, затем новый процесс восстанавливает только вперёд. Joint suite
+  18/18.
+
+Следующий узел: запуск этого recovery из защищённого content-addressed helper,
+а не прямой root-запуск изменяемого пути `/Applications`.

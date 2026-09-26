@@ -13,28 +13,36 @@ enum VPNSelectedCandidateRecovery {
                         journal initial: VPNUpdateJournalSnapshot,
                         testPolicy: Bool = false) throws
         -> VPNSelectedCandidateFinalizer.Outcome {
-        let recoverable = initial.phase == .selected && initial.recovery == .recoverCandidate
-            || initial.phase == .completed && initial.recovery == .completed
+        var current = initial
+        if initial.phase == .replacementPending && initial.recovery == .recoverCandidate {
+            try lease.check()
+            current = try store.selectUpdateCandidate(
+                transactionID: initial.transactionID,
+                expectedRevision: initial.revision)
+            try lease.check()
+        }
+        let recoverable = current.phase == .selected && current.recovery == .recoverCandidate
+            || current.phase == .completed && current.recovery == .completed
         guard recoverable else {
             throw VPNSelectedCandidateRecoveryError.invalidJournal
         }
         let outcome: VPNSelectedCandidateFinalizer.Outcome
-        if initial.phase == .selected {
+        if current.phase == .selected {
             outcome = try VPNSelectedCandidateFinalizer.finish(
                 store: store, runtime: runtime, lease: lease, budget: budget,
-                transactionID: initial.transactionID,
-                expectedRevision: initial.revision,
-                candidate: initial.candidate, testPolicy: testPolicy)
+                transactionID: current.transactionID,
+                expectedRevision: current.revision,
+                candidate: current.candidate, testPolicy: testPolicy)
         } else {
             outcome = try VPNSelectedCandidateFinalizer.reconcileCompleted(
                 store: store, runtime: runtime, lease: lease, budget: budget,
-                transactionID: initial.transactionID,
-                expectedRevision: initial.revision,
-                candidate: initial.candidate, testPolicy: testPolicy)
+                transactionID: current.transactionID,
+                expectedRevision: current.revision,
+                candidate: current.candidate, testPolicy: testPolicy)
         }
         try retireCompleted(store: store, lease: lease,
-                            transactionID: initial.transactionID,
-                            expectedRevision: 3, candidate: initial.candidate)
+                            transactionID: current.transactionID,
+                            expectedRevision: 3, candidate: current.candidate)
         return outcome
     }
 

@@ -32,6 +32,7 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         for arch in ('arm64', 'x86_64'):
             output = cls.build / f'joint-{arch}'
             cls.command(['swiftc', '-D', 'VPN_INSTALLER_TESTING', '-D', 'VPN_APPLICATION_SWAP_TESTING',
+                         '-D', 'VPN_RELEASE_STORE_TESTING',
                          '-D', 'VPN_APPLICATION_DESTINATION_TESTING',
                          '-D', 'VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING',
                          '-D', 'VPN_EXECUTOR_HANDOFF_TESTING',
@@ -121,6 +122,10 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertTrue(result.stdout.startswith('setup:'), result.stdout)
         return result.stdout.strip().split(':')[1]
 
+    def setup_selector_crash(self):
+        result = self.invoke('setup-selector-crash')
+        self.assertEqual(result.returncode, 86, result.stdout + result.stderr)
+
     def assert_no_effect(self):
         self.assertEqual(self.identities(), self.initial)
         self.assertFalse((self.apps / 'factory-marker').exists())
@@ -208,6 +213,13 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
     def test_selected_off_recovers_forward_and_retires_journal(self):
         self.setup_journal('setup-selected')
         result = self.invoke('recover-selected-off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'recovered:off:journal=retired:selected=11')
+        self.assertFalse((self.apps / 'start-marker').exists())
+
+    def test_selector_commit_crash_recovers_forward_and_retires_journal(self):
+        self.setup_selector_crash()
+        result = self.invoke('recover-selector-crash-off')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.strip(), 'recovered:off:journal=retired:selected=11')
         self.assertFalse((self.apps / 'start-marker').exists())

@@ -36,7 +36,8 @@ enum VPNHelperDaemon {
         let selected = try store.loadDeployment()
         func recoveryOnly() throws -> Bool {
             guard let journal = try store.loadUpdateJournal() else { return false }
-            let late = journal.phase == .selected && journal.recovery == .recoverCandidate
+            let late = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
+                || journal.phase == .selected && journal.recovery == .recoverCandidate
                 || journal.phase == .completed && journal.recovery == .completed
             guard late,
                   journal.candidate.ownerUserID == selected.ownerUserID,

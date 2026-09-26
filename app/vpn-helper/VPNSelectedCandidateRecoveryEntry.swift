@@ -16,7 +16,8 @@ enum VPNSelectedCandidateRecoveryEntry {
             guard let journal = try store.loadUpdateJournal() else {
                 throw VPNSelectedCandidateRecoveryError.invalidJournal
             }
-            let recoverable = journal.phase == .selected && journal.recovery == .recoverCandidate
+            let recoverable = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
+                || journal.phase == .selected && journal.recovery == .recoverCandidate
                 || journal.phase == .completed && journal.recovery == .completed
             guard recoverable else { throw VPNSelectedCandidateRecoveryError.invalidJournal }
             try VPNPeerAuthentication.validateCurrentProcess(
