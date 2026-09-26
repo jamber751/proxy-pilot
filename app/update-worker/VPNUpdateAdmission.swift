@@ -40,7 +40,8 @@ enum VPNUpdateAdmission {
         var failed = false
         for (directory, name) in [(support, "ProxyPilot"),
                                    (support, "kz.documentolog.proxypilot.vpn"),
-                                   (daemons, "kz.documentolog.proxypilot.vpn-helper.plist")] {
+                                   (daemons, "kz.documentolog.proxypilot.vpn-helper.plist"),
+                                   (daemons, "kz.documentolog.proxypilot.vpn-recovery.plist")] {
             var attributes = stat()
             if fstatat(directory, name, &attributes, AT_SYMLINK_NOFOLLOW) == 0 {
                 // A stopped, incomplete, stale or symlinked installation is

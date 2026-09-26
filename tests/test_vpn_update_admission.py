@@ -49,7 +49,8 @@ class VPNUpdateAdmissionTests(unittest.TestCase):
 
     def test_each_partial_installation_vetoes(self):
         for marker in (self.support / 'ProxyPilot', self.support / 'kz.documentolog.proxypilot.vpn',
-                       self.daemons / 'kz.documentolog.proxypilot.vpn-helper.plist'):
+                       self.daemons / 'kz.documentolog.proxypilot.vpn-helper.plist',
+                       self.daemons / 'kz.documentolog.proxypilot.vpn-recovery.plist'):
             with self.subTest(marker=marker.name):
                 marker.write_bytes(b'untouched')
                 self.expect('requiresCoordinatedUpdate')
