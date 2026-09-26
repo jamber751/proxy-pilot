@@ -50,7 +50,7 @@ final class ProxyModel:''' + model
         trust.write_text(text.replace(production_public, 'IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI='))
         app_sources = [main, trust] + [HELPER / name for name in COMPONENTS]
         app_sources += [HELPER / f'{name}.swift' for name in
-                        ('VPNStagedApplication', 'VPNReplacementExecutor',
+                        ('VPNStagedApplication', 'VPNInstalledApplication', 'VPNReplacementExecutor',
                          'VPNReplacementExecutorProvisioner', 'VPNProtectedApplicationSwap',
                          'VPNReplacementExecutorHandoff', 'VPNJointApplicationReplacement',
                          'VPNReplacementExecutorEntry', 'VPNApplicationDestinationStage',

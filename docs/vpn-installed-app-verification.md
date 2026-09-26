@@ -122,3 +122,19 @@ part of the exchange. Details: `vpn-executor-review.md`, `vpn-executor-tests.md`
 Provisioning/launch/recovery of this executor is still missing. This strengthens
 the internal copy boundary, not the writable Applications installation contract
 or installed/live-B proof. The existing user installation is unchanged.
+
+## Descriptor-bound installed B receipt
+
+`VPNInstalledApplication` now opens only literal `/Applications` in production,
+performs the full installed-bundle verification for exact B, and retains open
+descriptors for the destination, bundle, and main executable. Before returning
+the executable path or accepting a process PID it rebinds the fixed installed
+name, rechecks the complete signed tree, and compares the executable device and
+inode. The receipt is deliberately short-lived because Applications remains a
+mutable namespace.
+
+Four isolated tests cover the exact executable path, resource mutation, bundle
+name replacement, an unrelated live process, and the production root guard.
+They pass in a private Applications analogue. This proves the launch source
+identity but does not yet launch or authenticate candidate B; selector B remains
+forbidden until that live handshake is implemented.
