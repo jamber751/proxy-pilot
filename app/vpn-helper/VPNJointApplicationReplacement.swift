@@ -190,9 +190,27 @@ enum VPNJointApplicationReplacement {
                 authorizeMutation: authorizeMutation)
             #endif
             try recheck()
+            #if VPN_APPLICATION_DESTINATION_TESTING && VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
+            if testPolicy {
+                // The standalone handoff suite owns the disposable child role.
+                // Joint tests use different synthetic A/B bundle seals and have
+                // no production fixed store from which B can load A's policy.
+                try recheck()
+            } else {
+                try VPNInstalledCandidateHandoff.prove(
+                    release: initial.candidate.release, validateContext: recheck)
+            }
+            #else
+            try VPNInstalledCandidateHandoff.prove(
+                release: initial.candidate.release, validateContext: recheck)
+            #endif
+            try recheck()
             return outcome == .exchanged || destinationOutcome == .exchanged
                 ? .exchanged : .alreadyExchanged
         } catch {
+            #if VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
+            FileHandle.standardError.write(Data("joint-install-rejected:\(error)\n".utf8))
+            #endif
             throw VPNApplicationSwapError.commitUncertain
         }
     }

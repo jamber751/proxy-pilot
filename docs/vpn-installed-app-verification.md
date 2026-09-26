@@ -138,3 +138,29 @@ name replacement, an unrelated live process, and the production root guard.
 They pass in a private Applications analogue. This proves the launch source
 identity but does not yet launch or authenticate candidate B; selector B remains
 forbidden until that live handshake is implemented.
+
+## Live installed B handshake
+
+`VPNInstalledCandidateHandoff` now launches only the executable path returned by
+the descriptor-bound installed-B receipt. It passes one fixed inherited Unix
+socket, an empty environment, and one exact hidden argument. B validates its own
+candidate policy and the connected previous-A policy loaded from the protected
+journal; A validates B's audit-token identity and binds its PID back to the
+retained installed executable inode. Both sides revalidate identity and journal
+context around a bounded ready/go/ack/finish exchange. `SO_NOSIGPIPE` prevents a
+dying child from terminating A.
+
+The hidden B entry accepts no path, UID, release, or operation from argv. It
+requires root and reloads exact `replacementPending / inspectApplication` state
+on every context check. The production joint installer invokes this proof after
+the Applications exchange while still holding service lifecycle ownership.
+Selector B remains unchanged: readiness is now evidence available to the next
+commit boundary, not authority to publish B.
+
+The isolated two-process handshake passes success and mid-flight context-change
+tests; the journal/disk suite remains 9/9 and the arm64/x86_64 package suite
+passes all 10 required cases (3 optional external-engine cases skipped). The
+joint disposable fixture cannot reproduce distinct production A/B journal
+policies from the fixed system store, so its test branch stops at installed-B
+proof; production composition is compiled while the cross-release handshake is
+covered at the protocol boundary.

@@ -2163,3 +2163,20 @@ B. До этого не менять selector, не запускать B и не
 
 Следующий узел остаётся прежним: ограниченный запуск B из этого receipt,
 двусторонняя аутентификация и журнал-aware selector commit только после ready.
+
+### Продолжение 1.5n — live handshake установленной B (26 сентября)
+
+- [x] A запускает только executable из descriptor-bound installed-B receipt:
+  фиксированный hidden argument, один унаследованный Unix socket, пустое
+  окружение и ограниченный deadline.
+- [x] B получает candidate/previous policy только из защищённого журнала,
+  проверяет собственную identity и audit token A. A проверяет audit token B и
+  связывает живой PID с удерживаемым inode установленного executable.
+- [x] Контекст `replacementPending / inspectApplication` перепроверяется вокруг
+  ready/go/ack/finish; ранняя смерть B не посылает SIGPIPE в A.
+- [x] Изолированный handshake 2/2, joint regression 9/9, production package
+  10/10 обязательных сценариев прошли; 3 optional engine cases пропущены.
+
+Следующий узел: объединить ready receipt с единственным journal selector commit,
+не выпуская lifecycle lease; затем запустить выбранный helper B в idle-режиме,
+восстановить сохранённое desired state и завершить журнал.

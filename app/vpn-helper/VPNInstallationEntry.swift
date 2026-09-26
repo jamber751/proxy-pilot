@@ -16,6 +16,9 @@ enum VPNInstallationEntry {
     }
 
     static func runIfRequested(arguments: [String]) -> Int32? {
+        if let status = VPNInstalledCandidateEntry.runIfRequested(arguments: arguments) {
+            return status
+        }
         if let status = VPNReplacementExecutorEntry.runIfRequested(arguments: arguments) {
             return status
         }

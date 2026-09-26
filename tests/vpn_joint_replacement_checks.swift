@@ -36,6 +36,12 @@ import Foundation
 
     static func main() throws {
         let a = CommandLine.arguments
+        if a.count == 2, a[1] == VPNInstalledCandidateHandoff.childArgument {
+            let policy = try VPNPeerAuthentication.testCurrentPolicy(userID: geteuid())
+            exit(VPNInstalledCandidateHandoff.runChildIfRequested(
+                arguments: a, selfPolicy: policy, parentPolicy: policy,
+                validateContext: {}) ?? 64)
+        }
         guard a.count == 12 else { exit(64) }
         let operation = a[1], support = a[2], apps = a[3]
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))

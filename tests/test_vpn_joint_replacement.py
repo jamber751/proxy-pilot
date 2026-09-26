@@ -22,7 +22,8 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             'VPNHelperProtocol.swift', 'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
             'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNProfileVault.swift',
             'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNInstaller.swift',
-            'VPNStagedApplication.swift', 'VPNProtectedApplicationSwap.swift',
+            'VPNStagedApplication.swift', 'VPNInstalledApplication.swift',
+            'VPNInstalledCandidateHandoff.swift', 'VPNProtectedApplicationSwap.swift',
             'VPNReplacementExecutor.swift', 'VPNApplicationDestinationStage.swift',
             'VPNApplicationDestinationExchange.swift', 'VPNJointApplicationReplacement.swift')]
         slices = []
@@ -30,6 +31,8 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             output = cls.build / f'joint-{arch}'
             cls.command(['swiftc', '-D', 'VPN_INSTALLER_TESTING', '-D', 'VPN_APPLICATION_SWAP_TESTING',
                          '-D', 'VPN_APPLICATION_DESTINATION_TESTING',
+                         '-D', 'VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING',
+                         '-D', 'VPN_EXECUTOR_HANDOFF_TESTING',
                          '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-D', 'VPN_LAUNCHD_TESTING',
                          '-D', 'VPN_HELPER_READINESS_TESTING', '-target', f'{arch}-apple-macosx11.0',
                          *map(str, sources), str(ROOT / 'tests/vpn_joint_replacement_checks.swift'),
