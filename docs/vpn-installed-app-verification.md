@@ -193,3 +193,28 @@ without a helper start and desired-on start failure with cleanup while remaining
 selected. Authenticated helper start/readiness behavior is also covered by the
 existing activation suite; the production arm64/x86_64 package composition
 passes all required package cases.
+
+## Forward recovery and terminal journal retirement
+
+`VPNSelectedCandidateRecoveryEntry` is the fixed root-only entry for a crash
+after selector B has committed. It accepts no paths, transaction identifiers,
+releases or desired state from argv. It reloads the protected journal, accepts
+only exact `selected / recoverCandidate` or `completed / completed`, validates
+the running process against candidate B's policy, and binds that process to the
+literal installed B executable before obtaining lifecycle ownership.
+
+For `selected`, recovery repeats the normal finalizer. For `completed`, where an
+in-memory readiness receipt cannot survive a crash, it positively reconciles
+the durable intent: off drains the helper; on charges a bounded automatic
+attempt, restarts exact helper B in idle mode and requires its signed readiness.
+Only after the selected deployment and observable on/off outcome are confirmed
+does recovery retire the terminal journal. Failure never selects A or removes
+the journal based on an assumption.
+
+The joint suite now passes 16/16 scenarios. It covers forward recovery from both
+late phases, terminal retirement, refusal of an earlier journal before runtime
+effects, and start failures that preserve the appropriate retry phase. The
+production package suite passes all 10 required cases; 3 optional external
+engine-artifact cases remain skipped. Automatic discovery/launch of this entry
+and cleanup of retained A, executor and staging artifacts remain separate
+boundaries; this entry alone does not claim unattended recovery.

@@ -87,12 +87,18 @@ import Foundation
                     transitionPayload: edge, transitionSignature: edgeSig, expectedSequence: 10)
                 var result = journal
                 if operation != "setup-prepared" { result = try store.markUpdateReplacementPending(transactionID: journal.transactionID, expectedRevision: 0) }
-                if operation.hasPrefix("setup-selected") {
+                if operation.hasPrefix("setup-selected") || operation.hasPrefix("setup-completed") {
                     result = try store.selectUpdateCandidate(
                         transactionID: result.transactionID, expectedRevision: 1)
                 }
+                if operation.hasPrefix("setup-completed") {
+                    result = try store.completeUpdateJournal(
+                        transactionID: result.transactionID, expectedRevision: 2)
+                }
                 let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
-                if operation != "setup-selected-on" { try budget.recordManualOff() }
+                if operation != "setup-selected-on" && operation != "setup-completed-on" {
+                    try budget.recordManualOff()
+                }
                 print("setup:\(result.transactionID.uuidString):\(result.revision)")
                 return
             }
@@ -100,6 +106,17 @@ import Foundation
             defer { close(service) }
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
             let journal = try store.loadUpdateJournal()!
+            if operation.hasPrefix("recover-") {
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+                defer { lease.release() }
+                let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
+                let outcome = try VPNSelectedCandidateRecovery.recover(
+                    store: store, runtime: Runtime(operation, service, apps),
+                    lease: lease, budget: budget, journal: journal, testPolicy: true)
+                let selected = try store.loadDeployment()
+                print("recovered:\(outcome == .helperReady ? "ready" : "off"):journal=\((try store.loadUpdateJournal()) == nil ? "retired" : "present"):selected=\(selected.release.sequence)")
+                return
+            }
             if operation.hasPrefix("finalize-") {
                 let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
                 defer { lease.release() }

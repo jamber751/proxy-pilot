@@ -24,6 +24,7 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNInstaller.swift',
             'VPNStagedApplication.swift', 'VPNInstalledApplication.swift',
             'VPNInstalledCandidateHandoff.swift', 'VPNSelectedCandidateFinalizer.swift',
+            'VPNSelectedCandidateRecovery.swift',
             'VPNProtectedApplicationSwap.swift',
             'VPNReplacementExecutor.swift', 'VPNApplicationDestinationStage.swift',
             'VPNApplicationDestinationExchange.swift', 'VPNJointApplicationReplacement.swift')]
@@ -196,6 +197,47 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertTrue((self.apps / 'start-marker').exists())
         self.assertTrue((self.apps / 'drain-marker').exists())
         self.assertEqual((self.apps / 'drain-marker').read_text(), '1')
+
+    def test_selected_off_recovers_forward_and_retires_journal(self):
+        self.setup_journal('setup-selected')
+        result = self.invoke('recover-selected-off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'recovered:off:journal=retired:selected=11')
+        self.assertFalse((self.apps / 'start-marker').exists())
+
+    def test_completed_off_is_drained_before_terminal_retirement(self):
+        self.setup_journal('setup-completed')
+        result = self.invoke('recover-completed-off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'recovered:off:journal=retired:selected=11')
+        self.assertFalse((self.apps / 'start-marker').exists())
+        self.assertEqual((self.apps / 'drain-marker').read_text(), '1')
+
+    def test_recovery_refuses_nonterminal_journal_before_runtime_effects(self):
+        self.setup_journal('setup-prepared')
+        result = self.invoke('recover-prepared')
+        self.assert_rejected(result, 'invalidJournal')
+        self.assert_no_effect()
+
+    def test_selected_on_recovery_failure_keeps_forward_retry_journal(self):
+        self.setup_journal('setup-selected-on')
+        result = self.invoke('recover-selected-on-start-fail')
+        self.assert_rejected(result, 'launchFailed')
+        service = self.support / 'ProxyPilot/VPN'
+        record = __import__('json').loads((service / 'update.json').read_text())
+        self.assertEqual((record['phase'], record['revision']), ('selected', 2))
+        self.assertTrue((self.apps / 'start-marker').exists())
+        self.assertEqual((self.apps / 'drain-marker').read_text(), '1')
+
+    def test_completed_on_recovery_failure_does_not_retire_journal(self):
+        self.setup_journal('setup-completed-on')
+        result = self.invoke('recover-completed-on-start-fail')
+        self.assert_rejected(result, 'launchFailed')
+        service = self.support / 'ProxyPilot/VPN'
+        record = __import__('json').loads((service / 'update.json').read_text())
+        self.assertEqual((record['phase'], record['revision']), ('completed', 3))
+        self.assertTrue((self.apps / 'start-marker').exists())
+        self.assertEqual((self.apps / 'drain-marker').read_text(), '2')
 
     def test_context_refusals_precede_runtime_and_namespace_effects(self):
         for setup, operation in (('setup', 'wrong-uuid'), ('setup', 'wrong-revision'),

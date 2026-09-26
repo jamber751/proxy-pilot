@@ -16,6 +16,9 @@ enum VPNInstallationEntry {
     }
 
     static func runIfRequested(arguments: [String]) -> Int32? {
+        if let status = VPNSelectedCandidateRecoveryEntry.runIfRequested(arguments: arguments) {
+            return status
+        }
         if let status = VPNInstalledCandidateEntry.runIfRequested(arguments: arguments) {
             return status
         }
@@ -23,9 +26,13 @@ enum VPNInstallationEntry {
             return status
         }
         let options = Array(arguments.dropFirst())
-        guard options.contains(where: {
+        let installationOption = options.contains(where: {
             $0.hasPrefix("--vpn-support") || $0.hasPrefix("--vpn-protected")
-        }) else {
+        })
+        guard installationOption else {
+            // Exact hidden modes were dispatched above. A malformed or future
+            // --vpn-* role must never continue into ordinary GUI bootstrap.
+            if options.contains(where: { $0.hasPrefix("--vpn-") }) { return 64 }
             // Running the normal proxy UI/worker as root is never supported.
             return getuid() == 0 || geteuid() == 0 ? 77 : nil
         }

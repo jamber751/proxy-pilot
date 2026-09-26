@@ -2215,3 +2215,24 @@ readiness, восстановление сохранённого desired-on/off 
 завершение или безопасный повтор после crash на каждой поздней границе, затем
 retire terminal journal. Подключение самого VPN-профиля остаётся отдельным
 пользовательским действием/автоматикой и не смешивается с обновлением приложения.
+
+### Продолжение 1.5q — forward recovery и terminal retire (26 сентября)
+
+- [x] Добавлен фиксированный root-only recovery entry exact installed B. Он не
+  принимает путь, release, UUID или desired state извне: перечитывает защищённый
+  journal, проверяет policy процесса и связывает PID с inode literal installed B.
+- [x] `selected / recoverCandidate` продолжает обычный finalizer. Для уже
+  `completed / completed` потерянный после crash readiness receipt заменяется
+  положительной сверкой состояния: durable off drain-ит службу, durable on
+  расходует bounded automatic attempt, запускает exact helper B и проверяет его
+  signed readiness.
+- [x] Terminal journal удаляется только после повторной проверки lease,
+  selected B и подтверждённого on/off результата. Ошибка запуска оставляет
+  `selected` или `completed` для forward retry; отката selector на A нет.
+- [x] Joint suite 16/16 и production package suite 10/10 обязательных сценариев
+  прошли; 3 optional external-engine cases пропущены.
+
+Следующий узел: безопасно обнаруживать поздний journal и запускать recovery entry
+после перезапуска, не открывая root-режим обычному UI. После подтверждённого
+terminal retire отдельной транзакцией убрать retained A, protected executor и
+staging-остатки. До этого они сохраняются как доказательства/recovery material.

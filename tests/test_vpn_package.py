@@ -52,7 +52,8 @@ final class ProxyModel:''' + model
         app_sources += [HELPER / f'{name}.swift' for name in
                         ('VPNStagedApplication', 'VPNInstalledApplication',
                          'VPNInstalledCandidateHandoff', 'VPNReplacementExecutor',
-                         'VPNSelectedCandidateFinalizer',
+                         'VPNSelectedCandidateFinalizer', 'VPNSelectedCandidateRecovery',
+                         'VPNSelectedCandidateRecoveryEntry',
                          'VPNReplacementExecutorProvisioner', 'VPNProtectedApplicationSwap',
                          'VPNReplacementExecutorHandoff', 'VPNJointApplicationReplacement',
                          'VPNInstalledCandidateEntry', 'VPNReplacementExecutorEntry',
@@ -134,11 +135,17 @@ final class ProxyModel:''' + model
         result = self.app_run('--vpn-protected-replacement-executor')
         self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
         self.assertEqual(result.stderr, '')
+        for hidden in ('--vpn-installed-candidate-ready', '--vpn-selected-candidate-recovery'):
+            result = self.app_run(hidden)
+            self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+            self.assertEqual(result.stderr, '')
 
     def test_unknown_or_extra_arguments_do_not_fall_through_to_gui(self):
         for args in [('--vpn-support-bogus',), ('--vpn-support-install', '/tmp/other'),
                      ('--vpn-support-verify', '--owner', '0'),
-                     ('--vpn-protected-replacement-executor', '/tmp/other')]:
+                     ('--vpn-protected-replacement-executor', '/tmp/other'),
+                     ('--vpn-installed-candidate-ready', '/tmp/other'),
+                     ('--vpn-selected-candidate-recovery', '/tmp/other')]:
             self.assertEqual(self.app_run(*args).returncode, 64)
 
     def test_changed_sidecar_fails_in_the_actual_entry(self):
