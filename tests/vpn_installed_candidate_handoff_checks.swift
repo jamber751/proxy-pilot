@@ -11,7 +11,7 @@ import Foundation
             let policy = try VPNPeerAuthentication.testCurrentPolicy(userID: geteuid())
             exit(VPNInstalledCandidateHandoff.runChildIfRequested(
                 arguments: arguments, selfPolicy: policy, parentPolicy: policy,
-                validateContext: {}) ?? 64)
+                validatePending: {}, validateSelected: {}) ?? 64)
         }
         guard arguments.count == 5 else { exit(64) }
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
@@ -42,11 +42,23 @@ import Foundation
             let installed = try VPNInstalledApplication.testInspect(
                 inApplicationsDirectory: destination, release: release)
             var checks = 0
-            try VPNInstalledCandidateHandoff.testProve(installed: installed, release: release) {
-                checks += 1
-                if arguments[1] == "context-change", checks == 3 { throw Injected.changed }
-            }
-            print("ready:\(checks)")
+            var selected = false
+            try VPNInstalledCandidateHandoff.testProve(
+                installed: installed, release: release,
+                validatePending: {
+                    checks += 1
+                    if arguments[1] == "context-change", checks == 3 { throw Injected.changed }
+                    guard !selected else { throw Injected.changed }
+                }, commitSelection: {
+                    if arguments[1] == "commit-failure" { throw Injected.changed }
+                    guard !selected else { throw Injected.changed }
+                    selected = true
+                }, validateSelected: {
+                    checks += 1
+                    if arguments[1] == "selected-change" { throw Injected.changed }
+                    guard selected else { throw Injected.changed }
+                })
+            print("ready:\(checks):selected=\(selected)")
         } catch {
             print("rejected:\(error)")
             exit(77)

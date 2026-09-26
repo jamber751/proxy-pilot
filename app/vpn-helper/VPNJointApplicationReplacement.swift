@@ -117,6 +117,27 @@ enum VPNJointApplicationReplacement {
                 throw VPNReleaseStoreError.invalidUpdateJournal
             }
         }
+        func selectedContext() throws {
+            try lease.check()
+            guard let fresh = try store.loadUpdateJournal(),
+                  fresh.transactionID == initial.transactionID,
+                  fresh.revision == initial.revision + 1,
+                  fresh.phase == .selected,
+                  fresh.recovery == .recoverCandidate,
+                  fresh.previous.ownerUserID == initial.previous.ownerUserID,
+                  fresh.previous.release.isSameRelease(as: initial.previous.release),
+                  fresh.candidate.release.isSameRelease(as: initial.candidate.release) else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+            try lease.check()
+        }
+        func selectCandidate() throws {
+            try recheck()
+            _ = try store.selectUpdateCandidate(
+                transactionID: initial.transactionID,
+                expectedRevision: initial.revision)
+            try selectedContext()
+        }
         var adapter: VPNActivationRuntime?
         var drained = false
         func authorizeMutation() throws {
@@ -198,13 +219,19 @@ enum VPNJointApplicationReplacement {
                 try recheck()
             } else {
                 try VPNInstalledCandidateHandoff.prove(
-                    release: initial.candidate.release, validateContext: recheck)
+                    release: initial.candidate.release,
+                    validatePending: recheck,
+                    commitSelection: selectCandidate,
+                    validateSelected: selectedContext)
             }
             #else
             try VPNInstalledCandidateHandoff.prove(
-                release: initial.candidate.release, validateContext: recheck)
+                release: initial.candidate.release,
+                validatePending: recheck,
+                commitSelection: selectCandidate,
+                validateSelected: selectedContext)
             #endif
-            try recheck()
+            if testPolicy { try recheck() } else { try selectedContext() }
             return outcome == .exchanged || destinationOutcome == .exchanged
                 ? .exchanged : .alreadyExchanged
         } catch {

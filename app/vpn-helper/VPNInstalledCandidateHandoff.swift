@@ -7,9 +7,10 @@ enum VPNInstalledCandidateHandoffError: Error {
     case contextChanged, childFailed
 }
 
-/// One-shot liveness proof for exact installed B. This type cannot select B,
-/// start VPN, or receive paths/commands. Journal authorization stays with the
-/// caller and is rechecked through `validateContext` at every boundary.
+/// One-shot liveness proof for exact installed B. It holds B alive around one
+/// caller-supplied selector commit, but cannot itself write the journal, start
+/// VPN, or receive paths/commands. Journal authorization stays with the caller
+/// and is rechecked on both sides of that commit.
 enum VPNInstalledCandidateHandoff {
     static let childArgument = "--vpn-installed-candidate-ready"
     static let childSocket: Int32 = 22
@@ -20,48 +21,57 @@ enum VPNInstalledCandidateHandoff {
     private static let deadlineOffset: UInt64 = 15_000_000_000
 
     static func prove(release: VerifiedVPNRelease,
-                      validateContext: () throws -> Void) throws {
+                      validatePending: () throws -> Void,
+                      commitSelection: () throws -> Void,
+                      validateSelected: () throws -> Void) throws {
         guard getuid() == 0, geteuid() == 0 else {
             throw VPNInstalledCandidateHandoffError.requiresRoot
         }
         let installed = try VPNInstalledApplication.inspect(release: release)
         try perform(installed: installed, childPolicy: release.installerPolicy(),
-                    validateContext: validateContext)
+                    validatePending: validatePending,
+                    commitSelection: commitSelection,
+                    validateSelected: validateSelected)
     }
 
     #if VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
     static func testProve(installed: VPNInstalledApplication,
                           release: VerifiedVPNRelease,
-                          validateContext: () throws -> Void = {}) throws {
+                          validatePending: () throws -> Void = {},
+                          commitSelection: () throws -> Void = {},
+                          validateSelected: () throws -> Void = {}) throws {
         try perform(installed: installed,
                     childPolicy: release.clientPolicy(forTrustedUserID: geteuid()),
-                    validateContext: validateContext)
+                    validatePending: validatePending,
+                    commitSelection: commitSelection,
+                    validateSelected: validateSelected)
     }
     #endif
 
     static func runChildIfRequested(arguments: [String],
                                     selfPolicy: VPNPeerPolicy,
                                     parentPolicy: VPNPeerPolicy,
-                                    validateContext: () throws -> Void) -> Int32? {
+                                    validatePending: () throws -> Void,
+                                    validateSelected: () throws -> Void) -> Int32? {
         guard arguments.count == 2, arguments[1] == childArgument else { return nil }
         let deadline = DispatchTime.now().uptimeNanoseconds + deadlineOffset
         do {
             try validateSocket(childSocket)
             try VPNPeerAuthentication.validateCurrentProcess(policy: selfPolicy)
             try VPNPeerAuthentication.validate(connectedSocket: childSocket, policy: parentPolicy)
-            try validateContext()
+            try validatePending()
             try VPNHelperProtocol.write([ready], socket: childSocket, deadline: deadline)
             guard try VPNHelperProtocol.read(count: 1, socket: childSocket, deadline: deadline) == [go] else {
                 throw VPNInstalledCandidateHandoffError.unsafeChannel
             }
             try VPNPeerAuthentication.validate(connectedSocket: childSocket, policy: parentPolicy)
-            try validateContext()
+            try validatePending()
             try VPNHelperProtocol.write([acknowledged], socket: childSocket, deadline: deadline)
             guard try VPNHelperProtocol.read(count: 1, socket: childSocket, deadline: deadline) == [finish] else {
                 throw VPNInstalledCandidateHandoffError.unsafeChannel
             }
             try VPNPeerAuthentication.validate(connectedSocket: childSocket, policy: parentPolicy)
-            try validateContext()
+            try validateSelected()
             return 0
         } catch {
             #if VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
@@ -73,8 +83,10 @@ enum VPNInstalledCandidateHandoff {
 
     private static func perform(installed: VPNInstalledApplication,
                                 childPolicy: VPNPeerPolicy,
-                                validateContext: () throws -> Void) throws {
-        try validateContext()
+                                validatePending: () throws -> Void,
+                                commitSelection: () throws -> Void,
+                                validateSelected: () throws -> Void) throws {
+        try validatePending()
         try installed.revalidate()
         let path = try installed.path()
         var pair = [Int32](repeating: -1, count: 2)
@@ -105,14 +117,18 @@ enum VPNInstalledCandidateHandoff {
         }
         try VPNPeerAuthentication.validate(connectedSocket: pair[0], policy: childPolicy)
         try installed.validateProcess(processID)
-        try validateContext()
+        try validatePending()
         try VPNHelperProtocol.write([go], socket: pair[0], deadline: deadline)
         guard try VPNHelperProtocol.read(count: 1, socket: pair[0], deadline: deadline) == [acknowledged] else {
             throw VPNInstalledCandidateHandoffError.childFailed
         }
         try VPNPeerAuthentication.validate(connectedSocket: pair[0], policy: childPolicy)
         try installed.validateProcess(processID)
-        try validateContext()
+        try validatePending()
+        try commitSelection()
+        try validateSelected()
+        try VPNPeerAuthentication.validate(connectedSocket: pair[0], policy: childPolicy)
+        try installed.validateProcess(processID)
         try VPNHelperProtocol.write([finish], socket: pair[0], deadline: deadline)
         var status: Int32 = 0
         while DispatchTime.now().uptimeNanoseconds < deadline {
@@ -124,7 +140,7 @@ enum VPNInstalledCandidateHandoff {
         guard reaped, status & 0x7f == 0, (status >> 8) & 0xff == 0 else {
             throw VPNInstalledCandidateHandoffError.childFailed
         }
-        try validateContext()
+        try validateSelected()
         try installed.revalidate()
     }
 

@@ -154,13 +154,20 @@ The hidden B entry accepts no path, UID, release, or operation from argv. It
 requires root and reloads exact `replacementPending / inspectApplication` state
 on every context check. The production joint installer invokes this proof after
 the Applications exchange while still holding service lifecycle ownership.
-Selector B remains unchanged: readiness is now evidence available to the next
-commit boundary, not authority to publish B.
+The parent now performs the single journal selector commit only after B has
+acknowledged readiness and while the same authenticated PID/socket/inode binding
+is still live. It validates exact `selected / recoverCandidate` state before
+sending the finish byte; B independently reloads that selected state before a
+clean exit. Failures after the commit are uncertain and recover only forward.
+The handshake itself still has no disk-write authority: the caller supplies the
+one commit closure while retaining the service lifecycle lease.
 
-The isolated two-process handshake passes success and mid-flight context-change
-tests; the journal/disk suite remains 9/9 and the arm64/x86_64 package suite
+The isolated two-process handshake passes success, mid-flight context-change,
+commit failure and post-commit selected-context failure tests (3 test groups);
+the journal/disk suite remains 9/9 and the arm64/x86_64 package suite
 passes all 10 required cases (3 optional external-engine cases skipped). The
 joint disposable fixture cannot reproduce distinct production A/B journal
 policies from the fixed system store, so its test branch stops at installed-B
 proof; production composition is compiled while the cross-release handshake is
-covered at the protocol boundary.
+covered at the protocol boundary. Starting helper B and completing the journal
+remain separate later boundaries.

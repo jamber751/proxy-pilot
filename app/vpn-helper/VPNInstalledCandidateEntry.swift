@@ -26,12 +26,23 @@ enum VPNInstalledCandidateEntry {
             return VPNInstalledCandidateHandoff.runChildIfRequested(
                 arguments: arguments, selfPolicy: selfPolicy,
                 parentPolicy: parentPolicy,
-                validateContext: {
+                validatePending: {
                     guard let fresh = try store.loadUpdateJournal(),
                           fresh.transactionID == initial.transactionID,
                           fresh.revision == initial.revision,
                           fresh.phase == .replacementPending,
                           fresh.recovery == .inspectApplication,
+                          fresh.previous.ownerUserID == initial.previous.ownerUserID,
+                          fresh.previous.release.isSameRelease(as: initial.previous.release),
+                          fresh.candidate.release.isSameRelease(as: initial.candidate.release) else {
+                        throw VPNReleaseStoreError.staleRevision
+                    }
+                }, validateSelected: {
+                    guard let fresh = try store.loadUpdateJournal(),
+                          fresh.transactionID == initial.transactionID,
+                          fresh.revision == initial.revision + 1,
+                          fresh.phase == .selected,
+                          fresh.recovery == .recoverCandidate,
                           fresh.previous.ownerUserID == initial.previous.ownerUserID,
                           fresh.previous.release.isSameRelease(as: initial.previous.release),
                           fresh.candidate.release.isSameRelease(as: initial.candidate.release) else {

@@ -60,12 +60,19 @@ class VPNInstalledCandidateHandoffTests(unittest.TestCase):
     def test_exact_installed_candidate_completes_mutual_handoff(self):
         result = self.invoke('success')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.strip(), 'ready:4')
+        self.assertEqual(result.stdout.strip(), 'ready:5:selected=true')
 
     def test_context_change_terminates_child_without_success(self):
         result = self.invoke('context-change')
         self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
         self.assertEqual(result.stdout.strip(), 'rejected:changed')
+
+    def test_commit_or_selected_recheck_failure_never_returns_ready(self):
+        for operation in ('commit-failure', 'selected-change'):
+            with self.subTest(operation=operation):
+                result = self.invoke(operation)
+                self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.strip(), 'rejected:changed')
 
 
 if __name__ == '__main__':

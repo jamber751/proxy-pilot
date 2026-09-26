@@ -40,7 +40,7 @@ import Foundation
             let policy = try VPNPeerAuthentication.testCurrentPolicy(userID: geteuid())
             exit(VPNInstalledCandidateHandoff.runChildIfRequested(
                 arguments: a, selfPolicy: policy, parentPolicy: policy,
-                validateContext: {}) ?? 64)
+                validatePending: {}, validateSelected: {}) ?? 64)
         }
         guard a.count == 12 else { exit(64) }
         let operation = a[1], support = a[2], apps = a[3]

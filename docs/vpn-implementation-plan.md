@@ -2180,3 +2180,20 @@ B. До этого не менять selector, не запускать B и не
 Следующий узел: объединить ready receipt с единственным journal selector commit,
 не выпуская lifecycle lease; затем запустить выбранный helper B в idle-режиме,
 восстановить сохранённое desired state и завершить журнал.
+
+### Продолжение 1.5o — selector B внутри live window (26 сентября)
+
+- [x] Selector меняется ровно один раз между authenticated `ack` B и `finish`:
+  A повторно проверяет pending-контекст, socket/PID/inode, выполняет
+  `selectUpdateCandidate`, затем требует exact `selected / recoverCandidate`.
+- [x] B остаётся живой, повторно проверяет audit token A и самостоятельно
+  перечитывает selected-контекст до успешного выхода. Сам handshake не умеет
+  писать journal — единственная commit-closure принадлежит coordinator под
+  удерживаемым service lifecycle lease.
+- [x] Ошибка до записи не выдаёт ready; ошибка после возможной записи считается
+  uncertain и восстанавливается только вперёд. Handshake 3/3, joint regression
+  9/9, production package 10/10 обязательных сценариев прошли; 3 optional
+  engine-artifact cases пропущены.
+
+Следующий узел: journal-aware запуск helper B в idle-режиме, authenticated helper
+readiness, восстановление сохранённого desired-on/off и `selected → completed`.
