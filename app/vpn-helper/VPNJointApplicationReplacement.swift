@@ -256,6 +256,11 @@ enum VPNJointApplicationReplacement {
                     expectedRevision: initial.revision + 1,
                     candidate: initial.candidate)
                 try completedContext()
+                try VPNSelectedCandidateRecovery.retireCompleted(
+                    store: store, lease: lease,
+                    transactionID: initial.transactionID,
+                    expectedRevision: initial.revision + 2,
+                    candidate: initial.candidate)
             }
             return outcome == .exchanged || destinationOutcome == .exchanged
                 ? .exchanged : .alreadyExchanged

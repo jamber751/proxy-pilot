@@ -32,14 +32,26 @@ enum VPNSelectedCandidateRecovery {
                 expectedRevision: initial.revision,
                 candidate: initial.candidate, testPolicy: testPolicy)
         }
+        try retireCompleted(store: store, lease: lease,
+                            transactionID: initial.transactionID,
+                            expectedRevision: 3, candidate: initial.candidate)
+        return outcome
+    }
+
+    /// Retires only an exact completed transaction whose selected deployment is
+    /// still candidate B. The caller must already hold a fresh readiness or
+    /// explicit desired-off receipt under this same lifecycle lease.
+    static func retireCompleted(store: VPNReleaseStore, lease: VPNLifecycleLease,
+                                transactionID: UUID, expectedRevision: UInt64,
+                                candidate: VPNAuthorizedDeployment) throws {
         try lease.check()
         guard let completed = try store.loadUpdateJournal(),
-              completed.transactionID == initial.transactionID,
-              completed.revision == 3,
+              completed.transactionID == transactionID,
+              completed.revision == expectedRevision,
               completed.phase == .completed,
               completed.recovery == .completed,
-              completed.candidate.ownerUserID == initial.candidate.ownerUserID,
-              completed.candidate.release.isSameRelease(as: initial.candidate.release) else {
+              completed.candidate.ownerUserID == candidate.ownerUserID,
+              completed.candidate.release.isSameRelease(as: candidate.release) else {
             throw VPNSelectedCandidateRecoveryError.invalidJournal
         }
         do {
@@ -48,13 +60,12 @@ enum VPNSelectedCandidateRecovery {
             try lease.check()
             let selected = try store.loadDeployment()
             guard try store.loadUpdateJournal() == nil,
-                  selected.ownerUserID == initial.candidate.ownerUserID,
-                  selected.release.isSameRelease(as: initial.candidate.release) else {
+                  selected.ownerUserID == candidate.ownerUserID,
+                  selected.release.isSameRelease(as: candidate.release) else {
                 throw VPNSelectedCandidateRecoveryError.retirementUncertain
             }
         } catch {
             throw VPNSelectedCandidateRecoveryError.retirementUncertain
         }
-        return outcome
     }
 }

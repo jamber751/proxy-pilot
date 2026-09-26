@@ -211,7 +211,7 @@ Only after the selected deployment and observable on/off outcome are confirmed
 does recovery retire the terminal journal. Failure never selects A or removes
 the journal based on an assumption.
 
-The joint suite now passes 16/16 scenarios. It covers forward recovery from both
+The joint suite now passes 17/17 scenarios. It covers forward recovery from both
 late phases, terminal retirement, refusal of an earlier journal before runtime
 effects, and start failures that preserve the appropriate retry phase. The
 production package suite passes all 10 required cases; 3 optional external
@@ -241,3 +241,10 @@ launchd transition from selected recovery-only service through completed and
 terminal retirement. The existing behavior of an already-running operational
 helper is preserved while a newly prepared journal awaits the coordinator's
 explicit drain.
+
+The ordinary no-crash path now uses the same exact terminal-retirement primitive
+immediately after its in-memory readiness (or desired-off) receipt and completed
+journal check. Consequently a successful update does not leave the helper in
+recovery-only mode. The recovery entry retains the same primitive for a later
+forward retry; neither path can retire a non-completed or differently selected
+transaction.

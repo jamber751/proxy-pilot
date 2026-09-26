@@ -186,6 +186,13 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertEqual(result.stdout.strip(), 'finalized:off:phase=completed:revision=3')
         self.assertFalse((self.apps / 'start-marker').exists())
 
+    def test_successful_finalization_retires_the_terminal_journal(self):
+        self.setup_journal('setup-selected')
+        result = self.invoke('finalize-and-retire-off')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'finalized:off:journal=retired')
+        self.assertFalse((self.apps / 'start-marker').exists())
+
     def test_selected_desired_on_start_failure_cleans_up_and_stays_selected(self):
         self.setup_journal('setup-selected-on')
         result = self.invoke('finalize-on-start-fail')

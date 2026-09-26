@@ -127,6 +127,15 @@ import Foundation
                     transactionID: journal.transactionID,
                     expectedRevision: journal.revision,
                     candidate: journal.candidate, testPolicy: true)
+                if operation == "finalize-and-retire-off" {
+                    try VPNSelectedCandidateRecovery.retireCompleted(
+                        store: store, lease: lease,
+                        transactionID: journal.transactionID,
+                        expectedRevision: journal.revision + 1,
+                        candidate: journal.candidate)
+                    print("finalized:\(outcome == .helperReady ? "ready" : "off"):journal=retired")
+                    return
+                }
                 let fresh = try store.loadUpdateJournal()!
                 print("finalized:\(outcome == .helperReady ? "ready" : "off"):phase=\(fresh.phase.rawValue):revision=\(fresh.revision)")
                 return

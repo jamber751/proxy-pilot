@@ -2255,3 +2255,18 @@ staging-остатки. До этого они сохраняются как д�
 поздний journal и запустить fixed recovery entry после crash/reboot. Обычный UI
 не получает права читать или изменять root-store. Затем — отдельная cleanup-
 транзакция retained A/executor/stage после подтверждённого terminal retire.
+
+### Продолжение 1.5s — retire в штатном update-пути (26 сентября)
+
+- [x] Единый `retireCompleted` проверяет lifecycle lease, exact transaction,
+  revision, completed recovery state, owner и durable selector B до удаления,
+  затем подтверждает отсутствие journal и неизменный selector.
+- [x] Штатный pipeline вызывает его сразу после живого signed readiness либо
+  явного desired-off и completed check. Успешное обновление больше не оставляет
+  helper в recovery-only режиме.
+- [x] Crash recovery использует тот же primitive после повторной сверки, без
+  отдельной менее строгой ветки. Joint suite 17/17; production package suite
+  10/10 обязательных сценариев, 3 optional engine cases пропущены.
+
+Следующий узел: unattended root-discovery позднего journal после crash/reboot,
+затем идемпотентная cleanup-транзакция для retained A/executor/stage.
