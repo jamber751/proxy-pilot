@@ -9,6 +9,18 @@ enum VPNDirectoryProvisioner {
     /// The caller still needs the user's system installation authorization.
     /// Returned descriptor belongs to the caller; no service is registered.
     static func openSystemDirectory(create: Bool) throws -> Int32 {
+        try openSystemComponent(name: "VPN", create: create)
+    }
+
+    /// Fixed application-replacement namespace. Keeping it beside, rather than
+    /// inside, the service store lets recovery reopen the protected A/B slots
+    /// after a process crash without accepting a path or conflating the two
+    /// lifecycle locks.
+    static func openSystemUpdateDirectory(create: Bool) throws -> Int32 {
+        try openSystemComponent(name: "Update", create: create)
+    }
+
+    private static func openSystemComponent(name: String, create: Bool) throws -> Int32 {
         guard geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
         var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard parent >= 0 else { throw VPNDirectoryError.unavailable }
@@ -19,17 +31,29 @@ enum VPNDirectoryProvisioner {
             close(parent)
             parent = child
         }
-        return try openBelowTrustedBase(parent, create: create)
+        return try openComponentBelowTrustedBase(parent, name: name, create: create)
     }
 
     /// Internal mechanism, NOT an IPC interface. The base fd must already be
     /// trusted; only the two hardcoded application directory names are created.
     /// In production openSystemDirectory is the only entry point to use.
     static func openBelowTrustedBase(_ base: Int32, create: Bool) throws -> Int32 {
+        try openComponentBelowTrustedBase(base, name: "VPN", create: create)
+    }
+
+    #if VPN_DIRECTORY_TESTING
+    static func testOpenUpdateBelowTrustedBase(_ base: Int32, create: Bool) throws -> Int32 {
+        try openComponentBelowTrustedBase(base, name: "Update", create: create)
+    }
+    #endif
+
+    private static func openComponentBelowTrustedBase(_ base: Int32, name: String,
+                                                       create: Bool) throws -> Int32 {
+        guard name == "VPN" || name == "Update" else { throw VPNDirectoryError.unsafeDirectory }
         try check(base, privateDirectory: false)
         let app = try openChild(parent: base, name: "ProxyPilot", create: create, privateDirectory: true)
         defer { close(app) }
-        return try openChild(parent: app, name: "VPN", create: create, privateDirectory: true)
+        return try openChild(parent: app, name: name, create: create, privateDirectory: true)
     }
 
     /// Removes the two application directories, innermost first, and only when

@@ -22,6 +22,7 @@ class VPNDirectoryTests(unittest.TestCase):
         for arch in ('arm64', 'x86_64'):
             output = directory / arch
             result = subprocess.run(['swiftc', '-target', f'{arch}-apple-macosx11.0',
+                                     '-D', 'VPN_DIRECTORY_TESTING',
                                      str(ROOT / 'app/vpn-helper/VPNDirectoryProvisioner.swift'),
                                      str(ROOT / 'tests/vpn_directory_checks.swift'), '-o', str(output)],
                                     capture_output=True, text=True, timeout=60)
@@ -55,6 +56,22 @@ class VPNDirectoryTests(unittest.TestCase):
 
     def test_read_does_not_create_missing_directories(self):
         self.expect('read', 'rejected:unavailable')
+        self.assertFalse(self.app.exists())
+
+    def test_update_namespace_is_a_separate_fixed_private_sibling(self):
+        self.expect('create', 'private-directory-ready')
+        self.expect('create-update', 'private-directory-ready')
+        update = self.app / 'Update'
+        self.assertEqual(stat.S_IMODE(update.stat().st_mode), 0o700)
+        self.assertEqual(update.stat().st_uid, os.geteuid())
+        (update / 'untouched').write_bytes(b'update')
+        (self.app / 'VPN/untouched').write_bytes(b'vpn')
+        self.expect('read-update', 'private-directory-ready')
+        self.assertEqual((update / 'untouched').read_bytes(), b'update')
+        self.assertEqual((self.app / 'VPN/untouched').read_bytes(), b'vpn')
+
+    def test_update_read_does_not_create_missing_directories(self):
+        self.expect('read-update', 'rejected:unavailable')
         self.assertFalse(self.app.exists())
 
     def test_writable_base_rejected_before_creation(self):
@@ -94,4 +111,5 @@ class VPNDirectoryTests(unittest.TestCase):
     @unittest.skipIf(os.geteuid() == 0, 'must never call production provisioning from an elevated test')
     def test_production_entry_requires_root_before_any_write(self):
         self.expect('root-guard', 'rejected:requiresRoot')
+        self.expect('root-update-guard', 'rejected:requiresRoot')
         self.assertEqual(list(self.base.iterdir()), [])
