@@ -29,7 +29,7 @@ enum VPNReplacementExecutorEntry {
             return VPNReplacementExecutorHandoff.runChildIfRequested(
                 arguments: arguments, policy: policy,
                 operation: { request, applicationDirectory in
-                    try VPNJointApplicationReplacement.exchangePreparedCopies(
+                    try VPNJointApplicationReplacement.installPreparedApplication(
                         applicationDirectory: applicationDirectory,
                         transactionID: request.transactionID,
                         expectedRevision: request.expectedRevision,

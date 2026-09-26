@@ -49,3 +49,28 @@ Applications analogues; no test names or mutates the real installed bundle.
 Next: connect this primitive to the protected journal while retaining the
 replacement/drain authority across the final mutation, then prove exact
 installed B plus a live authenticated B process before changing the selector.
+
+## Journal-aware composition
+
+`VPNJointApplicationReplacement.installPreparedApplication` now keeps the
+service lifecycle lease and the same journal snapshot contract across the
+protected-copy exchange, destination staging, and destination exchange. The
+runtime adapter is created lazily only after both protected bundles validate;
+the old service is drained once per attempt. Every later mutation authorization
+rechecks the exact transaction UUID, revision, A/B releases, phase, recovery
+mode, executor identity, and lifecycle lease.
+
+The production hidden executor now enters this complete disk-install path. If
+the destination is still A and the fixed private stage is absent, exact B is
+staged from the protected current slot and then exchanged. A retry with exact
+installed B and retained A skips restaging and moves forward. Any error after
+the protected-copy exchange is reported as uncertain because reversing either
+namespace would be unsafe. The journal remains `replacementPending`, revision
+1, and selector A throughout this boundary.
+
+The expanded journal suite passes 9/9 scenarios, including full disk install,
+idempotent retry, one drain per attempt, unchanged unrelated Applications
+siblings, stale journal rejection, wrong live process, executor mutation, lock
+contention, and post-exchange uncertainty. The complete arm64/x86_64 package
+suite passes 10 required cases; 3 cases requiring an optional external complete
+engine artifact are skipped.

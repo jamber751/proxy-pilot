@@ -6,9 +6,11 @@ import Foundation
 @main enum VPNJointReplacementChecks {
     final class Runtime: VPNActivationRuntime {
         let mode: String, service: Int32, appPath: String
+        var stopCount = 0
         init(_ mode: String, _ service: Int32, _ appPath: String) { self.mode = mode; self.service = service; self.appPath = appPath }
         func stopAndDrain(deadline: UInt64) throws {
-            try Data("drained".utf8).write(to: URL(fileURLWithPath: appPath + "/drain-marker"))
+            stopCount += 1
+            try Data("\(stopCount)".utf8).write(to: URL(fileURLWithPath: appPath + "/drain-marker"))
             if mode == "drain-fail" { throw VPNLaunchdError.cleanupNotConfirmed }
             if mode == "lose-lease" { _ = unlinkat(service, VPNLifecycleLease.lockName, 0) }
             if mode == "corrupt-journal" {
@@ -34,7 +36,7 @@ import Foundation
 
     static func main() throws {
         let a = CommandLine.arguments
-        guard a.count == 11 else { exit(64) }
+        guard a.count == 12 else { exit(64) }
         let operation = a[1], support = a[2], apps = a[3]
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
         let authority = try VPNReleaseAuthority(trustedPublicKey: key.publicKey.rawRepresentation, minimumSequence: 1, supportedProtocol: 1)
@@ -66,8 +68,9 @@ import Foundation
         let edgeSig = try key.signature(for: VPNReleaseAuthority.updateTransitionDomain + edge)
         let base = open(support, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         let appFD = open(apps, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard base >= 0, appFD >= 0 else { exit(65) }
-        defer { close(base); close(appFD) }
+        let destinationFD = open(a[11], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard base >= 0, appFD >= 0, destinationFD >= 0 else { exit(65) }
+        defer { close(base); close(appFD); close(destinationFD) }
         do {
             if operation.hasPrefix("setup") {
                 let service = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: true)
@@ -117,6 +120,14 @@ import Foundation
             if operation == "production" {
                 outcome = try VPNJointApplicationReplacement.exchangePreparedCopies(
                     applicationDirectory: appFD, transactionID: id, expectedRevision: revision, authority: authority)
+            } else if operation.hasPrefix("install") {
+                outcome = try VPNJointApplicationReplacement.testInstallPreparedApplication(
+                    applicationDirectory: appFD, destination: destinationFD,
+                    transactionID: id, expectedRevision: revision,
+                    authority: authority, base: base) { directory in
+                        try Data("factory".utf8).write(to: URL(fileURLWithPath: apps + "/factory-marker"))
+                        return Runtime(operation, directory, apps)
+                    }
             } else {
                 outcome = try VPNJointApplicationReplacement.testExchangePreparedCopies(
                     applicationDirectory: appFD, transactionID: id, expectedRevision: revision,

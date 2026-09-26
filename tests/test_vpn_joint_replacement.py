@@ -23,11 +23,13 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNProfileVault.swift',
             'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNInstaller.swift',
             'VPNStagedApplication.swift', 'VPNProtectedApplicationSwap.swift',
-            'VPNReplacementExecutor.swift', 'VPNJointApplicationReplacement.swift')]
+            'VPNReplacementExecutor.swift', 'VPNApplicationDestinationStage.swift',
+            'VPNApplicationDestinationExchange.swift', 'VPNJointApplicationReplacement.swift')]
         slices = []
         for arch in ('arm64', 'x86_64'):
             output = cls.build / f'joint-{arch}'
             cls.command(['swiftc', '-D', 'VPN_INSTALLER_TESTING', '-D', 'VPN_APPLICATION_SWAP_TESTING',
+                         '-D', 'VPN_APPLICATION_DESTINATION_TESTING',
                          '-D', 'VPN_ENGINE_DELIVERY_TESTING', '-D', 'VPN_LAUNCHD_TESTING',
                          '-D', 'VPN_HELPER_READINESS_TESTING', '-target', f'{arch}-apple-macosx11.0',
                          *map(str, sources), str(ROOT / 'tests/vpn_joint_replacement_checks.swift'),
@@ -84,6 +86,10 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.executor_identity = (self.executor.stat().st_ino,
                                   executor_bundle.stat().st_ino,
                                   self.runner_a.read_bytes())
+        self.destination = self.work / 'Applications'; self.destination.mkdir(mode=0o700)
+        shutil.copytree(self.current / 'ProxyPilot.app', self.destination / 'ProxyPilot.app', symlinks=True)
+        (self.destination / 'Other.app').mkdir()
+        (self.destination / 'Other.app/sentinel').write_text('untouched')
 
     def replace_main_and_sign(self, app):
         executable = app / 'Contents/MacOS/ProxyPilot'
@@ -100,7 +106,8 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
     def invoke(self, operation, executable=None):
         args = [str(executable or self.runner_a), operation, str(self.support), str(self.apps),
                 str(self.helper), self.a['arm64'], self.a['x86_64'], self.b['arm64'],
-                self.b['x86_64'], self.helper_pins['arm64'], self.helper_pins['x86_64']]
+                self.b['x86_64'], self.helper_pins['arm64'], self.helper_pins['x86_64'],
+                str(self.destination)]
         return subprocess.run(args, env=ENV, capture_output=True, text=True, timeout=60)
 
     def setup_journal(self, operation='setup'):
@@ -147,6 +154,25 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assert_rejected(failed_retry, 'commitUncertain')
         self.assertEqual(self.identities(), self.initial[::-1])
         self.assertEqual(before, {name: (service / name).read_bytes() for name in before})
+
+    def test_full_disk_install_and_retry_remain_journal_pending(self):
+        self.setup_journal()
+        first = self.invoke('install')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertIn('result:exchanged:phase=replacementPending:revision=1:selected=10', first.stdout)
+        self.assertEqual(self.identities(), self.initial[::-1])
+        self.assertEqual(self.code_pins(self.destination / 'ProxyPilot.app'), self.b)
+        retained = self.destination / '.ProxyPilot.vpn-update/ProxyPilot.app'
+        self.assertEqual(self.code_pins(retained), self.a)
+        self.assertEqual((self.apps / 'drain-marker').read_text(), '1')
+        self.assertEqual((self.destination / 'Other.app/sentinel').read_text(), 'untouched')
+        (self.apps / 'drain-marker').unlink()
+        retry = self.invoke('install')
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertIn('result:already:phase=replacementPending:revision=1:selected=10', retry.stdout)
+        self.assertEqual((self.apps / 'drain-marker').read_text(), '1')
+        self.assertEqual(self.code_pins(self.destination / 'ProxyPilot.app'), self.b)
+        self.assertEqual(self.code_pins(retained), self.a)
 
     def test_context_refusals_precede_runtime_and_namespace_effects(self):
         for setup, operation in (('setup', 'wrong-uuid'), ('setup', 'wrong-revision'),

@@ -2130,3 +2130,23 @@ B. До этого не менять selector, не запускать B и не
 `replacementPending` и остановка старой службы сохранялись до самой операции.
 После этого запустить и аутентифицировать exact installed B; selector B менять
 только после доказательства live B.
+
+### Продолжение 1.5l — journal-aware установка B (26 сентября)
+
+- [x] Скрытый executor A теперь удерживает service lifecycle lease и неизменный
+  journal-контекст через protected swap, staging у Applications и финальный
+  destination exchange. На каждом mutation boundary снова проверяются UUID,
+  revision, A/B, phase/recovery и identity executor A.
+- [x] Старая служба drain-ится ровно один раз за попытку. Адаптер создаётся
+  лениво после проверки защищённых копий; повторная авторизация перед заменой
+  повторяет проверки, но не запускает второй stop.
+- [x] Чистая попытка сама создаёт exact fixed stage B; forward retry распознаёт
+  installed B + retained A. После protected swap любая дальнейшая ошибка —
+  неопределённый commit без обратной замены.
+- [x] Journal и selector намеренно остаются `replacementPending / A`. Joint
+  runtime suite 9/9 и production package suite 10/10 обязательных сценариев
+  прошли; 3 optional engine-artifact сценария пропущены.
+
+Следующий узел: запуск B только из проверенного установленного inode, взаимная
+аутентификация живого B и подтверждение его idle/readiness. Лишь после этого —
+атомарный selector B, восстановление желаемого VPN-состояния и завершение журнала.
