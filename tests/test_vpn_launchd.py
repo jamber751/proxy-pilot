@@ -8,6 +8,7 @@ profile, no routes, no DNS. Passing this is not proof of a root daemon install.
 import hashlib
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -22,7 +23,8 @@ HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
               'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNLaunchdRuntime.swift', 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNEndpointDirectory.swift']
+              'VPNLaunchdRuntime.swift', 'VPNRecoveryLaunchdJob.swift',
+              'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNEndpointDirectory.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
            'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
            'VPNHelperListener.swift', 'VPNEndpointDirectory.swift']
@@ -100,6 +102,8 @@ class VPNLaunchdTests(unittest.TestCase):
     def boot_out(self):
         subprocess.run(['/bin/launchctl', 'bootout', f'{self.domain}/{self.label}'],
                        capture_output=True, timeout=60)
+        subprocess.run(['/bin/launchctl', 'bootout', f'{self.domain}/{self.label}.recovery'],
+                       capture_output=True, timeout=60)
 
     def service_pid(self):
         result = subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}'],
@@ -169,6 +173,20 @@ class VPNLaunchdTests(unittest.TestCase):
                                  text=True, timeout=60).stdout
         self.assertIn(f'"Label" => "{self.label}"', content)
         self.assertIn('"serve"', content)
+
+    def test_recovery_job_uses_only_the_protected_helper_and_fixed_arguments(self):
+        result = self.run_driver('recovery-arm')
+        self.assertEqual(result.stdout.strip(), 'recovery:armed', result.stdout + result.stderr)
+        plist = self.plists / f'{self.label}.recovery.plist'
+        description = plistlib.loads(plist.read_bytes())
+        protected = self.storage / ('helper-' + hashlib.sha256((self.work / 'server').read_bytes()).hexdigest())
+        self.assertEqual(description['ProgramArguments'], [
+            str(protected.resolve()), 'recover-update', '/Library/Application Support/ProxyPilot/VPN'])
+        self.assertEqual(description['KeepAlive'], {'SuccessfulExit': False})
+        self.assertTrue(description['RunAtLoad'])
+        self.assertEqual(description['ThrottleInterval'], 10)
+        self.assertEqual(self.run_driver('recovery-remove').stdout.strip(), 'recovery:removed')
+        self.assertFalse(plist.exists())
 
     def test_recover_restarts_the_selected_release(self):
         self.assertEqual(self.run_driver().stdout.strip(), 'ready:11')

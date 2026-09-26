@@ -31,6 +31,19 @@ enum VPNLaunchdChecks {
                                                     minimumSequence: 1, supportedProtocol: 1)
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: fd, authority: authority)
             if args[1] == "load" { print("selected:\(try store.loadDeployment().release.sequence)"); return }
+            if args[1] == "recovery-arm" || args[1] == "recovery-remove" {
+                let recovery = try VPNRecoveryLaunchdJob.testUserDomain(
+                    label: label + ".recovery", plistDirectory: plists,
+                    storageDirectory: fd)
+                if args[1] == "recovery-arm" {
+                    try recovery.installAndArm(try store.loadDeployment(), deadline: deadline(20))
+                    print("recovery:armed")
+                } else {
+                    try recovery.remove(deadline: deadline(20))
+                    print("recovery:removed")
+                }
+                return
+            }
             let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plists, storageDirectory: fd)
             if args[1] == "stop" {
                 do { try runtime.stopAndDrain(deadline: deadline(20)); print("stopped") }

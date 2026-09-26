@@ -71,7 +71,7 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
   for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact VPNStagedApplication VPNInstalledApplication VPNInstalledCandidateHandoff VPNInstalledCandidateEntry VPNSelectedCandidateFinalizer VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryEntry VPNReplacementExecutor VPNReplacementExecutorProvisioner VPNProtectedApplicationSwap VPNReplacementExecutorHandoff VPNJointApplicationReplacement VPNReplacementExecutorEntry VPNApplicationDestinationStage VPNApplicationDestinationExchange \
     VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
-    VPNActivationCoordinator VPNLaunchdRuntime VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
+    VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
     SOURCES+=("$HERE/vpn-helper/$COMPONENT.swift")
   done
 fi

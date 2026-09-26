@@ -94,7 +94,8 @@ enum VPNInstaller {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
         let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
-        try uninstall(directory: directory, runtime: runtime)
+        let recovery = try VPNRecoveryLaunchdJob.system(storageDirectory: directory)
+        try uninstall(directory: directory, runtime: runtime, recovery: recovery)
         try VPNEndpointDirectory.removeSystem()
         try VPNDirectoryProvisioner.removeSystemDirectories()
     }
@@ -104,7 +105,10 @@ enum VPNInstaller {
         let directory = try openInstalled { try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false) }
         let runtime = try VPNLaunchdRuntime.testUserDomain(label: label, plistDirectory: plistDirectory,
                                                            storageDirectory: directory)
-        try uninstall(directory: directory, runtime: runtime)
+        let recovery = try VPNRecoveryLaunchdJob.testUserDomain(
+            label: label + ".recovery", plistDirectory: plistDirectory,
+            storageDirectory: directory)
+        try uninstall(directory: directory, runtime: runtime, recovery: recovery)
         try VPNDirectoryProvisioner.removeBelowTrustedBase(base)
     }
 
@@ -290,13 +294,15 @@ enum VPNInstaller {
                                       expectedSequence: expectedSequence, intent: intent)
     }
 
-    private static func uninstall(directory: Int32, runtime: VPNLaunchdRuntime) throws {
+    private static func uninstall(directory: Int32, runtime: VPNLaunchdRuntime,
+                                  recovery: VPNRecoveryLaunchdJob) throws {
         defer { close(directory) }
         let lease = try lifecycleLease(directory)
         defer { lease.release() }
         // Decide what may be removed before stopping anything: an unexpected
         // file must not leave a stopped service and a half-removed directory.
         let removable = try removableNames(directory)
+        try recovery.remove(deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
         try runtime.stopAndDrain(deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
         try runtime.removeServiceDescription()
         try remove(removable, from: directory)

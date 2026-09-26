@@ -10,7 +10,7 @@ SOURCES=("$HERE/../VPNConfiguration.swift" "$HERE/../VPNProfileImporter.swift")
 for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact \
   VPNReleaseStore VPNDirectoryProvisioner VPNEndpointDirectory VPNHelperProtocol VPNHelperReadiness \
   VPNHelperListener VPNProfileVault VPNLifecycleOwnership VPNActivationBudget VPNActivationCoordinator \
-  VPNLaunchdRuntime VPNStagedApplication VPNInstalledApplication VPNSelectedCandidateFinalizer \
+  VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNStagedApplication VPNInstalledApplication VPNSelectedCandidateFinalizer \
   VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryDaemonEntry VPNHelperRuntime VPNHelperDaemon ServiceMain; do
   SOURCES+=("$HERE/$COMPONENT.swift")
 done

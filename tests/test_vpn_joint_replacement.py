@@ -21,7 +21,7 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift', 'VPNDirectoryProvisioner.swift',
             'VPNHelperProtocol.swift', 'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
             'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNProfileVault.swift',
-            'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNInstaller.swift',
+            'VPNEndpointDirectory.swift', 'VPNLaunchdRuntime.swift', 'VPNRecoveryLaunchdJob.swift', 'VPNInstaller.swift',
             'VPNStagedApplication.swift', 'VPNInstalledApplication.swift',
             'VPNInstalledCandidateHandoff.swift', 'VPNSelectedCandidateFinalizer.swift',
             'VPNSelectedCandidateRecovery.swift',

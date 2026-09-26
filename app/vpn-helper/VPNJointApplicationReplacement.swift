@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 
 /// Journal-authorized replacement boundary. The legacy entry exchanges only
@@ -224,6 +225,17 @@ enum VPNJointApplicationReplacement {
                 authorizeMutation: authorizeMutation)
             #endif
             try recheck()
+            if !testPolicy {
+                // Arm the protected candidate helper before B is allowed to
+                // commit the selector. If this process dies after selection,
+                // launchd finishes readiness/reconciliation from the durable
+                // journal without executing the mutable app path.
+                let recovery = try VPNRecoveryLaunchdJob.system(storageDirectory: directory)
+                try recovery.installAndArm(
+                    initial.candidate,
+                    deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
+                try recheck()
+            }
             #if VPN_APPLICATION_DESTINATION_TESTING && VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
             if testPolicy {
                 // The standalone handoff suite owns the disposable child role.

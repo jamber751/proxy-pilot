@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 
 /// Fixed recovery role for the protected, content-addressed candidate helper.
@@ -6,11 +7,10 @@ import Foundation
 /// path in /Applications, the helper is already rooted in the protected store.
 /// The role accepts no transaction, release, owner, path or desired state.
 enum VPNSelectedCandidateRecoveryDaemonEntry {
-    static let argument = "recover-update"
-
     static func runIfRequested(arguments: [String]) -> Int32? {
-        guard arguments.count == 3, arguments[1] == argument,
-              arguments[2] == VPNHelperDaemon.storagePath else { return nil }
+        guard arguments.count == 3,
+              arguments[1] == VPNRecoveryLaunchdJob.recoveryArgument,
+              arguments[2] == VPNRecoveryLaunchdJob.storagePath else { return nil }
         guard getuid() == 0, geteuid() == 0 else { return 77 }
         do {
             let authority = try VPNReleaseTrust.authority()
@@ -18,17 +18,39 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
             defer { close(directory) }
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory,
                                             authority: authority)
-            guard let journal = try store.loadUpdateJournal() else { return 0 }
+            guard var journal = try store.loadUpdateJournal() else { return 0 }
+            let armed = journal.phase == .replacementPending && journal.recovery == .inspectApplication
             let recoverable = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
                 || journal.phase == .selected && journal.recovery == .recoverCandidate
                 || journal.phase == .completed && journal.recovery == .completed
-            // Watch-based launch may observe prepared/pending journal writes.
-            // Those states belong to source A and are a successful no-op here.
-            guard recoverable else { return 0 }
+            guard armed || recoverable else { return 0 }
             try VPNPeerAuthentication.validateCurrentProcess(
                 policy: journal.candidate.release.helperPolicy())
             let installed = try VPNInstalledApplication.inspect(
                 release: journal.candidate.release)
+            // The recovery job is bootstrapped immediately before B proves
+            // itself and commits the selector. Its first RunAtLoad invocation
+            // therefore waits briefly for that exact journal to advance. This
+            // closes the post-selector crash window without WatchPaths, whose
+            // events are explicitly lossy/racy. A timeout while A still owns
+            // the transaction is a successful no-op; source-A recovery owns it.
+            if armed {
+                let transactionID = journal.transactionID
+                let candidate = journal.candidate.release
+                let deadline = DispatchTime.now().uptimeNanoseconds + 30_000_000_000
+                while journal.phase == .replacementPending && journal.recovery == .inspectApplication {
+                    guard DispatchTime.now().uptimeNanoseconds < deadline else { return 0 }
+                    usleep(100_000)
+                    guard let fresh = try store.loadUpdateJournal() else { return 0 }
+                    guard fresh.transactionID == transactionID,
+                          fresh.candidate.release.isSameRelease(as: candidate) else { return 0 }
+                    journal = fresh
+                }
+                let advanced = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
+                    || journal.phase == .selected && journal.recovery == .recoverCandidate
+                    || journal.phase == .completed && journal.recovery == .completed
+                guard advanced else { return 0 }
+            }
             let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
             defer { lease.release() }
             try installed.revalidate()

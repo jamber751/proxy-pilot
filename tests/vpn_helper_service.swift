@@ -11,6 +11,11 @@ import Foundation
 enum VPNHelperService {
     static func main() {
         let args = CommandLine.arguments
+        if args.count == 3, args[1] == "recover-update",
+           args[2] == "/Library/Application Support/ProxyPilot/VPN" {
+            sleep(30)
+            exit(0)
+        }
         guard (3...5).contains(args.count), ["serve", "seed"].contains(args[1]) else { exit(64) }
         let ready = args.count < 4 || args[3] != "not-ready"
         let directory = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
