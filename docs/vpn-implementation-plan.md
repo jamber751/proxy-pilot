@@ -2286,3 +2286,21 @@ staging-остатки. До этого они сохраняются как д�
 
 Следующий узел: запуск этого recovery из защищённого content-addressed helper,
 а не прямой root-запуск изменяемого пути `/Applications`.
+
+### Продолжение 1.5u — protected recovery worker (26 сентября)
+
+- [x] В content-addressed helper добавлен фиксированный режим `recover-update`.
+  Он принимает только literal system storage path и не принимает UUID, owner,
+  release, desired state или путь приложения.
+- [x] Worker проверяет собственный live helper process по candidate pins,
+  revalidate-ит literal installed B, получает lifecycle lease и вызывает тот же
+  forward-only recovery coordinator.
+- [x] Ранние source-A фазы — no-op. Busy/временная launch-readiness ошибка имеют
+  отдельный retry exit; manual-off, exhausted budget и permanent invalid state
+  не создают бесконечный launchd crash loop.
+- [x] Production helper собран как Universal arm64+x86_64; non-root recovery
+  отвергнут до системного storage.
+
+Следующий узел: отдельный launchd recovery job должен запускать только этот
+защищённый helper, стартовать до selector window и на boot, а uninstall обязан
+сначала выгрузить job и удалить только его фиксированный plist.

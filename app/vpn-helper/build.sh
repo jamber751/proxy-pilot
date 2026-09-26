@@ -8,12 +8,14 @@ mkdir -m 700 "$OUT"
 mkdir "$OUT/ModuleCache"
 SOURCES=("$HERE/../VPNConfiguration.swift" "$HERE/../VPNProfileImporter.swift")
 for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact \
-  VPNReleaseStore VPNDirectoryProvisioner VPNEndpointDirectory VPNHelperProtocol VPNHelperListener \
-  VPNProfileVault VPNLifecycleOwnership VPNActivationBudget VPNHelperRuntime VPNHelperDaemon ServiceMain; do
+  VPNReleaseStore VPNDirectoryProvisioner VPNEndpointDirectory VPNHelperProtocol VPNHelperReadiness \
+  VPNHelperListener VPNProfileVault VPNLifecycleOwnership VPNActivationBudget VPNActivationCoordinator \
+  VPNLaunchdRuntime VPNStagedApplication VPNInstalledApplication VPNSelectedCandidateFinalizer \
+  VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryDaemonEntry VPNHelperRuntime VPNHelperDaemon ServiceMain; do
   SOURCES+=("$HERE/$COMPONENT.swift")
 done
 for ARCH in arm64 x86_64; do
-  /usr/bin/swiftc -O -parse-as-library -module-cache-path "$OUT/ModuleCache" \
+  /usr/bin/swiftc -O -parse-as-library -D VPN_RECOVERY_DAEMON_ENTRY -module-cache-path "$OUT/ModuleCache" \
     -target "$ARCH-apple-macosx11.0" "${SOURCES[@]}" -o "$OUT/helper-$ARCH"
 done
 /usr/bin/lipo -create "$OUT/helper-arm64" "$OUT/helper-x86_64" -output "$OUT/vpn-helper"

@@ -256,3 +256,23 @@ journal's `selected` transition and continues forward. It never interprets the
 same on-disk phase with selector A (`inspectApplication`) as candidate recovery.
 The joint suite forces process exit immediately after the selector rename and
 then proves completed/off plus terminal retirement in a fresh process.
+
+## Protected helper recovery role
+
+The content-addressed candidate helper now contains a second fixed role,
+`recover-update`, dispatched before normal daemon startup. It accepts only the
+literal production storage path and no transaction, owner, release, app path or
+desired state. Non-root execution exits before opening system storage.
+
+For a recoverable late journal it authenticates its own live process against the
+candidate helper pins, statically revalidates literal installed B, acquires the
+service lifecycle lease and invokes the same forward-only recovery coordinator.
+Early source-A journal phases are successful no-ops. Temporary lifecycle,
+launch/readiness and uncertain-retirement failures have a distinct retry exit;
+manual-off, exhausted budget and permanent invalid state do not request a
+launchd crash loop.
+
+Both arm64 and x86_64 production helper slices compile and form a signed
+Universal executable with this role. The role is not registered as a launchd
+job yet; this increment establishes a protected executable target so the next
+step never has to launch the mutable `/Applications` path directly as root.
