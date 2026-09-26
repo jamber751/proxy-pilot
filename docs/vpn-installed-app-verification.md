@@ -273,6 +273,35 @@ manual-off, exhausted budget and permanent invalid state do not request a
 launchd crash loop.
 
 Both arm64 and x86_64 production helper slices compile and form a signed
-Universal executable with this role. The role is not registered as a launchd
-job yet; this increment establishes a protected executable target so the next
-step never has to launch the mutable `/Applications` path directly as root.
+Universal executable with this role.
+
+## Protected launchd recovery job
+
+The joint replacement now installs a separate fixed launchd job immediately
+before installed B performs the live selector handshake. Its executable is the
+candidate's content-addressed helper in root-private storage, never the mutable
+application path. The plist supplies only the fixed `recover-update` role and
+literal production storage path, uses `RunAtLoad`, and retries only failures
+that the recovery entry classifies as transient.
+
+The first invocation may observe the exact `replacementPending /
+inspectApplication` state because it is deliberately armed before selection.
+It authenticates candidate helper B and installed application B, then waits for
+that same transaction to advance for the bounded live-B handshake. A selector
+commit or a reboot in a later recoverable phase continues through the existing
+forward-only coordinator. A removed, changed, early or permanently invalid
+journal exits without mutating selection.
+
+The launchd adapter revalidates the complete signed helper before publishing an
+atomic root-owned description, confirms an older job is unloaded, and accepts no
+caller-controlled command, path, release or transaction. Uninstall unloads and
+removes this exact description before deleting protected storage. The ordinary
+updater's read-only admission gate also treats an orphan recovery plist as an
+installed component and refuses an uncoordinated Sparkle update.
+
+Validation: the real user launchd domain accepted the protected helper job and
+its exact plist contract; the full launchd plus joint-replacement suites passed
+30/30, installer passed 36/36, package composition passed 10 required cases
+with 3 optional engine cases skipped, and update admission passed 10/10. A real
+Universal helper was rebuilt and strictly verified. No system job, application,
+profile, route, DNS setting or VPN tunnel was changed by these tests.
