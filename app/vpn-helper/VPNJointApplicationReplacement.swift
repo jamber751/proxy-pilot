@@ -4,9 +4,10 @@ import Foundation
 /// Journal-authorized replacement boundary. The legacy entry exchanges only
 /// protected copies; the production executor entry also installs exact B into
 /// Applications. The executor must be exact A in its separate fixed slot, with
-/// protected ancestry supplied by a trusted caller. Success still does not
-/// prove live B and never advances the selector, journal, activation budget or
-/// the user's desired-on/off state.
+/// protected ancestry supplied by a trusted caller. The full production entry
+/// proves live app B, selects B, restores idle-helper availability according to
+/// the durable activation intent, and records completion. It never applies a
+/// VPN profile, routes, DNS, or changes the user's desired-on/off state.
 enum VPNJointApplicationReplacement {
     static func exchangePreparedCopies(applicationDirectory: Int32, transactionID: UUID,
                                        expectedRevision: UInt64, authority: VPNReleaseAuthority) throws
@@ -20,8 +21,8 @@ enum VPNJointApplicationReplacement {
                            runtime: { try VPNLaunchdRuntime.system(storageDirectory: directory) })
     }
 
-    /// Completes the disk replacement while the journal and stopped-service
-    /// authority remain held. It still does not launch B or advance selector B.
+    /// Completes replacement and readiness while the journal and stopped-service
+    /// authority remain held. It never applies profile/routes/DNS.
     static func installPreparedApplication(applicationDirectory: Int32, transactionID: UUID,
                                            expectedRevision: UInt64,
                                            authority: VPNReleaseAuthority) throws
@@ -138,6 +139,18 @@ enum VPNJointApplicationReplacement {
                 expectedRevision: initial.revision)
             try selectedContext()
         }
+        func completedContext() throws {
+            try lease.check()
+            guard let fresh = try store.loadUpdateJournal(),
+                  fresh.transactionID == initial.transactionID,
+                  fresh.revision == initial.revision + 2,
+                  fresh.phase == .completed,
+                  fresh.recovery == .completed,
+                  fresh.candidate.release.isSameRelease(as: initial.candidate.release) else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+            try lease.check()
+        }
         var adapter: VPNActivationRuntime?
         var drained = false
         func authorizeMutation() throws {
@@ -231,7 +244,19 @@ enum VPNJointApplicationReplacement {
                 commitSelection: selectCandidate,
                 validateSelected: selectedContext)
             #endif
-            if testPolicy { try recheck() } else { try selectedContext() }
+            if testPolicy {
+                try recheck()
+            } else {
+                try selectedContext()
+                guard let adapter else { throw VPNLaunchdError.invalidConfiguration }
+                let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
+                _ = try VPNSelectedCandidateFinalizer.finish(
+                    store: store, runtime: adapter, lease: lease, budget: budget,
+                    transactionID: initial.transactionID,
+                    expectedRevision: initial.revision + 1,
+                    candidate: initial.candidate)
+                try completedContext()
+            }
             return outcome == .exchanged || destinationOutcome == .exchanged
                 ? .exchanged : .alreadyExchanged
         } catch {

@@ -2197,3 +2197,21 @@ B. До этого не менять selector, не запускать B и не
 
 Следующий узел: journal-aware запуск helper B в idle-режиме, authenticated helper
 readiness, восстановление сохранённого desired-on/off и `selected → completed`.
+
+### Продолжение 1.5p — helper B и завершение журнала (26 сентября)
+
+- [x] После selector coordinator под тем же lifecycle lease перечитывает exact B
+  и durable activation intent. Off не воскресит helper; on расходует одну
+  ограниченную automatic attempt и запускает только helper B в idle-режиме.
+- [x] Для on требуется signed challenge-response readiness exact B и повторная
+  проверка selector/lease. Failure budget очищается только после ready.
+- [x] Лишь затем journal переходит `selected → completed`. Ошибка запуска/ready
+  вызывает stop-and-drain и оставляет selected для forward retry; после возможной
+  записи completed результат uncertain и готовый helper не останавливается наугад.
+- [x] Joint suite 11/11, selector handshake 3/3, production package 10/10
+  обязательных сценариев прошли; 3 optional engine-artifact cases пропущены.
+
+Следующий узел: отдельный recovery entry для `recoverCandidate/completed`,
+завершение или безопасный повтор после crash на каждой поздней границе, затем
+retire terminal journal. Подключение самого VPN-профиля остаётся отдельным
+пользовательским действием/автоматикой и не смешивается с обновлением приложения.

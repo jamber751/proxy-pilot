@@ -52,6 +52,7 @@ final class ProxyModel:''' + model
         app_sources += [HELPER / f'{name}.swift' for name in
                         ('VPNStagedApplication', 'VPNInstalledApplication',
                          'VPNInstalledCandidateHandoff', 'VPNReplacementExecutor',
+                         'VPNSelectedCandidateFinalizer',
                          'VPNReplacementExecutorProvisioner', 'VPNProtectedApplicationSwap',
                          'VPNReplacementExecutorHandoff', 'VPNJointApplicationReplacement',
                          'VPNInstalledCandidateEntry', 'VPNReplacementExecutorEntry',

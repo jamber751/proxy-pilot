@@ -169,5 +169,27 @@ passes all 10 required cases (3 optional external-engine cases skipped). The
 joint disposable fixture cannot reproduce distinct production A/B journal
 policies from the fixed system store, so its test branch stops at installed-B
 proof; production composition is compiled while the cross-release handshake is
-covered at the protocol boundary. Starting helper B and completing the journal
-remain separate later boundaries.
+covered at the protocol boundary. Helper B readiness and journal completion are
+implemented by the separate boundary below.
+
+## Selected helper readiness and completion
+
+`VPNSelectedCandidateFinalizer` now handles the post-selector boundary under the
+same service lifecycle lease. It reloads exact selected B and the protected
+activation budget. If the durable intent is off, it does not restart the helper
+and records an explicit completed/off outcome. If intent is on, it charges one
+bounded automatic attempt, starts only selected helper B in idle mode, validates
+its signed readiness challenge, rechecks selection and lease, and clears the
+failure budget only after readiness.
+
+Only then does it advance `selected → completed` and revalidate the completed
+journal. A start/readiness failure attempts stop-and-drain and leaves the journal
+selected for forward retry. Once completion may have been written, errors are
+`commitUncertain` and the ready helper is not torn down based on a guess. No VPN
+profile, route, or DNS setting is applied by this boundary.
+
+The joint suite now passes 11/11 scenarios, including desired-off completion
+without a helper start and desired-on start failure with cleanup while remaining
+selected. Authenticated helper start/readiness behavior is also covered by the
+existing activation suite; the production arm64/x86_64 package composition
+passes all required package cases.

@@ -87,9 +87,12 @@ import Foundation
                     transitionPayload: edge, transitionSignature: edgeSig, expectedSequence: 10)
                 var result = journal
                 if operation != "setup-prepared" { result = try store.markUpdateReplacementPending(transactionID: journal.transactionID, expectedRevision: 0) }
-                if operation == "setup-selected" { result = try store.selectUpdateCandidate(transactionID: result.transactionID, expectedRevision: 1) }
+                if operation.hasPrefix("setup-selected") {
+                    result = try store.selectUpdateCandidate(
+                        transactionID: result.transactionID, expectedRevision: 1)
+                }
                 let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
-                try budget.recordManualOff()
+                if operation != "setup-selected-on" { try budget.recordManualOff() }
                 print("setup:\(result.transactionID.uuidString):\(result.revision)")
                 return
             }
@@ -97,6 +100,20 @@ import Foundation
             defer { close(service) }
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
             let journal = try store.loadUpdateJournal()!
+            if operation.hasPrefix("finalize-") {
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+                defer { lease.release() }
+                let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
+                let outcome = try VPNSelectedCandidateFinalizer.finish(
+                    store: store, runtime: Runtime(operation, service, apps),
+                    lease: lease, budget: budget,
+                    transactionID: journal.transactionID,
+                    expectedRevision: journal.revision,
+                    candidate: journal.candidate, testPolicy: true)
+                let fresh = try store.loadUpdateJournal()!
+                print("finalized:\(outcome == .helperReady ? "ready" : "off"):phase=\(fresh.phase.rawValue):revision=\(fresh.revision)")
+                return
+            }
             if operation.hasPrefix("raw-after-executor-") {
                 let outcome = try VPNProtectedApplicationSwap.testExchange(
                     inTrustedDirectory: appFD, previous: journal.previous.release,
