@@ -39,13 +39,10 @@ arm64 and x86_64. Seven isolated runtime scenarios are implemented for staging,
 idempotent recovery, source/copy mutation, hostile fixed names, damaged recovery,
 destination permissions, lock contention and the production non-root guard.
 
-Runtime execution is pending a host restart. The earlier sanitizer experiment
-left macOS blocking every newly linked ad-hoc Mach-O at `_dyld_start`, including
-a two-line C smoke binary, before application code runs. Restarting the user
-trust agent did not clear it. This is not recorded as a passed test, and no real
-Applications bundle or system/network setting was changed.
+After the host restart, a freshly linked smoke binary ran normally and all seven
+destination scenarios passed in **6.322 seconds**. No test touched the real
+Applications bundle or any system/network setting.
 
-Next: after the host runtime recovers, run the complete destination suite. Only
-then implement the atomic exchange with the installed A name, preserve
+Next: implement the atomic exchange with the installed A name, preserve
 forward-recovery evidence and bind exact installed B to a live authenticated B
 process before selector B can advance.
