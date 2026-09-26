@@ -32,13 +32,20 @@ enum VPNHelperDaemon {
                               authority: VPNReleaseAuthority,
                               policy: (VerifiedVPNRelease) throws -> VPNPeerPolicy) throws {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
-        // Boot recovery is deliberately not journal-aware yet. Refuse before
-        // charging its attempt or touching the endpoint; a running daemon does
-        // not repeat this check and is not stopped merely because a journal
-        // later appears.
-        try store.requireNoPendingUpdate()
         let stamp = try selectionStamp(directory)
         let selected = try store.loadDeployment()
+        func recoveryOnly() throws -> Bool {
+            guard let journal = try store.loadUpdateJournal() else { return false }
+            let late = journal.phase == .selected && journal.recovery == .recoverCandidate
+                || journal.phase == .completed && journal.recovery == .completed
+            guard late,
+                  journal.candidate.ownerUserID == selected.ownerUserID,
+                  journal.candidate.release.isSameRelease(as: selected.release) else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+            return true
+        }
+        _ = try recoveryOnly()
         guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
         try VPNPeerAuthentication.validateCurrentProcess(policy: policy(selected.release))
         let runtime = try VPNHelperRuntime(storageDirectory: directory)
@@ -49,10 +56,11 @@ enum VPNHelperDaemon {
         catch VPNLifecycleOwnershipError.busy { }
         defer { bootLease?.release() }
         let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
-        // Recheck even when a coordinator owns the lease: ordinary coordinator
-        // startup is also forbidden from launching through a journal window.
-        try store.requireNoPendingUpdate()
-        if bootLease != nil {
+        // A selected/completed journal is allowed only as a readiness-only
+        // recovery launch. Earlier, corrupt or mismatched journals fail before
+        // endpoint creation and never spend an automatic attempt.
+        let startsForRecovery = try recoveryOnly()
+        if bootLease != nil, !startsForRecovery {
             // Close the window between the preflight above and lifecycle
             // acquisition: journal preparation can legitimately win that race.
             try budget.beginAttempt(intent: .automatic)
@@ -75,15 +83,26 @@ enum VPNHelperDaemon {
         try stillSelected()
         if let lease = bootLease {
             try lease.check()
-            // This signed, selected daemon has created its authenticated idle
-            // listener. No VPN/profile is applied on boot. External callers
-            // still perform their own mutual readiness authentication.
-            try budget.recordSuccess()
+            if !startsForRecovery {
+                // This signed, selected daemon has created its authenticated idle
+                // listener. No VPN/profile is applied on boot. External callers
+                // still perform their own mutual readiness authentication.
+                try budget.recordSuccess()
+            }
+            // A recovery-only helper must not keep the lifecycle lease needed by
+            // the exact installed B coordinator that will reconcile the journal.
             lease.release(); bootLease = nil
         }
         while true {
             try stillSelected()
-            _ = try? listener.serveOnce(isReady: { (try? stillSelected()) != nil })
+            _ = try? listener.serveOnce(
+                isReady: {
+                    guard (try? stillSelected()) != nil else { return false }
+                    return !startsForRecovery || (try? recoveryOnly()) != nil
+                },
+                allowOwnerRequests: {
+                    !startsForRecovery || (try? store.requireNoPendingUpdate()) != nil
+                })
         }
     }
 

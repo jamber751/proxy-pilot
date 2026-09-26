@@ -55,7 +55,11 @@ enum VPNHelperService {
                                                   ownerUserID: deployment.ownerUserID)
             #endif
             print("listening"); fflush(stdout)
-            while true { _ = try? listener.serveOnce(isReady: { ready }) }
+            let ownerRequestsAllowed = !args.contains("owner-blocked")
+            while true {
+                _ = try? listener.serveOnce(
+                    isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed })
+            }
         } catch {
             FileHandle.standardError.write(Data("service:\(error)\n".utf8))
             exit(71)

@@ -58,6 +58,29 @@ enum VPNInstallerChecks {
                 let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
                 defer { close(directory) }
                 let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
+                #if VPN_INSTALLER_TESTING
+                if args[1].hasPrefix("journal-test-") {
+                    guard let journal = try store.loadUpdateJournal() else {
+                        throw VPNReleaseStoreError.invalidUpdateJournal
+                    }
+                    if args[1] == "journal-test-select" {
+                        let result = try store.selectUpdateCandidate(
+                            transactionID: journal.transactionID, expectedRevision: journal.revision)
+                        print("journal:\(result.phase.rawValue):\(result.revision)")
+                    } else if args[1] == "journal-test-complete" {
+                        let result = try store.completeUpdateJournal(
+                            transactionID: journal.transactionID, expectedRevision: journal.revision)
+                        print("journal:\(result.phase.rawValue):\(result.revision)")
+                    } else if args[1] == "journal-test-retire-completed" {
+                        try store.retireUpdateJournal(
+                            transactionID: journal.transactionID, expectedRevision: journal.revision)
+                        print("journal:retired")
+                    } else {
+                        throw VPNReleaseStoreError.invalidUpdateJournal
+                    }
+                    return
+                }
+                #endif
                 // Even absent/corrupt records must reach the installer wrapper;
                 // do not let this fixture become the gate under test.
                 let journal = (try? store.loadUpdateJournal()) ?? nil

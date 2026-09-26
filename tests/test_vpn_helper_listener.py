@@ -326,3 +326,9 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.assertFalse((self.storage / 'profile.ovpn').exists())
         self.assertNotEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
         self.assertEqual(self.probe(), 'ready:10 closed')
+
+    def test_owner_is_refused_before_readiness_when_operations_are_blocked(self):
+        self.seed()
+        self.serve(extra=['owner-blocked'])
+        self.assertIn('rejected:', self.probe())
+        self.assertNotEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])

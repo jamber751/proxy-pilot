@@ -218,3 +218,26 @@ production package suite passes all 10 required cases; 3 optional external
 engine-artifact cases remain skipped. Automatic discovery/launch of this entry
 and cleanup of retained A, executor and staging artifacts remain separate
 boundaries; this entry alone does not claim unattended recovery.
+
+## Recovery-only helper startup
+
+The real helper previously rejected every update journal at startup, which made
+the selected-candidate finalizer's readiness probe impossible in production.
+The helper now distinguishes an exact late journal from all other update state.
+It may start only when `selected / recoverCandidate` or `completed / completed`
+names the same selected owner and release that the helper authenticates.
+
+While that late journal exists, the listener permits only the separately pinned
+root installer readiness role. The owner's app is refused before receiving a
+readiness response and cannot enter status/profile operations. Booting this
+recovery-only helper neither charges nor clears the automatic activation budget,
+and it releases any short boot lifecycle lease so installed B can acquire the
+coordinator lease. Once the terminal journal is retired, the same selected
+helper may serve the owner normally. Earlier, corrupt or mismatched journals
+still fail before endpoint creation.
+
+The listener/daemon suite passes 76 scenarios, including a real disposable
+launchd transition from selected recovery-only service through completed and
+terminal retirement. The existing behavior of an already-running operational
+helper is preserved while a newly prepared journal awaits the coordinator's
+explicit drain.

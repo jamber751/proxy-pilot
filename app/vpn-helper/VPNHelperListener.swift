@@ -119,7 +119,8 @@ final class VPNHelperListener {
     /// `isReady` is asked immediately before replying, so the receipt reflects
     /// the helper's state at that moment rather than the fact it is running.
     @discardableResult
-    func serveOnce(timeoutMilliseconds: Int = 2000, isReady: () -> Bool) throws -> Bool {
+    func serveOnce(timeoutMilliseconds: Int = 2000, isReady: () -> Bool,
+                   allowOwnerRequests: () -> Bool = { true }) throws -> Bool {
         guard (1...5000).contains(timeoutMilliseconds) else { throw VPNHelperListenerError.invalidTimeout }
         guard listener >= 0 else { throw VPNHelperListenerError.unavailable }
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
@@ -144,6 +145,11 @@ final class VPNHelperListener {
             guard Array(challenge.prefix(8)) == Self.request,
                   Array(challenge[8..<16]) == Self.encoded(release.protocolVersion),
                   Array(challenge[16..<24]) == Self.encoded(release.sequence) else { return false }
+            // During late update recovery, only the authenticated root installer
+            // may obtain readiness. The ordinary owner must not cross from a
+            // provisional helper into status/profile operations until the
+            // terminal journal has been retired.
+            guard installationProbe || allowOwnerRequests() else { return false }
             // Answer only for the state at this instant. A running process is
             // not readiness, and a rejected answer must not be a stale success.
             guard isReady() else { return false }

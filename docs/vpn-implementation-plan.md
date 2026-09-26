@@ -2236,3 +2236,22 @@ retire terminal journal. Подключение самого VPN-профиля 
 после перезапуска, не открывая root-режим обычному UI. После подтверждённого
 terminal retire отдельной транзакцией убрать retained A, protected executor и
 staging-остатки. До этого они сохраняются как доказательства/recovery material.
+
+### Продолжение 1.5r — recovery-only helper handshake (26 сентября)
+
+- [x] Устранён production deadlock: helper больше не отвергает exact поздний
+  journal, который finalizer обязан удерживать до signed readiness.
+- [x] Разрешены только `selected / recoverCandidate` и `completed / completed`,
+  если candidate owner/release совпадает с durable selector. Prepared, pending,
+  повреждённый или чужой journal по-прежнему останавливает запуск до endpoint.
+- [x] Пока journal существует, listener отвечает только pinned root installer;
+  обычный owner не получает даже readiness и не может выполнить status/profile.
+  Recovery-only boot не расходует activation budget и освобождает lifecycle lease.
+- [x] После terminal retire тот же exact helper открывает owner-команды без
+  перезапуска. Listener + daemon suite: 76 сценариев, включая реальный disposable
+  launchd-переход selected → completed → retired.
+
+Следующий узел остаётся прежним: доверенный root-механизм должен обнаружить
+поздний journal и запустить fixed recovery entry после crash/reboot. Обычный UI
+не получает права читать или изменять root-store. Затем — отдельная cleanup-
+транзакция retained A/executor/stage после подтверждённого terminal retire.

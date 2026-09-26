@@ -100,6 +100,31 @@ class VPNDaemonTests(installer.VPNInstallerTests):
         self.assertEqual(after_files.pop('update.json'), b'corrupt')
         self.assertEqual((after_pid, after_files), before)
 
+    def test_late_update_boot_is_readiness_only_until_terminal_retirement(self):
+        self.install_ready()
+        self.prepare_joint_update()
+        self.assertEqual(self.journal_action('journal-begin').stdout.strip(),
+                         'journal:replacementPending:1')
+        self.assertEqual(self.journal_action('journal-test-select').stdout.strip(),
+                         'journal:selected:2')
+        budget = (self.storage / 'activation.json').read_bytes()
+
+        self.bootstrap()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (self.storage / 'helper.sock').is_socket():
+            time.sleep(0.05)
+        self.assertTrue((self.storage / 'helper.sock').is_socket())
+        complete = self.journal_action('journal-test-complete')
+        self.assertEqual(complete.stdout.strip(), 'journal:completed:3',
+                         complete.stdout + complete.stderr + repr(self.journal_record()))
+        refused = self.run_installer('probe', executable='installer-next')
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
+        self.assertEqual(self.journal_action('journal-test-retire-completed').stdout.strip(),
+                         'journal:retired')
+        accepted = self.run_installer('probe', executable='installer-next')
+        self.assertEqual(accepted.stdout.strip(), 'ready:11', accepted.stdout + accepted.stderr)
+
     def test_boot_does_not_delete_a_foreign_file(self):
         self.install_ready(); self.boot_out()
         endpoint = self.storage / 'helper.sock'
