@@ -20,6 +20,16 @@ enum VPNDirectoryProvisioner {
         try openSystemComponent(name: "Update", create: create)
     }
 
+    /// Binds an inherited descriptor to the one fixed production transaction
+    /// directory. Root-private is necessary but not sufficient: a privileged
+    /// caller must not redirect replacement into some other private tree.
+    static func requireSystemUpdateDirectory(_ descriptor: Int32) throws {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
+        let expected = try openSystemUpdateDirectory(create: false)
+        defer { close(expected) }
+        try requireSameDirectory(descriptor, expected)
+    }
+
     private static func openSystemComponent(name: String, create: Bool) throws -> Int32 {
         guard geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
         var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -45,7 +55,23 @@ enum VPNDirectoryProvisioner {
     static func testOpenUpdateBelowTrustedBase(_ base: Int32, create: Bool) throws -> Int32 {
         try openComponentBelowTrustedBase(base, name: "Update", create: create)
     }
+
+    static func testRequireUpdateDirectory(_ descriptor: Int32,
+                                           belowTrustedBase base: Int32) throws {
+        let expected = try testOpenUpdateBelowTrustedBase(base, create: false)
+        defer { close(expected) }
+        try requireSameDirectory(descriptor, expected)
+    }
     #endif
+
+    private static func requireSameDirectory(_ supplied: Int32, _ expected: Int32) throws {
+        try check(supplied, privateDirectory: true)
+        var actual = stat(), wanted = stat()
+        guard fstat(supplied, &actual) == 0, fstat(expected, &wanted) == 0,
+              actual.st_dev == wanted.st_dev, actual.st_ino == wanted.st_ino else {
+            throw VPNDirectoryError.unsafeDirectory
+        }
+    }
 
     private static func openComponentBelowTrustedBase(_ base: Int32, name: String,
                                                        create: Bool) throws -> Int32 {

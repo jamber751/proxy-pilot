@@ -26,7 +26,7 @@ class VPNExecutorHandoffTests(unittest.TestCase):
         staged.VPNStagedApplicationTests.setUpClass.__func__(cls)
         sources = [HELPER / name for name in (
             'VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift',
-            'VPNLifecycleOwnership.swift', 'VPNStagedApplication.swift',
+            'VPNLifecycleOwnership.swift', 'VPNDirectoryProvisioner.swift', 'VPNStagedApplication.swift',
             'VPNReplacementExecutor.swift', 'VPNProtectedApplicationSwap.swift',
             'VPNReplacementExecutorProvisioner.swift', 'VPNReplacementExecutorHandoff.swift')]
         slices = []

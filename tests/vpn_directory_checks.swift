@@ -14,10 +14,21 @@ enum VPNDirectoryChecks {
                     : VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true)
                 exit(70)
             }
-            guard ["create", "read", "create-update", "read-update"].contains(operation) else { exit(64) }
+            guard ["create", "read", "create-update", "read-update",
+                   "validate-update", "validate-vpn-as-update"].contains(operation) else { exit(64) }
             let base = open(CommandLine.arguments[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard base >= 0 else { exit(77) }
             defer { close(base) }
+            if operation.hasPrefix("validate-") {
+                let supplied = try operation == "validate-update"
+                    ? VPNDirectoryProvisioner.testOpenUpdateBelowTrustedBase(base, create: false)
+                    : VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
+                defer { close(supplied) }
+                try VPNDirectoryProvisioner.testRequireUpdateDirectory(
+                    supplied, belowTrustedBase: base)
+                print("private-directory-ready")
+                return
+            }
             let directory = try operation.hasSuffix("update")
                 ? VPNDirectoryProvisioner.testOpenUpdateBelowTrustedBase(base, create: operation == "create-update")
                 : VPNDirectoryProvisioner.openBelowTrustedBase(base, create: operation == "create")

@@ -74,6 +74,12 @@ class VPNDirectoryTests(unittest.TestCase):
         self.expect('read-update', 'rejected:unavailable')
         self.assertFalse(self.app.exists())
 
+    def test_update_descriptor_must_match_the_fixed_sibling(self):
+        self.expect('create', 'private-directory-ready')
+        self.expect('create-update', 'private-directory-ready')
+        self.expect('validate-update', 'private-directory-ready')
+        self.expect('validate-vpn-as-update', 'rejected:unsafeDirectory')
+
     def test_writable_base_rejected_before_creation(self):
         self.base.chmod(0o770)
         self.expect('create', 'rejected:unsafeDirectory')

@@ -14,6 +14,7 @@ enum VPNJointApplicationReplacement {
                                        expectedRevision: UInt64, authority: VPNReleaseAuthority) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(applicationDirectory)
         let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: false)
         defer { close(directory) }
         return try perform(applicationDirectory: applicationDirectory, transactionID: transactionID,
@@ -29,6 +30,7 @@ enum VPNJointApplicationReplacement {
                                            authority: VPNReleaseAuthority) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(applicationDirectory)
         let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: false)
         defer { close(directory) }
         return try perform(applicationDirectory: applicationDirectory, transactionID: transactionID,

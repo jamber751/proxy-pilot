@@ -38,6 +38,7 @@ enum VPNReplacementExecutorHandoff {
                                policy: VPNPeerPolicy) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNExecutorHandoffError.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
         return try performLaunch(base: base, release: release, request: request, policy: policy,
                                  checkpoint: { _ in })
     }
