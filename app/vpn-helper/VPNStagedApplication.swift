@@ -12,8 +12,10 @@ enum VPNStagedApplicationError: Error {
 struct VPNStagedApplicationInspection {
     fileprivate let release: VerifiedVPNRelease
     fileprivate let snapshot: VPNStagedApplication.Snapshot
-    fileprivate init(release: VerifiedVPNRelease, snapshot: VPNStagedApplication.Snapshot) {
-        self.release = release; self.snapshot = snapshot
+    fileprivate let policy: VPNStagedApplication.StoragePolicy
+    fileprivate init(release: VerifiedVPNRelease, snapshot: VPNStagedApplication.Snapshot,
+                     policy: VPNStagedApplication.StoragePolicy) {
+        self.release = release; self.snapshot = snapshot; self.policy = policy
     }
     func matchesRelease(_ release: VerifiedVPNRelease) -> Bool {
         self.release.isSameRelease(as: release)
@@ -42,17 +44,62 @@ enum VPNStagedApplication {
         let parent: [UInt64]
         let entries: [String: Entry]
     }
+    fileprivate enum StoragePolicy: Equatable {
+        case protected(parentOwner: uid_t, nodeOwner: uid_t)
+        case installed(owner: uid_t, productionParent: Bool)
+
+        var nodeOwner: uid_t {
+            switch self {
+            case .protected(_, let owner), .installed(let owner, _): return owner
+            }
+        }
+        var isProtected: Bool {
+            if case .protected = self { return true }
+            return false
+        }
+    }
 
     static func inspect(inTrustedDirectory parent: Int32, release: VerifiedVPNRelease) throws -> VPNStagedApplicationInspection {
-        try checkParent(parent)
+        try inspect(parent: parent, release: release,
+                    policy: .protected(parentOwner: geteuid(), nodeOwner: geteuid()))
+    }
+
+    /// A protected parent may temporarily retain a previously user-owned app
+    /// after an atomic destination exchange. The owner is trusted journal state,
+    /// never supplied by IPC or inferred from the files themselves.
+    static func inspectProtected(inTrustedDirectory parent: Int32,
+                                 contentOwnerUserID: uid_t,
+                                 release: VerifiedVPNRelease) throws
+        -> VPNStagedApplicationInspection {
+        try inspect(parent: parent, release: release,
+                    policy: .protected(parentOwner: geteuid(),
+                                       nodeOwner: contentOwnerUserID))
+    }
+
+    /// Ephemeral observation of the fixed installed name in Applications. The
+    /// parent is intentionally mutable; callers must retain their lease and
+    /// repeat this complete inspection at every mutation/selection boundary.
+    static func inspectInstalled(inApplicationsDirectory parent: Int32,
+                                 ownerUserID: uid_t,
+                                 productionParent: Bool,
+                                 release: VerifiedVPNRelease) throws
+        -> VPNStagedApplicationInspection {
+        try inspect(parent: parent, release: release,
+                    policy: .installed(owner: ownerUserID,
+                                       productionParent: productionParent))
+    }
+
+    private static func inspect(parent: Int32, release: VerifiedVPNRelease,
+                                policy: StoragePolicy) throws -> VPNStagedApplicationInspection {
+        try checkParent(parent, policy: policy)
         let bundle = openat(parent, bundleName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard bundle >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
         defer { close(bundle) }
-        let before = try capture(parent: parent, bundle: bundle)
+        let before = try capture(parent: parent, bundle: bundle, policy: policy)
         try checkLinks(before.entries)
         let contents = try openDirectory(bundle, "Contents")
         defer { close(contents) }
-        let plist = try readFile(contents, "Info.plist", limit: 1024 * 1024)
+        let plist = try readFile(contents, "Info.plist", limit: 1024 * 1024, policy: policy)
         guard let info = try PropertyListSerialization.propertyList(from: plist, options: [], format: nil) as? [String: Any],
               info["CFBundleIdentifier"] as? String == identifier,
               info["CFBundleExecutable"] as? String == "ProxyPilot",
@@ -63,21 +110,23 @@ enum VPNStagedApplication {
         }
         let macOS = try openDirectory(contents, "MacOS")
         defer { close(macOS) }
-        let executable = try readFile(macOS, "ProxyPilot", limit: 64 * 1024 * 1024, executable: true)
+        let executable = try readFile(macOS, "ProxyPilot", limit: 64 * 1024 * 1024,
+                                      executable: true, policy: policy)
         try checkUniversalExecutable(executable)
         let url = try boundBundleURL(parent: parent, bundle: bundle)
         try checkSignature(url: url, release: release)
         _ = try boundBundleURL(parent: parent, bundle: bundle)
-        guard try capture(parent: parent, bundle: bundle) == before else {
+        guard try capture(parent: parent, bundle: bundle, policy: policy) == before else {
             throw VPNStagedApplicationError.changed
         }
-        return VPNStagedApplicationInspection(release: release, snapshot: before)
+        return VPNStagedApplicationInspection(release: release, snapshot: before, policy: policy)
     }
 
     /// Stronger parent contract for transaction slots: exactly the fixed app
     /// and no sibling files. Callers must repeat this at mutation boundaries.
     static func requireExclusiveBundle(inTrustedDirectory parent: Int32) throws {
-        try checkParent(parent)
+        try checkParent(parent, policy: .protected(parentOwner: geteuid(),
+                                                   nodeOwner: geteuid()))
         let copy = openat(parent, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard copy >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
         guard let stream = fdopendir(copy) else {
@@ -109,7 +158,7 @@ enum VPNStagedApplication {
     }
 
     static func revalidate(_ inspection: VPNStagedApplicationInspection, inTrustedDirectory parent: Int32) throws {
-        let current = try inspect(inTrustedDirectory: parent, release: inspection.release)
+        let current = try inspect(parent: parent, release: inspection.release, policy: inspection.policy)
         guard current.snapshot == inspection.snapshot else { throw VPNStagedApplicationError.changed }
     }
 
@@ -119,6 +168,7 @@ enum VPNStagedApplication {
     /// not a permanent-storage or power-loss guarantee.
     static func synchronize(_ inspection: VPNStagedApplicationInspection,
                             inTrustedDirectory parent: Int32) throws {
+        guard inspection.policy.isProtected else { throw VPNStagedApplicationError.unsafeStorage }
         try revalidate(inspection, inTrustedDirectory: parent)
         let bundle = openat(parent, bundleName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard bundle >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
@@ -197,12 +247,13 @@ enum VPNStagedApplication {
         }
     }
 
-    private static func capture(parent: Int32, bundle: Int32) throws -> Snapshot {
-        try checkParent(parent)
+    private static func capture(parent: Int32, bundle: Int32,
+                                policy: StoragePolicy) throws -> Snapshot {
+        try checkParent(parent, policy: policy)
         _ = try boundBundleURL(parent: parent, bundle: bundle)
         var root = stat(), parentState = stat()
         guard fstat(bundle, &root) == 0, fstat(parent, &parentState) == 0 else { throw VPNStagedApplicationError.unsafeStorage }
-        try checkNode(bundle, attributes: root, directory: true)
+        try checkNode(bundle, attributes: root, directory: true, policy: policy)
         var entries: [String: Entry] = ["": Entry(type: S_IFDIR, facts: facts(root), target: nil)]
         var bytes: Int64 = 0
         func visit(_ directory: Int32, prefix: String, depth: Int) throws {
@@ -241,7 +292,7 @@ enum VPNStagedApplication {
                 }
                 var named = stat()
                 guard fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-                      named.st_dev == root.st_dev, named.st_uid == geteuid() else {
+                      named.st_dev == root.st_dev, named.st_uid == policy.nodeOwner else {
                     throw VPNStagedApplicationError.unsafeStorage
                 }
                 let kind = named.st_mode & S_IFMT
@@ -278,7 +329,8 @@ enum VPNStagedApplication {
                     guard fstat(child, &opened) == 0, facts(opened) == facts(named) else {
                         throw VPNStagedApplicationError.changed
                     }
-                    try checkNode(child, attributes: opened, directory: kind == S_IFDIR)
+                    try checkNode(child, attributes: opened, directory: kind == S_IFDIR,
+                                  policy: policy)
                     if kind == S_IFREG {
                         guard opened.st_size >= 0, opened.st_size <= maximumBytes - bytes else {
                             throw VPNStagedApplicationError.limitExceeded
@@ -348,17 +400,41 @@ enum VPNStagedApplication {
          UInt64(truncatingIfNeeded: s.st_ctimespec.tv_sec), UInt64(s.st_ctimespec.tv_nsec)]
     }
 
-    private static func checkParent(_ fd: Int32) throws {
+    private static func checkParent(_ fd: Int32, policy: StoragePolicy) throws {
         var s = stat(), fs = statfs()
-        guard fstat(fd, &s) == 0, s.st_mode & 0o7777 == 0o700, s.st_nlink > 0,
+        guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFDIR, s.st_nlink > 0,
               fstatfs(fd, &fs) == 0, fs.f_flags & UInt32(MNT_LOCAL) != 0 else {
             throw VPNStagedApplicationError.unsafeStorage
         }
-        try checkNode(fd, attributes: s, directory: true)
+        switch policy {
+        case .protected(let parentOwner, _):
+            guard s.st_uid == parentOwner, s.st_mode & 0o7777 == 0o700 else {
+                throw VPNStagedApplicationError.unsafeStorage
+            }
+            try checkNode(fd, attributes: s, directory: true, policy: policy)
+        case .installed(_, let production):
+            if production {
+                guard s.st_uid == 0, s.st_mode & S_IWOTH == 0 else {
+                    throw VPNStagedApplicationError.unsafeStorage
+                }
+                let named = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard named >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
+                defer { close(named) }
+                var actual = stat()
+                guard fstat(named, &actual) == 0, actual.st_dev == s.st_dev,
+                      actual.st_ino == s.st_ino else { throw VPNStagedApplicationError.unsafeStorage }
+            } else {
+                guard s.st_uid == geteuid(), s.st_mode & 0o7777 == 0o700 else {
+                    throw VPNStagedApplicationError.unsafeStorage
+                }
+            }
+            try checkNoACL(fd)
+        }
     }
 
-    private static func checkNode(_ fd: Int32, attributes s: stat, directory: Bool) throws {
-        guard s.st_uid == geteuid(), s.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
+    private static func checkNode(_ fd: Int32, attributes s: stat, directory: Bool,
+                                  policy: StoragePolicy) throws {
+        guard s.st_uid == policy.nodeOwner, s.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
               s.st_mode & 0o7022 == 0, s.st_mode & 0o400 != 0,
               directory ? s.st_mode & 0o100 != 0 : s.st_nlink == 1 else {
             throw VPNStagedApplicationError.unsafeStorage
@@ -390,13 +466,15 @@ enum VPNStagedApplication {
         return fd
     }
 
-    private static func readFile(_ parent: Int32, _ name: String, limit: Int, executable: Bool = false) throws -> Data {
+    private static func readFile(_ parent: Int32, _ name: String, limit: Int,
+                                 executable: Bool = false,
+                                 policy: StoragePolicy) throws -> Data {
         let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { throw VPNStagedApplicationError.invalidBundle }
         defer { close(fd) }
         var s = stat()
         guard fstat(fd, &s) == 0 else { throw VPNStagedApplicationError.unsafeStorage }
-        try checkNode(fd, attributes: s, directory: false)
+        try checkNode(fd, attributes: s, directory: false, policy: policy)
         guard !executable || s.st_mode & 0o100 != 0 else { throw VPNStagedApplicationError.unsafeStorage }
         var result = Data(), bytes = [UInt8](repeating: 0, count: 8192)
         while true {

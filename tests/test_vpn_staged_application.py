@@ -117,6 +117,11 @@ class VPNStagedApplicationTests(unittest.TestCase):
     def test_valid_match_and_revalidation(self):
         self.check(); self.check('revalidate')
 
+    def test_installed_policy_allows_parent_siblings_but_binds_owner(self):
+        (self.stage / 'Other.app').mkdir()
+        self.check('inspect-installed')
+        self.check('wrong-installed-owner', expected='unsafeStorage')
+
     def test_resource_and_nested_tampering(self):
         pins = self.pins()
         for relative in ('Contents/Resources/data.txt', 'Contents/Helpers/Nested.app/Contents/MacOS/Nested'):

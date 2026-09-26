@@ -68,7 +68,7 @@ fi
 
 if [[ "$VPN_INSTALLER" == 1 ]]; then
   LINK_FLAGS+=(-D VPN_INSTALLER_ENTRY)
-  for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact VPNStagedApplication VPNReplacementExecutor VPNReplacementExecutorProvisioner VPNProtectedApplicationSwap VPNReplacementExecutorHandoff VPNJointApplicationReplacement VPNReplacementExecutorEntry VPNApplicationDestinationStage \
+  for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact VPNStagedApplication VPNReplacementExecutor VPNReplacementExecutorProvisioner VPNProtectedApplicationSwap VPNReplacementExecutorHandoff VPNJointApplicationReplacement VPNReplacementExecutorEntry VPNApplicationDestinationStage VPNApplicationDestinationExchange \
     VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
     VPNActivationCoordinator VPNLaunchdRuntime VPNInstaller VPNInstallationPayload VPNInstallationEntry; do

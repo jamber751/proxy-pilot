@@ -56,6 +56,16 @@ import Foundation
             case "revalidate":
                 let receipt = try VPNStagedApplication.inspect(inTrustedDirectory: fd, release: candidate)
                 try VPNStagedApplication.revalidate(receipt, inTrustedDirectory: fd)
+            case "inspect-installed":
+                let receipt = try VPNStagedApplication.inspectInstalled(
+                    inApplicationsDirectory: fd, ownerUserID: geteuid(),
+                    productionParent: false, release: candidate)
+                precondition(receipt.matchesRelease(candidate))
+                try VPNStagedApplication.revalidate(receipt, inTrustedDirectory: fd)
+            case "wrong-installed-owner":
+                _ = try VPNStagedApplication.inspectInstalled(
+                    inApplicationsDirectory: fd, ownerUserID: geteuid() &+ 1,
+                    productionParent: false, release: candidate)
             case "resource-after":
                 let receipt = try VPNStagedApplication.inspect(inTrustedDirectory: fd, release: candidate)
                 try Data("changed".utf8).write(to: URL(fileURLWithPath: path + "/ProxyPilot.app/Contents/Resources/data.txt"))

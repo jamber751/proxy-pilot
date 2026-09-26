@@ -53,7 +53,8 @@ final class ProxyModel:''' + model
                         ('VPNStagedApplication', 'VPNReplacementExecutor',
                          'VPNReplacementExecutorProvisioner', 'VPNProtectedApplicationSwap',
                          'VPNReplacementExecutorHandoff', 'VPNJointApplicationReplacement',
-                         'VPNReplacementExecutorEntry', 'VPNApplicationDestinationStage')]
+                         'VPNReplacementExecutorEntry', 'VPNApplicationDestinationStage',
+                         'VPNApplicationDestinationExchange')]
         app_sources += [HELPER / f'{name}.swift' for name in ('VPNInstallationPayload', 'VPNInstallationEntry')]
         app_sources += [ROOT / 'app' / f'{name}.swift' for name in
                         ('Controls', 'Updates', 'VPNConfiguration', 'VPNProfileImporter', 'VPNStore')]
