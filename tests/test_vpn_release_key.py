@@ -4,6 +4,7 @@ Every test creates and deletes its own keychain file, so the developer's login
 keychain is never read or written. No real release key is used or produced here.
 """
 import base64
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -90,6 +91,60 @@ class VPNReleaseKeyTests(unittest.TestCase):
         verified = self.run_tool('verify', str(self.manifest), str(self.signature), str(self.public), keychain=False)
         self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
         self.assertIn('Verified sequence 7', verified.stdout)
+
+    def test_transition_sign_and_verify_round_trip(self):
+        self.generate()
+        self.run_tool('sign', str(self.manifest), str(self.signature))
+        candidate = self.base / 'candidate.txt'
+        candidate.write_text(MANIFEST.replace('sequence=7', 'sequence=8')
+                             .replace('version=1.6.0', 'version=1.7.0')
+                             .replace('app-arm64=' + '11' * 20,
+                                      'app-arm64=' + '66' * 20))
+        candidate_signature = self.base / 'candidate.sig'
+        self.run_tool('sign', str(candidate), str(candidate_signature))
+        transition = self.base / 'transition.txt'
+        transition_signature = self.base / 'transition.sig'
+        signed = self.run_tool('sign-transition', str(self.manifest), str(self.signature),
+                               str(candidate), str(candidate_signature), str(transition),
+                               str(transition_signature))
+        self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
+        expected = ('format=1\nproduct=kz.documentolog.proxypilot\n'
+                    'from-sequence=7\nfrom-sha256=' + hashlib.sha256(self.manifest.read_bytes()).hexdigest() + '\n'
+                    'to-sequence=8\nto-sha256=' + hashlib.sha256(candidate.read_bytes()).hexdigest() + '\n')
+        self.assertEqual(transition.read_text(), expected)
+        verified = self.run_tool('verify-transition', str(self.manifest), str(self.signature),
+                                 str(candidate), str(candidate_signature), str(transition),
+                                 str(transition_signature), str(self.public), keychain=False)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertIn('Verified transition 7 to 8', verified.stdout)
+
+    def test_transition_rejects_tampering_and_non_forward_edges(self):
+        self.generate()
+        self.run_tool('sign', str(self.manifest), str(self.signature))
+        candidate = self.base / 'candidate.txt'
+        candidate_signature = self.base / 'candidate.sig'
+        transition = self.base / 'transition.txt'
+        transition_signature = self.base / 'transition.sig'
+        candidate.write_text(MANIFEST.replace('sequence=7', 'sequence=8'))
+        self.run_tool('sign', str(candidate), str(candidate_signature))
+        self.run_tool('sign-transition', str(self.manifest), str(self.signature),
+                      str(candidate), str(candidate_signature), str(transition),
+                      str(transition_signature))
+        transition.write_text(transition.read_text().replace('to-sequence=8', 'to-sequence=9'))
+        refused = self.run_tool('verify-transition', str(self.manifest), str(self.signature),
+                                str(candidate), str(candidate_signature), str(transition),
+                                str(transition_signature), str(self.public), keychain=False)
+        self.assertNotEqual(refused.returncode, 0)
+        candidate.write_text(MANIFEST)
+        self.run_tool('sign', str(candidate), str(candidate_signature))
+        previous_transition = transition.read_text()
+        previous_signature = transition_signature.read_text()
+        refused = self.run_tool('sign-transition', str(self.manifest), str(self.signature),
+                                str(candidate), str(candidate_signature), str(transition),
+                                str(transition_signature))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(transition.read_text(), previous_transition)
+        self.assertEqual(transition_signature.read_text(), previous_signature)
 
     def test_engine_manifest_sign_and_verify_round_trip(self):
         self.generate()

@@ -645,16 +645,21 @@ in the Keychain, never on disk, never in argv, never printed. `generate` writes
 the public half and refuses to overwrite an existing key unless `--force` is
 given, because rotating invalidates every earlier release. `sign` produces a
 detached signature over the same domain-separated bytes the helper verifies, so
-a signature over an archive or an appcast can never authorize root code. `verify`
-runs the helper's own verifier — format, protocol, sequence and pinned hashes,
-not just signature bytes. `--keychain` points every operation at another keychain
-file, which is how the tests stay off the developer's login keychain entirely.
+a signature over an archive or an appcast can never authorize root code. For an
+update, `sign-transition` first verifies both detached release signatures, requires
+a strict forward release, constructs the canonical A→B record itself and signs it
+under the separate transition domain; callers never hand-author the digest record.
+`verify` and `verify-transition` run the helper's own verifiers — format, protocol,
+sequence, pinned hashes and the exact edge, not just signature bytes. `--keychain`
+points every operation at another keychain file, which is how the tests stay off
+the developer's login keychain entirely.
 
-Nine tests generate, sign, verify and reject inside a disposable keychain they
+Thirteen tests generate, sign, verify and reject inside a disposable keychain they
 create and delete: the public half is published while the secret never appears in
 output, a changed release description fails verification, another key cannot sign
 for this one, an existing key is never replaced silently while rotation stays
-possible, signing without a key refuses, the committed public key matches the
+possible, signing without a key refuses, an altered or non-forward update edge is
+rejected without overwriting its outputs, the committed public key matches the
 compiled constant, and a build without trust refuses to build an authority.
 
 Rotation means shipping a new build with a new constant. There is no chained

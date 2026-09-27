@@ -23,6 +23,8 @@ enum VPNReleaseKeyTool {
           vpn-release-key public [--keychain <path>]
           vpn-release-key sign <manifest> <signature-file> [--keychain <path>]
           vpn-release-key verify <manifest> <signature> <public-key-file>
+          vpn-release-key sign-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature-file> [--keychain <path>]
+          vpn-release-key verify-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature> <public-key-file>
         """)
     }
 
@@ -83,6 +85,34 @@ enum VPNReleaseKeyTool {
         }
     }
 
+    static func file(_ path: String, limit: Int) -> Data? {
+        guard let data = FileManager.default.contents(atPath: path),
+              !data.isEmpty, data.count <= limit else { return nil }
+        return data
+    }
+
+    static func signature(_ path: String) -> Data? {
+        guard let data = file(path, limit: 89),
+              let text = String(data: data, encoding: .utf8),
+              text.count == 89, text.last == "\n",
+              let decoded = Data(base64Encoded: String(text.dropLast())),
+              decoded.count == 64,
+              decoded.base64EncodedString() + "\n" == text else { return nil }
+        return decoded
+    }
+
+    static func canonicalTransition(previousPayload: Data, previous: VerifiedVPNRelease,
+                                    candidatePayload: Data, candidate: VerifiedVPNRelease) -> Data {
+        func hex(_ data: Data) -> String {
+            data.map { String(format: "%02x", $0) }.joined()
+        }
+        return Data(("format=1\nproduct=kz.documentolog.proxypilot\n"
+            + "from-sequence=\(previous.sequence)\n"
+            + "from-sha256=\(hex(Data(SHA256.hash(data: previousPayload))))\n"
+            + "to-sequence=\(candidate.sequence)\n"
+            + "to-sha256=\(hex(Data(SHA256.hash(data: candidatePayload))))\n").utf8)
+    }
+
     static func main() {
         let arguments = CommandLine.arguments
         guard arguments.count >= 2 else { usage() }
@@ -138,6 +168,58 @@ enum VPNReleaseKeyTool {
                 fail("Release description or signature rejected.")
             }
             print("Verified sequence \(release.sequence) version \(release.version)")
+        case "sign-transition":
+            guard arguments.count >= 8,
+                  let key = storedKey(chain),
+                  let previousPayload = file(arguments[2], limit: VPNReleaseAuthority.maximumPayloadBytes),
+                  let previousSignature = signature(arguments[3]),
+                  let candidatePayload = file(arguments[4], limit: VPNReleaseAuthority.maximumPayloadBytes),
+                  let candidateSignature = signature(arguments[5]),
+                  let authority = try? VPNReleaseAuthority(
+                    trustedPublicKey: key.publicKey.rawRepresentation,
+                    minimumSequence: 1, supportedProtocol: 1),
+                  let previous = try? authority.verify(
+                    payload: previousPayload, signature: previousSignature, previous: nil),
+                  let candidate = try? authority.verify(
+                    payload: candidatePayload, signature: candidateSignature, previous: previous) else {
+                fail("Release descriptions rejected; transition not written.")
+            }
+            let transition = canonicalTransition(
+                previousPayload: previousPayload, previous: previous,
+                candidatePayload: candidatePayload, candidate: candidate)
+            guard let signed = try? key.signature(
+                for: VPNReleaseAuthority.updateTransitionDomain + transition),
+                  (try? authority.verifyUpdateTransition(
+                    payload: transition, signature: signed, previous: previous,
+                    candidatePayload: candidatePayload,
+                    candidateSignature: candidateSignature)) != nil else {
+                fail("Release transition rejected; transition not written.")
+            }
+            write(signed.base64EncodedString() + "\n", to: arguments[7])
+            write(String(decoding: transition, as: UTF8.self), to: arguments[6])
+            print("Signed transition \(previous.sequence) to \(candidate.sequence)")
+        case "verify-transition":
+            guard arguments.count >= 9,
+                  let previousPayload = file(arguments[2], limit: VPNReleaseAuthority.maximumPayloadBytes),
+                  let previousSignature = signature(arguments[3]),
+                  let candidatePayload = file(arguments[4], limit: VPNReleaseAuthority.maximumPayloadBytes),
+                  let candidateSignature = signature(arguments[5]),
+                  let transition = file(arguments[6], limit: VPNReleaseAuthority.maximumUpdateTransitionBytes),
+                  let transitionSignature = signature(arguments[7]),
+                  let publicText = try? String(contentsOfFile: arguments[8], encoding: .utf8),
+                  let publicKey = Data(base64Encoded:
+                    publicText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let authority = try? VPNReleaseAuthority(
+                    trustedPublicKey: publicKey, minimumSequence: 1, supportedProtocol: 1),
+                  let previous = try? authority.verify(
+                    payload: previousPayload, signature: previousSignature, previous: nil),
+                  let edge = try? authority.verifyUpdateTransition(
+                    payload: transition, signature: transitionSignature, previous: previous,
+                    candidatePayload: candidatePayload,
+                    candidateSignature: candidateSignature) else {
+                fail("Release transition or signature rejected.")
+            }
+            print("Verified transition \(edge.fromSequence) to \(edge.toSequence)")
         default:
             usage()
         }
