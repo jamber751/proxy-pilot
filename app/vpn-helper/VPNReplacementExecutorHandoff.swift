@@ -35,11 +35,13 @@ enum VPNReplacementExecutorHandoff {
     static func launchPrepared(inTrustedDirectory base: Int32,
                                release: VerifiedVPNRelease,
                                request: VPNExecutorHandoffRequest,
-                               policy: VPNPeerPolicy) throws
+                               childPolicy: VPNPeerPolicy,
+                               parentPolicy: VPNPeerPolicy) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNExecutorHandoffError.requiresRoot }
         try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
-        return try performLaunch(base: base, release: release, request: request, policy: policy,
+        return try performLaunch(base: base, release: release, request: request,
+                                 childPolicy: childPolicy, parentPolicy: parentPolicy,
                                  checkpoint: { _ in })
     }
 
@@ -47,11 +49,13 @@ enum VPNReplacementExecutorHandoff {
     static func testLaunchPrepared(inTrustedDirectory base: Int32,
                                    release: VerifiedVPNRelease,
                                    request: VPNExecutorHandoffRequest,
-                                   policy: VPNPeerPolicy,
+                                   childPolicy: VPNPeerPolicy,
+                                   parentPolicy: VPNPeerPolicy,
                                    checkpoint: (String) throws -> Void = { _ in }) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
-        return try performLaunch(base: base, release: release, request: request, policy: policy,
+        return try performLaunch(base: base, release: release, request: request,
+                                 childPolicy: childPolicy, parentPolicy: parentPolicy,
                                  checkpoint: checkpoint)
     }
 
@@ -60,16 +64,19 @@ enum VPNReplacementExecutorHandoff {
     /// Returns nil for the ordinary app launch, or the executor's process exit
     /// status for the exact hidden role. The caller must exit immediately when
     /// this returns a value and must never initialize UI in that process.
-    static func runChildIfRequested(arguments: [String], policy: VPNPeerPolicy,
+    static func runChildIfRequested(arguments: [String], selfPolicy: VPNPeerPolicy,
+                                    parentPolicy: VPNPeerPolicy,
                                     operation: (VPNExecutorHandoffRequest, Int32) throws
                                         -> VPNProtectedApplicationSwap.Outcome) -> Int32? {
         guard arguments.count == 2, arguments[1] == childArgument else { return nil }
-        return runChild(policy: policy, operation: operation)
+        return runChild(selfPolicy: selfPolicy, parentPolicy: parentPolicy,
+                        operation: operation)
     }
 
     private static func performLaunch(base: Int32, release: VerifiedVPNRelease,
                                       request: VPNExecutorHandoffRequest,
-                                      policy: VPNPeerPolicy,
+                                      childPolicy: VPNPeerPolicy,
+                                      parentPolicy: VPNPeerPolicy,
                                       checkpoint: (String) throws -> Void) throws
         -> VPNProtectedApplicationSwap.Outcome {
         let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: base)
@@ -138,7 +145,9 @@ enum VPNReplacementExecutorHandoff {
         // from resolving an audit token after an early-rejected child has died.
         // The child remains blocked on the request while both proofs run.
         do {
-            try VPNPeerAuthentication.validate(connectedSocket: parentSocket, policy: policy)
+            try VPNPeerAuthentication.validate(connectedSocket: parentSocket,
+                                                policy: childPolicy)
+            try VPNPeerAuthentication.validateCurrentProcess(policy: parentPolicy)
             try prepared.validateProcess(processID)
         } catch {
             throw VPNExecutorHandoffError.authenticationFailed
@@ -171,7 +180,8 @@ enum VPNReplacementExecutorHandoff {
         }
     }
 
-    private static func runChild(policy: VPNPeerPolicy,
+    private static func runChild(selfPolicy: VPNPeerPolicy,
+                                 parentPolicy: VPNPeerPolicy,
                                  operation: (VPNExecutorHandoffRequest, Int32) throws
                                     -> VPNProtectedApplicationSwap.Outcome) -> Int32 {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeout
@@ -181,12 +191,13 @@ enum VPNReplacementExecutorHandoff {
                 try? writeAll(childSocket, data: Data([denialByte(0x41)]), deadline: deadline)
                 throw error
             }
-            do { try VPNPeerAuthentication.validateCurrentProcess(policy: policy) }
+            do { try VPNPeerAuthentication.validateCurrentProcess(policy: selfPolicy) }
             catch {
                 try? writeAll(childSocket, data: Data([denialByte(0x42)]), deadline: deadline)
                 throw error
             }
-            do { try VPNPeerAuthentication.validate(connectedSocket: childSocket, policy: policy) }
+            do { try VPNPeerAuthentication.validate(connectedSocket: childSocket,
+                                                     policy: parentPolicy) }
             catch {
                 try? writeAll(childSocket, data: Data([denialByte(0x43)]), deadline: deadline)
                 throw error

@@ -91,6 +91,10 @@ class VPNExecutorHandoffTests(unittest.TestCase):
         self.assert_rejected('wrong-peer', 'authenticationFailed')
         self.assertFalse((self.base / 'handoff-marker').exists())
 
+    def test_wrong_parent_identity_is_denied_before_go(self):
+        self.assert_rejected('wrong-parent', 'authenticationFailed')
+        self.assertFalse((self.base / 'handoff-marker').exists())
+
     def test_executor_tamper_before_spawn_is_denied(self):
         self.assert_rejected('tamper-before-launch', 'invalidSignature')
         self.assertFalse((self.base / 'handoff-marker').exists())

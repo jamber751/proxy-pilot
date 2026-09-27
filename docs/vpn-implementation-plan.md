@@ -88,6 +88,9 @@ VPN-компонента. Защищённый content-addressed helper B теп
   Старый helper-only `--vpn-support-update` закрыт: он мог выбрать helper B,
   пока в `/Applications` оставалась A. До подключения executor handoff update
   завершается безопасным отказом, а не частичной установкой.
+- [x] Executor handoff разделяет identities: родитель-кандидат B проверяет exact
+  child A, а child A независимо проверяет parent B. Неверная identity любой
+  стороны блокируется до GO и до записи журнала; 10/10 handoff-сценариев прошли.
 - [x] Проверки: launchd + joint 30/30, installer 36/36, package 10 обязательных
   из 10 (3 внешних engine-сценария пропущены), admission 10/10; Universal helper
   собран для arm64/x86_64 и прошёл strict codesign.

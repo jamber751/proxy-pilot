@@ -42,7 +42,7 @@ import Foundation
         let arguments = CommandLine.arguments
         let ownPolicy = try VPNPeerAuthentication.testCurrentPolicy(userID: geteuid())
         if let status = VPNReplacementExecutorHandoff.runChildIfRequested(
-            arguments: arguments, policy: ownPolicy,
+            arguments: arguments, selfPolicy: ownPolicy, parentPolicy: ownPolicy,
             operation: { request, base in
                 try marker(base, request)
                 if request.expectedRevision == 99 { throw Injected.failure }
@@ -62,7 +62,7 @@ import Foundation
                 _ = try VPNReplacementExecutorHandoff.launchPrepared(
                     inTrustedDirectory: base, release: verified,
                     request: VPNExecutorHandoffRequest(transactionID: UUID(), expectedRevision: 1),
-                    policy: ownPolicy)
+                    childPolicy: ownPolicy, parentPolicy: ownPolicy)
                 fatalError("production launch unexpectedly succeeded")
             }
             var held: VPNLifecycleLease?
@@ -78,16 +78,18 @@ import Foundation
                 (operation == "already" ? 2 : 1)
             let transaction = UUID(uuidString: "7BB17D0B-AE44-4B16-A9F8-C202E4A64983")!
             let policy: VPNPeerPolicy
+            let wrongPolicy = try VPNPeerPolicy(userID: geteuid() &+ 1,
+                                                signingIdentifier: "kz.documentolog.proxypilot",
+                                                codeDirectoryHashes: Set([Data(repeating: 0, count: 20)]))
             if operation == "wrong-peer" {
-                policy = try VPNPeerPolicy(userID: geteuid() &+ 1,
-                                           signingIdentifier: "kz.documentolog.proxypilot",
-                                           codeDirectoryHashes: Set([Data(repeating: 0, count: 20)]))
+                policy = wrongPolicy
             } else { policy = ownPolicy }
             let outcome = try VPNReplacementExecutorHandoff.testLaunchPrepared(
                 inTrustedDirectory: base, release: verified,
                 request: VPNExecutorHandoffRequest(transactionID: transaction,
                                                    expectedRevision: revision),
-                policy: policy) { point in
+                childPolicy: policy,
+                parentPolicy: operation == "wrong-parent" ? wrongPolicy : ownPolicy) { point in
                     if operation == "tamper-after-ready", point == "childReady" {
                         try Data("changed".utf8).write(to: URL(fileURLWithPath:
                             path + "/executor/ProxyPilot.app/Contents/Resources/data.txt"))

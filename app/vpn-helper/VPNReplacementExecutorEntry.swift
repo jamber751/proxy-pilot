@@ -27,7 +27,7 @@ enum VPNReplacementExecutorEntry {
             }
             let policy = try journal.previous.release.installerPolicy()
             return VPNReplacementExecutorHandoff.runChildIfRequested(
-                arguments: arguments, policy: policy,
+                arguments: arguments, selfPolicy: policy, parentPolicy: policy,
                 operation: { request, applicationDirectory in
                     try VPNJointApplicationReplacement.installPreparedApplication(
                         applicationDirectory: applicationDirectory,
