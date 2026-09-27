@@ -16,7 +16,7 @@ enum VPNHelperService {
             sleep(30)
             exit(0)
         }
-        guard (3...5).contains(args.count), ["serve", "seed"].contains(args[1]) else { exit(64) }
+        guard (3...7).contains(args.count), ["serve", "seed"].contains(args[1]) else { exit(64) }
         let ready = args.count < 4 || args[3] != "not-ready"
         let directory = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { exit(70) }
@@ -43,7 +43,42 @@ enum VPNHelperService {
             let deployment = try store.loadDeployment()
             let listener: VPNHelperListener
             #if VPN_HELPER_LISTENER_TESTING
-            if args.count >= 4, args[3] == "installer-test" {
+            if args.count == 7,
+               ["installer-transition-test", "helper-transition-test"].contains(args[3]) {
+                func hash(_ value: String) -> Data? {
+                    guard value.utf8.count == 40 else { return nil }
+                    var bytes = [UInt8]()
+                    bytes.reserveCapacity(20)
+                    var index = value.startIndex
+                    for _ in 0..<20 {
+                        let next = value.index(index, offsetBy: 2)
+                        guard let byte = UInt8(value[index..<next], radix: 16) else { return nil }
+                        bytes.append(byte)
+                        index = next
+                    }
+                    return Data(bytes)
+                }
+                guard let arm = hash(args[4]), let intel = hash(args[5]) else { exit(64) }
+                let transitionPolicy = try VPNPeerPolicy(
+                    userID: deployment.ownerUserID,
+                    signingIdentifier: args[3] == "helper-transition-test"
+                        ? "kz.documentolog.proxypilot.vpn-helper"
+                        : "kz.documentolog.proxypilot",
+                    codeDirectoryHashes: Set([arm, intel]))
+                let state = args[6]
+                listener = try VPNHelperListener.testBindInstaller(
+                    inTrustedDirectory: directory, release: deployment.release,
+                    ownerUserID: deployment.ownerUserID,
+                    additionalReadinessPolicies: {
+                        guard let value = try? String(contentsOfFile: state, encoding: .utf8) else {
+                            return []
+                        }
+                        if value == "retire-after-first-check" {
+                            try? FileManager.default.removeItem(atPath: state)
+                        }
+                        return [transitionPolicy]
+                    })
+            } else if args.count >= 4, args[3] == "installer-test" {
                 listener = try VPNHelperListener.testBindInstaller(inTrustedDirectory: directory, release: deployment.release,
                                                                    ownerUserID: deployment.ownerUserID)
             } else {

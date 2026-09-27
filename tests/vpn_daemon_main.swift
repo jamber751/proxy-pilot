@@ -20,7 +20,23 @@ import Foundation
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
             let authority = try VPNReleaseAuthority.engineCandidateAuthority(
                 trustedPublicKey: key.publicKey.rawRepresentation, minimumSequence: 1)
-            try VPNHelperDaemon.testServe(directory: directory, endpoint: directory, shared: false, authority: authority)
+            try VPNHelperDaemon.testServe(
+                directory: directory, endpoint: directory, shared: false,
+                authority: authority,
+                recoveryCleanup: {
+                    do {
+                        let unexpected = try VPNLifecycleOwnership.acquire(
+                            inTrustedDirectory: directory)
+                        unexpected.release()
+                        throw VPNHelperDaemonError.selectionChanged
+                    } catch VPNLifecycleOwnershipError.busy {
+                        // Cleanup must be serialized with the next updater.
+                    }
+                    guard unlinkat(directory, "recovery-cleanup-marker", 0) == 0
+                            || errno == ENOENT else {
+                        throw VPNHelperDaemonError.selectionChanged
+                    }
+                })
         } catch { print("rejected:\(error)"); exit(77) }
     }
 }

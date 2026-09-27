@@ -78,8 +78,13 @@ enum VPNReadinessChecks {
 
     /// Fixture-only trusted authority, matching what the helper fixture seeds.
     static func fixtureRelease(pin: String) throws -> VerifiedVPNRelease {
+        #if VPN_PREVIOUS_CLIENT
+        let fixtureVersion = "1.6.1"
+        #else
+        let fixtureVersion = "1.6.0"
+        #endif
         let payload = Data(([
-            "format=1", "product=kz.documentolog.proxypilot", "sequence=10", "version=1.6.0", "protocol=1",
+            "format=1", "product=kz.documentolog.proxypilot", "sequence=10", "version=\(fixtureVersion)", "protocol=1",
             "app-arm64=\(String(repeating: "11", count: 20))", "app-x86_64=\(String(repeating: "22", count: 20))",
             "helper-arm64=\(pin)", "helper-x86_64=\(pin)",
             "helper-sha256=\(String(repeating: "55", count: 32))", "helper-bytes=1", ""

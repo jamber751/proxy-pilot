@@ -39,7 +39,10 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
                 let candidate = journal.candidate.release
                 let deadline = DispatchTime.now().uptimeNanoseconds + 30_000_000_000
                 while journal.phase == .replacementPending && journal.recovery == .inspectApplication {
-                    guard DispatchTime.now().uptimeNanoseconds < deadline else { return 0 }
+                    // Stay retryable until A either advances or cancels the
+                    // durable transaction. A successful exit here would leave
+                    // launchd dormant and reopen the post-selector crash gap.
+                    guard DispatchTime.now().uptimeNanoseconds < deadline else { return 75 }
                     usleep(100_000)
                     guard let fresh = try store.loadUpdateJournal() else { return 0 }
                     guard fresh.transactionID == transactionID,

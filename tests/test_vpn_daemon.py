@@ -108,6 +108,8 @@ class VPNDaemonTests(installer.VPNInstallerTests):
         self.assertEqual(self.journal_action('journal-test-select').stdout.strip(),
                          'journal:selected:2')
         budget = (self.storage / 'activation.json').read_bytes()
+        cleanup_marker = self.storage / 'recovery-cleanup-marker'
+        cleanup_marker.write_text('armed')
 
         self.bootstrap()
         deadline = time.monotonic() + 5
@@ -120,10 +122,15 @@ class VPNDaemonTests(installer.VPNInstallerTests):
         refused = self.run_installer('probe', executable='installer-next')
         self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
         self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
+        self.assertTrue(cleanup_marker.exists())
         self.assertEqual(self.journal_action('journal-test-retire-completed').stdout.strip(),
                          'journal:retired')
         accepted = self.run_installer('probe', executable='installer-next')
         self.assertEqual(accepted.stdout.strip(), 'ready:11', accepted.stdout + accepted.stderr)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and cleanup_marker.exists():
+            time.sleep(0.05)
+        self.assertFalse(cleanup_marker.exists())
 
     def test_boot_does_not_delete_a_foreign_file(self):
         self.install_ready(); self.boot_out()

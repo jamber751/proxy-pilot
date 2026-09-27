@@ -50,6 +50,9 @@ class VPNHelperListenerTests(unittest.TestCase):
             ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
                         'VPNHelperReadiness.swift', 'VPNHelperSession.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING']),
+            ('previous', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
+                          'VPNHelperReadiness.swift', 'VPNHelperSession.swift'],
+             ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_PREVIOUS_CLIENT']),
         ]:
             main = 'vpn_helper_service.swift' if name == 'service' else 'vpn_readiness_checks.swift'
             files = [HELPER / source for source in sources] + [ROOT / 'tests' / main]
@@ -63,11 +66,15 @@ class VPNHelperListenerTests(unittest.TestCase):
                 slices.append(str(output))
             cls.command(['lipo', '-create', *slices, '-output', str(cls.work / name)])
         shutil.copyfile(cls.work / 'client', cls.work / 'stranger')
+        shutil.copyfile(cls.work / 'client', cls.work / 'helper-owner')
         (cls.work / 'service').chmod(0o700)
         (cls.work / 'stranger').chmod(0o700)
+        (cls.work / 'helper-owner').chmod(0o700)
         cls.pins = {}
         for name, identifier in [('service', 'kz.documentolog.proxypilot.vpn-helper'),
                                  ('client', 'kz.documentolog.proxypilot'),
+                                 ('previous', 'kz.documentolog.proxypilot'),
+                                 ('helper-owner', 'kz.documentolog.proxypilot.vpn-helper'),
                                  ('stranger', 'kz.documentolog.proxypilot.other')]:
             cls.command(['codesign', '--force', '--sign', '-', '--identifier', identifier,
                          '--options', 'runtime,hard,kill', str(cls.work / name)])
@@ -247,10 +254,10 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.serve()
         self.assertEqual(self.session('garbage'), ['answer:closed'])
 
-    def store_profile(self, text):
+    def store_profile(self, text, client='client'):
         candidate = self.base / 'candidate.ovpn'
         candidate.write_text(text)
-        return self.session(f'profile={candidate}')
+        return self.session(f'profile={candidate}', client=client)
 
     def test_a_valid_profile_is_revalidated_and_kept(self):
         self.seed()
@@ -326,6 +333,51 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.assertFalse((self.storage / 'profile.ovpn').exists())
         self.assertNotEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
         self.assertEqual(self.probe(), 'ready:10 closed')
+
+    def transition_service(self, state='enabled', client='previous', role='installer-transition-test'):
+        policy_state = self.base / 'transition-policy'
+        policy_state.write_text(state)
+        self.serve(extra=[role, self.pins[client]['arm64'],
+                          self.pins[client]['x86_64'], str(policy_state)])
+        return policy_state
+
+    def test_previous_app_is_readiness_only_while_transition_policy_exists(self):
+        self.seed()
+        self.transition_service()
+        self.assertEqual(self.probe(client='previous'), 'ready:10 closed')
+        self.assertNotEqual(self.session('status', client='previous'),
+                            ['answer:ok sequence:10 protocol:1'])
+        self.assertNotIn('answer:0 body:0', self.store_profile(PROFILE, client='previous'))
+        self.assertFalse((self.storage / 'profile.ovpn').exists())
+
+    def test_previous_app_is_rejected_after_transition_policy_disappears(self):
+        self.seed()
+        policy_state = self.transition_service()
+        self.assertEqual(self.probe(client='previous'), 'ready:10 closed')
+        policy_state.unlink()
+        self.assertIn('rejected:', self.probe(client='previous'))
+        # The selected app remains the ordinary authenticated fixture owner.
+        self.assertEqual(self.probe(), 'ready:10 closed')
+
+    def test_transition_policy_is_rechecked_immediately_before_readiness_reply(self):
+        self.seed()
+        self.transition_service(state='retire-after-first-check')
+        self.assertIn('rejected:', self.probe(client='previous'))
+
+    def test_transition_policy_never_admits_an_unrelated_client(self):
+        self.seed()
+        self.transition_service()
+        self.assertIn('rejected:', self.probe(client='stranger'))
+        self.assertEqual(self.probe(client='previous'), 'ready:10 closed')
+
+    def test_selected_helper_is_readiness_only_until_its_transition_policy_disappears(self):
+        self.seed()
+        policy_state = self.transition_service(client='helper-owner', role='helper-transition-test')
+        self.assertEqual(self.probe(client='helper-owner'), 'ready:10 closed')
+        self.assertNotEqual(self.session('status', client='helper-owner'),
+                            ['answer:ok sequence:10 protocol:1'])
+        policy_state.unlink()
+        self.assertIn('rejected:', self.probe(client='helper-owner'))
 
     def test_owner_is_refused_before_readiness_when_operations_are_blocked(self):
         self.seed()

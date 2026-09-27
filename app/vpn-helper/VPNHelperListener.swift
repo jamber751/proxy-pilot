@@ -15,6 +15,7 @@ final class VPNHelperListener {
     private let release: VerifiedVPNRelease
     private let policy: VPNPeerPolicy
     private let installerPolicy: VPNPeerPolicy
+    private let additionalReadinessPolicies: () throws -> [VPNPeerPolicy]
     private let vault: VPNProfileVault
 
     #if VPN_HELPER_LISTENER_TESTING
@@ -22,8 +23,12 @@ final class VPNHelperListener {
     // Exercises the readiness-only dispatch path without elevating a fixture.
     // Production still authenticates root UID + exact app pin for this role.
     static func testBindInstaller(inTrustedDirectory directory: Int32, release: VerifiedVPNRelease,
-                                  ownerUserID: uid_t) throws -> VPNHelperListener {
-        let listener = try bind(inTrustedDirectory: directory, release: release, ownerUserID: ownerUserID)
+                                  ownerUserID: uid_t,
+                                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] }) throws
+        -> VPNHelperListener {
+        let listener = try bind(inTrustedDirectory: directory, release: release,
+                                ownerUserID: ownerUserID,
+                                additionalReadinessPolicies: additionalReadinessPolicies)
         listener.fixtureInstaller = true
         return listener
     }
@@ -33,7 +38,9 @@ final class VPNHelperListener {
     /// unlinks an existing socket: a stale endpoint means the supervisor did not
     /// confirm the previous stop, and quietly stealing it would hide that.
     static func bind(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
-                     ownerUserID: uid_t, endpointDirectory: Int32? = nil) throws -> VPNHelperListener {
+                     ownerUserID: uid_t, endpointDirectory: Int32? = nil,
+                     additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] }) throws
+        -> VPNHelperListener {
         let policy = try release.clientPolicy(forTrustedUserID: ownerUserID)
         let directory = fcntl(trusted, F_DUPFD_CLOEXEC, 0)
         guard directory >= 0 else { throw VPNHelperListenerError.unsafeStorage }
@@ -91,7 +98,9 @@ final class VPNHelperListener {
         do {
             let vault = try VPNProfileVault(trustedDirectoryDescriptor: directory)
             return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy,
-                                     installerPolicy: try release.installerPolicy(), vault: vault)
+                                     installerPolicy: try release.installerPolicy(),
+                                     additionalReadinessPolicies: additionalReadinessPolicies,
+                                     vault: vault)
         } catch {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unsafeStorage
@@ -99,11 +108,14 @@ final class VPNHelperListener {
     }
 
     private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy,
-                 installerPolicy: VPNPeerPolicy, vault: VPNProfileVault) {
+                 installerPolicy: VPNPeerPolicy,
+                 additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
+                 vault: VPNProfileVault) {
         self.listener = listener
         self.release = release
         self.policy = policy
         self.installerPolicy = installerPolicy
+        self.additionalReadinessPolicies = additionalReadinessPolicies
         self.vault = vault
     }
 
@@ -136,11 +148,47 @@ final class VPNHelperListener {
             var peerUID: uid_t = 0, peerGID: gid_t = 0
             guard getpeereid(client, &peerUID, &peerGID) == 0 else { return false }
             var installationProbe = peerUID == 0
-            var connectionPolicy = installationProbe ? installerPolicy : policy
+            func rootReadinessPolicy() throws -> VPNPeerPolicy {
+                if (try? VPNPeerAuthentication.validate(
+                        connectedSocket: client, policy: installerPolicy)) != nil {
+                    return installerPolicy
+                }
+                let additional = try additionalReadinessPolicies()
+                guard additional.count <= 2 else {
+                    throw VPNPeerAuthenticationError.denied
+                }
+                for candidate in additional {
+                    if (try? VPNPeerAuthentication.validate(
+                            connectedSocket: client, policy: candidate)) != nil {
+                        return candidate
+                    }
+                }
+                throw VPNPeerAuthenticationError.denied
+            }
+            var connectionPolicy = installationProbe ? try rootReadinessPolicy() : policy
             #if VPN_HELPER_LISTENER_TESTING
-            if fixtureInstaller { installationProbe = true; connectionPolicy = policy }
+            if fixtureInstaller {
+                installationProbe = true
+                if (try? VPNPeerAuthentication.validate(
+                        connectedSocket: client, policy: policy)) != nil {
+                    connectionPolicy = policy
+                } else {
+                    let additional = try additionalReadinessPolicies()
+                    guard additional.count <= 2,
+                          let matched = additional.first(where: {
+                              (try? VPNPeerAuthentication.validate(
+                                  connectedSocket: client, policy: $0)) != nil
+                          }) else {
+                        throw VPNPeerAuthenticationError.denied
+                    }
+                    connectionPolicy = matched
+                }
+            }
             #endif
-            try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
+            if !installationProbe {
+                try VPNPeerAuthentication.validate(
+                    connectedSocket: client, policy: connectionPolicy)
+            }
             let challenge = try VPNHelperProtocol.read(count: 56, socket: client, deadline: deadline)
             guard Array(challenge.prefix(8)) == Self.request,
                   Array(challenge[8..<16]) == Self.encoded(release.protocolVersion),
@@ -153,7 +201,28 @@ final class VPNHelperListener {
             // Answer only for the state at this instant. A running process is
             // not readiness, and a rejected answer must not be a stale success.
             guard isReady() else { return false }
-            try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
+            if installationProbe {
+                #if VPN_HELPER_LISTENER_TESTING
+                if fixtureInstaller {
+                    let baseStillMatches = (try? VPNPeerAuthentication.validate(
+                        connectedSocket: client, policy: policy)) != nil
+                    if !baseStillMatches {
+                        let current = try additionalReadinessPolicies()
+                        guard current.count <= 2,
+                              current.contains(where: {
+                                  (try? VPNPeerAuthentication.validate(
+                                      connectedSocket: client, policy: $0)) != nil
+                              }) else { throw VPNPeerAuthenticationError.denied }
+                    }
+                } else {
+                    connectionPolicy = try rootReadinessPolicy()
+                }
+                #else
+                connectionPolicy = try rootReadinessPolicy()
+                #endif
+            } else {
+                try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
+            }
             try VPNHelperProtocol.write(Self.response + challenge.dropFirst(8), socket: client, deadline: deadline)
             // The root installation role ends here. It never enters the owner's
             // command dispatcher, even if extra request bytes are already queued.
