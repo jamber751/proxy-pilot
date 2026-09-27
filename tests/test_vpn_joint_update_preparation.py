@@ -25,6 +25,7 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
             'VPNReplacementExecutorProvisioner.swift', 'VPNInstallationPayload.swift',
             'VPNJointUpdatePreparation.swift')]
         cls.command(['swiftc', '-D', 'VPN_APPLICATION_TRANSACTION_STAGING_TESTING',
+                     '-D', 'VPN_APPLICATION_SWAP_TESTING',
                      '-D', 'VPN_EXECUTOR_PROVISIONING_TESTING',
                      '-D', 'VPN_EXECUTOR_HANDOFF_TESTING',
                      '-D', 'VPN_JOINT_UPDATE_PREPARATION_TESTING',
@@ -120,6 +121,18 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
         self.assert_result('mark-pending', output='pending:1')
         self.assert_result(output='alreadyPrepared:1')
         self.assertTrue((self.update / 'executor/ProxyPilot.app').is_dir())
+
+    def test_pending_retry_after_real_slot_swap_never_restages_from_live_sources(self):
+        self.assert_result('swap-pending-and-retry', output='postSwap:1:1')
+        self.assertEqual(
+            self.pins_for(self.update / 'current/ProxyPilot.app'),
+            self.candidate_pins)
+        self.assertEqual(
+            self.pins_for(self.update / 'candidate/ProxyPilot.app'),
+            self.previous_pins)
+        self.assertEqual(
+            self.pins_for(self.update / 'executor/ProxyPilot.app'),
+            self.previous_pins)
 
     def test_service_lock_and_production_root_guard(self):
         self.assert_rejected('busy', 'busy')

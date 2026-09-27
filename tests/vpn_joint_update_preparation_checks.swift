@@ -116,6 +116,21 @@ import Foundation
                 print("pending:\(pending.revision)")
                 return
             }
+            if operation == "swap-pending-and-retry" {
+                let pending = try store.markUpdateReplacementPending(
+                    transactionID: result.journal.transactionID,
+                    expectedRevision: result.journal.revision)
+                _ = try VPNProtectedApplicationSwap.testExchange(
+                    inTrustedDirectory: update, previous: previous,
+                    candidate: candidate, transition: transition)
+                let retried = try VPNJointUpdatePreparation.testPrepare(
+                    service: service, update: update,
+                    previousSource: previousSource,
+                    candidateSource: candidateSource,
+                    payload: joint, authority: authority)
+                print("postSwap:\(retried.journal.revision):\(pending.revision)")
+                return
+            }
             switch result.outcome {
             case .prepared: outcome = "prepared"
             case .resumed: outcome = "resumed"

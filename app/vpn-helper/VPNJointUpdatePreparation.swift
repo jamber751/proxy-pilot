@@ -41,6 +41,14 @@ enum VPNJointUpdatePreparation {
             provision: {
                 try VPNReplacementExecutorProvisioner.prepare(
                     inTrustedDirectory: update, release: payload.previous)
+            }, validatePending: {
+                _ = try VPNApplicationTransactionStager.validatePreparedOrExchanged(
+                    inTrustedDirectory: update, previous: payload.previous,
+                    candidate: payload.candidate.release,
+                    transition: payload.transition)
+                let executor = try VPNReplacementExecutor.inspectPrepared(
+                    inTrustedDirectory: update, release: payload.previous)
+                try executor.revalidatePrepared()
             }, checkpoint: { _ in })
     }
 
@@ -73,6 +81,14 @@ enum VPNJointUpdatePreparation {
             provision: {
                 try VPNReplacementExecutorProvisioner.testPrepare(
                     inTrustedDirectory: update, release: payload.previous)
+            }, validatePending: {
+                _ = try VPNApplicationTransactionStager.testValidatePreparedOrExchanged(
+                    inTrustedDirectory: update, previous: payload.previous,
+                    candidate: payload.candidate.release,
+                    transition: payload.transition)
+                let executor = try VPNReplacementExecutor.inspectPrepared(
+                    inTrustedDirectory: update, release: payload.previous)
+                try executor.revalidatePrepared()
             }, checkpoint: checkpoint)
     }
     #endif
@@ -84,6 +100,7 @@ enum VPNJointUpdatePreparation {
         authenticateCandidate: () throws -> Void,
         stage: (uid_t) throws -> VPNApplicationTransactionStager.Outcome,
         provision: () throws -> VPNReplacementExecutorProvisioner.Outcome,
+        validatePending: () throws -> Void,
         checkpoint: (String) throws -> Void) throws -> Result {
         try authenticateCandidate()
         let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
@@ -115,6 +132,23 @@ enum VPNJointUpdatePreparation {
         }
 
         let before = try existingJournal()
+        if let before, before.phase == .replacementPending {
+            // Once replacement is pending, A may already have left
+            // /Applications and the protected slots may already be B/A. Resume
+            // exclusively from the signed journal and protected A/B/executor
+            // material. Re-staging from the live destination could reverse the
+            // transaction or reject a safe post-swap retry.
+            try lease.check()
+            try validatePending()
+            try checkpoint("afterPendingValidation")
+            try lease.check()
+            guard let final = try existingJournal(),
+                  final.transactionID == before.transactionID,
+                  final.revision == before.revision else {
+                throw VPNJointUpdatePreparationError.commitUncertain
+            }
+            return Result(journal: final, outcome: .alreadyPrepared)
+        }
         try lease.check()
         let staging = try stage(current.ownerUserID)
         try checkpoint("afterApplicationStaging")

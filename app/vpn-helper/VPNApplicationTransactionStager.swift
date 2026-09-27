@@ -12,6 +12,7 @@ enum VPNApplicationTransactionStagingError: Error {
 /// supplied by the trusted package layer. No path is accepted by this type.
 enum VPNApplicationTransactionStager {
     enum Outcome { case staged, resumed, alreadyStaged }
+    enum Layout { case prepared, exchanged }
     private static let app = "ProxyPilot.app"
 
     static func prepare(candidateDirectory: Int32,
@@ -39,6 +40,20 @@ enum VPNApplicationTransactionStager {
                            checkpoint: { _ in })
     }
 
+    /// Reopens only the fixed, protected A/B slots. This is the retry path
+    /// after replacement has been authorized: the mutable Applications tree is
+    /// no longer a trustworthy source for A, and must not be consulted again.
+    static func validatePreparedOrExchanged(inTrustedDirectory base: Int32,
+                                            previous: VerifiedVPNRelease,
+                                            candidate: VerifiedVPNRelease,
+                                            transition: VerifiedVPNUpdateTransition) throws -> Layout {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNApplicationTransactionStagingError.requiresRoot
+        }
+        return try validate(base: base, previous: previous,
+                            candidate: candidate, transition: transition)
+    }
+
     #if VPN_APPLICATION_TRANSACTION_STAGING_TESTING
     static func testPrepare(base: Int32,
                             previousSource: Int32,
@@ -60,7 +75,51 @@ enum VPNApplicationTransactionStager {
                            previous: previous, candidate: candidate, transition: transition,
                            checkpoint: checkpoint)
     }
+
+    static func testValidatePreparedOrExchanged(inTrustedDirectory base: Int32,
+                                                previous: VerifiedVPNRelease,
+                                                candidate: VerifiedVPNRelease,
+                                                transition: VerifiedVPNUpdateTransition) throws -> Layout {
+        guard getuid() != 0, geteuid() == getuid() else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        return try validate(base: base, previous: previous,
+                            candidate: candidate, transition: transition)
+    }
     #endif
+
+    private static func validate(base: Int32,
+                                 previous: VerifiedVPNRelease,
+                                 candidate: VerifiedVPNRelease,
+                                 transition: VerifiedVPNUpdateTransition) throws -> Layout {
+        guard !previous.isSameRelease(as: candidate),
+              transition.matchesSource(previous),
+              transition.matchesDestination(candidate) else {
+            throw VPNApplicationTransactionStagingError.invalidLayout
+        }
+        try checkBase(base)
+        let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: base)
+        defer { lease.release() }
+        try lease.check()
+        let prepared = matches(base: base, current: previous, candidate: candidate)
+        let exchanged = matches(base: base, current: candidate, candidate: previous)
+        guard prepared != exchanged else {
+            throw VPNApplicationTransactionStagingError.invalidLayout
+        }
+        try lease.check()
+        return prepared ? .prepared : .exchanged
+    }
+
+    private static func matches(base: Int32, current: VerifiedVPNRelease,
+                                candidate: VerifiedVPNRelease) -> Bool {
+        do {
+            try validatePublished(base: base, name: "current", release: current)
+            try validatePublished(base: base, name: "candidate", release: candidate)
+            return true
+        } catch {
+            return false
+        }
+    }
 
     private static func perform(base: Int32,
                                 previousSource: Int32,
