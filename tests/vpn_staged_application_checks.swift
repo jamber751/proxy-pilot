@@ -66,6 +66,9 @@ import Foundation
                 _ = try VPNStagedApplication.inspectInstalled(
                     inApplicationsDirectory: fd, ownerUserID: geteuid() &+ 1,
                     productionParent: false, release: candidate)
+            case "protected-parent-distinct-content-owner":
+                try VPNStagedApplication.testProtectedParent(
+                    inTrustedDirectory: fd, contentOwnerUserID: geteuid() &+ 1)
             case "resource-after":
                 let receipt = try VPNStagedApplication.inspect(inTrustedDirectory: fd, release: candidate)
                 try Data("changed".utf8).write(to: URL(fileURLWithPath: path + "/ProxyPilot.app/Contents/Resources/data.txt"))

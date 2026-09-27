@@ -162,6 +162,18 @@ enum VPNStagedApplication {
         guard current.snapshot == inspection.snapshot else { throw VPNStagedApplicationError.changed }
     }
 
+    #if VPN_STAGED_APPLICATION_TESTING
+    /// Regression seam for the retained-app ownership split: only the protected
+    /// parent is checked here, so its owner must not be confused with the
+    /// intentionally different owner expected for bundle descendants.
+    static func testProtectedParent(inTrustedDirectory parent: Int32,
+                                    contentOwnerUserID: uid_t) throws {
+        try checkParent(
+            parent,
+            policy: .protected(parentOwner: geteuid(), nodeOwner: contentOwnerUserID))
+    }
+    #endif
+
     /// Flush every physical regular file and directory represented by an exact
     /// observation, then repeat the full validation. This establishes an
     /// ordered publication boundary for a newly cloned protected copy; it is
@@ -411,7 +423,13 @@ enum VPNStagedApplication {
             guard s.st_uid == parentOwner, s.st_mode & 0o7777 == 0o700 else {
                 throw VPNStagedApplicationError.unsafeStorage
             }
-            try checkNode(fd, attributes: s, directory: true, policy: policy)
+            // The protected container and its retained app can intentionally
+            // have different owners after the atomic Applications exchange.
+            // Validate the container against its own trusted owner; descendants
+            // remain bound to policy.nodeOwner by capture/readFile.
+            try checkNode(
+                fd, attributes: s, directory: true,
+                policy: .protected(parentOwner: parentOwner, nodeOwner: parentOwner))
         case .installed(_, let production):
             if production {
                 guard s.st_uid == 0, s.st_mode & S_IWOTH == 0 else {

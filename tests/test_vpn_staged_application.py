@@ -41,7 +41,8 @@ class VPNStagedApplicationTests(unittest.TestCase):
         cls.command(['lipo', '-create', *map(str, cls.slices.values()), '-output', str(cls.universal)])
         cls.checker = cls.build / 'checks'
         sanitize = ['-sanitize=address'] if os.environ.get('PP_STAGED_ASAN') == '1' else []
-        cls.command(['swiftc', *sanitize, str(HELPER / 'VPNPeerAuthentication.swift'),
+        cls.command(['swiftc', *sanitize, '-D', 'VPN_STAGED_APPLICATION_TESTING',
+                     str(HELPER / 'VPNPeerAuthentication.swift'),
                      str(HELPER / 'VPNReleaseAuthorization.swift'),
                      str(HELPER / 'VPNStagedApplication.swift'),
                      str(ROOT / 'tests/vpn_staged_application_checks.swift'), '-o', str(cls.checker)])
@@ -121,6 +122,9 @@ class VPNStagedApplicationTests(unittest.TestCase):
         (self.stage / 'Other.app').mkdir()
         self.check('inspect-installed')
         self.check('wrong-installed-owner', expected='unsafeStorage')
+
+    def test_protected_parent_owner_is_independent_from_retained_content_owner(self):
+        self.check('protected-parent-distinct-content-owner')
 
     def test_resource_and_nested_tampering(self):
         pins = self.pins()
