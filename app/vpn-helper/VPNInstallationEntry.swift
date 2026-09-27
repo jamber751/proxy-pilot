@@ -16,6 +16,13 @@ enum VPNInstallationEntry {
         case remove = "--vpn-support-remove"
     }
 
+    /// Stable, non-sensitive breadcrumbs for Installer logs. Never include an
+    /// exception description, path, account, payload or dynamic identifier.
+    private enum Stage: String {
+        case trust, packageIdentity, payload, sourcePreparation
+        case executorHandoff, serviceStatus, installation, removal
+    }
+
     static func runIfRequested(arguments: [String]) -> Int32? {
         if let status = VPNSelectedCandidateRecoveryEntry.runIfRequested(arguments: arguments) {
             return status
@@ -41,8 +48,10 @@ enum VPNInstallationEntry {
         guard getuid() == geteuid(), action == .verify || action == .verifyUpdate
                 || action == .status || geteuid() == 0 else { return 77 }
         guard action != .status || geteuid() != 0 else { return 77 }
+        var stage = Stage.trust
         do {
             let authority = try VPNReleaseTrust.authority()
+            stage = .packageIdentity
             guard Bundle.main.bundleIdentifier == "kz.documentolog.proxypilot",
                   Bundle.main.object(forInfoDictionaryKey: "ProxyPilotVPNInstaller") as? Bool == true,
                   let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
@@ -51,6 +60,7 @@ enum VPNInstallationEntry {
             }
             let packageDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
             if action == .verifyUpdate {
+                stage = .payload
                 let joint = try VPNJointUpdatePayload.load(
                     directory: packageDirectory, version: version, authority: authority)
                 let policy = try geteuid() == 0
@@ -62,6 +72,7 @@ enum VPNInstallationEntry {
                 return 0
             }
             if action == .update {
+                stage = .payload
                 let package = open(packageDirectory.path,
                     O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 guard package >= 0 else {
@@ -71,12 +82,14 @@ enum VPNInstallationEntry {
                 let joint = try VPNJointUpdatePayload.load(
                     inTrustedDirectory: package, version: version,
                     authority: authority)
+                stage = .sourcePreparation
                 let prepared = try VPNJointUpdatePreparation.prepare(
                     candidateDirectory: package, payload: joint,
                     authority: authority)
                 let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(
                     create: false)
                 defer { close(update) }
+                stage = .executorHandoff
                 _ = try VPNReplacementExecutorHandoff.launchPrepared(
                     inTrustedDirectory: update,
                     release: joint.previous,
@@ -88,6 +101,7 @@ enum VPNInstallationEntry {
                 print("VPN support and application updated.")
                 return 0
             }
+            stage = .payload
             let payload = try VPNInstallationPayload.load(directory: packageDirectory,
                                                             version: version, authority: authority)
             let policy = try geteuid() == 0 ? payload.release.installerPolicy()
@@ -101,6 +115,7 @@ enum VPNInstallationEntry {
             case .verifyUpdate:
                 fatalError("handled before loading the ordinary package")
             case .status:
+                stage = .serviceStatus
                 // Ordinary-user cross-UID readiness; not a VPN connect action.
                 let socket = try VPNEndpointDirectory.connectSystem(deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
                 let session = try VPNHelperSession.open(takingSocket: socket, release: payload.release)
@@ -113,6 +128,7 @@ enum VPNInstallationEntry {
                 }
                 print("VPN support is available. Release \(payload.release.sequence).")
             case .install:
+                stage = .installation
                 let owner = try consoleOwner()
                 _ = try VPNInstaller.install(payload: payload.manifest, signature: payload.signature,
                                               helper: payload.helper, engine: payload.engine, authority: authority, trustedOwnerUserID: owner)
@@ -120,13 +136,16 @@ enum VPNInstallationEntry {
             case .update:
                 fatalError("handled by the coordinated update boundary")
             case .remove:
+                stage = .removal
                 try VPNInstaller.uninstall()
                 print("VPN support removed.")
             }
             return 0
         } catch {
-            // Stable error codes, no personal paths, payloads or key material.
-            FileHandle.standardError.write(Data("VPN support operation failed. No authorization was bypassed.\n".utf8))
+            // Stable error code and whitelisted stage only: no exception text,
+            // personal paths, payloads, identifiers or key material.
+            FileHandle.standardError.write(Data(
+                "VPN support operation failed at \(stage.rawValue). No authorization was bypassed.\n".utf8))
             return 77
         }
     }

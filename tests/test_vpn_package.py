@@ -188,7 +188,11 @@ final class ProxyModel:''' + model
 
     def test_changed_sidecar_fails_in_the_actual_entry(self):
         with (self.payload / 'vpn-helper').open('ab') as stream: stream.write(b'changed')
-        self.assertEqual(self.app_run('--vpn-support-verify').returncode, 77)
+        result = self.app_run('--vpn-support-verify')
+        self.assertEqual(result.returncode, 77)
+        self.assertEqual(result.stderr,
+                         'VPN support operation failed at payload. '
+                         'No authorization was bypassed.\n')
         self.package(success=False)
 
     def test_packages_only_run_the_fixed_same_app_mode(self):
