@@ -51,6 +51,7 @@ final class ProxyModel:''' + model
         app_sources = [main, trust] + [HELPER / name for name in COMPONENTS]
         app_sources += [HELPER / f'{name}.swift' for name in
                         ('VPNStagedApplication', 'VPNApplicationTransactionStager',
+                         'VPNJointUpdatePreparation',
                          'VPNInstalledApplication',
                          'VPNInstalledCandidateHandoff', 'VPNReplacementExecutor',
                          'VPNSelectedCandidateFinalizer', 'VPNSelectedCandidateRecovery',

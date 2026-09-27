@@ -124,6 +124,8 @@ struct VPNInstallationPayload {
 struct VPNJointUpdatePayload {
     let previousManifest: Data
     let previousSignature: Data
+    let transitionPayload: Data
+    let transitionSignature: Data
     let candidate: VPNInstallationPayload
     let previous: VerifiedVPNRelease
     let transition: VerifiedVPNUpdateTransition
@@ -160,6 +162,8 @@ struct VPNJointUpdatePayload {
         return VPNJointUpdatePayload(
             previousManifest: previousManifest,
             previousSignature: previousSignature,
+            transitionPayload: transitionPayload,
+            transitionSignature: transitionSignature,
             candidate: candidate, previous: previous, transition: transition)
     }
 }

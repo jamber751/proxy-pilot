@@ -91,6 +91,11 @@ VPN-компонента. Защищённый content-addressed helper B теп
 - [x] Executor handoff разделяет identities: родитель-кандидат B проверяет exact
   child A, а child A независимо проверяет parent B. Неверная identity любой
   стороны блокируется до GO и до записи журнала; 10/10 handoff-сценариев прошли.
+- [x] Добавлена возобновляемая preparation-фаза без stop/select: под service→app
+  lock order она связывает установленную A, package B и signed transition,
+  публикует A/B slots, durable update journal и executor A. Падение после app
+  staging или journal продолжает только вперёд; повтор не переписывает готовые
+  объекты. 4/4 coordinator и 7/7 staging-сценариев прошли.
 - [x] Проверки: launchd + joint 30/30, installer 36/36, package 10 обязательных
   из 10 (3 внешних engine-сценария пропущены), admission 10/10; Universal helper
   собран для arm64/x86_64 и прошёл strict codesign.
