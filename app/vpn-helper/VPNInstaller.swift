@@ -9,6 +9,7 @@ enum VPNInstallerError: Error {
     case notInstalled
     case unexpectedContent
     case removalFailed
+    case coordinatedUpdateRequired
 }
 
 /// One authorized installation path, in a fixed order: authenticate the release

@@ -82,11 +82,18 @@ VPN-компонента. Защищённый content-addressed helper B теп
   `current` / `candidate` только после полной проверки подписей и отдельного
   подписанного разрешения перехода A→B. Пустой или полностью проверенный
   `.preparing` после падения продолжается вперёд; чужое состояние не удаляется.
+- [x] Update-пакет теперь несёт предыдущий signed manifest и отдельный signed
+  transition A→B, проверяет весь набор собственным production verifier до GUI и
+  до системных записей. Инструмент выпуска сам строит канонический transition.
+  Старый helper-only `--vpn-support-update` закрыт: он мог выбрать helper B,
+  пока в `/Applications` оставалась A. До подключения executor handoff update
+  завершается безопасным отказом, а не частичной установкой.
 - [x] Проверки: launchd + joint 30/30, installer 36/36, package 10 обязательных
   из 10 (3 внешних engine-сценария пропущены), admission 10/10; Universal helper
   собран для arm64/x86_64 и прошёл strict codesign.
-- [x] Новый staging: 7/7 сфокусированных сценариев и полная package-композиция
-  10/10 обязательных сценариев (3 внешних engine-сценария пропущены).
+- [x] Новый staging: 7/7 сфокусированных сценариев; signing tool 13/13;
+  package-композиция 13/13 обязательных сценариев, 3 внешних engine-сценария
+  пропущены.
 - [ ] Следом — подключить staging к реальному updater/package handoff, не передавая
   пути через IPC. После этого отдельной транзакцией безопасно удалить retained A,
   executor и destination-stage только после подтверждённой B/readiness и retirement.

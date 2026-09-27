@@ -22,7 +22,14 @@ as a working VPN feature.
    `Payload/vpn-release.sig` using the existing `app/vpn-release-key.swift` tool
    and the existing VPN release Keychain key. Never generate/rotate a key merely
    to make a package pass. The packager does not access the Keychain.
-4. Run `python3 app/vpn-package/package.py build --stage <absolute-stage-directory>
+4. For an update only, add the exact signed previous release with
+   `package.py prepare-update --stage <stage> --previous-manifest <old-manifest>
+   --previous-signature <old-signature>`. Then use `vpn-release-key
+   sign-transition <old-manifest> <old-signature> <stage>/Payload/vpn-release.manifest
+   <stage>/Payload/vpn-release.sig <stage>/Payload/vpn-update-transition
+   <stage>/Payload/vpn-update-transition.sig`. The tool constructs the canonical
+   A→B record itself and refuses non-forward or mismatched releases.
+5. Run `python3 app/vpn-package/package.py build --stage <absolute-stage-directory>
    --action install --output <new-absolute-package.pkg>`.
    Build `update` and `remove` packages the same way with distinct output paths.
 
@@ -51,9 +58,11 @@ not entered, and no paths, owner IDs or shell commands are accepted as arguments
 - `--vpn-support-install`: root only, refuses an existing installation; the
   initial owner is the active local console user, not an environment variable.
 - `--vpn-support-update`: root only, preserves the owner and enforces the current
-  sequence and signed forward transition. Both binaries are staged and validated
-  before the running service stops; one atomic record selects the complete set.
-  Failure never becomes first install, component downgrade or silent repair.
+  sequence and signed forward transition. The legacy helper-only mutation is now
+  disabled because it could select helper B while application A remained
+  installed. The package verifies the complete joint input, then currently fails
+  closed until the protected A executor handoff is connected. Do not publish an
+  update package as functional yet.
 - `--vpn-support-remove`: root only, stops the exact service and removes only
   recognized files; unexpected content aborts removal.
   Recognized content-addressed old engine versions are included in that cleanup.

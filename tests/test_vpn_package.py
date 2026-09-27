@@ -105,7 +105,7 @@ final class ProxyModel:''' + model
         self.work = Path(self.temp.name)
         self.stage = self.work / 'stage'
         self.command([sys.executable, str(PACKAGER), 'prepare', '--app', str(self.app),
-                      '--helper', str(self.build / 'helper'), '--sequence', '1', '--output', str(self.stage)])
+                      '--helper', str(self.build / 'helper'), '--sequence', '2', '--output', str(self.stage)])
         self.payload = self.stage / 'Payload'
         self.command([str(self.build / 'signer'), 'sign', str(self.payload)])
 
@@ -113,7 +113,9 @@ final class ProxyModel:''' + model
         return subprocess.run([str(self.payload / 'ProxyPilot.app/Contents/MacOS/ProxyPilot'), *args],
                               env=ENV, capture_output=True, text=True, timeout=10)
 
-    def package(self, action='install', *, success=True):
+    def package(self, action='install', *, success=True, prepare=True):
+        if action == 'update' and prepare and not (self.payload / 'vpn-update-transition').exists():
+            self.prepare_joint_payload()
         output = self.work / f'{action}.pkg'
         result = subprocess.run([sys.executable, str(PACKAGER), 'build', '--stage', str(self.stage),
                                  '--action', action, '--output', str(output)], env=ENV,
@@ -126,6 +128,39 @@ final class ProxyModel:''' + model
         result = self.app_run('--vpn-support-verify')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.strip(), 'VPN support package verified.')
+
+    def prepare_joint_payload(self):
+        candidate = (self.payload / 'vpn-release.manifest').read_text()
+        previous = self.work / 'previous.manifest'
+        previous.write_text(candidate.replace('sequence=2\n', 'sequence=1\n'))
+        previous_signature = self.work / 'previous.sig'
+        self.command([str(self.build / 'signer'), 'sign-release', str(previous),
+                      str(previous_signature)])
+        self.command([sys.executable, str(PACKAGER), 'prepare-update',
+                      '--stage', str(self.stage), '--previous-manifest', str(previous),
+                      '--previous-signature', str(previous_signature)])
+        self.command([str(self.build / 'signer'), 'sign-joint', str(self.payload)])
+
+    def test_joint_payload_binds_previous_candidate_and_exact_edge(self):
+        self.prepare_joint_payload()
+        verified_app = self.app_run('--vpn-support-verify-update')
+        self.assertEqual(verified_app.returncode, 0,
+                         verified_app.stdout + verified_app.stderr)
+        self.assertEqual(verified_app.stdout.strip(),
+                         'VPN joint update package verified.')
+        result = self.command([str(self.build / 'signer'), 'verify-joint',
+                               str(self.payload), '1.6.0'])
+        self.assertEqual(result.stdout.strip(), 'verified:1->2')
+        for name in ('vpn-previous-release.manifest', 'vpn-update-transition',
+                     'vpn-update-transition.sig'):
+            with self.subTest(name=name):
+                path = self.payload / name
+                original = path.read_bytes(); path.write_bytes(original + b'x')
+                refused = subprocess.run([str(self.build / 'signer'), 'verify-joint',
+                                          str(self.payload), '1.6.0'], env=ENV,
+                                         capture_output=True, text=True, timeout=10)
+                self.assertEqual(refused.returncode, 77, refused.stdout + refused.stderr)
+                path.write_bytes(original)
 
     def test_admin_operations_reject_nonroot_before_any_sidecar_read(self):
         (self.payload / 'vpn-release.manifest').unlink()
@@ -144,6 +179,7 @@ final class ProxyModel:''' + model
     def test_unknown_or_extra_arguments_do_not_fall_through_to_gui(self):
         for args in [('--vpn-support-bogus',), ('--vpn-support-install', '/tmp/other'),
                      ('--vpn-support-verify', '--owner', '0'),
+                     ('--vpn-support-verify-update', '/tmp/other'),
                      ('--vpn-protected-replacement-executor', '/tmp/other'),
                      ('--vpn-installed-candidate-ready', '/tmp/other'),
                      ('--vpn-selected-candidate-recovery', '/tmp/other')]:
@@ -171,6 +207,10 @@ final class ProxyModel:''' + model
                 self.assertNotIn('@ACTION@', post)
                 self.assertNotIn('launchctl', post)
                 self.assertNotIn('chown', post)
+                pre = (scripts / 'preinstall').read_text()
+                expected_verify = ('--vpn-support-verify-update' if action == 'update'
+                                   else '--vpn-support-verify')
+                self.assertIn(expected_verify, pre)
                 for name in ('preinstall', 'postinstall'):
                     result = subprocess.run(['/bin/zsh', str(scripts / name), 'test.pkg', '/', '/'],
                                             env=ENV, capture_output=True, text=True, timeout=5)
@@ -178,6 +218,37 @@ final class ProxyModel:''' + model
                 self.command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(scripts / 'Payload/ProxyPilot.app')])
                 result = self.command([str(scripts / 'Payload/ProxyPilot.app/Contents/MacOS/ProxyPilot'), '--vpn-support-verify'])
                 self.assertIn('package verified', result.stdout)
+
+    def test_update_package_requires_complete_joint_sidecars(self):
+        self.package('update')
+        for name in ('vpn-previous-release.manifest', 'vpn-previous-release.sig',
+                     'vpn-update-transition', 'vpn-update-transition.sig'):
+            with self.subTest(name=name):
+                output = self.work / 'update.pkg'
+                if output.exists(): output.unlink()
+                path = self.payload / name
+                original = path.read_bytes(); path.unlink()
+                try: self.package('update', success=False, prepare=False)
+                finally: path.write_bytes(original)
+
+    def test_prepare_update_never_overwrites_or_accepts_bad_signature(self):
+        previous = self.work / 'previous.manifest'
+        previous.write_text((self.payload / 'vpn-release.manifest').read_text()
+                            .replace('sequence=2\n', 'sequence=1\n'))
+        signature = self.work / 'previous.sig'; signature.write_text('invalid\n')
+        command = [sys.executable, str(PACKAGER), 'prepare-update', '--stage', str(self.stage),
+                   '--previous-manifest', str(previous), '--previous-signature', str(signature)]
+        refused = subprocess.run(command, env=ENV, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertFalse((self.payload / 'vpn-previous-release.manifest').exists())
+        self.command([str(self.build / 'signer'), 'sign-release', str(previous), str(signature)])
+        self.command(command)
+        before = {name: (self.payload / name).read_bytes() for name in
+                  ('vpn-previous-release.manifest', 'vpn-previous-release.sig',
+                   'vpn-update-transition', 'vpn-update-transition.sig')}
+        refused = subprocess.run(command, env=ENV, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(before, {name: (self.payload / name).read_bytes() for name in before})
 
     def test_unsigned_package_cannot_be_built(self):
         (self.payload / 'vpn-release.sig').write_text('')

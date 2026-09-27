@@ -5,6 +5,8 @@ Never installs, launches a GUI/helper, elevates, signs a release or accesses key
 Only the candidate app's explicit non-mutating verification mode is executed.
 """
 import argparse
+import base64
+import binascii
 import hashlib
 import importlib.util
 import io
@@ -22,6 +24,8 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 APP_ID = 'kz.documentolog.proxypilot'
 SAFE_ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+JOINT_FILES = {'vpn-previous-release.manifest', 'vpn-previous-release.sig',
+               'vpn-update-transition', 'vpn-update-transition.sig'}
 
 
 def regular_bytes(path, limit):
@@ -173,16 +177,48 @@ def prepare(app, helper, sequence, output, engine_artifact=None):
     print('Prepared unsigned sidecars. Sign vpn-release.manifest separately; nothing installed.')
 
 
-def verify(payload):
+def verify(payload, action=None, allow_joint=False):
     expected = {'ProxyPilot.app', 'vpn-helper', 'vpn-release.manifest', 'vpn-release.sig'}
     if (payload / 'vpn-engine').exists() or (payload / 'vpn-engine').is_symlink(): expected.add('vpn-engine')
-    if set(os.listdir(payload)) != expected:
+    actual = set(os.listdir(payload))
+    if action == 'update': expected |= JOINT_FILES
+    allowed = [expected]
+    if allow_joint and action != 'update': allowed.append(expected | JOINT_FILES)
+    if actual not in allowed:
         raise ValueError('Unexpected package files; never include profiles or staging leftovers')
     app = payload / 'ProxyPilot.app'
     version = version_of(app)
     pins(app, APP_ID)
-    run(app / 'Contents/MacOS/ProxyPilot', '--vpn-support-verify')
+    mode = '--vpn-support-verify-update' if action == 'update' else '--vpn-support-verify'
+    run(app / 'Contents/MacOS/ProxyPilot', mode)
     return version
+
+
+def prepare_update(stage, previous_manifest, previous_signature):
+    if not stage.is_absolute() or stage.is_symlink() or not stage.is_dir():
+        raise ValueError('Expected an existing absolute private stage')
+    payload = stage / 'Payload'
+    verify(payload)
+    if any((payload / name).exists() or (payload / name).is_symlink() for name in JOINT_FILES):
+        raise ValueError('Update sidecars already exist; never overwrite release input')
+    previous = regular_bytes(previous_manifest, 4096)
+    encoded = regular_bytes(previous_signature, 89)
+    try:
+        text = encoded.decode('ascii')
+        if len(text) != 89 or not text.endswith('\n'):
+            raise ValueError('non-canonical signature')
+        decoded = base64.b64decode(text[:-1], validate=True)
+    except (UnicodeDecodeError, ValueError, binascii.Error):
+        raise ValueError('Invalid previous release signature encoding')
+    if len(decoded) != 64 or base64.b64encode(decoded).decode('ascii') + '\n' != text:
+        raise ValueError('Invalid previous release signature encoding')
+    (payload / 'vpn-previous-release.manifest').write_bytes(previous)
+    (payload / 'vpn-previous-release.sig').write_bytes(encoded)
+    (payload / 'vpn-previous-release.manifest').chmod(0o600)
+    (payload / 'vpn-previous-release.sig').chmod(0o600)
+    for name in ('vpn-update-transition', 'vpn-update-transition.sig'):
+        (payload / name).touch(mode=0o600)
+    print('Prepared update sidecars. Sign the exact transition separately; nothing installed.')
 
 
 def build(stage, action, output):
@@ -190,7 +226,7 @@ def build(stage, action, output):
     if action not in ('install', 'update', 'remove'): raise ValueError('Unknown fixed action')
     if not stage.is_absolute() or stage.is_symlink(): raise ValueError('Expected an absolute staging directory')
     payload = stage / 'Payload'
-    version = verify(payload)
+    version = verify(payload, action=action, allow_joint=True)
     if (payload / 'vpn-engine').exists():
         lock, record, _ = source_material(stage / 'EngineSources')
         engine_data = regular_bytes(payload / 'vpn-engine', 64 * 1024 * 1024)
@@ -206,11 +242,15 @@ def build(stage, action, output):
         run('/usr/bin/ditto', '--noextattr', '--norsrc', payload / 'ProxyPilot.app', copied / 'ProxyPilot.app')
         sidecars = ['vpn-helper', 'vpn-release.manifest', 'vpn-release.sig']
         if (payload / 'vpn-engine').exists(): sidecars.append('vpn-engine')
+        if action == 'update': sidecars += sorted(JOINT_FILES)
         for name in sidecars:
             shutil.copyfile(payload / name, copied / name)
             (copied / name).chmod(0o700 if name in ('vpn-helper', 'vpn-engine') else 0o600)
-        if verify(copied) != version: raise ValueError('Package changed while copying')
-        shutil.copyfile(HERE / 'preinstall', scripts / 'preinstall')
+        if verify(copied, action=action) != version: raise ValueError('Package changed while copying')
+        preinstall = (HERE / 'preinstall').read_text()
+        if action == 'update':
+            preinstall = preinstall.replace('--vpn-support-verify', '--vpn-support-verify-update')
+        (scripts / 'preinstall').write_text(preinstall)
         (scripts / 'postinstall').write_text((HERE / 'postinstall.in').read_text().replace('@ACTION@', action))
         for name in ('preinstall', 'postinstall'): (scripts / name).chmod(0o755)
         run('/usr/bin/codesign', '--verify', '--deep', '--strict', copied / 'ProxyPilot.app')
@@ -229,6 +269,10 @@ def main():
     candidate.add_argument('--engine-artifact', type=Path, help='Complete pinned engine builder artifact directory')
     candidate.add_argument('--sequence', required=True)
     candidate.add_argument('--output', type=Path, required=True)
+    update = modes.add_parser('prepare-update')
+    update.add_argument('--stage', type=Path, required=True)
+    update.add_argument('--previous-manifest', type=Path, required=True)
+    update.add_argument('--previous-signature', type=Path, required=True)
     package = modes.add_parser('build')
     package.add_argument('--stage', type=Path, required=True)
     package.add_argument('--action', choices=('install', 'update', 'remove'), required=True)
@@ -237,6 +281,7 @@ def main():
     if os.geteuid() == 0: parser.error('Build as an ordinary user, never root')
     try:
         if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output, args.engine_artifact)
+        elif args.mode == 'prepare-update': prepare_update(args.stage, args.previous_manifest, args.previous_signature)
         else: build(args.stage, args.action, args.output)
     except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error: parser.error(str(error))
 

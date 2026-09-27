@@ -9,6 +9,7 @@ import SystemConfiguration
 enum VPNInstallationEntry {
     enum Action: String {
         case verify = "--vpn-support-verify"
+        case verifyUpdate = "--vpn-support-verify-update"
         case status = "--vpn-support-status"
         case install = "--vpn-support-install"
         case update = "--vpn-support-update"
@@ -37,7 +38,8 @@ enum VPNInstallationEntry {
             return getuid() == 0 || geteuid() == 0 ? 77 : nil
         }
         guard options.count == 1, let action = Action(rawValue: options[0]) else { return 64 }
-        guard getuid() == geteuid(), action == .verify || action == .status || geteuid() == 0 else { return 77 }
+        guard getuid() == geteuid(), action == .verify || action == .verifyUpdate
+                || action == .status || geteuid() == 0 else { return 77 }
         guard action != .status || geteuid() != 0 else { return 77 }
         do {
             let authority = try VPNReleaseTrust.authority()
@@ -47,7 +49,27 @@ enum VPNInstallationEntry {
                   Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == version else {
                 throw VPNInstallationPayloadError.versionMismatch
             }
-            let payload = try VPNInstallationPayload.load(directory: Bundle.main.bundleURL.deletingLastPathComponent(),
+            let packageDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+            if action == .verifyUpdate {
+                let joint = try VPNJointUpdatePayload.load(
+                    directory: packageDirectory, version: version, authority: authority)
+                try VPNPeerAuthentication.validateCurrentProcess(
+                    policy: joint.candidate.release.clientPolicy(forTrustedUserID: geteuid()))
+                print("VPN joint update package verified.")
+                return 0
+            }
+            if action == .update {
+                let joint = try VPNJointUpdatePayload.load(
+                    directory: packageDirectory, version: version, authority: authority)
+                try VPNPeerAuthentication.validateCurrentProcess(
+                    policy: joint.candidate.release.installerPolicy())
+                // The legacy helper-only update would select B while the
+                // installed application is still A. Keep this fixed entry
+                // fail-closed until the joint staging/executor handoff owns
+                // the complete replacement transaction.
+                throw VPNInstallerError.coordinatedUpdateRequired
+            }
+            let payload = try VPNInstallationPayload.load(directory: packageDirectory,
                                                             version: version, authority: authority)
             let policy = try geteuid() == 0 ? payload.release.installerPolicy()
                 : payload.release.clientPolicy(forTrustedUserID: geteuid())
@@ -57,6 +79,8 @@ enum VPNInstallationEntry {
                 // Integrity preflight only. Does not open installed storage,
                 // contact a helper, show UI, or claim that VPN is available.
                 print("VPN support package verified.")
+            case .verifyUpdate:
+                fatalError("handled before loading the ordinary package")
             case .status:
                 // Ordinary-user cross-UID readiness; not a VPN connect action.
                 let socket = try VPNEndpointDirectory.connectSystem(deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
@@ -75,17 +99,7 @@ enum VPNInstallationEntry {
                                               helper: payload.helper, engine: payload.engine, authority: authority, trustedOwnerUserID: owner)
                 print("VPN support installed.")
             case .update:
-                let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: false)
-                let sequence: UInt64
-                do {
-                    defer { close(directory) }
-                    sequence = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
-                        .loadDeployment().release.sequence
-                }
-                _ = try VPNInstaller.update(payload: payload.manifest, signature: payload.signature,
-                                             helper: payload.helper, engine: payload.engine, authority: authority, expectedSequence: sequence,
-                                             intent: .explicit)
-                print("VPN support updated.")
+                fatalError("handled by the coordinated update boundary")
             case .remove:
                 try VPNInstaller.uninstall()
                 print("VPN support removed.")

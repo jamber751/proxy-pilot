@@ -18,13 +18,13 @@ struct VPNInstallationPayload {
         guard parent >= 0 else { throw VPNInstallationPayloadError.unsafePackage }
         defer { close(parent) }
         try check(parent, directory: true)
+        return try load(parent: parent, version: version, authority: authority)
+    }
+
+    fileprivate static func load(parent: Int32, version: String,
+                                 authority: VPNReleaseAuthority) throws -> VPNInstallationPayload {
         let manifest = try read("vpn-release.manifest", in: parent, limit: VPNReleaseAuthority.maximumPayloadBytes)
-        let encoded = try read("vpn-release.sig", in: parent, limit: 89)
-        guard let text = String(data: encoded, encoding: .utf8), text.count == 89, text.last == "\n",
-              let signature = Data(base64Encoded: String(text.dropLast())), signature.count == 64,
-              signature.base64EncodedString() + "\n" == text else {
-            throw VPNInstallationPayloadError.invalidSignatureEncoding
-        }
+        let signature = try readSignature("vpn-release.sig", in: parent)
         let release = try authority.verify(payload: manifest, signature: signature, previous: nil)
         guard release.version == version else { throw VPNInstallationPayloadError.versionMismatch }
         let helper = try read("vpn-helper", in: parent, limit: VPNReleaseAuthority.maximumHelperBytes) { file, bytes in
@@ -45,8 +45,20 @@ struct VPNInstallationPayload {
         return VPNInstallationPayload(manifest: manifest, signature: signature, helper: helper, engine: engine, release: release)
     }
 
-    private static func read(_ name: String, in parent: Int32, limit: Int,
-                             validate: ((Int32, Data) throws -> Void)? = nil) throws -> Data {
+    fileprivate static func readSignature(_ name: String, in parent: Int32) throws -> Data {
+        let encoded = try read(name, in: parent, limit: 89)
+        guard let text = String(data: encoded, encoding: .utf8),
+              text.count == 89, text.last == "\n",
+              let signature = Data(base64Encoded: String(text.dropLast())),
+              signature.count == 64,
+              signature.base64EncodedString() + "\n" == text else {
+            throw VPNInstallationPayloadError.invalidSignatureEncoding
+        }
+        return signature
+    }
+
+    fileprivate static func read(_ name: String, in parent: Int32, limit: Int,
+                                 validate: ((Int32, Data) throws -> Void)? = nil) throws -> Data {
         let file = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard file >= 0 else { throw VPNInstallationPayloadError.unsafePackage }
         defer { close(file) }
@@ -80,7 +92,7 @@ struct VPNInstallationPayload {
         return data
     }
 
-    private static func check(_ fd: Int32, directory: Bool) throws {
+    fileprivate static func check(_ fd: Int32, directory: Bool) throws {
         var info = stat(), filesystem = statfs()
         guard fstat(fd, &info) == 0, info.st_uid == geteuid(),
               info.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
@@ -102,5 +114,52 @@ struct VPNInstallationPayload {
         guard acl_get_entry(acl, Int32(ACL_FIRST_ENTRY.rawValue), &entry) == -1, errno == EINVAL else {
             throw VPNInstallationPayloadError.unsafePackage
         }
+    }
+}
+
+/// Complete immutable input for a future joint app/helper replacement. The
+/// package carries A only as signed metadata; production still has to match it
+/// against protected installed state before any mutation. B and the exact edge
+/// are verified together while one trusted package directory descriptor is held.
+struct VPNJointUpdatePayload {
+    let previousManifest: Data
+    let previousSignature: Data
+    let candidate: VPNInstallationPayload
+    let previous: VerifiedVPNRelease
+    let transition: VerifiedVPNUpdateTransition
+
+    static func load(directory: URL, version: String,
+                     authority: VPNReleaseAuthority) throws -> VPNJointUpdatePayload {
+        let parent = open(directory.path,
+                          O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw VPNInstallationPayloadError.unsafePackage }
+        defer { close(parent) }
+        try VPNInstallationPayload.check(parent, directory: true)
+        let candidate = try VPNInstallationPayload.load(
+            parent: parent, version: version, authority: authority)
+        let previousManifest = try VPNInstallationPayload.read(
+            "vpn-previous-release.manifest", in: parent,
+            limit: VPNReleaseAuthority.maximumPayloadBytes)
+        let previousSignature = try VPNInstallationPayload.readSignature(
+            "vpn-previous-release.sig", in: parent)
+        let transitionPayload = try VPNInstallationPayload.read(
+            "vpn-update-transition", in: parent,
+            limit: VPNReleaseAuthority.maximumUpdateTransitionBytes)
+        let transitionSignature = try VPNInstallationPayload.readSignature(
+            "vpn-update-transition.sig", in: parent)
+        let previous = try authority.verify(
+            payload: previousManifest, signature: previousSignature, previous: nil)
+        let transition = try authority.verifyUpdateTransition(
+            payload: transitionPayload, signature: transitionSignature,
+            previous: previous, candidatePayload: candidate.manifest,
+            candidateSignature: candidate.signature)
+        guard transition.matchesSource(previous),
+              transition.matchesDestination(candidate.release) else {
+            throw VPNReleaseAuthorizationError.invalidUpdateTransition
+        }
+        return VPNJointUpdatePayload(
+            previousManifest: previousManifest,
+            previousSignature: previousSignature,
+            candidate: candidate, previous: previous, transition: transition)
     }
 }
