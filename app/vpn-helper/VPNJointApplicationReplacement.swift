@@ -2,6 +2,30 @@ import Darwin
 import Dispatch
 import Foundation
 
+enum VPNJointApplicationReplacementFailure: UInt8, Error {
+    case applicationDestinationExchange = 0x61
+    case recoveryArm = 0x62
+    case candidateProof = 0x63
+    case candidateFinalization = 0x64
+    case journalRetirement = 0x65
+    case applicationDestinationRecheck = 0x66
+
+    var diagnosticByte: UInt8 {
+        rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .applicationDestinationExchange: return "applicationDestinationExchange"
+        case .recoveryArm: return "recoveryArm"
+        case .candidateProof: return "candidateProof"
+        case .candidateFinalization: return "candidateFinalization"
+        case .journalRetirement: return "journalRetirement"
+        case .applicationDestinationRecheck: return "applicationDestinationRecheck"
+        }
+    }
+}
+
 /// Journal-authorized replacement boundary. The legacy entry exchanges only
 /// protected copies; the production executor entry also installs exact B into
 /// Applications. The executor must be exact A in its separate fixed slot, with
@@ -254,6 +278,7 @@ enum VPNJointApplicationReplacement {
         do { try recheck() } catch { throw VPNApplicationSwapError.commitUncertain }
         guard installDestination else { return outcome }
 
+        var failureStage = VPNJointApplicationReplacementFailure.applicationDestinationExchange
         do {
             let destinationOutcome: VPNApplicationDestinationExchange.Outcome
             #if VPN_APPLICATION_DESTINATION_TESTING
@@ -288,12 +313,14 @@ enum VPNJointApplicationReplacement {
                 applicationDirectory: applicationDirectory, journal: initial,
                 authorizeMutation: authorizeMutation)
             #endif
+            failureStage = .applicationDestinationRecheck
             try recheck()
             if !testPolicy {
                 // Arm the protected candidate helper before B is allowed to
                 // commit the selector. If this process dies after selection,
                 // launchd finishes readiness/reconciliation from the durable
                 // journal without executing the mutable app path.
+                failureStage = .recoveryArm
                 let recovery = try VPNRecoveryLaunchdJob.system(storageDirectory: directory)
                 try recovery.installAndArm(
                     initial.candidate,
@@ -307,6 +334,7 @@ enum VPNJointApplicationReplacement {
                 // no production fixed store from which B can load A's policy.
                 try recheck()
             } else {
+                failureStage = .candidateProof
                 try VPNInstalledCandidateHandoff.prove(
                     release: initial.candidate.release,
                     validatePending: recheck,
@@ -314,6 +342,7 @@ enum VPNJointApplicationReplacement {
                     validateSelected: selectedContext)
             }
             #else
+            failureStage = .candidateProof
             try VPNInstalledCandidateHandoff.prove(
                 release: initial.candidate.release,
                 validatePending: recheck,
@@ -326,12 +355,14 @@ enum VPNJointApplicationReplacement {
                 try selectedContext()
                 guard let adapter else { throw VPNLaunchdError.invalidConfiguration }
                 let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
+                failureStage = .candidateFinalization
                 _ = try VPNSelectedCandidateFinalizer.finish(
                     store: store, runtime: adapter, lease: lease, budget: budget,
                     transactionID: initial.transactionID,
                     expectedRevision: activeRevision + 1,
                     candidate: initial.candidate)
                 try completedContext()
+                failureStage = .journalRetirement
                 try VPNSelectedCandidateRecovery.retireCompleted(
                     store: store, lease: lease,
                     transactionID: initial.transactionID,
@@ -341,6 +372,13 @@ enum VPNJointApplicationReplacement {
             return outcome == .exchanged || destinationOutcome == .exchanged
                 ? .exchanged : .alreadyExchanged
         } catch {
+            if !testPolicy {
+                // The protected executor inherits only its authenticated socket
+                // and directory descriptor. Report this allowlisted stage over
+                // that socket; touching closed stdio would terminate Foundation
+                // before the parent could receive the diagnostic.
+                throw failureStage
+            }
             #if VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
             FileHandle.standardError.write(Data("joint-install-rejected:\(error)\n".utf8))
             #endif

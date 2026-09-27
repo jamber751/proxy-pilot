@@ -35,6 +35,9 @@ enum VPNReplacementExecutorEntry {
             return VPNReplacementExecutorHandoff.runChildIfRequested(
                 arguments: arguments, selfPolicy: selfPolicy,
                 parentPolicy: parentPolicy,
+                failureDiagnostic: { error in
+                    (error as? VPNJointApplicationReplacementFailure)?.diagnosticByte
+                },
                 operation: { request, applicationDirectory in
                     try VPNJointApplicationReplacement.installPreparedOrPendingApplication(
                         applicationDirectory: applicationDirectory,

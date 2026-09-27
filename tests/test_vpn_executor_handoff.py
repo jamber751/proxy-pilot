@@ -108,6 +108,23 @@ class VPNExecutorHandoffTests(unittest.TestCase):
         self.assert_rejected('child-failure', 'commitUncertain')
         self.assertTrue((self.base / 'handoff-marker').is_file())
 
+    def test_child_failure_reports_only_allowlisted_operation_stage(self):
+        result = self.invoke('child-diagnostic')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'rejected:commitUncertain')
+        self.assertIn('VPN replacement executor failed at candidateProof.', result.stderr)
+        self.assertTrue((self.base / 'handoff-marker').is_file())
+
+    def test_child_failure_reports_destination_recheck_stage(self):
+        result = self.invoke('child-diagnostic-recheck')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'rejected:commitUncertain')
+        self.assertIn(
+            'VPN replacement executor failed at applicationDestinationRecheck.',
+            result.stderr,
+        )
+        self.assertTrue((self.base / 'handoff-marker').is_file())
+
     def test_namespace_lock_contention_never_spawns(self):
         self.assert_rejected('busy', 'busy')
         self.assertFalse((self.base / 'executor').exists())

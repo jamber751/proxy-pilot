@@ -21,6 +21,36 @@ struct VPNExecutorHandoffRequest: Equatable {
 /// caller-controlled path, command or release metadata. Both peers authenticate
 /// the live process before the parent releases its namespace lease and sends GO.
 enum VPNReplacementExecutorHandoff {
+    private enum ChildOperationStage: UInt8 {
+        case applicationDestinationExchange = 0x61
+        case recoveryArm = 0x62
+        case candidateProof = 0x63
+        case candidateFinalization = 0x64
+        case journalRetirement = 0x65
+        case applicationDestinationRecheck = 0x66
+
+        var label: String {
+            switch self {
+            case .applicationDestinationExchange: return "applicationDestinationExchange"
+            case .recoveryArm: return "recoveryArm"
+            case .candidateProof: return "candidateProof"
+            case .candidateFinalization: return "candidateFinalization"
+            case .journalRetirement: return "journalRetirement"
+            case .applicationDestinationRecheck: return "applicationDestinationRecheck"
+            }
+        }
+    }
+
+    private enum FailureStage: String {
+        case preparation
+        case channel
+        case spawn
+        case mutualAuthentication
+        case request
+        case childCompletion
+        case childOperation
+    }
+
     static let childArgument = "--vpn-protected-replacement-executor"
     static let childSocket: Int32 = 20
     static let childApplicationDirectory: Int32 = 21
@@ -40,9 +70,34 @@ enum VPNReplacementExecutorHandoff {
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw VPNExecutorHandoffError.requiresRoot }
         try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
-        return try performLaunch(base: base, release: release, request: request,
-                                 childPolicy: childPolicy, parentPolicy: parentPolicy,
-                                 checkpoint: { _ in })
+        do {
+            return try performLaunch(base: base, release: release, request: request,
+                                     childPolicy: childPolicy, parentPolicy: parentPolicy,
+                                     checkpoint: { _ in })
+        } catch let error as VPNExecutorHandoffError {
+            report(stage(for: error))
+            throw error
+        } catch {
+            report(.preparation)
+            throw error
+        }
+    }
+
+    private static func stage(for error: VPNExecutorHandoffError) -> FailureStage {
+        switch error {
+        case .requiresRoot: return .preparation
+        case .unsafeChannel: return .channel
+        case .spawnFailed: return .spawn
+        case .authenticationFailed: return .mutualAuthentication
+        case .invalidRequest: return .request
+        case .childFailed: return .childCompletion
+        case .commitUncertain: return .childOperation
+        }
+    }
+
+    private static func report(_ stage: FailureStage) {
+        FileHandle.standardError.write(Data(
+            "VPN executor handoff failed at \(stage.rawValue).\n".utf8))
     }
 
     #if VPN_EXECUTOR_HANDOFF_TESTING
@@ -66,11 +121,12 @@ enum VPNReplacementExecutorHandoff {
     /// this returns a value and must never initialize UI in that process.
     static func runChildIfRequested(arguments: [String], selfPolicy: VPNPeerPolicy,
                                     parentPolicy: VPNPeerPolicy,
+                                    failureDiagnostic: (Error) -> UInt8? = { _ in nil },
                                     operation: (VPNExecutorHandoffRequest, Int32) throws
                                         -> VPNProtectedApplicationSwap.Outcome) -> Int32? {
         guard arguments.count == 2, arguments[1] == childArgument else { return nil }
         return runChild(selfPolicy: selfPolicy, parentPolicy: parentPolicy,
-                        operation: operation)
+                        failureDiagnostic: failureDiagnostic, operation: operation)
     }
 
     private static func performLaunch(base: Int32, release: VerifiedVPNRelease,
@@ -168,6 +224,11 @@ enum VPNReplacementExecutorHandoff {
             let result = try readExact(parentSocket, count: 1, deadline: deadline)
             let status = try waitForExit(processID, deadline: deadline)
             reaped = true
+            if let byte = result.first, let stage = ChildOperationStage(rawValue: byte) {
+                FileHandle.standardError.write(Data(
+                    "VPN replacement executor failed at \(stage.label).\n".utf8))
+                throw VPNExecutorHandoffError.commitUncertain
+            }
             guard status & 0x7f == 0, (status >> 8) & 0xff == 0, let byte = result.first else {
                 throw VPNExecutorHandoffError.childFailed
             }
@@ -182,6 +243,7 @@ enum VPNReplacementExecutorHandoff {
 
     private static func runChild(selfPolicy: VPNPeerPolicy,
                                  parentPolicy: VPNPeerPolicy,
+                                 failureDiagnostic: (Error) -> UInt8?,
                                  operation: (VPNExecutorHandoffRequest, Int32) throws
                                     -> VPNProtectedApplicationSwap.Outcome) -> Int32 {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeout
@@ -210,7 +272,9 @@ enum VPNReplacementExecutorHandoff {
                 try writeAll(childSocket, data: Data([byte]), deadline: deadline)
                 return 0
             } catch {
-                try? writeAll(childSocket, data: Data([failed]), deadline: deadline)
+                let diagnostic = failureDiagnostic(error)
+                    .flatMap(ChildOperationStage.init(rawValue:))?.rawValue ?? failed
+                try? writeAll(childSocket, data: Data([diagnostic]), deadline: deadline)
                 return 77
             }
         } catch {

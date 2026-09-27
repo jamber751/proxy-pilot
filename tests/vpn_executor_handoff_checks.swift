@@ -4,6 +4,10 @@ import Foundation
 
 @main enum VPNExecutorHandoffChecks {
     enum Injected: Error { case failure }
+    enum InjectedDiagnostic: Error {
+        case candidateProof
+        case applicationDestinationRecheck
+    }
     static let helper = Data("inert helper".utf8)
 
     static func release(arm: String, intel: String) throws -> VerifiedVPNRelease {
@@ -43,9 +47,20 @@ import Foundation
         let ownPolicy = try VPNPeerAuthentication.testCurrentPolicy(userID: geteuid())
         if let status = VPNReplacementExecutorHandoff.runChildIfRequested(
             arguments: arguments, selfPolicy: ownPolicy, parentPolicy: ownPolicy,
+            failureDiagnostic: { error in
+                guard let diagnostic = error as? InjectedDiagnostic else { return nil }
+                switch diagnostic {
+                case .candidateProof: return 0x63
+                case .applicationDestinationRecheck: return 0x66
+                }
+            },
             operation: { request, base in
                 try marker(base, request)
                 if request.expectedRevision == 99 { throw Injected.failure }
+                if request.expectedRevision == 98 { throw InjectedDiagnostic.candidateProof }
+                if request.expectedRevision == 97 {
+                    throw InjectedDiagnostic.applicationDestinationRecheck
+                }
                 return request.expectedRevision == 2 ? .alreadyExchanged : .exchanged
             }) {
             exit(status)
@@ -74,8 +89,14 @@ import Foundation
                 try Data("changed".utf8).write(to: URL(fileURLWithPath:
                     path + "/executor/ProxyPilot.app/Contents/Resources/data.txt"))
             }
-            let revision: UInt64 = operation == "child-failure" ? 99 :
-                (operation == "already" ? 2 : 1)
+            let revision: UInt64
+            switch operation {
+            case "child-failure": revision = 99
+            case "child-diagnostic": revision = 98
+            case "child-diagnostic-recheck": revision = 97
+            case "already": revision = 2
+            default: revision = 1
+            }
             let transaction = UUID(uuidString: "7BB17D0B-AE44-4B16-A9F8-C202E4A64983")!
             let policy: VPNPeerPolicy
             let wrongPolicy = try VPNPeerPolicy(userID: geteuid() &+ 1,
