@@ -22,21 +22,37 @@ struct VPNExecutorHandoffRequest: Equatable {
 /// the live process before the parent releases its namespace lease and sends GO.
 enum VPNReplacementExecutorHandoff {
     private enum ChildOperationStage: UInt8 {
-        case applicationDestinationExchange = 0x61
+        case applicationDestinationPreparation = 0x61
         case recoveryArm = 0x62
         case candidateProof = 0x63
         case candidateFinalization = 0x64
         case journalRetirement = 0x65
         case applicationDestinationRecheck = 0x66
+        case applicationDestinationCommit = 0x67
+        case applicationDestinationPostCommitSync = 0x68
+        case applicationDestinationProtectedValidation = 0x69
+        case applicationDestinationIdentityValidation = 0x6a
+        case applicationDestinationCandidateInspection = 0x6b
+        case applicationDestinationPreviousInspection = 0x6c
+        case applicationDestinationCandidateRevalidation = 0x6d
+        case applicationDestinationPreviousRevalidation = 0x6e
 
         var label: String {
             switch self {
-            case .applicationDestinationExchange: return "applicationDestinationExchange"
+            case .applicationDestinationPreparation: return "applicationDestinationPreparation"
             case .recoveryArm: return "recoveryArm"
             case .candidateProof: return "candidateProof"
             case .candidateFinalization: return "candidateFinalization"
             case .journalRetirement: return "journalRetirement"
             case .applicationDestinationRecheck: return "applicationDestinationRecheck"
+            case .applicationDestinationCommit: return "applicationDestinationCommit"
+            case .applicationDestinationPostCommitSync: return "applicationDestinationPostCommitSync"
+            case .applicationDestinationProtectedValidation: return "applicationDestinationProtectedValidation"
+            case .applicationDestinationIdentityValidation: return "applicationDestinationIdentityValidation"
+            case .applicationDestinationCandidateInspection: return "applicationDestinationCandidateInspection"
+            case .applicationDestinationPreviousInspection: return "applicationDestinationPreviousInspection"
+            case .applicationDestinationCandidateRevalidation: return "applicationDestinationCandidateRevalidation"
+            case .applicationDestinationPreviousRevalidation: return "applicationDestinationPreviousRevalidation"
             }
         }
     }

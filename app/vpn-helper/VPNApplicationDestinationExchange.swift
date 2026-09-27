@@ -18,7 +18,8 @@ enum VPNApplicationDestinationExchange {
                          previousOwnerUserID: uid_t,
                          candidate: VerifiedVPNRelease,
                          transition: VerifiedVPNUpdateTransition,
-                         authorizeMutation: () throws -> Void) throws -> Outcome {
+                         authorizeMutation: () throws -> Void,
+                         checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
         guard getuid() == 0, geteuid() == 0 else {
             throw VPNApplicationDestinationExchangeError.requiresRoot
         }
@@ -29,7 +30,7 @@ enum VPNApplicationDestinationExchange {
                            previousOwnerUserID: previousOwnerUserID,
                            candidate: candidate, transition: transition,
                            productionDestination: true, requireExecutor: true,
-                           authorizeMutation: authorizeMutation, checkpoint: { _ in })
+                           authorizeMutation: authorizeMutation, checkpoint: checkpoint)
     }
 
     #if VPN_APPLICATION_DESTINATION_TESTING
@@ -144,18 +145,24 @@ enum VPNApplicationDestinationExchange {
         do {
             try checkpoint("afterExchange")
             try sync(destination, stage)
+            try checkpoint("afterSync")
             try checkProtected()
+            try checkpoint("afterProtectedValidation")
             guard try childIdentity(destination) == oldStaged,
                   try childIdentity(stage) == oldInstalled else {
                 throw VPNApplicationDestinationExchangeError.invalidLayout
             }
+            try checkpoint("afterIdentityValidation")
             let installedB = try VPNStagedApplication.inspectInstalled(
                 inApplicationsDirectory: destination, ownerUserID: geteuid(),
                 productionParent: productionDestination, release: candidate)
+            try checkpoint("afterCandidateInspection")
             let retainedA = try VPNStagedApplication.inspectProtected(
                 inTrustedDirectory: stage, contentOwnerUserID: previousOwnerUserID,
                 release: previous)
+            try checkpoint("afterPreviousInspection")
             try VPNStagedApplication.revalidate(installedB, inTrustedDirectory: destination)
+            try checkpoint("afterCandidateRevalidation")
             try VPNStagedApplication.revalidate(retainedA, inTrustedDirectory: stage)
         } catch {
             throw VPNApplicationDestinationExchangeError.commitUncertain

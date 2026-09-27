@@ -7,6 +7,7 @@ import Foundation
     enum InjectedDiagnostic: Error {
         case candidateProof
         case applicationDestinationRecheck
+        case applicationDestinationPostCommitSync
     }
     static let helper = Data("inert helper".utf8)
 
@@ -52,6 +53,7 @@ import Foundation
                 switch diagnostic {
                 case .candidateProof: return 0x63
                 case .applicationDestinationRecheck: return 0x66
+                case .applicationDestinationPostCommitSync: return 0x68
                 }
             },
             operation: { request, base in
@@ -60,6 +62,9 @@ import Foundation
                 if request.expectedRevision == 98 { throw InjectedDiagnostic.candidateProof }
                 if request.expectedRevision == 97 {
                     throw InjectedDiagnostic.applicationDestinationRecheck
+                }
+                if request.expectedRevision == 96 {
+                    throw InjectedDiagnostic.applicationDestinationPostCommitSync
                 }
                 return request.expectedRevision == 2 ? .alreadyExchanged : .exchanged
             }) {
@@ -94,6 +99,7 @@ import Foundation
             case "child-failure": revision = 99
             case "child-diagnostic": revision = 98
             case "child-diagnostic-recheck": revision = 97
+            case "child-diagnostic-post-commit-sync": revision = 96
             case "already": revision = 2
             default: revision = 1
             }
