@@ -136,6 +136,12 @@ struct VPNJointUpdatePayload {
                           O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard parent >= 0 else { throw VPNInstallationPayloadError.unsafePackage }
         defer { close(parent) }
+        return try load(inTrustedDirectory: parent, version: version,
+                        authority: authority)
+    }
+
+    static func load(inTrustedDirectory parent: Int32, version: String,
+                     authority: VPNReleaseAuthority) throws -> VPNJointUpdatePayload {
         try VPNInstallationPayload.check(parent, directory: true)
         let candidate = try VPNInstallationPayload.load(
             parent: parent, version: version, authority: authority)

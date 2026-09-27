@@ -184,6 +184,16 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertEqual(self.code_pins(self.destination / 'ProxyPilot.app'), self.b)
         self.assertEqual(self.code_pins(retained), self.a)
 
+    def test_prepared_executor_begins_replacement_under_one_lease(self):
+        self.setup_journal('setup-prepared')
+        result = self.invoke('install-begin')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('result:exchanged:phase=replacementPending:revision=1:selected=10',
+                      result.stdout)
+        self.assertEqual((self.apps / 'drain-marker').read_text(), '1')
+        self.assertEqual(self.code_pins(self.destination / 'ProxyPilot.app'), self.b)
+        self.assertEqual((self.destination / 'Other.app/sentinel').read_text(), 'untouched')
+
     def test_selected_desired_off_completes_without_starting_helper(self):
         self.setup_journal('setup-selected')
         result = self.invoke('finalize-off')

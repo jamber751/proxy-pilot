@@ -232,6 +232,13 @@ final class ProxyModel:''' + model
                 try: self.package('update', success=False, prepare=False)
                 finally: path.write_bytes(original)
 
+    def test_update_entry_uses_only_joint_preparation_and_executor_handoff(self):
+        source = (HELPER / 'VPNInstallationEntry.swift').read_text()
+        self.assertIn('VPNJointUpdatePreparation.prepare(', source)
+        self.assertIn('VPNReplacementExecutorHandoff.launchPrepared(', source)
+        self.assertNotIn('VPNInstaller.update(', source)
+        self.assertNotIn('Process()', source)
+
     def test_prepare_update_never_overwrites_or_accepts_bad_signature(self):
         previous = self.work / 'previous.manifest'
         previous.write_text((self.payload / 'vpn-release.manifest').read_text()

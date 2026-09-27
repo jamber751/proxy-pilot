@@ -39,6 +39,27 @@ enum VPNJointApplicationReplacement {
                            runtime: { try VPNLaunchdRuntime.system(storageDirectory: directory) })
     }
 
+    /// Candidate B may hand a still-prepared transaction to exact executor A.
+    /// A validates both protected copies first; the same service lease then
+    /// covers drain, prepared→replacementPending and every replacement step.
+    static func installPreparedOrPendingApplication(
+        applicationDirectory: Int32, transactionID: UUID,
+        expectedRevision: UInt64, authority: VPNReleaseAuthority) throws
+        -> VPNProtectedApplicationSwap.Outcome {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNInstallerError.requiresRoot
+        }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(applicationDirectory)
+        let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: false)
+        defer { close(directory) }
+        return try perform(
+            applicationDirectory: applicationDirectory,
+            transactionID: transactionID, expectedRevision: expectedRevision,
+            authority: authority, directory: directory, testPolicy: false,
+            destination: nil, installDestination: true, beginPrepared: true,
+            runtime: { try VPNLaunchdRuntime.system(storageDirectory: directory) })
+    }
+
     #if VPN_INSTALLER_TESTING && VPN_APPLICATION_SWAP_TESTING
     static func testExchangePreparedCopies(applicationDirectory: Int32, transactionID: UUID,
                                            expectedRevision: UInt64, authority: VPNReleaseAuthority,
@@ -70,6 +91,25 @@ enum VPNJointApplicationReplacement {
                            testPolicy: true, destination: destination, installDestination: true,
                            runtime: { try runtime(directory) })
     }
+
+    static func testInstallPreparedOrPendingApplication(
+        applicationDirectory: Int32, destination: Int32,
+        transactionID: UUID, expectedRevision: UInt64,
+        authority: VPNReleaseAuthority, base: Int32,
+        runtime: (Int32) throws -> VPNActivationRuntime) throws
+        -> VPNProtectedApplicationSwap.Outcome {
+        guard getuid() != 0, geteuid() == getuid() else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        let directory = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
+        defer { close(directory) }
+        return try perform(
+            applicationDirectory: applicationDirectory,
+            transactionID: transactionID, expectedRevision: expectedRevision,
+            authority: authority, directory: directory, testPolicy: true,
+            destination: destination, installDestination: true,
+            beginPrepared: true, runtime: { try runtime(directory) })
+    }
     #endif
     #endif
 
@@ -77,6 +117,7 @@ enum VPNJointApplicationReplacement {
                                 expectedRevision: UInt64, authority: VPNReleaseAuthority,
                                 directory: Int32, testPolicy: Bool,
                                 destination: Int32?, installDestination: Bool = false,
+                                beginPrepared: Bool = false,
                                 runtime: () throws -> VPNActivationRuntime) throws -> VPNProtectedApplicationSwap.Outcome {
         // Two distinct locks, always service first, then app namespace.
         var serviceInfo = stat(), applicationInfo = stat()
@@ -88,14 +129,11 @@ enum VPNJointApplicationReplacement {
         defer { lease.release() }
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
 
-        func context() throws -> VPNUpdateJournalSnapshot {
+        func authenticated(_ revision: UInt64) throws -> VPNUpdateJournalSnapshot {
             try lease.check()
             guard let journal = try store.loadUpdateJournal() else { throw VPNReleaseStoreError.invalidUpdateJournal }
-            guard journal.transactionID == transactionID, journal.revision == expectedRevision else {
+            guard journal.transactionID == transactionID, journal.revision == revision else {
                 throw VPNReleaseStoreError.staleRevision
-            }
-            guard journal.phase == .replacementPending, journal.recovery == .inspectApplication else {
-                throw VPNReleaseStoreError.invalidUpdateJournal
             }
             #if VPN_INSTALLER_TESTING && VPN_APPLICATION_SWAP_TESTING
             if testPolicy {
@@ -112,9 +150,21 @@ enum VPNJointApplicationReplacement {
             return journal
         }
 
-        let initial = try context()
+        let initial = try authenticated(expectedRevision)
+        let beginsPrepared = initial.phase == .prepared
+            && initial.recovery == .canCancelOrReplace && beginPrepared
+        guard beginsPrepared || (initial.phase == .replacementPending
+                && initial.recovery == .inspectApplication) else {
+            throw VPNReleaseStoreError.invalidUpdateJournal
+        }
+        var replacementPending = !beginsPrepared
+        var activeRevision = initial.revision
         func recheck() throws {
-            let fresh = try context()
+            let fresh = try authenticated(activeRevision)
+            let phaseMatches = replacementPending
+                ? fresh.phase == .replacementPending && fresh.recovery == .inspectApplication
+                : fresh.phase == .prepared && fresh.recovery == .canCancelOrReplace
+            guard phaseMatches else { throw VPNReleaseStoreError.invalidUpdateJournal }
             guard fresh.previous.ownerUserID == initial.previous.ownerUserID,
                   fresh.previous.release.isSameRelease(as: initial.previous.release),
                   fresh.candidate.release.isSameRelease(as: initial.candidate.release) else {
@@ -125,7 +175,7 @@ enum VPNJointApplicationReplacement {
             try lease.check()
             guard let fresh = try store.loadUpdateJournal(),
                   fresh.transactionID == initial.transactionID,
-                  fresh.revision == initial.revision + 1,
+                  fresh.revision == activeRevision + 1,
                   fresh.phase == .selected,
                   fresh.recovery == .recoverCandidate,
                   fresh.previous.ownerUserID == initial.previous.ownerUserID,
@@ -139,14 +189,14 @@ enum VPNJointApplicationReplacement {
             try recheck()
             _ = try store.selectUpdateCandidate(
                 transactionID: initial.transactionID,
-                expectedRevision: initial.revision)
+                expectedRevision: activeRevision)
             try selectedContext()
         }
         func completedContext() throws {
             try lease.check()
             guard let fresh = try store.loadUpdateJournal(),
                   fresh.transactionID == initial.transactionID,
-                  fresh.revision == initial.revision + 2,
+                  fresh.revision == activeRevision + 2,
                   fresh.phase == .completed,
                   fresh.recovery == .completed,
                   fresh.candidate.release.isSameRelease(as: initial.candidate.release) else {
@@ -168,6 +218,18 @@ enum VPNJointApplicationReplacement {
                 try created.stopAndDrain(deadline: deadline)
                 guard DispatchTime.now().uptimeNanoseconds < deadline else { throw VPNLaunchdError.timeout }
                 drained = true
+                if !replacementPending {
+                    let advanced = try store.markUpdateReplacementPending(
+                        transactionID: initial.transactionID,
+                        expectedRevision: activeRevision)
+                    guard advanced.phase == .replacementPending,
+                          advanced.recovery == .inspectApplication,
+                          advanced.revision == activeRevision + 1 else {
+                        throw VPNReleaseStoreError.invalidUpdateJournal
+                    }
+                    activeRevision = advanced.revision
+                    replacementPending = true
+                }
             }
             _ = adapter
             try recheck()
@@ -267,13 +329,13 @@ enum VPNJointApplicationReplacement {
                 _ = try VPNSelectedCandidateFinalizer.finish(
                     store: store, runtime: adapter, lease: lease, budget: budget,
                     transactionID: initial.transactionID,
-                    expectedRevision: initial.revision + 1,
+                    expectedRevision: activeRevision + 1,
                     candidate: initial.candidate)
                 try completedContext()
                 try VPNSelectedCandidateRecovery.retireCompleted(
                     store: store, lease: lease,
                     transactionID: initial.transactionID,
-                    expectedRevision: initial.revision + 2,
+                    expectedRevision: activeRevision + 2,
                     candidate: initial.candidate)
             }
             return outcome == .exchanged || destinationOutcome == .exchanged

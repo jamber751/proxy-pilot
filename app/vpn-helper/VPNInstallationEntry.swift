@@ -53,21 +53,40 @@ enum VPNInstallationEntry {
             if action == .verifyUpdate {
                 let joint = try VPNJointUpdatePayload.load(
                     directory: packageDirectory, version: version, authority: authority)
+                let policy = try geteuid() == 0
+                    ? joint.candidate.release.installerPolicy()
+                    : joint.candidate.release.clientPolicy(forTrustedUserID: geteuid())
                 try VPNPeerAuthentication.validateCurrentProcess(
-                    policy: joint.candidate.release.clientPolicy(forTrustedUserID: geteuid()))
+                    policy: policy)
                 print("VPN joint update package verified.")
                 return 0
             }
             if action == .update {
+                let package = open(packageDirectory.path,
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard package >= 0 else {
+                    throw VPNInstallationPayloadError.unsafePackage
+                }
+                defer { close(package) }
                 let joint = try VPNJointUpdatePayload.load(
-                    directory: packageDirectory, version: version, authority: authority)
-                try VPNPeerAuthentication.validateCurrentProcess(
-                    policy: joint.candidate.release.installerPolicy())
-                // The legacy helper-only update would select B while the
-                // installed application is still A. Keep this fixed entry
-                // fail-closed until the joint staging/executor handoff owns
-                // the complete replacement transaction.
-                throw VPNInstallerError.coordinatedUpdateRequired
+                    inTrustedDirectory: package, version: version,
+                    authority: authority)
+                let prepared = try VPNJointUpdatePreparation.prepare(
+                    candidateDirectory: package, payload: joint,
+                    authority: authority)
+                let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(
+                    create: false)
+                defer { close(update) }
+                _ = try VPNReplacementExecutorHandoff.launchPrepared(
+                    inTrustedDirectory: update,
+                    release: joint.previous,
+                    request: VPNExecutorHandoffRequest(
+                        transactionID: prepared.journal.transactionID,
+                        expectedRevision: prepared.journal.revision),
+                    childPolicy: joint.previous.installerPolicy(),
+                    parentPolicy: joint.candidate.release.installerPolicy())
+                print("VPN support and application updated.")
+                return 0
             }
             let payload = try VPNInstallationPayload.load(directory: packageDirectory,
                                                             version: version, authority: authority)

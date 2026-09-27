@@ -18,18 +18,25 @@ enum VPNReplacementExecutorEntry {
                 defer { close(directory) }
                 let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory,
                                                 authority: authority)
-                guard let loaded = try store.loadUpdateJournal(),
-                      loaded.phase == .replacementPending,
-                      loaded.recovery == .inspectApplication else {
+                guard let loaded = try store.loadUpdateJournal() else {
+                    throw VPNReleaseStoreError.invalidUpdateJournal
+                }
+                let prepared = loaded.phase == .prepared
+                    && loaded.recovery == .canCancelOrReplace
+                let pending = loaded.phase == .replacementPending
+                    && loaded.recovery == .inspectApplication
+                guard prepared || pending else {
                     throw VPNReleaseStoreError.invalidUpdateJournal
                 }
                 journal = loaded
             }
-            let policy = try journal.previous.release.installerPolicy()
+            let selfPolicy = try journal.previous.release.installerPolicy()
+            let parentPolicy = try journal.candidate.release.installerPolicy()
             return VPNReplacementExecutorHandoff.runChildIfRequested(
-                arguments: arguments, selfPolicy: policy, parentPolicy: policy,
+                arguments: arguments, selfPolicy: selfPolicy,
+                parentPolicy: parentPolicy,
                 operation: { request, applicationDirectory in
-                    try VPNJointApplicationReplacement.installPreparedApplication(
+                    try VPNJointApplicationReplacement.installPreparedOrPendingApplication(
                         applicationDirectory: applicationDirectory,
                         transactionID: request.transactionID,
                         expectedRevision: request.expectedRevision,

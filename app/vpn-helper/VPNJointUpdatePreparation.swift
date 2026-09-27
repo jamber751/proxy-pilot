@@ -97,11 +97,13 @@ enum VPNJointUpdatePreparation {
             throw VPNJointUpdatePreparationError.invalidState
         }
 
-        func existingPrepared() throws -> VPNUpdateJournalSnapshot? {
+        func existingJournal() throws -> VPNUpdateJournalSnapshot? {
             guard let journal = try store.loadUpdateJournal() else { return nil }
-            guard journal.phase == .prepared,
-                  journal.recovery == .canCancelOrReplace,
-                  journal.revision == 0,
+            let prepared = journal.phase == .prepared
+                && journal.recovery == .canCancelOrReplace && journal.revision == 0
+            let pending = journal.phase == .replacementPending
+                && journal.recovery == .inspectApplication && journal.revision == 1
+            guard prepared || pending,
                   journal.previous.ownerUserID == current.ownerUserID,
                   journal.previous.release.isSameRelease(as: payload.previous),
                   journal.candidate.release.isSameRelease(as: payload.candidate.release),
@@ -112,7 +114,7 @@ enum VPNJointUpdatePreparation {
             return journal
         }
 
-        let before = try existingPrepared()
+        let before = try existingJournal()
         try lease.check()
         let staging = try stage(current.ownerUserID)
         try checkpoint("afterApplicationStaging")
@@ -139,7 +141,7 @@ enum VPNJointUpdatePreparation {
         let executor = try provision()
         try checkpoint("afterExecutor")
         try lease.check()
-        guard let final = try existingPrepared(),
+        guard let final = try existingJournal(),
               final.transactionID == journal.transactionID,
               final.revision == journal.revision else {
             throw VPNJointUpdatePreparationError.commitUncertain

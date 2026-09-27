@@ -96,16 +96,21 @@ VPN-компонента. Защищённый content-addressed helper B теп
   публикует A/B slots, durable update journal и executor A. Падение после app
   staging или journal продолжает только вперёд; повтор не переписывает готовые
   объекты. 4/4 coordinator и 7/7 staging-сценариев прошли.
+- [x] Fixed root update entry подключён к этой фазе и descriptor-only handoff:
+  package B не меняет selector сам, а запускает protected executor A. A под одной
+  service lease валидирует slots, drain-ит helper, фиксирует
+  `prepared→replacementPending` и продолжает существующий full replacement,
+  live-B/readiness/finalizer. Joint suite 19/19, preparation 5/5.
 - [x] Проверки: launchd + joint 30/30, installer 36/36, package 10 обязательных
   из 10 (3 внешних engine-сценария пропущены), admission 10/10; Universal helper
   собран для arm64/x86_64 и прошёл strict codesign.
 - [x] Новый staging: 7/7 сфокусированных сценариев; signing tool 13/13;
-  package-композиция 13/13 обязательных сценариев, 3 внешних engine-сценария
+  package-композиция 14/14 обязательных сценариев, 3 внешних engine-сценария
   пропущены.
-- [ ] Следом — подключить staging к реальному updater/package handoff, не передавая
-  пути через IPC. После этого отдельной транзакцией безопасно удалить retained A,
-  executor и destination-stage только после подтверждённой B/readiness и retirement.
-  До завершения связки обычный updater намеренно ставит veto.
+- [ ] Следом — root-приёмка полного package handoff на одноразовой установленной
+  копии и crash/reboot границах; затем отдельной транзакцией безопасно удалить
+  retained A, executor и destination-stage только после подтверждённой
+  B/readiness и retirement. Обычный Sparkle updater пока намеренно ставит veto.
 
 Продолжение 20 сентября — **атомарная подготовка защищённого исполнителя A**.
 Копия создаётся только из уже проверенного `current` внутри приватного

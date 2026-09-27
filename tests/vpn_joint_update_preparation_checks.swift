@@ -109,6 +109,13 @@ import Foundation
                 }
             }
             let outcome: String
+            if operation == "mark-pending" {
+                let pending = try store.markUpdateReplacementPending(
+                    transactionID: result.journal.transactionID,
+                    expectedRevision: result.journal.revision)
+                print("pending:\(pending.revision)")
+                return
+            }
             switch result.outcome {
             case .prepared: outcome = "prepared"
             case .resumed: outcome = "resumed"

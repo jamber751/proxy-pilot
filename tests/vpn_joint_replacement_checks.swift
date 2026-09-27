@@ -177,6 +177,14 @@ import Foundation
             if operation == "production" {
                 outcome = try VPNJointApplicationReplacement.exchangePreparedCopies(
                     applicationDirectory: appFD, transactionID: id, expectedRevision: revision, authority: authority)
+            } else if operation == "install-begin" {
+                outcome = try VPNJointApplicationReplacement.testInstallPreparedOrPendingApplication(
+                    applicationDirectory: appFD, destination: destinationFD,
+                    transactionID: id, expectedRevision: revision,
+                    authority: authority, base: base) { directory in
+                        try Data("factory".utf8).write(to: URL(fileURLWithPath: apps + "/factory-marker"))
+                        return Runtime(operation, directory, apps)
+                    }
             } else if operation.hasPrefix("install") {
                 outcome = try VPNJointApplicationReplacement.testInstallPreparedApplication(
                     applicationDirectory: appFD, destination: destinationFD,

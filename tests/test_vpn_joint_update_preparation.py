@@ -116,6 +116,11 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
         self.assertFalse((self.update / 'executor').exists())
         self.assert_result(output='resumed:0')
 
+    def test_pending_retry_revalidates_all_prepared_material(self):
+        self.assert_result('mark-pending', output='pending:1')
+        self.assert_result(output='alreadyPrepared:1')
+        self.assertTrue((self.update / 'executor/ProxyPilot.app').is_dir())
+
     def test_service_lock_and_production_root_guard(self):
         self.assert_rejected('busy', 'busy')
         self.assert_rejected('production', 'requiresRoot')

@@ -58,11 +58,13 @@ not entered, and no paths, owner IDs or shell commands are accepted as arguments
 - `--vpn-support-install`: root only, refuses an existing installation; the
   initial owner is the active local console user, not an environment variable.
 - `--vpn-support-update`: root only, preserves the owner and enforces the current
-  sequence and signed forward transition. The legacy helper-only mutation is now
+  sequence and signed forward transition. The legacy helper-only mutation is
   disabled because it could select helper B while application A remained
-  installed. The package verifies the complete joint input, then currently fails
-  closed until the protected A executor handoff is connected. Do not publish an
-  update package as functional yet.
+  installed. The complete joint input is staged without stopping the service;
+  candidate B then mutually authenticates and hands control to protected executor
+  A. A owns drain, application replacement, live-B proof, helper readiness and
+  forward recovery. This path compiles and passes disposable tests, but has not
+  had an authorized real-system install/reboot acceptance; do not publish it yet.
 - `--vpn-support-remove`: root only, stops the exact service and removes only
   recognized files; unexpected content aborts removal.
   Recognized content-addressed old engine versions are included in that cleanup.
