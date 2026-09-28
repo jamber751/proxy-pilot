@@ -45,6 +45,12 @@ enum VPNUpdateJournalChecks {
                     transitionPayload: transition, transitionSignature: tsig, expectedSequence: 10))
             case "load":
                 if let s = try store.loadUpdateJournal() { show(s) } else { print("journal=none") }
+            case "load-selected":
+                print("selected=\(try store.loadDeployment().release.sequence)")
+            case "load-cleanup":
+                if let s = try store.loadUpdateCleanupReceipt() {
+                    print("cleanup=\(s.phase.rawValue) revision=\(s.revision) id=\(s.transactionID.uuidString) owner=\(s.ownerUserID) previous=\(s.previous.release.sequence) selected=\(s.candidate.release.sequence)")
+                } else { print("cleanup=none") }
             case "pending": show(try store.markUpdateReplacementPending(transactionID: id!, expectedRevision: revision))
             case "select": show(try store.selectUpdateCandidate(transactionID: id!, expectedRevision: revision))
             case "complete": show(try store.completeUpdateJournal(transactionID: id!, expectedRevision: revision))

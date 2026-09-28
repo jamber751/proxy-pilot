@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -183,11 +184,26 @@ class VPNUpdateJournalTests(unittest.TestCase):
         self.run_journal("pending", tid=tid, rev=0, ok=True)
         self.assertIn("inspectApplication", self.run_journal("load", ok=True).stdout)
         self.run_journal("select", tid=tid, rev=1, ok=True)
-        self.assertIn("selected=20", self.run_journal("load", ok=True).stdout)
+        self.assertIn("selected=20", self.run_journal("load-selected", ok=True).stdout)
         self.run_journal("complete", tid=tid, rev=2, ok=True)
         self.assertIn("updateInProgress", self.run_journal("ordinary-prepare").stdout)
         self.run_journal("retire", tid=tid, rev=3, ok=True)
         self.assertIn("journal=none", self.run_journal("load", ok=True).stdout)
+        receipt = self.run_journal("load-cleanup", ok=True).stdout
+        self.assertIn("cleanup=completed revision=3", receipt)
+        self.assertIn(f"id={tid}", receipt)
+        self.assertIn("owner=501 previous=10 selected=20", receipt)
+        # Read-only selected state remains available, but every deployment or
+        # joint-update mutation waits for a future cleanup coordinator.
+        self.assertIn("selected=20", self.run_journal("load-selected", ok=True).stdout)
+        for op in (
+            "ordinary-commit",
+            "ordinary-prepare",
+            "metadata-accept",
+            "bootstrap-again",
+            "prepare",
+        ):
+            self.assertIn("cleanupPending", self.run_journal(op).stdout)
 
     def test_cancel_terminal_blocks_until_retired(self):
         tid = self.prepare()
@@ -339,6 +355,116 @@ class VPNUpdateJournalTests(unittest.TestCase):
         j.symlink_to(target)
         self.assertIn("unsafeStorage", self.run_journal("load").stdout)
         self.assertEqual(target.read_bytes(), b"keep")
+
+    def test_completed_retirement_persists_receipt_before_unlink_and_retries(self):
+        tid = self.prepare()
+        self.run_journal("pending", tid=tid, rev=0, ok=True)
+        self.run_journal("select", tid=tid, rev=1, ok=True)
+        self.run_journal("complete", tid=tid, rev=2, ok=True)
+        terminal = json.loads((self.dir / "update.json").read_bytes())
+
+        # A crash before the cleanup rename leaves only the terminal journal.
+        r = self.run_journal(
+            "retire", checkpoint="cleanup.json:before-rename", tid=tid, rev=3
+        )
+        self.assertEqual(r.returncode, 86)
+        self.assertTrue((self.dir / "update.json").exists())
+        self.assertFalse((self.dir / "cleanup.json").exists())
+
+        # A crash after the durable receipt commit leaves both records. A retry
+        # verifies their exact equality and finishes the ordered unlink.
+        r = self.run_journal(
+            "retire", checkpoint="cleanup.json:after-commit", tid=tid, rev=3
+        )
+        self.assertEqual(r.returncode, 86)
+        self.assertTrue((self.dir / "update.json").exists())
+        self.assertTrue((self.dir / "cleanup.json").exists())
+        self.assertEqual(json.loads((self.dir / "cleanup.json").read_bytes())["journal"], terminal)
+        self.run_journal("retire", tid=tid, rev=3, ok=True)
+        self.assertFalse((self.dir / "update.json").exists())
+        self.assertTrue((self.dir / "cleanup.json").exists())
+        attributes = (self.dir / "cleanup.json").stat()
+        self.assertEqual(attributes.st_uid, os.geteuid())
+        self.assertEqual(stat.S_IMODE(attributes.st_mode), 0o600)
+        # Retrying after unlink is also successful and re-syncs the directory.
+        self.run_journal("retire", tid=tid, rev=3, ok=True)
+
+    def test_completed_retirement_retry_after_unlink_checkpoint(self):
+        tid = self.prepare()
+        self.run_journal("pending", tid=tid, rev=0, ok=True)
+        self.run_journal("select", tid=tid, rev=1, ok=True)
+        self.run_journal("complete", tid=tid, rev=2, ok=True)
+        r = self.run_journal(
+            "retire", checkpoint="update.json:after-unlink", tid=tid, rev=3
+        )
+        self.assertEqual(r.returncode, 86)
+        self.assertFalse((self.dir / "update.json").exists())
+        self.assertTrue((self.dir / "cleanup.json").exists())
+        self.run_journal("retire", tid=tid, rev=3, ok=True)
+
+    def test_cleanup_receipt_is_canonical_and_revalidates_all_evidence(self):
+        tid = self.prepare()
+        self.run_journal("pending", tid=tid, rev=0, ok=True)
+        self.run_journal("select", tid=tid, rev=1, ok=True)
+        self.run_journal("complete", tid=tid, rev=2, ok=True)
+        self.run_journal("retire", tid=tid, rev=3, ok=True)
+        receipt = self.dir / "cleanup.json"
+        original = receipt.read_bytes()
+
+        def canonical(value):
+            encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+            return encoded.replace("/", "\\/").encode()
+
+        self.assertEqual(canonical(json.loads(original)), original)
+        mutations = []
+        extra = json.loads(original)
+        extra["unknown"] = 1
+        mutations.append(canonical(extra))
+        wrong_owner = json.loads(original)
+        wrong_owner["journal"]["owner"] = 502
+        mutations.append(canonical(wrong_owner))
+        bad_edge = json.loads(original)
+        raw = bytearray(base64.b64decode(bad_edge["journal"]["transitionSignature"]))
+        raw[0] ^= 1
+        bad_edge["journal"]["transitionSignature"] = base64.b64encode(raw).decode()
+        mutations.append(canonical(bad_edge))
+        bad_candidate = json.loads(original)
+        raw = bytearray(base64.b64decode(bad_candidate["journal"]["candidateSignature"]))
+        raw[0] ^= 1
+        bad_candidate["journal"]["candidateSignature"] = base64.b64encode(raw).decode()
+        mutations.append(canonical(bad_candidate))
+        wrong_phase = json.loads(original)
+        wrong_phase["journal"].update(phase="selected", revision=2)
+        mutations.append(canonical(wrong_phase))
+        for damaged in mutations:
+            receipt.write_bytes(damaged)
+            self.assertIn("invalidCleanupReceipt", self.run_journal("load-cleanup").stdout)
+            # Runtime/read-only selection is intentionally not gated by cleanup.
+            self.assertIn("selected=20", self.run_journal("load-selected", ok=True).stdout)
+            self.assertIn("invalidCleanupReceipt", self.run_journal("ordinary-prepare").stdout)
+            receipt.write_bytes(original)
+
+        # Stored A and B artifacts are part of receipt validation.
+        for helper in (self.helpers[1], self.helpers[2]):
+            artifact = self.dir / ("helper-" + hashlib.sha256(helper.read_bytes()).hexdigest())
+            saved = artifact.read_bytes()
+            artifact.write_bytes(b"bad")
+            self.assertIn("invalidCleanupReceipt", self.run_journal("load-cleanup").stdout)
+            artifact.write_bytes(saved)
+
+        # The receipt is historical evidence only when exact B remains selected.
+        selected = self.dir / "release.json"
+        selected_b = selected.read_bytes()
+        evidence = json.loads(original)["journal"]
+        selected_a = {
+            "schema": 2,
+            "owner": evidence["owner"],
+            "payload": evidence["previousPayload"],
+            "signature": evidence["previousSignature"],
+        }
+        selected.write_bytes(canonical(selected_a))
+        self.assertIn("invalidCleanupReceipt", self.run_journal("load-cleanup").stdout)
+        selected.write_bytes(selected_b)
 
 
 if __name__ == "__main__":

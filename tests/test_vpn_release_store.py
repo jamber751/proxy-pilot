@@ -94,6 +94,14 @@ class VPNReleaseStoreTests(unittest.TestCase):
         self.expect('conflict', 'rejected:conflictingRelease', sequence=20, expected=20)
         self.expect('load', 'sequence=20 owner=501')
 
+    def test_cleanup_receipt_does_not_block_read_only_state_but_fails_mutations_closed(self):
+        self.seed()
+        receipt = self.directory / 'cleanup.json'
+        receipt.write_bytes(b'corrupt')
+        receipt.chmod(0o600)
+        self.expect('load', 'sequence=10 owner=501')
+        self.expect('upgrade', 'rejected:invalidCleanupReceipt', sequence=20)
+
     def test_bad_signature_keeps_previous_bytes(self):
         self.seed()
         before = (self.directory / 'release.json').read_bytes()
