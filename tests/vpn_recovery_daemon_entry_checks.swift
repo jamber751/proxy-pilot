@@ -107,6 +107,10 @@ enum VPNRecoveryDaemonEntryTestHarness {
             transactionID: prepared.transactionID, expectedRevision: prepared.revision)
         let selected = try store.selectUpdateCandidate(
             transactionID: pending.transactionID, expectedRevision: pending.revision)
+        if arguments[1] == "fixture-prepare-off" {
+            let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
+            try budget.recordManualOff()
+        }
         print("prepared:selected:\(selected.revision)")
         return 0
     }
@@ -168,6 +172,14 @@ enum VPNRecoveryDaemonEntryTestHarness {
                 try VPNLaunchdRuntime.testUserDomain(
                     label: context.helperLabel, plistDirectory: context.plists,
                     storageDirectory: service)
+            }, completeCleanup: { _, _ in
+                let injection = context.storage.appendingPathComponent("inject-cleanup-once")
+                if FileManager.default.fileExists(atPath: injection.path) {
+                    try FileManager.default.removeItem(at: injection)
+                    throw VPNReleaseStoreError.writeFailed
+                }
+                try Data("complete".utf8).write(to:
+                    context.storage.appendingPathComponent("cleanup-complete"))
             }, removeRecoveryJob: { service, deadline in
                 let recovery = try VPNRecoveryLaunchdJob.testUserDomain(
                     label: context.recoveryLabel, plistDirectory: context.plists,
@@ -180,7 +192,7 @@ enum VPNRecoveryDaemonEntryTestHarness {
         guard arguments.count >= 2 else { return nil }
         do {
             switch arguments[1] {
-            case "fixture-prepare": return try prepare(arguments)
+            case "fixture-prepare", "fixture-prepare-off": return try prepare(arguments)
             case "fixture-arm": return try arm(arguments, holdLease: false)
             case "fixture-arm-held": return try arm(arguments, holdLease: true)
             case "serve": return try serve(arguments)

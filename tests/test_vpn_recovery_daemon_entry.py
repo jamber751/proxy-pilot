@@ -125,7 +125,10 @@ class VPNRecoveryDaemonEntryTests(unittest.TestCase):
         self.recovery_label = f'kz.documentolog.proxypilot.vpn-recovery.e2e-{suffix}'
         self.addCleanup(self.boot_out, self.helper_label)
         self.addCleanup(self.boot_out, self.recovery_label)
-        prepared = self.run_helper('fixture-prepare', str(self.storage),
+        prepare_action = ('fixture-prepare-off'
+            if self._testMethodName == 'test_retired_cleanup_transient_failure_retries_and_disarms'
+            else 'fixture-prepare')
+        prepared = self.run_helper(prepare_action, str(self.storage),
             self.previous_pins['arm64'], self.previous_pins['x86_64'],
             self.candidate_pins['arm64'], self.candidate_pins['x86_64'],
             self.helper_pins['arm64'], self.helper_pins['x86_64'])
@@ -230,6 +233,40 @@ class VPNRecoveryDaemonEntryTests(unittest.TestCase):
         self.wait_recovered(timeout=30)
         self.assert_terminal_state()
         self.wait_recovery_cleanup()
+
+    def test_retired_cleanup_transient_failure_retries_and_disarms(self):
+        injection = self.storage / 'inject-cleanup-once'
+        injection.write_text('fail once')
+        armed = self.run_helper('fixture-arm', str(self.storage))
+        self.assertEqual(armed.stdout.strip(), 'armed', armed.stdout + armed.stderr)
+        deadline = time.monotonic() + 8
+        saw_temporary_failure = False
+        state = ''
+        while time.monotonic() < deadline:
+            state = subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.recovery_label}'],
+                                   capture_output=True, text=True, timeout=60).stdout
+            if 'last exit code = 75' in state:
+                saw_temporary_failure = True
+                break
+            time.sleep(0.05)
+        self.assertTrue(saw_temporary_failure, state)
+        self.assertFalse((self.storage / 'update.json').exists())
+        self.assertFalse(injection.exists())
+        self.assertFalse((self.storage / 'cleanup-complete').exists())
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            if ((self.storage / 'cleanup-complete').exists()
+                    and not self.loaded(self.recovery_label)):
+                break
+            time.sleep(0.05)
+        self.assertTrue((self.storage / 'cleanup-complete').exists())
+        self.assertFalse(self.loaded(self.recovery_label))
+        self.assertFalse((self.plists / f'{self.recovery_label}.plist').exists())
+        envelope = json.loads((self.storage / 'release.json').read_text())
+        self.assertIn('sequence=11\n', base64.b64decode(envelope['payload']).decode())
+        budget = json.loads((self.storage / 'activation.json').read_text())
+        self.assertEqual((budget['desired'], budget['failures']), (False, 0))
+        self.assertFalse(self.loaded(self.helper_label))
 
 
 if __name__ == '__main__':

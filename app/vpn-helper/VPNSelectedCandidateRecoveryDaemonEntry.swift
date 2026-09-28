@@ -7,6 +7,7 @@ import Foundation
 /// path in /Applications, the helper is already rooted in the protected store.
 /// The role accepts no transaction, release, owner, path or desired state.
 enum VPNSelectedCandidateRecoveryDaemonEntry {
+    private enum EntryError: Error { case transientRetiredMaintenance }
     static func runIfRequested(arguments: [String]) -> Int32? {
         guard requested(arguments) else { return nil }
         guard getuid() == 0, geteuid() == 0 else { return 77 }
@@ -78,13 +79,15 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
                 policy: currentPolicy(selected.release))
             let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
             defer { lease.release() }
-            try completeCleanup(directory, lease)
-            try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
-                store: store, lease: lease, selected: selected) {
-                    try removeRecoveryJob(
-                        directory,
-                        DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
-                }
+            try retiredMaintenance {
+                try completeCleanup(directory, lease)
+                try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                    store: store, lease: lease, selected: selected) {
+                        try removeRecoveryJob(
+                            directory,
+                            DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                    }
+            }
             return 0
         }
         let armed = journal.phase == .replacementPending && journal.recovery == .inspectApplication
@@ -122,19 +125,60 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
             journal: journal, testPolicy: testPolicy,
             retiredCleanup: { outcome in
                 guard outcome == .remainedOff else { return }
-                try completeCleanup(directory, lease)
-                try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
-                    store: store, lease: lease, selected: journal.candidate) {
-                        try removeRecoveryJob(
-                            directory,
-                            DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
-                    }
+                try retiredMaintenance {
+                    try completeCleanup(directory, lease)
+                    try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                        store: store, lease: lease, selected: journal.candidate) {
+                            try removeRecoveryJob(
+                                directory,
+                                DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                        }
+                }
             })
         return 0
     }
 
+    /// Once the transaction is durably retired, an uncertain maintenance
+    /// failure must keep the recovery job retryable. Authenticated evidence
+    /// mismatches remain permanent refusals and must not create a retry loop.
+    private static func retiredMaintenance(_ work: () throws -> Void) throws {
+        do { try work() }
+        catch let error as VPNSelectedCandidateRecoveryError {
+            throw error
+        } catch let error as VPNReleaseStoreError {
+            switch error {
+            case .invalidState, .deploymentRequired, .invalidUpdateJournal,
+                 .invalidCleanupReceipt, .invalidUpdatePreparation,
+                 .alreadyInitialized, .staleRevision:
+                throw error
+            default:
+                throw EntryError.transientRetiredMaintenance
+            }
+        } catch let error as VPNDirectoryError {
+            switch error {
+            case .requiresRoot, .unsafeDirectory: throw error
+            case .unavailable, .syncUncertain: throw EntryError.transientRetiredMaintenance
+            }
+        } catch let error as VPNJointUpdateCleanupError {
+            switch error {
+            case .requiresRoot, .unsafeStorage, .invalidLayout: throw error
+            case .commitUncertain: throw EntryError.transientRetiredMaintenance
+            }
+        } catch is VPNLaunchdError {
+            throw EntryError.transientRetiredMaintenance
+        } catch let error as VPNReleaseAuthorizationError {
+            throw error
+        } catch let error as VPNStagedApplicationError {
+            throw error
+        } catch {
+            throw EntryError.transientRetiredMaintenance
+        }
+    }
+
     private static func status(_ error: Error) -> Int32 {
         switch error {
+        case EntryError.transientRetiredMaintenance:
+            return 75
         case VPNLifecycleOwnershipError.busy:
             return 75
         case VPNActivationBudgetError.turnedOff,
