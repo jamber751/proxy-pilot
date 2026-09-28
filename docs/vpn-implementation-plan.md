@@ -2420,3 +2420,22 @@ DNS и VPN-туннель в этой приёмке не включались.
 fixed layout в root-private inbox, проверяет полный signed переход A→B и передаёт
 его существующему journal/recovery pipeline. URL, shell, argv и произвольные пути
 через IPC не передаются.
+
+### Продолжение 1.5y — descriptor-only broker boundary (28 сентября)
+
+- [x] Зафиксирован бинарный протокол из двух операций: submit передаёт только
+  expected source sequence, а candidate directory приходит отдельным file
+  descriptor; status содержит только bounded state и числовые sequence/revision.
+- [x] Production boundary отклоняет отсутствующий/лишний descriptor, status с
+  аргументом, незнакомый frame, нелокальный или доступный на запись каталог,
+  ACL, symlink/hardlink, лишнее имя и неполный fixed layout.
+- [x] Read-only authorization root-private inbox повторно проверяет signed A→B,
+  durable selector/journal, exact app, helper и engine. Версия B выводится из
+  подписанного manifest и не принимается через IPC.
+- [x] Контракт и реальные descriptor checks проходят 10 сценариев; payload suite
+  проходит 24/24, typecheck всех VPN-компонентов — без ошибок.
+
+Broker пока намеренно не слушает endpoint и не меняет систему. Следующий узел:
+атомарно скопировать fixed layout из user-owned descriptor в новый root-private
+inbox, revalidate его этой границей, затем вызвать существующий preparation и
+executor handoff с идемпотентным status/receipt.

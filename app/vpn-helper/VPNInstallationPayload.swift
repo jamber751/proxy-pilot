@@ -172,4 +172,22 @@ struct VPNJointUpdatePayload {
             transitionSignature: transitionSignature,
             candidate: candidate, previous: previous, transition: transition)
     }
+
+    /// Broker-only loader: derives the candidate version from the signed
+    /// release description instead of accepting it over IPC. The ordinary
+    /// package path still binds the same value to the sealed app bundle version.
+    static func loadForBroker(inTrustedDirectory parent: Int32,
+                              authority: VPNReleaseAuthority) throws
+        -> VPNJointUpdatePayload {
+        try VPNInstallationPayload.check(parent, directory: true)
+        let manifest = try VPNInstallationPayload.read(
+            "vpn-release.manifest", in: parent,
+            limit: VPNReleaseAuthority.maximumPayloadBytes)
+        let signature = try VPNInstallationPayload.readSignature(
+            "vpn-release.sig", in: parent)
+        let candidate = try authority.verify(
+            payload: manifest, signature: signature, previous: nil)
+        return try load(inTrustedDirectory: parent, version: candidate.version,
+                        authority: authority)
+    }
 }
