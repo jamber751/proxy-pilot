@@ -113,6 +113,24 @@ import Foundation
             let service = try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
             defer { close(service) }
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+            if operation == "cleanup-retired" {
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+                defer { lease.release() }
+                let selected = try store.loadDeployment()
+                try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                    store: store, lease: lease, selected: selected) {
+                        do {
+                            let unexpected = try VPNLifecycleOwnership.acquire(
+                                inTrustedDirectory: service)
+                            unexpected.release()
+                            throw VPNSelectedCandidateRecoveryError.retirementUncertain
+                        } catch VPNLifecycleOwnershipError.busy { }
+                        try Data("retry".utf8).write(to: URL(
+                            fileURLWithPath: apps + "/recovery-cleanup-marker"))
+                    }
+                print("cleanup:retired")
+                return
+            }
             let journal = try store.loadUpdateJournal()!
             if operation.hasPrefix("recover-") {
                 let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
@@ -120,7 +138,22 @@ import Foundation
                 let budget = try VPNActivationBudget(trustedDirectoryDescriptor: service)
                 let outcome = try VPNSelectedCandidateRecovery.recover(
                     store: store, runtime: Runtime(operation, service, apps),
-                    lease: lease, budget: budget, journal: journal, testPolicy: true)
+                    lease: lease, budget: budget, journal: journal, testPolicy: true,
+                    retiredCleanup: { outcome in
+                        guard operation.contains("cleanup") else { return }
+                        do {
+                            let unexpected = try VPNLifecycleOwnership.acquire(
+                                inTrustedDirectory: service)
+                            unexpected.release()
+                            throw VPNSelectedCandidateRecoveryError.retirementUncertain
+                        } catch VPNLifecycleOwnershipError.busy { }
+                        guard try store.loadUpdateJournal() == nil else {
+                            throw VPNSelectedCandidateRecoveryError.retirementUncertain
+                        }
+                        let marker = outcome == .remainedOff ? "off" : "ready"
+                        try Data(marker.utf8).write(
+                            to: URL(fileURLWithPath: apps + "/recovery-cleanup-marker"))
+                    })
                 let selected = try store.loadDeployment()
                 print("recovered:\(outcome == .helperReady ? "ready" : "off"):journal=\((try store.loadUpdateJournal()) == nil ? "retired" : "present"):selected=\(selected.release.sequence)")
                 return

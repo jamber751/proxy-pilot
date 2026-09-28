@@ -31,13 +31,17 @@ enum VPNLaunchdChecks {
                                                     minimumSequence: 1, supportedProtocol: 1)
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: fd, authority: authority)
             if args[1] == "load" { print("selected:\(try store.loadDeployment().release.sequence)"); return }
-            if args[1] == "recovery-arm" || args[1] == "recovery-remove" {
+            if args[1] == "recovery-arm" || args[1] == "recovery-remove"
+                    || args[1] == "recovery-self-remove" {
                 let recovery = try VPNRecoveryLaunchdJob.testUserDomain(
                     label: label + ".recovery", plistDirectory: plists,
                     storageDirectory: fd)
                 if args[1] == "recovery-arm" {
                     try recovery.installAndArm(try store.loadDeployment(), deadline: deadline(20))
                     print("recovery:armed")
+                } else if args[1] == "recovery-self-remove" {
+                    try recovery.removeCurrent(deadline: deadline(20))
+                    print("recovery:self-removed")
                 } else {
                     try recovery.remove(deadline: deadline(20))
                     print("recovery:removed")

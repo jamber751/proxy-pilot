@@ -227,6 +227,28 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertEqual(result.stdout.strip(), 'recovered:off:journal=retired:selected=11')
         self.assertFalse((self.apps / 'start-marker').exists())
 
+    def test_desired_off_cleanup_runs_after_retirement_under_lifecycle_lease(self):
+        self.setup_journal('setup-selected')
+        result = self.invoke('recover-selected-off-cleanup')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.apps / 'recovery-cleanup-marker').read_text(), 'off')
+        self.assertFalse((self.support / 'ProxyPilot/VPN/update.json').exists())
+
+    def test_cleanup_retry_after_journal_is_already_retired(self):
+        self.setup_journal('setup-selected')
+        recovered = self.invoke('recover-selected-off')
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+        result = self.invoke('cleanup-retired')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'cleanup:retired')
+        self.assertEqual((self.apps / 'recovery-cleanup-marker').read_text(), 'retry')
+
+    def test_desired_on_does_not_use_off_cleanup_path(self):
+        self.setup_journal('setup-selected-on')
+        result = self.invoke('recover-selected-on-start-fail-cleanup')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.apps / 'recovery-cleanup-marker').exists())
+
     def test_selector_commit_crash_recovers_forward_and_retires_journal(self):
         self.setup_selector_crash()
         result = self.invoke('recover-selector-crash-off')

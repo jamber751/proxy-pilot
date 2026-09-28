@@ -115,6 +115,10 @@ class VPNLaunchdTests(unittest.TestCase):
         return subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}'],
                               capture_output=True, timeout=60).returncode == 0
 
+    def recovery_loaded(self):
+        return subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}.recovery'],
+                              capture_output=True, timeout=60).returncode == 0
+
     def run_driver(self, action='update', helper='server', sequence=11, expected=10, timeout=90):
         artifact = (self.work / helper).read_bytes()
         fields = {'format': 1, 'product': 'kz.documentolog.proxypilot', 'sequence': sequence,
@@ -187,6 +191,16 @@ class VPNLaunchdTests(unittest.TestCase):
         self.assertEqual(description['ThrottleInterval'], 10)
         self.assertEqual(self.run_driver('recovery-remove').stdout.strip(), 'recovery:removed')
         self.assertFalse(plist.exists())
+
+    def test_recovery_job_can_durably_disarm_itself(self):
+        self.assertEqual(self.run_driver('recovery-arm').stdout.strip(), 'recovery:armed')
+        plist = self.plists / f'{self.label}.recovery.plist'
+        self.assertTrue(plist.exists())
+        self.assertTrue(self.recovery_loaded())
+        result = self.run_driver('recovery-self-remove')
+        self.assertEqual(result.stdout.strip(), 'recovery:self-removed', result.stdout + result.stderr)
+        self.assertFalse(plist.exists())
+        self.assertFalse(self.recovery_loaded())
 
     def test_recover_restarts_the_selected_release(self):
         self.assertEqual(self.run_driver().stdout.strip(), 'ready:11')

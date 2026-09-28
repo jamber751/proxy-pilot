@@ -8,10 +8,29 @@ enum VPNSelectedCandidateRecoveryError: Error {
 /// Forward-only recovery for a disk-installed exact B. It never accepts paths,
 /// releases or desired state from IPC and never rolls selector B back to A.
 enum VPNSelectedCandidateRecovery {
+    /// Serializes stale recovery-job cleanup with the next updater. This also
+    /// supports a KeepAlive retry after the completed journal was already
+    /// retired but self-bootout did not finish.
+    static func cleanRetiredRecoveryJob(store: VPNReleaseStore,
+                                        lease: VPNLifecycleLease,
+                                        selected expected: VPNAuthorizedDeployment,
+                                        cleanup: () throws -> Void) throws {
+        try lease.check()
+        try store.requireNoPendingUpdate()
+        let selected = try store.loadDeployment()
+        guard selected.ownerUserID == expected.ownerUserID,
+              selected.release.isSameRelease(as: expected.release) else {
+            throw VPNSelectedCandidateRecoveryError.invalidJournal
+        }
+        try lease.check()
+        try cleanup()
+    }
+
     static func recover(store: VPNReleaseStore, runtime: VPNActivationRuntime,
                         lease: VPNLifecycleLease, budget: VPNActivationBudget,
                         journal initial: VPNUpdateJournalSnapshot,
-                        testPolicy: Bool = false) throws
+                        testPolicy: Bool = false,
+                        retiredCleanup: (VPNSelectedCandidateFinalizer.Outcome) throws -> Void = { _ in }) throws
         -> VPNSelectedCandidateFinalizer.Outcome {
         var current = initial
         if initial.phase == .replacementPending && initial.recovery == .recoverCandidate {
@@ -43,6 +62,10 @@ enum VPNSelectedCandidateRecovery {
         try retireCompleted(store: store, lease: lease,
                             transactionID: current.transactionID,
                             expectedRevision: 3, candidate: current.candidate)
+        // Still under the same lifecycle lease: cleanup therefore cannot race a
+        // following transaction's recovery-arm operation. The callback runs only
+        // after durable retirement and can distinguish the no-helper/off outcome.
+        try retiredCleanup(outcome)
         return outcome
     }
 

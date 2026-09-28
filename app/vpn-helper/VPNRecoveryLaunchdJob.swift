@@ -100,6 +100,23 @@ final class VPNRecoveryLaunchdJob {
             throw VPNLaunchdError.launchFailed
         }
         try waitUntilUnloaded(deadline: deadline)
+        try removeDescription()
+    }
+
+    /// Disarms the recovery job from inside that job itself. The description is
+    /// durably removed first because a successful `bootout` may terminate the
+    /// caller before it can execute another instruction. A failed bootout leaves
+    /// the already-loaded KeepAlive job able to retry, but it cannot return after
+    /// reboot because its persistent description is gone.
+    func removeCurrent(deadline: UInt64) throws {
+        try removeDescription()
+        let status = try launchctl(["bootout", "\(domain)/\(label)"], deadline: deadline)
+        guard status == 0 || status == ESRCH || status == EINPROGRESS else {
+            throw VPNLaunchdError.launchFailed
+        }
+    }
+
+    private func removeDescription() throws {
         let parent = try openPlistDirectory()
         defer { close(parent) }
         var attributes = stat()

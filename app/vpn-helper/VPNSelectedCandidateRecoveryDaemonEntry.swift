@@ -18,7 +18,24 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
             defer { close(directory) }
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory,
                                             authority: authority)
-            guard var journal = try store.loadUpdateJournal() else { return 0 }
+            guard var journal = try store.loadUpdateJournal() else {
+                // Retirement is durable before self-removal. If bootout failed,
+                // KeepAlive invokes us again with no journal; only the exact
+                // selected helper may finish this stale-job maintenance.
+                let selected = try store.loadDeployment()
+                try VPNPeerAuthentication.validateCurrentProcess(
+                    policy: selected.release.helperPolicy())
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
+                defer { lease.release() }
+                try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                    store: store, lease: lease, selected: selected) {
+                        let recovery = try VPNRecoveryLaunchdJob.system(
+                            storageDirectory: directory)
+                        try recovery.removeCurrent(
+                            deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                    }
+                return 0
+            }
             let armed = journal.phase == .replacementPending && journal.recovery == .inspectApplication
             let recoverable = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
                 || journal.phase == .selected && journal.recovery == .recoverCandidate
@@ -61,7 +78,17 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
             let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
             _ = try VPNSelectedCandidateRecovery.recover(
                 store: store, runtime: runtime, lease: lease, budget: budget,
-                journal: journal)
+                journal: journal,
+                retiredCleanup: { outcome in
+                    guard outcome == .remainedOff else { return }
+                    try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                        store: store, lease: lease, selected: journal.candidate) {
+                            let recovery = try VPNRecoveryLaunchdJob.system(
+                                storageDirectory: directory)
+                            try recovery.removeCurrent(
+                                deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                        }
+                })
             return 0
         } catch VPNLifecycleOwnershipError.busy {
             // A still-live coordinator owns this attempt. The launchd recovery
