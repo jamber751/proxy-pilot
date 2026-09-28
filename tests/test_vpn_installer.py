@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -130,6 +131,12 @@ class VPNInstallerTests(unittest.TestCase):
 
     def boot_out(self):
         subprocess.run(['/bin/launchctl', 'bootout', f'{self.domain}/{self.label}'], capture_output=True, timeout=60)
+        # launchctl may return before the per-user job disappears from `print`.
+        # Waiting here makes both assertions and cleanup observe the completed
+        # transition instead of a transient launchd snapshot.
+        deadline = time.monotonic() + 5
+        while self.loaded() and time.monotonic() < deadline:
+            time.sleep(0.05)
 
     def loaded(self):
         return subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}'],
