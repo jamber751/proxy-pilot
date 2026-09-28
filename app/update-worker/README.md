@@ -10,8 +10,8 @@ package successfully replaced signed A119 with signed B120, selected helper B,
 proved readiness and retired its recovery job on Apple Silicon/macOS 26.1. This
 was a direct native package acceptance run, not Sparkle integration. The default
 updater is still unchanged and publication remains blocked on that integration,
-an authorized rerun of the corrected removal package, reboot/crash recovery and
-Intel/macOS 11 runtime acceptance.
+reboot/crash recovery and Intel/macOS 11 runtime acceptance. The corrected
+removal path passed a separate authorized sequence-121 system run.
 
 Build into a new disposable output directory:
 
@@ -223,11 +223,11 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
    protection in the opt-in Sparkle worker. Late-stage races plus crash/reboot
    recovery remain release blockers. Never accept a new VPN client pin merely
    because Sparkle installed it.
-4. Rerun the corrected remove package with authorization. The first B120 removal
-   removed the service/VPN directory but failed on the non-empty shared parent
-   containing the intentionally retained updater directory; focused tests cover
-   the fix, while scoped recovery—not the corrected remover—restored 1.5.1 and
-   cleaned the system acceptance state. No OpenVPN tunnel has been started.
+4. Preserve the accepted removal boundary. The first B120 removal failed on the
+   non-empty shared parent containing the intentionally retained updater directory.
+   The corrected sequence-121 remove package then passed with a root-private
+   `Update` marker present: service, endpoint, plist and VPN directory disappeared,
+   while the marker remained for separate cleanup. No OpenVPN tunnel was started.
 
 ## Additional native acceptance (8 September)
 

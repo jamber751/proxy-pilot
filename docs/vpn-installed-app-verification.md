@@ -19,11 +19,12 @@ recovery, Intel/macOS 11, Sparkle coordination or a working VPN tunnel.
 The subsequent B120 removal stopped and removed the service and VPN directory,
 then failed in the removal stage because the shared `ProxyPilot` parent still
 contained the intentionally retained `Update` sibling. The implementation now
-preserves that sibling and passes focused tests, but the fixed package has not
-yet been rerun with root authorization. A scoped recovery package restored the
-original ProxyPilot 1.5.1, archived retained evidence, and verified clean system
-labels, support directories and application transaction stages. That recovery
-does not turn the failed removal into acceptance of the corrected remover.
+preserves that sibling and passes focused tests. A separate authorized sequence-121
+system run then installed the idle helper with an exact root-private retained marker
+and successfully removed the service, endpoint, plist and VPN directory without
+consuming that marker. Scoped cleanup archived the marker afterward. The original
+ProxyPilot 1.5.1 remained unchanged and final system labels, support directories
+and application transaction stages were clean.
 
 The `/Applications/.ProxyPilot.vpn-update` transaction area is governed by its
 separate authenticated cleanup. Its lifecycle must not be inferred from removal

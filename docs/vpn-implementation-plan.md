@@ -2369,16 +2369,17 @@ staging-остатки. До этого они сохраняются как д�
   ProxyPilot 1.5.1, сохранил retained evidence в архиве и подтвердил отсутствие
   системных labels, VPN support directories и application transaction stages.
   Это восстановление не считается штатным remove-flow.
-- [ ] Первый B120 remove остановил службу и удалил VPN-каталог, но завершился
+- [x] Первый B120 remove остановил службу и удалил VPN-каталог, но завершился
   ошибкой стадии удаления: общий parent нельзя было удалить из-за намеренно
   сохранённого `ProxyPilot/Update` (`rmdir` вернул `ENOTEMPTY`). Код теперь
-  сохраняет этот sibling и проходит focused tests, однако исправленный package
-  ещё не перезапускался с root-авторизацией.
+  сохраняет этот sibling и проходит focused tests. Отдельный авторизованный
+  sequence-121 прогон подтвердил исправление с root-private marker внутри `Update`:
+  service, endpoint, plist и VPN directory удалены, marker не затронут.
 - [ ] `/Applications/.ProxyPilot.vpn-update` очищается отдельной аутентифицированной
   транзакцией; отсутствие VPN support directory само по себе не доказывает его
   очистку. Не объединять эти две границы в uninstall-доказательстве.
 
-Публикация по-прежнему заблокирована до успешного root-прогона исправленного
-remove package, crash/reboot приёмки, исполнения на Intel/macOS 11 и интеграции
+Публикация по-прежнему заблокирована до crash/reboot приёмки, исполнения на
+Intel/macOS 11 и интеграции
 совместной app/helper транзакции с release/default Sparkle flow. Профиль, маршруты,
 DNS и VPN-туннель в этой приёмке не включались.

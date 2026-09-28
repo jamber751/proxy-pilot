@@ -12,8 +12,9 @@ run installed signed A119 and completed the exact signed A119 → B120 joint app
 update. Installed B matched both expected architecture hashes, its ordinary-user
 status reported release 120, the selected helper was ready, and the recovery job
 retired. This closes one clean joint-update path, not release acceptance. The fixed
-remove path still needs a new authorized root run; crash/reboot recovery,
-Intel/macOS 11 execution, and integration with the default Sparkle flow remain open.
+remove path passed a separate authorized sequence-121 system run; crash/reboot
+recovery, Intel/macOS 11 execution, and integration with the default Sparkle flow
+remain open.
 
 ## Build and sign
 
@@ -81,7 +82,9 @@ not entered, and no paths, owner IDs or shell commands are accepted as arguments
   The first B120 system removal stopped the service and removed VPN storage, then
   failed when the shared parent still contained the intentionally retained
   `ProxyPilot/Update` directory. The implementation now preserves that sibling and
-  passes focused tests, but that fixed package has not yet been rerun as root.
+  passes focused tests. The corrected sequence-121 package also passed an authorized
+  system run with a root-private retained `Update` marker present: it removed the
+  service, endpoint, plist and VPN directory without consuming the marker.
   `/Applications/.ProxyPilot.vpn-update` has its own authenticated transaction
   cleanup and must not be treated as part of this directory-removal proof.
 
@@ -108,9 +111,9 @@ is not erased. A real reboot and execution on macOS 11/Intel remain distinct fro
 simulated per-user service restart and cross-compilation.
 
 The 28 September recovery package restored the original ProxyPilot 1.5.1 after
-the acceptance run, archived the retained test evidence, and left the system
-labels, VPN support directories and application transaction stages clean. That
-scoped recovery result is not a successful rerun of the corrected remove package.
+the joint-update run. After the later corrected sequence-121 removal passed, a
+scoped cleanup archived its exact retained marker. Both runs ended with system
+labels, VPN support directories and application transaction stages clean.
 
 Automated package/payload tests use a disposable embedded public key, synthetic
 helper and an app whose normal GUI/CLI bootstrap traps. An optional complete

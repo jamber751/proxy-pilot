@@ -8,7 +8,8 @@ the selected helper was ready, and the recovery job retired. The first B120 remo
 then exposed a shared-parent cleanup bug after the service and VPN directory had
 already been removed: the intentionally retained `ProxyPilot/Update` sibling made
 the parent `rmdir` fail with `ENOTEMPTY`. The fix preserves that sibling and passes
-focused tests, but the corrected removal package has not yet been rerun as root.
+focused tests. A separate authorized sequence-121 system run then proved the
+corrected removal with a retained root-private `Update` marker present.
 A scoped recovery package restored the original 1.5.1 app, archived retained
 evidence, and left system labels/directories/stages clean. No VPN networking was
 enabled. See `../update-worker/README.md`. Earlier sections below retain the
