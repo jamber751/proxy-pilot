@@ -20,6 +20,10 @@ enum VPNDirectoryProvisioner {
         try openSystemComponent(name: "Update", create: create)
     }
 
+    static func openSystemRetirementDirectory(create: Bool) throws -> Int32 {
+        try openSystemComponent(name: "Retired", create: create)
+    }
+
     /// Binds an inherited descriptor to the one fixed production transaction
     /// directory. Root-private is necessary but not sufficient: a privileged
     /// caller must not redirect replacement into some other private tree.
@@ -56,6 +60,10 @@ enum VPNDirectoryProvisioner {
         try openComponentBelowTrustedBase(base, name: "Update", create: create)
     }
 
+    static func testOpenRetirementBelowTrustedBase(_ base: Int32, create: Bool) throws -> Int32 {
+        try openComponentBelowTrustedBase(base, name: "Retired", create: create)
+    }
+
     static func testRequireUpdateDirectory(_ descriptor: Int32,
                                            belowTrustedBase base: Int32) throws {
         let expected = try testOpenUpdateBelowTrustedBase(base, create: false)
@@ -75,7 +83,9 @@ enum VPNDirectoryProvisioner {
 
     private static func openComponentBelowTrustedBase(_ base: Int32, name: String,
                                                        create: Bool) throws -> Int32 {
-        guard name == "VPN" || name == "Update" else { throw VPNDirectoryError.unsafeDirectory }
+        guard name == "VPN" || name == "Update" || name == "Retired" else {
+            throw VPNDirectoryError.unsafeDirectory
+        }
         try check(base, privateDirectory: false)
         let app = try openChild(parent: base, name: "ProxyPilot", create: create, privateDirectory: true)
         defer { close(app) }

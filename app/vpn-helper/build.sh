@@ -11,7 +11,7 @@ for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust V
   VPNReleaseStore VPNDirectoryProvisioner VPNEndpointDirectory VPNHelperProtocol VPNHelperReadiness \
   VPNHelperListener VPNProfileVault VPNLifecycleOwnership VPNActivationBudget VPNActivationCoordinator \
   VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNStagedApplication VPNInstalledApplication VPNSelectedCandidateFinalizer \
-  VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryDaemonEntry VPNHelperRuntime VPNHelperDaemon ServiceMain; do
+  VPNJointUpdateCleanup VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryDaemonEntry VPNHelperRuntime VPNHelperDaemon ServiceMain; do
   SOURCES+=("$HERE/$COMPONENT.swift")
 done
 for ARCH in arm64 x86_64; do

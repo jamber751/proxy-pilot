@@ -137,7 +137,7 @@ enum VPNInstallationEntry {
                 fatalError("handled by the coordinated update boundary")
             case .remove:
                 stage = .removal
-                try VPNInstaller.uninstall()
+                try VPNInstaller.uninstall(authority: authority)
                 print("VPN support removed.")
             }
             return 0

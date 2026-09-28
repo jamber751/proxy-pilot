@@ -27,6 +27,7 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
             'VPNSelectedCandidateRecovery.swift',
             'VPNProtectedApplicationSwap.swift',
             'VPNReplacementExecutor.swift', 'VPNApplicationDestinationStage.swift',
+            'VPNJointUpdateCleanup.swift',
             'VPNApplicationDestinationExchange.swift', 'VPNJointApplicationReplacement.swift')]
         slices = []
         for arch in ('arm64', 'x86_64'):

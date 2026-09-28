@@ -90,12 +90,18 @@ enum VPNInstaller {
     /// Stop the service, take its launchd description away so no boot brings it
     /// back, then remove exactly the files this component created. Anything else
     /// in the directory aborts the removal instead of being deleted.
-    static func uninstall() throws {
+    static func uninstall(authority: VPNReleaseAuthority) throws {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
         let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
         let recovery = try VPNRecoveryLaunchdJob.system(storageDirectory: directory)
-        try uninstall(directory: directory, runtime: runtime, recovery: recovery)
+        try uninstall(directory: directory, runtime: runtime, recovery: recovery) { lease in
+            // Keep the same service lease from cleanup through enumeration and
+            // stop. Releasing it between those steps would let a new updater
+            // publish state after the cleanup gate but before removal.
+            try VPNJointUpdateCleanup.completeSystem(
+                service: directory, lease: lease, authority: authority)
+        }
         try VPNEndpointDirectory.removeSystem()
         try VPNDirectoryProvisioner.removeSystemDirectories()
     }
@@ -295,10 +301,15 @@ enum VPNInstaller {
     }
 
     private static func uninstall(directory: Int32, runtime: VPNLaunchdRuntime,
-                                  recovery: VPNRecoveryLaunchdJob) throws {
+                                  recovery: VPNRecoveryLaunchdJob,
+                                  cleanup: (VPNLifecycleLease) throws -> Void = { _ in }) throws {
         defer { close(directory) }
         let lease = try lifecycleLease(directory)
         defer { lease.release() }
+        // A corrupt or incomplete receipt fails before enumeration, launchd
+        // changes or service stop, while lifecycle ownership remains held.
+        try cleanup(lease)
+        try lease.check()
         // Decide what may be removed before stopping anything: an unexpected
         // file must not leave a stopped service and a half-removed directory.
         let removable = try removableNames(directory)

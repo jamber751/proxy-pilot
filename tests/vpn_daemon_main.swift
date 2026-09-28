@@ -23,7 +23,7 @@ import Foundation
             try VPNHelperDaemon.testServe(
                 directory: directory, endpoint: directory, shared: false,
                 authority: authority,
-                recoveryCleanup: {
+                recoveryCleanup: { _ in
                     do {
                         let unexpected = try VPNLifecycleOwnership.acquire(
                             inTrustedDirectory: directory)

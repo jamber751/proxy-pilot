@@ -27,6 +27,8 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
                     policy: selected.release.helperPolicy())
                 let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
                 defer { lease.release() }
+                try VPNJointUpdateCleanup.completeSystem(
+                    service: directory, lease: lease, authority: authority)
                 try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
                     store: store, lease: lease, selected: selected) {
                         let recovery = try VPNRecoveryLaunchdJob.system(
@@ -81,6 +83,8 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
                 journal: journal,
                 retiredCleanup: { outcome in
                     guard outcome == .remainedOff else { return }
+                    try VPNJointUpdateCleanup.completeSystem(
+                        service: directory, lease: lease, authority: authority)
                     try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
                         store: store, lease: lease, selected: journal.candidate) {
                             let recovery = try VPNRecoveryLaunchdJob.system(

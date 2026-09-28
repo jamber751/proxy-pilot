@@ -402,6 +402,23 @@ class VPNUpdateJournalTests(unittest.TestCase):
         self.assertTrue((self.dir / "cleanup.json").exists())
         self.run_journal("retire", tid=tid, rev=3, ok=True)
 
+    def test_cleanup_receipt_phase_machine_is_ordered_and_idempotent(self):
+        tid = self.prepare()
+        self.run_journal("pending", tid=tid, rev=0, ok=True)
+        self.run_journal("select", tid=tid, rev=1, ok=True)
+        self.run_journal("complete", tid=tid, rev=2, ok=True)
+        self.run_journal("retire", tid=tid, rev=3, ok=True)
+        first = self.run_journal("cleanup-app", tid=tid, rev=3, ok=True)
+        self.assertIn("cleanup=applicationRetired", first.stdout)
+        refused = self.run_journal("cleanup-update", tid=str(uuid.uuid4()), rev=3)
+        self.assertIn("staleRevision", refused.stdout)
+        second = self.run_journal("cleanup-update", tid=tid, rev=3, ok=True)
+        self.assertIn("cleanup=updateRetired", second.stdout)
+        # GC authorization is deliberately owned by the coordinator; a receipt
+        # cannot be retired directly from the pre-GC phase.
+        refused = self.run_journal("cleanup-retire", tid=tid, rev=3)
+        self.assertIn("invalidCleanupReceipt", refused.stdout)
+
     def test_cleanup_receipt_is_canonical_and_revalidates_all_evidence(self):
         tid = self.prepare()
         self.run_journal("pending", tid=tid, rev=0, ok=True)

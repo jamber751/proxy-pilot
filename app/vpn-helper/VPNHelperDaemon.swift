@@ -17,7 +17,10 @@ enum VPNHelperDaemon {
         defer { close(endpoint) }
         try serve(directory: directory, endpoint: endpoint, shared: true,
                   authority: VPNReleaseTrust.authority(), policy: { try $0.helperPolicy() },
-                  recoveryCleanup: {
+                  recoveryCleanup: { lease in
+                      try VPNJointUpdateCleanup.completeSystem(
+                        service: directory, lease: lease,
+                        authority: try VPNReleaseTrust.authority())
                       let recovery = try VPNRecoveryLaunchdJob.system(
                         storageDirectory: directory)
                       try recovery.remove(
@@ -28,7 +31,7 @@ enum VPNHelperDaemon {
     #if VPN_DAEMON_TESTING
     static func testServe(directory: Int32, endpoint: Int32, shared: Bool,
                           authority: VPNReleaseAuthority,
-                          recoveryCleanup: () throws -> Void = {}) throws {
+                          recoveryCleanup: (VPNLifecycleLease) throws -> Void = { _ in }) throws {
         guard getuid() != 0, getuid() == geteuid() else { throw VPNPeerAuthenticationError.denied }
         try serve(directory: directory, endpoint: endpoint, shared: shared,
                   authority: authority, policy: { try $0.testHelperPolicy() },
@@ -39,7 +42,7 @@ enum VPNHelperDaemon {
     private static func serve(directory: Int32, endpoint: Int32, shared: Bool,
                               authority: VPNReleaseAuthority,
                               policy: (VerifiedVPNRelease) throws -> VPNPeerPolicy,
-                              recoveryCleanup: () throws -> Void) throws {
+                              recoveryCleanup: (VPNLifecycleLease) throws -> Void) throws {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
         let stamp = try selectionStamp(directory)
         let selected = try store.loadDeployment()
@@ -136,7 +139,7 @@ enum VPNHelperDaemon {
             // retired. It must never turn a successful update into an
             // unrecoverable failure; a later helper launch retries it.
             do {
-                try recoveryCleanup()
+                try recoveryCleanup(cleanupLease)
                 recoveryCleanupComplete = true
             } catch {
                 nextRecoveryCleanupAttempt = now + 10_000_000_000

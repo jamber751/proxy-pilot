@@ -20,6 +20,16 @@ enum VPNUpdateJournalPhase: String, Codable {
     case prepared, replacementPending, selected, completed, cancelled
 }
 
+enum VPNUpdateCleanupPhase: String, Codable {
+    case pending, applicationRetired, updateRetired, gcAuthorized
+}
+
+struct VPNUpdateCleanupRootIdentity: Codable, Equatable {
+    let name: String
+    let device: UInt64
+    let inode: UInt64
+}
+
 /// Recovery instructions for a future trusted coordinator, NOT runtime evidence
 /// or authorization to replace an app/start a service.
 enum VPNUpdateRecovery: String {
@@ -54,11 +64,16 @@ struct VPNUpdateCleanupReceiptSnapshot {
     let previous: VPNAuthorizedDeployment
     let candidate: VPNAuthorizedDeployment
     let transition: VerifiedVPNUpdateTransition
-    fileprivate init(_ journal: VPNUpdateJournalSnapshot) {
+    let cleanupPhase: VPNUpdateCleanupPhase
+    let gcRoots: [VPNUpdateCleanupRootIdentity]?
+    fileprivate init(_ journal: VPNUpdateJournalSnapshot, cleanupPhase: VPNUpdateCleanupPhase,
+                     gcRoots: [VPNUpdateCleanupRootIdentity]?) {
         transactionID = journal.transactionID; revision = journal.revision
         phase = journal.phase; ownerUserID = journal.candidate.ownerUserID
         previous = journal.previous; candidate = journal.candidate
         transition = journal.transition
+        self.cleanupPhase = cleanupPhase
+        self.gcRoots = gcRoots
     }
 }
 
@@ -118,6 +133,8 @@ final class VPNReleaseStore {
     }
     fileprivate struct CleanupReceipt: Codable {
         let schema: Int
+        var phase: VPNUpdateCleanupPhase
+        var gcRoots: [VPNUpdateCleanupRootIdentity]?
         let journal: UpdateJournal
     }
     private struct Envelope: Codable {
@@ -290,7 +307,7 @@ final class VPNReleaseStore {
                 throw VPNReleaseStoreError.invalidUpdateJournal
             }
             if record.phase == .completed {
-                let expected = CleanupReceipt(schema: 1, journal: record)
+                let expected = CleanupReceipt(schema: 2, phase: .pending, gcRoots: nil, journal: record)
                 if let (existing, _) = cleanup {
                     guard try encodeCleanupReceipt(existing) == encodeCleanupReceipt(expected) else {
                         throw VPNReleaseStoreError.invalidCleanupReceipt
@@ -327,6 +344,74 @@ final class VPNReleaseStore {
         guard try readCleanupReceipt() == nil else { throw VPNReleaseStoreError.cleanupPending }
     }
 
+    @discardableResult
+    func advanceUpdateCleanupReceipt(transactionID: UUID,
+                                     expectedPhase: VPNUpdateCleanupPhase,
+                                     to phase: VPNUpdateCleanupPhase) throws
+        -> VPNUpdateCleanupReceiptSnapshot {
+        try withLock {
+            guard var (receipt, snapshot) = try readCleanupReceipt() else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            guard snapshot.transactionID == transactionID else {
+                throw VPNReleaseStoreError.staleRevision
+            }
+            guard receipt.phase == expectedPhase else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            let valid = (expectedPhase == .pending && phase == .applicationRetired)
+                || (expectedPhase == .applicationRetired && phase == .updateRetired)
+            guard valid else { throw VPNReleaseStoreError.invalidCleanupReceipt }
+            receipt.phase = phase
+            try replace(cleanupName, with: encodeCleanupReceipt(receipt))
+            snapshot = try validateCleanupReceipt(receipt)
+            return snapshot
+        }
+    }
+
+    @discardableResult
+    func authorizeUpdateCleanupGC(transactionID: UUID,
+                                  roots: [VPNUpdateCleanupRootIdentity]) throws
+        -> VPNUpdateCleanupReceiptSnapshot {
+        try withLock {
+            guard let loaded = try readCleanupReceipt() else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            var receipt = loaded.0
+            let snapshot = loaded.1
+            guard snapshot.transactionID == transactionID else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            if receipt.phase == .gcAuthorized {
+                guard receipt.gcRoots == roots else { throw VPNReleaseStoreError.invalidCleanupReceipt }
+                return snapshot
+            }
+            guard receipt.phase == .updateRetired, validCleanupRoots(roots) else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            receipt.phase = .gcAuthorized
+            receipt.gcRoots = roots
+            try replace(cleanupName, with: encodeCleanupReceipt(receipt))
+            return try validateCleanupReceipt(receipt)
+        }
+    }
+
+    func retireUpdateCleanupReceipt(transactionID: UUID) throws {
+        try withLock {
+            guard let (receipt, snapshot) = try readCleanupReceipt(),
+                  snapshot.transactionID == transactionID else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            guard receipt.phase == .gcAuthorized else {
+                throw VPNReleaseStoreError.invalidCleanupReceipt
+            }
+            guard unlinkat(directory, cleanupName, 0) == 0 else {
+                throw VPNReleaseStoreError.writeFailed
+            }
+            guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
+        }
+    }
+
     private func requireJournal(_ transactionID: UUID, revision: UInt64) throws -> (UpdateJournal, VPNUpdateJournalSnapshot) {
         guard let (record, snapshot) = try readJournal() else { throw VPNReleaseStoreError.invalidUpdateJournal }
         guard record.transactionID == transactionID, record.revision == revision else {
@@ -358,12 +443,26 @@ final class VPNReleaseStore {
     }
 
     private func validateCleanupReceipt(_ receipt: CleanupReceipt) throws -> VPNUpdateCleanupReceiptSnapshot {
-        guard receipt.schema == 1, receipt.journal.phase == .completed,
+        guard receipt.schema == 2, receipt.journal.phase == .completed,
               receipt.journal.revision == 3 else {
             throw VPNReleaseStoreError.invalidCleanupReceipt
         }
-        do { return VPNUpdateCleanupReceiptSnapshot(try validateJournal(receipt.journal)) }
+        guard (receipt.phase == .gcAuthorized) == (receipt.gcRoots != nil),
+              receipt.gcRoots.map(validCleanupRoots) ?? true else {
+            throw VPNReleaseStoreError.invalidCleanupReceipt
+        }
+        do { return VPNUpdateCleanupReceiptSnapshot(try validateJournal(receipt.journal),
+            cleanupPhase: receipt.phase, gcRoots: receipt.gcRoots) }
         catch { throw VPNReleaseStoreError.invalidCleanupReceipt }
+    }
+
+    private func validCleanupRoots(_ roots: [VPNUpdateCleanupRootIdentity]) -> Bool {
+        guard roots.map(\.name) == roots.map(\.name).sorted(),
+              Set(roots.map(\.name)).count == 4,
+              Set(roots.map(\.name)) == Set(["application", "current", "candidate", "executor"]) else {
+            return false
+        }
+        return roots.allSatisfy { $0.device != 0 && $0.inode != 0 }
     }
 
     private func validateJournal(_ record: UpdateJournal) throws -> VPNUpdateJournalSnapshot {

@@ -23,6 +23,7 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
             'VPNStagedApplication.swift', 'VPNApplicationTransactionStager.swift',
             'VPNReplacementExecutor.swift', 'VPNProtectedApplicationSwap.swift',
             'VPNReplacementExecutorProvisioner.swift', 'VPNInstallationPayload.swift',
+            'VPNJointUpdateCleanup.swift',
             'VPNJointUpdatePreparation.swift')]
         cls.command(['swiftc', '-D', 'VPN_APPLICATION_TRANSACTION_STAGING_TESTING',
                      '-D', 'VPN_APPLICATION_SWAP_TESTING',

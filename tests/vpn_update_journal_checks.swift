@@ -49,8 +49,16 @@ enum VPNUpdateJournalChecks {
                 print("selected=\(try store.loadDeployment().release.sequence)")
             case "load-cleanup":
                 if let s = try store.loadUpdateCleanupReceipt() {
-                    print("cleanup=\(s.phase.rawValue) revision=\(s.revision) id=\(s.transactionID.uuidString) owner=\(s.ownerUserID) previous=\(s.previous.release.sequence) selected=\(s.candidate.release.sequence)")
+                    print("cleanup=\(s.phase.rawValue) revision=\(s.revision) id=\(s.transactionID.uuidString) owner=\(s.ownerUserID) previous=\(s.previous.release.sequence) selected=\(s.candidate.release.sequence) cleanupPhase=\(s.cleanupPhase.rawValue)")
                 } else { print("cleanup=none") }
+            case "cleanup-app":
+                let s = try store.advanceUpdateCleanupReceipt(transactionID: id!, expectedPhase: .pending, to: .applicationRetired)
+                print("cleanup=\(s.cleanupPhase.rawValue)")
+            case "cleanup-update":
+                let s = try store.advanceUpdateCleanupReceipt(transactionID: id!, expectedPhase: .applicationRetired, to: .updateRetired)
+                print("cleanup=\(s.cleanupPhase.rawValue)")
+            case "cleanup-retire":
+                try store.retireUpdateCleanupReceipt(transactionID: id!); print("cleanup=none")
             case "pending": show(try store.markUpdateReplacementPending(transactionID: id!, expectedRevision: revision))
             case "select": show(try store.selectUpdateCandidate(transactionID: id!, expectedRevision: revision))
             case "complete": show(try store.completeUpdateJournal(transactionID: id!, expectedRevision: revision))
