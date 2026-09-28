@@ -89,7 +89,8 @@ import Foundation
                 let wanted = String(a[1].dropFirst(6))
                 VPNJointUpdateCleanup.checkpoint = { if $0 == wanted { _exit(86) } }
             }
-            if a[1] == "cleanup-cancelled" || a[1].hasPrefix("cancel-crash:") {
+            if a[1] == "cleanup-cancelled" || a[1] == "uninstall-cleanup-cancelled"
+                || a[1].hasPrefix("cancel-crash:") {
                 if a[1].hasPrefix("cancel-crash:") {
                     let wanted = String(a[1].dropFirst("cancel-crash:".count))
                     VPNJointUpdateCleanup.checkpoint = { if $0 == wanted { _exit(86) } }
@@ -97,10 +98,16 @@ import Foundation
                 guard let journal = try store.loadUpdateJournal() else { exit(77) }
                 let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
                 defer { lease.release() }
-                try VPNJointUpdateCleanup.testCompleteCancelled(
-                    service: service, update: update, retirement: retired,
-                    applications: applications, authority: authority,
-                    transactionID: journal.transactionID, lease: lease)
+                if a[1] == "uninstall-cleanup-cancelled" {
+                    try VPNJointUpdateCleanup.testCompleteAll(
+                        service: service, update: update, retirement: retired,
+                        applications: applications, authority: authority, lease: lease)
+                } else {
+                    try VPNJointUpdateCleanup.testCompleteCancelled(
+                        service: service, update: update, retirement: retired,
+                        applications: applications, authority: authority,
+                        transactionID: journal.transactionID, lease: lease)
+                }
                 print("cancel-clean")
                 return
             }

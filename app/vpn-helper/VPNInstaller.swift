@@ -105,39 +105,8 @@ enum VPNInstaller {
             // Keep the same service lease from cleanup through enumeration and
             // stop. Releasing it between those steps would let a new updater
             // publish state after the cleanup gate but before removal.
-            try VPNJointUpdateCleanup.completeSystem(
+            try VPNJointUpdateCleanup.completeAllSystem(
                 service: directory, lease: lease, authority: authority)
-            let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory,
-                                            authority: authority)
-            // A crash may leave the immutable preparation and its exact
-            // prepared journal together. Normalize that durable conversion
-            // before deciding whether the still-cancellable journal can be
-            // retired as part of this explicit uninstall.
-            _ = try store.finishUpdatePreparationConversion()
-            if try store.loadUpdatePreparation() != nil {
-                try VPNJointUpdateCleanup.completePreparationSystem(
-                    service: directory, lease: lease, authority: authority)
-            }
-            if let journal = try store.loadUpdateJournal() {
-                let cancelled: VPNUpdateJournalSnapshot
-                if journal.phase == .prepared,
-                   journal.recovery == .canCancelOrReplace {
-                    cancelled = try store.cancelUpdateJournal(
-                        transactionID: journal.transactionID,
-                        expectedRevision: journal.revision)
-                } else if journal.recovery == .cancelled {
-                    cancelled = journal
-                } else {
-                    throw VPNReleaseStoreError.updateInProgress
-                }
-                try VPNJointUpdateCleanup.completeCancelledSystem(
-                    service: directory, lease: lease, authority: authority,
-                    transactionID: cancelled.transactionID)
-            }
-            try store.requireNoPendingUpdate()
-            guard try store.loadUpdateCleanupReceipt() == nil else {
-                throw VPNReleaseStoreError.cleanupPending
-            }
         }
         try VPNEndpointDirectory.removeSystem()
         try VPNDirectoryProvisioner.removeSystemDirectories()

@@ -120,6 +120,52 @@ class VPNCancelledUpdateCleanupTests(unittest.TestCase):
         result = self.invoke('cleanup-cancelled')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_after_clone_pending_executor_is_quarantined_and_collected(self):
+        (self.update / 'executor').rename(self.update / '.executor.preparing')
+        result = self.invoke('cleanup-cancelled')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / 'update.json').exists())
+        self.assertEqual([p.name for p in self.update.iterdir()], ['lifecycle.lock'])
+        self.assertEqual(list(self.retired.iterdir()), [])
+
+    def test_uninstall_gate_cleans_after_clone_before_service_removal(self):
+        (self.update / 'executor').rename(self.update / '.executor.preparing')
+        result = self.invoke('uninstall-cleanup-cancelled')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / 'update.json').exists())
+        self.assertEqual([p.name for p in self.update.iterdir()], ['lifecycle.lock'])
+        self.assertEqual(list(self.retired.iterdir()), [])
+
+    def test_published_and_pending_executor_are_mutually_exclusive(self):
+        shutil.copytree(self.update / 'executor', self.update / '.executor.preparing',
+                        symlinks=True)
+        result = self.invoke('cleanup-cancelled')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue((self.service / 'update.json').exists())
+        self.assertTrue((self.update / 'executor/ProxyPilot.app').is_dir())
+        self.assertTrue((self.update / '.executor.preparing/ProxyPilot.app').is_dir())
+
+    def test_hostile_pending_executor_outer_layout_fails_closed(self):
+        (self.update / 'executor').rename(self.update / '.executor.preparing')
+        (self.update / '.executor.preparing/foreign').write_text('keep')
+        result = self.invoke('cleanup-cancelled')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue((self.service / 'update.json').exists())
+        self.assertTrue((self.update / '.executor.preparing/foreign').exists())
+
+    def test_pending_executor_gc_receipt_rejects_inode_rebind(self):
+        (self.update / 'executor').rename(self.update / '.executor.preparing')
+        crash = self.invoke('cancel-crash:cancel:gc-authorized')
+        self.assertEqual(crash.returncode, 86, crash.stdout + crash.stderr)
+        archived = self.retired / f'{self.transaction}-cancelled' / 'pending-executor'
+        displaced = archived.with_name('pending-executor-displaced')
+        archived.rename(displaced)
+        archived.mkdir(mode=0o700)
+        result = self.invoke('cleanup-cancelled')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue((self.service / 'update.json').exists())
+        self.assertTrue((displaced / 'ProxyPilot.app').is_dir())
+
     def test_foreign_update_entry_fails_closed_with_journal(self):
         (self.update / 'foreign').write_text('keep')
         result = self.invoke('cleanup-cancelled')

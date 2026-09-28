@@ -27,6 +27,39 @@ enum VPNJointUpdateCleanup {
         try completeSystem(service: service, lease: lease, authority: authority)
     }
 
+    /// Uninstall's single-lease cleanup gate. Prepared work is explicitly
+    /// cancelled here; any later phase remains fail-closed.
+    static func completeAllSystem(service: Int32, lease: VPNLifecycleLease,
+                                  authority: VPNReleaseAuthority) throws {
+        try completeSystem(service: service, lease: lease, authority: authority)
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service,
+                                        authority: authority)
+        _ = try store.finishUpdatePreparationConversion()
+        if try store.loadUpdatePreparation() != nil {
+            try completePreparationSystem(service: service, lease: lease,
+                                          authority: authority)
+        }
+        if let journal = try store.loadUpdateJournal() {
+            let cancelled: VPNUpdateJournalSnapshot
+            if journal.phase == .prepared, journal.recovery == .canCancelOrReplace {
+                cancelled = try store.cancelUpdateJournal(
+                    transactionID: journal.transactionID,
+                    expectedRevision: journal.revision)
+            } else if journal.recovery == .cancelled {
+                cancelled = journal
+            } else {
+                throw VPNReleaseStoreError.updateInProgress
+            }
+            try completeCancelledSystem(service: service, lease: lease,
+                                        authority: authority,
+                                        transactionID: cancelled.transactionID)
+        }
+        try store.requireNoPendingUpdate()
+        guard try store.loadUpdateCleanupReceipt() == nil else {
+            throw VPNReleaseStoreError.cleanupPending
+        }
+    }
+
     /// Recovery already owns the service lifecycle. Reuse that lease so cleanup
     /// cannot deadlock or invert the service→Update lock order.
     static func completeSystem(service: Int32, lease: VPNLifecycleLease,
@@ -131,6 +164,41 @@ enum VPNJointUpdateCleanup {
         try performPreparation(service: service, update: update,
                                retirement: retirement, authority: authority,
                                lease: lease)
+    }
+
+    static func testCompleteAll(service: Int32, update: Int32, retirement: Int32,
+                                applications: Int32,
+                                authority: VPNReleaseAuthority,
+                                lease: VPNLifecycleLease) throws {
+        try perform(service: service, update: update, retirement: retirement,
+                    applications: applications, authority: authority,
+                    productionApplications: false, existingServiceLease: lease)
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service,
+                                        authority: authority)
+        _ = try store.finishUpdatePreparationConversion()
+        if try store.loadUpdatePreparation() != nil {
+            try performPreparation(service: service, update: update,
+                                   retirement: retirement, authority: authority,
+                                   lease: lease)
+        }
+        if let journal = try store.loadUpdateJournal() {
+            let cancelled: VPNUpdateJournalSnapshot
+            if journal.phase == .prepared, journal.recovery == .canCancelOrReplace {
+                cancelled = try store.cancelUpdateJournal(
+                    transactionID: journal.transactionID,
+                    expectedRevision: journal.revision)
+            } else if journal.recovery == .cancelled { cancelled = journal }
+            else { throw VPNReleaseStoreError.updateInProgress }
+            try performCancelled(service: service, update: update,
+                                 retirement: retirement, applications: applications,
+                                 authority: authority,
+                                 transactionID: cancelled.transactionID,
+                                 productionApplications: false, lease: lease)
+        }
+        try store.requireNoPendingUpdate()
+        guard try store.loadUpdateCleanupReceipt() == nil else {
+            throw VPNReleaseStoreError.cleanupPending
+        }
     }
     #endif
 
@@ -287,10 +355,13 @@ enum VPNJointUpdateCleanup {
                                             sourceMayExist: false)
             try validateCancelledUpdateLayout(update: update, archive: archive,
                                               journal: journal, allowSources: true)
-            for name in ["current", "candidate", "executor"] {
-                try retireOptionalExact(from: update, source: name, to: archive,
-                                        destination: name)
-                testCheckpoint("cancel:update-after-\(name)")
+            let updateSlots = [("current", "current"), ("candidate", "candidate"),
+                               ("executor", "executor"),
+                               (".executor.preparing", "pending-executor")]
+            for (source, destination) in updateSlots {
+                try retireOptionalExact(from: update, source: source, to: archive,
+                                        destination: destination)
+                testCheckpoint("cancel:update-after-\(destination)")
             }
             try validateCancelledUpdateLayout(update: update, archive: archive,
                                               journal: journal, allowSources: false)
@@ -313,7 +384,7 @@ enum VPNJointUpdateCleanup {
                 roots.append(try rootIdentity(logical: "application", parent: applications,
                                               name: applicationArchive))
             }
-            for name in ["candidate", "current", "executor"] {
+            for name in ["candidate", "current", "executor", "pending-executor"] {
                 if let fd = try directory(archive, name) {
                     close(fd)
                     roots.append(try rootIdentity(logical: name, parent: archive, name: name))
@@ -336,7 +407,7 @@ enum VPNJointUpdateCleanup {
                            identity: identity, owner: journal.previous.ownerUserID,
                            remainingEntries: &remainingEntries)
         }
-        for name in ["current", "candidate", "executor"] {
+        for name in ["current", "candidate", "executor", "pending-executor"] {
             if let identity = identities[name] {
                 try removeTree(parent: archive, name: name, identity: identity,
                                owner: journal.previous.ownerUserID,
@@ -382,23 +453,34 @@ enum VPNJointUpdateCleanup {
                           sourceMayExist: allowSources)
         let sourceExecutor = try directory(update, "executor")
         let archivedExecutor = try directory(archive, "executor")
-        defer { if let sourceExecutor { close(sourceExecutor) }; if let archivedExecutor { close(archivedExecutor) } }
-        guard sourceExecutor == nil || archivedExecutor == nil,
-              allowSources || sourceExecutor == nil else {
+        let sourcePending = try directory(update, ".executor.preparing")
+        let archivedPending = try directory(archive, "pending-executor")
+        defer {
+            if let sourceExecutor { close(sourceExecutor) }
+            if let archivedExecutor { close(archivedExecutor) }
+            if let sourcePending { close(sourcePending) }
+            if let archivedPending { close(archivedPending) }
+        }
+        let executorCopies = [sourceExecutor, archivedExecutor, sourcePending, archivedPending]
+            .compactMap { $0 }
+        guard executorCopies.count <= 1,
+              allowSources || (sourceExecutor == nil && sourcePending == nil) else {
             throw VPNJointUpdateCleanupError.invalidLayout
         }
-        if let executor = sourceExecutor ?? archivedExecutor {
+        if let executor = executorCopies.first {
             try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: executor)
             _ = try VPNStagedApplication.inspect(inTrustedDirectory: executor,
                                                  release: journal.previous.release)
         }
-        let allowedUpdate = Set([VPNLifecycleLease.lockName, "current", "candidate", "executor"])
+        let allowedUpdate = Set([VPNLifecycleLease.lockName, "current", "candidate",
+                                 "executor", ".executor.preparing"])
         let actualUpdate = Set(try names(update))
         guard actualUpdate.isSubset(of: allowedUpdate),
               actualUpdate.contains(VPNLifecycleLease.lockName) else {
             throw VPNJointUpdateCleanupError.invalidLayout
         }
-        guard Set(try names(archive)).isSubset(of: ["current", "candidate", "executor"]) else {
+        guard Set(try names(archive)).isSubset(of: ["current", "candidate", "executor",
+                                                   "pending-executor"]) else {
             throw VPNJointUpdateCleanupError.invalidLayout
         }
     }

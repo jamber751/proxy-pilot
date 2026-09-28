@@ -835,9 +835,11 @@ final class VPNReleaseStore {
 
     private func validCancelledCleanupRoots(_ roots: [VPNUpdateCleanupRootIdentity]) -> Bool {
         let names = roots.map(\.name)
-        let allowed = Set(["application", "current", "candidate", "executor"])
+        let allowed = Set(["application", "current", "candidate", "executor",
+                           "pending-executor"])
         guard names == names.sorted(), Set(names).count == names.count,
               Set(names).isSubset(of: allowed), Set(names).isSuperset(of: ["current", "candidate"]),
+              !(Set(names).contains("executor") && Set(names).contains("pending-executor")),
               roots.count >= 2, roots.count <= 4 else { return false }
         return roots.allSatisfy { $0.device != 0 && $0.inode != 0 }
     }
