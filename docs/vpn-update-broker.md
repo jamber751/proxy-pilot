@@ -52,6 +52,14 @@ Nothing is executed from the submitted directory. A failed or stale submission
 does not stop VPN, alter the selector, spend the activation budget, or modify the
 installed application.
 
+The current inbox foundation publishes under a SHA-256 content-derived name. It
+clones only the nine fixed direct children, bounds recursive entries/bytes/depth,
+re-snapshots the mutable source before publication, synchronizes the copied tree,
+and atomically renames a private pending directory. An identical retry resumes or
+returns the same inbox; another candidate, a changed published inbox, or another
+pending identity is refused without overwrite. This copier is not yet reachable
+from an endpoint and does not call the mutation pipeline.
+
 ## Broker lifecycle
 
 The broker is a separate root process and endpoint, not the selected VPN helper
@@ -78,4 +86,3 @@ to ProxyPilot.
 - crash/reboot tests cover every copy, journal, drain, exchange, selection,
   readiness, retirement, and cleanup checkpoint;
 - native acceptance passes on Apple Silicon and Intel/macOS 11 before release.
-

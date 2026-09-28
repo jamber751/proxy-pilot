@@ -2439,3 +2439,22 @@ Broker пока намеренно не слушает endpoint и не меня
 атомарно скопировать fixed layout из user-owned descriptor в новый root-private
 inbox, revalidate его этой границей, затем вызвать существующий preparation и
 executor handoff с идемпотентным status/receipt.
+
+### Продолжение 1.5z — root-private broker inbox (28 сентября)
+
+- [x] Candidate копируется только из заранее открытого descriptor в private
+  trusted parent; destination name выводится из SHA-256 полного snapshot и не
+  принимается от клиента.
+- [x] Копировщик принимает ровно девять фиксированных имён, отклоняет missing,
+  extra, symlink, hardlink, FIFO/special nodes, writable nodes и превышение
+  лимитов entries/bytes/depth. После clone mutable source снимается повторно.
+- [x] Каждый файл/каталог и parent синхронизируются до/после atomic publication.
+  Повторы после crash на `afterCopy`, `beforePublish`, `afterPublish` либо безопасно
+  продолжаются, либо узнают уже опубликованный exact inbox без overwrite.
+- [x] Same candidate идемпотентен; conflicting candidate, другое pending identity
+  и повреждённый published inbox fail closed. Inbox contract 6/6 и typecheck всех
+  VPN-компонентов прошли.
+
+Следующий узел: локальный Unix transport с descriptor passing и взаимной live
+process authentication, затем единая транзакция `inbox → authorize → prepare →
+executor handoff`; до неё endpoint и UI остаются отключены.
