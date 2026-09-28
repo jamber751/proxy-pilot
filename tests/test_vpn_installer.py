@@ -491,6 +491,19 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertFalse((self.support / 'ProxyPilot').exists())
         self.assertEqual(sorted(os.listdir(self.support)), [])
 
+    def test_uninstall_preserves_separate_joint_update_transaction(self):
+        self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        update = self.support / 'ProxyPilot' / 'Update'
+        update.mkdir(mode=0o700)
+        retained = update / 'retained-transaction'
+        retained.write_bytes(b'cleaned by a separate authenticated transaction')
+        result = self.run_installer('uninstall')
+        self.assertEqual(result.stdout.strip(), 'uninstalled', result.stdout + result.stderr)
+        self.assertFalse(self.loaded())
+        self.assertFalse(self.storage.exists())
+        self.assertEqual(retained.read_bytes(),
+                         b'cleaned by a separate authenticated transaction')
+
     def test_asan_directory_enumeration_handles_many_variable_dirent_records(self):
         (self.support / 'ProxyPilot').mkdir(mode=0o700)
         self.storage.mkdir(mode=0o700)

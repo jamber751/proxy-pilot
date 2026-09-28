@@ -14,7 +14,7 @@ enum VPNDirectoryChecks {
                     : VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true)
                 exit(70)
             }
-            guard ["create", "read", "create-update", "read-update",
+            guard ["create", "read", "create-update", "read-update", "remove-vpn",
                    "validate-update", "validate-vpn-as-update"].contains(operation) else { exit(64) }
             let base = open(CommandLine.arguments[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard base >= 0 else { exit(77) }
@@ -26,6 +26,11 @@ enum VPNDirectoryChecks {
                 defer { close(supplied) }
                 try VPNDirectoryProvisioner.testRequireUpdateDirectory(
                     supplied, belowTrustedBase: base)
+                print("private-directory-ready")
+                return
+            }
+            if operation == "remove-vpn" {
+                try VPNDirectoryProvisioner.removeBelowTrustedBase(base)
                 print("private-directory-ready")
                 return
             }

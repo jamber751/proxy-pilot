@@ -80,6 +80,21 @@ class VPNDirectoryTests(unittest.TestCase):
         self.expect('validate-update', 'private-directory-ready')
         self.expect('validate-vpn-as-update', 'rejected:unsafeDirectory')
 
+    def test_vpn_removal_preserves_nonempty_update_sibling(self):
+        self.expect('create', 'private-directory-ready')
+        self.expect('create-update', 'private-directory-ready')
+        retained = self.app / 'Update' / 'retained-transaction'
+        retained.write_bytes(b'authenticated cleanup is a separate transaction')
+        self.expect('remove-vpn', 'private-directory-ready')
+        self.assertFalse((self.app / 'VPN').exists())
+        self.assertEqual(retained.read_bytes(),
+                         b'authenticated cleanup is a separate transaction')
+
+    def test_vpn_removal_still_removes_empty_application_container(self):
+        self.expect('create', 'private-directory-ready')
+        self.expect('remove-vpn', 'private-directory-ready')
+        self.assertFalse(self.app.exists())
+
     def test_writable_base_rejected_before_creation(self):
         self.base.chmod(0o770)
         self.expect('create', 'rejected:unsafeDirectory')

@@ -82,19 +82,31 @@ enum VPNDirectoryProvisioner {
         return try openChild(parent: app, name: name, create: create, privateDirectory: true)
     }
 
-    /// Removes the two application directories, innermost first, and only when
-    /// they are already empty and still pass the same checks. Never recursive and
-    /// never forced: emptying the VPN directory is the caller's explicit step.
+    /// Removes the VPN directory after the caller has emptied it. The private
+    /// application container is removed only when it is empty. A completed joint
+    /// application update deliberately retains its separate `Update` sibling for
+    /// a later authenticated cleanup transaction; that retained sibling must not
+    /// turn an otherwise complete VPN-support removal into a failure.
+    ///
+    /// This remains non-recursive and never removes or even opens sibling
+    /// contents. An unexpected child inside VPN still prevents the first rmdir;
+    /// only ENOTEMPTY/EEXIST from the already-validated parent container is the
+    /// accepted "another component is retained" result.
     static func removeBelowTrustedBase(_ base: Int32) throws {
         try check(base, privateDirectory: false)
         let app = try openChild(parent: base, name: "ProxyPilot", create: false, privateDirectory: true)
         defer { close(app) }
         let vpn = try openChild(parent: app, name: "VPN", create: false, privateDirectory: true)
         close(vpn)
-        guard unlinkat(app, "VPN", AT_REMOVEDIR) == 0, fsync(app) == 0,
-              unlinkat(base, "ProxyPilot", AT_REMOVEDIR) == 0, fsync(base) == 0 else {
+        guard unlinkat(app, "VPN", AT_REMOVEDIR) == 0, fsync(app) == 0 else {
             throw VPNDirectoryError.unavailable
         }
+        if unlinkat(base, "ProxyPilot", AT_REMOVEDIR) != 0 {
+            guard errno == ENOTEMPTY || errno == EEXIST else {
+                throw VPNDirectoryError.unavailable
+            }
+        }
+        guard fsync(base) == 0 else { throw VPNDirectoryError.syncUncertain }
     }
 
     static func removeSystemDirectories() throws {
