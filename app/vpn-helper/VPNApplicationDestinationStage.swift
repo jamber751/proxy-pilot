@@ -12,6 +12,10 @@ enum VPNApplicationDestinationStageError: Error {
 enum VPNApplicationDestinationStage {
     enum Outcome { case staged, alreadyStaged }
     static let stageName = ".ProxyPilot.vpn-update"
+    // Present at runtime since macOS 10.12, but older SDK Swift overlays do not
+    // export the C macro even when targeting macOS 11. Keep the ABI value from
+    // <sys/clonefile.h> so release builds compile on the macOS 14 CI image.
+    private static let cloneResolveBeneath: UInt32 = 0x0010
 
     static func prepare(inTrustedDirectory base: Int32,
                         release: VerifiedVPNRelease) throws -> Outcome {
@@ -64,7 +68,7 @@ enum VPNApplicationDestinationStage {
             return .alreadyStaged
         }
 
-        let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY | CLONE_RESOLVE_BENEATH)
+        let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) | cloneResolveBeneath
         guard clonefileat(base, "current", destination, stageName, flags) == 0 else {
             if errno == ENOTSUP || errno == EXDEV {
                 throw VPNApplicationDestinationStageError.cloneUnavailable

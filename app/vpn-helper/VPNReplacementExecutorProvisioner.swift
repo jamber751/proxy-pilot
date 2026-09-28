@@ -13,6 +13,9 @@ enum VPNReplacementExecutorProvisioner {
     enum Outcome { case prepared, recoveredPrepared, alreadyPrepared }
     private static let preparing = ".executor.preparing"
     private static let executor = "executor"
+    // Runtime flag from <sys/clonefile.h>; older SDK Swift overlays omit the
+    // macro even though the supported macOS runtime implements it.
+    private static let cloneResolveBeneath: UInt32 = 0x0010
 
     static func prepare(inTrustedDirectory base: Int32,
                         release: VerifiedVPNRelease) throws -> Outcome {
@@ -64,7 +67,7 @@ enum VPNReplacementExecutorProvisioner {
             return .recoveredPrepared
         }
 
-        let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY | CLONE_RESOLVE_BENEATH)
+        let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) | cloneResolveBeneath
         guard clonefileat(base, "current", base, preparing, flags) == 0 else {
             if errno == ENOTSUP || errno == EXDEV { throw VPNExecutorProvisioningError.cloneUnavailable }
             throw VPNExecutorProvisioningError.unsafeStorage

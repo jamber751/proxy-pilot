@@ -11,6 +11,9 @@ enum VPNApplicationTransactionStagingError: Error {
 /// to ProxyPilot/Update, and accepts B only from a root-private descriptor
 /// supplied by the trusted package layer. No path is accepted by this type.
 enum VPNApplicationTransactionStager {
+    // Runtime flag from <sys/clonefile.h>; spell out the stable ABI value because
+    // the macOS 14 SDK Swift overlay used by CI does not export the macro.
+    private static let cloneResolveBeneath: UInt32 = 0x0010
     enum Outcome { case staged, resumed, alreadyStaged }
     enum Layout { case prepared, exchanged }
     private static let app = "ProxyPilot.app"
@@ -202,7 +205,7 @@ enum VPNApplicationTransactionStager {
             try lease.check()
             try VPNStagedApplication.revalidate(sourceInspection,
                                                  inTrustedDirectory: source)
-            let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY | CLONE_RESOLVE_BENEATH)
+            let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) | cloneResolveBeneath
             guard clonefileat(source, app, staging, app, flags) == 0 else {
                 if errno == ENOTSUP || errno == EXDEV {
                     throw VPNApplicationTransactionStagingError.cloneUnavailable
