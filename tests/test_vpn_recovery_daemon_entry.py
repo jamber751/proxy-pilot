@@ -189,17 +189,20 @@ class VPNRecoveryDaemonEntryTests(unittest.TestCase):
     def wait_recovery_cleanup(self):
         # The first post-retirement request also gives the idle helper another
         # bounded chance to remove the recovery job after the coordinator lease.
+        description = self.plists / f'{self.recovery_label}.plist'
         for _ in range(3):
             result = self.probe()
             self.assertEqual(result.stdout.strip(), 'ready:11', result.stdout + result.stderr)
-            if not self.loaded(self.recovery_label):
+            if not self.loaded(self.recovery_label) and not description.exists():
                 break
             time.sleep(1.1)
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and self.loaded(self.recovery_label):
+        while time.monotonic() < deadline:
+            if not self.loaded(self.recovery_label) and not description.exists():
+                break
             time.sleep(0.05)
         self.assertFalse(self.loaded(self.recovery_label))
-        self.assertFalse((self.plists / f'{self.recovery_label}.plist').exists())
+        self.assertFalse(description.exists())
 
     def test_desired_on_recovery_runs_real_service_entry_through_launchd(self):
         armed = self.run_helper('fixture-arm', str(self.storage))
