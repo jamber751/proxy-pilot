@@ -29,6 +29,30 @@ import Foundation
                 "to-sequence=\(bv.sequence)\nto-sha256=\(hex(Data(SHA256.hash(data: bp))))\n").utf8)
             let edgeSignature = try key.signature(for: VPNReleaseAuthority.updateTransitionDomain + edge)
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+            if a[1] == "setup-preparation" {
+                _ = try store.bootstrapDeployment(payload: ap, signature: asig,
+                                                  helper: helper,
+                                                  trustedOwnerUserID: geteuid())
+                let preparation = try store.beginUpdatePreparation(
+                    payload: bp, signature: bsig, helper: helper,
+                    transitionPayload: edge, transitionSignature: edgeSignature,
+                    expectedSequence: av.sequence)
+                print(preparation.transactionID.uuidString.lowercased())
+                return
+            }
+            if a[1] == "cleanup-preparation" || a[1].hasPrefix("preparation-crash:") {
+                if a[1].hasPrefix("preparation-crash:") {
+                    let wanted = String(a[1].dropFirst("preparation-crash:".count))
+                    VPNJointUpdateCleanup.checkpoint = { if $0 == wanted { _exit(86) } }
+                }
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+                defer { lease.release() }
+                try VPNJointUpdateCleanup.testCompletePreparation(
+                    service: service, update: update, retirement: retired,
+                    authority: authority, lease: lease)
+                print("preparation-clean")
+                return
+            }
             if a[1] == "prepare-next" {
                 let journal = try store.prepareUpdateJournal(
                     payload: bp, signature: bsig, helper: helper,

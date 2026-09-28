@@ -12,6 +12,7 @@ enum VPNReleaseStoreError: Error {
     case deploymentRequired
     case updateInProgress
     case invalidUpdateJournal
+    case invalidUpdatePreparation
     case cleanupPending
     case invalidCleanupReceipt
 }
@@ -25,6 +26,8 @@ enum VPNUpdateJournalPhase: String, Codable {
 enum VPNUpdateCleanupPhase: String, Codable {
     case pending, applicationRetired, updateRetired, gcAuthorized
 }
+
+enum VPNUpdatePreparationPhase: String, Codable { case staging, gcAuthorized }
 
 struct VPNUpdateCleanupRootIdentity: Codable, Equatable {
     let name: String
@@ -55,6 +58,25 @@ struct VPNUpdateJournalSnapshot {
         self.recovery = recovery
         self.transition = transition
         cancellationGCRoots = record.cleanupRoots
+    }
+}
+
+struct VPNUpdatePreparationSnapshot {
+    let transactionID: UUID
+    let ownerUserID: uid_t
+    let previous: VPNAuthorizedDeployment
+    let candidate: VPNAuthorizedDeployment
+    let transition: VerifiedVPNUpdateTransition
+    let phase: VPNUpdatePreparationPhase
+    let cleanupRoots: [VPNUpdateCleanupRootIdentity]?
+    fileprivate init(_ record: VPNReleaseStore.UpdatePreparation,
+                     previous: VPNAuthorizedDeployment,
+                     candidate: VPNAuthorizedDeployment,
+                     transition: VerifiedVPNUpdateTransition) {
+        transactionID = record.transactionID; ownerUserID = record.owner
+        self.previous = previous; self.candidate = candidate
+        self.transition = transition; phase = record.phase
+        cleanupRoots = record.cleanupRoots
     }
 }
 
@@ -122,6 +144,19 @@ struct VPNPreparedDeployment {
 /// test process's UID and a private disposable directory. Never accept this fd
 /// from IPC or use the unprivileged app's profile/preferences directory.
 final class VPNReleaseStore {
+    fileprivate struct UpdatePreparation: Codable {
+        let schema: Int
+        let transactionID: UUID
+        let owner: uid_t
+        let previousPayload: Data
+        let previousSignature: Data
+        let candidatePayload: Data
+        let candidateSignature: Data
+        let transitionPayload: Data
+        let transitionSignature: Data
+        var phase: VPNUpdatePreparationPhase
+        var cleanupRoots: [VPNUpdateCleanupRootIdentity]? = nil
+    }
     fileprivate struct UpdateJournal: Codable {
         let schema: Int
         let transactionID: UUID
@@ -156,8 +191,10 @@ final class VPNReleaseStore {
     private let recordName = "release.json"
     private let markerName = "initialized"
     private let journalName = "update.json"
+    private let preparationName = "preparation.json"
     private let cleanupName = "cleanup.json"
     private static let maximumJournalBytes = 32768
+    private static let maximumPreparationBytes = 32768
     // A receipt nests one already size-bounded journal plus a small schema
     // envelope; every valid journal must remain representable.
     private static let maximumCleanupBytes = maximumJournalBytes + 1024
@@ -192,11 +229,135 @@ final class VPNReleaseStore {
     /// Also rejects terminal/corrupt journals: retirement is a separate durable
     /// action. Read-only selection remains available for diagnosis/reconciliation.
     func requireNoPendingUpdate() throws {
-        try withLock { try requireNoJournal() }
+        try withLock { try requireNoPreparation(); try requireNoJournal() }
     }
 
     func loadUpdateJournal() throws -> VPNUpdateJournalSnapshot? {
         try withLock { try readJournal()?.1 }
+    }
+
+    func loadUpdatePreparation() throws -> VPNUpdatePreparationSnapshot? {
+        try withLock { try readPreparation()?.1 }
+    }
+
+    /// Completes the only valid two-record conversion state without requiring
+    /// untrusted package input. Both records contain the exact signed bytes and
+    /// transaction id, and journal validation rechecks the stored artifacts.
+    @discardableResult
+    func finishUpdatePreparationConversion() throws -> VPNUpdateJournalSnapshot? {
+        try withLock {
+            try requireNoCleanupReceipt()
+            guard let (preparation, _) = try readPreparation() else { return nil }
+            guard preparation.phase == .staging,
+                  let (journal, snapshot) = try readJournal(),
+                  journalMatchesPreparation(journal, preparation) else {
+                // A preparation by itself is not a conversion to finish. Any
+                // other coexistence is corrupt and must remain fail-closed.
+                if try readFile(journalName, limit: Self.maximumJournalBytes) == nil {
+                    return nil
+                }
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            _ = try validateJournal(journal)
+            try unlinkPreparation()
+            return snapshot
+        }
+    }
+
+    @discardableResult
+    func beginUpdatePreparation(payload: Data, signature: Data, helper: Data,
+                                engine: Data? = nil, transitionPayload: Data,
+                                transitionSignature: Data,
+                                expectedSequence: UInt64) throws
+        -> VPNUpdatePreparationSnapshot {
+        try withLock {
+            try requireNoCleanupReceipt()
+            let (currentEnvelope, current) = try readCurrent()
+            guard currentEnvelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
+            guard current.release.sequence == expectedSequence else {
+                throw VPNReleaseStoreError.staleRevision
+            }
+            let transition = try authority.verifyUpdateTransition(
+                payload: transitionPayload, signature: transitionSignature,
+                previous: current.release, candidatePayload: payload,
+                candidateSignature: signature)
+            let candidate = try authority.verify(payload: payload, signature: signature,
+                                                 previous: current.release)
+            try candidate.validateArtifacts(helper: helper, engine: engine)
+            let expected = UpdatePreparation(
+                schema: 1, transactionID: UUID(), owner: current.ownerUserID,
+                previousPayload: currentEnvelope.payload,
+                previousSignature: currentEnvelope.signature,
+                candidatePayload: payload, candidateSignature: signature,
+                transitionPayload: transitionPayload,
+                transitionSignature: transitionSignature, phase: .staging)
+            if let (existing, snapshot) = try readPreparation() {
+                guard existing.phase == .staging,
+                      existing.owner == expected.owner,
+                      existing.previousPayload == expected.previousPayload,
+                      existing.previousSignature == expected.previousSignature,
+                      existing.candidatePayload == expected.candidatePayload,
+                      existing.candidateSignature == expected.candidateSignature,
+                      existing.transitionPayload == expected.transitionPayload,
+                      existing.transitionSignature == expected.transitionSignature else {
+                    throw VPNReleaseStoreError.invalidUpdatePreparation
+                }
+                return snapshot
+            }
+            try requireNoJournal()
+            _ = transition
+            try replace(preparationName, with: encodePreparation(expected))
+            #if VPN_RELEASE_STORE_TESTING
+            Self.checkpoint?("preparation.json:after-commit")
+            #endif
+            return try validatePreparation(expected)
+        }
+    }
+
+    @discardableResult
+    func commitUpdatePreparation(transactionID: UUID, helper: Data,
+                                 engine: Data? = nil) throws -> VPNUpdateJournalSnapshot {
+        try withLock {
+            try requireNoCleanupReceipt()
+            guard let (preparation, snapshot) = try readPreparation(),
+                  preparation.transactionID == transactionID,
+                  preparation.phase == .staging else {
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            if let (journal, result) = try readJournal() {
+                guard journalMatchesPreparation(journal, preparation) else {
+                    throw VPNReleaseStoreError.invalidUpdatePreparation
+                }
+                try validateStoredArtifacts(snapshot.candidate.release)
+                try unlinkPreparation()
+                return result
+            }
+            try snapshot.candidate.release.validateArtifacts(helper: helper, engine: engine)
+            try stageArtifacts(helper: helper, engine: engine,
+                               release: snapshot.candidate.release)
+            #if VPN_RELEASE_STORE_TESTING
+            Self.checkpoint?("preparation.json:after-artifacts")
+            #endif
+            let journal = UpdateJournal(
+                schema: 1, transactionID: preparation.transactionID,
+                revision: 0, phase: .prepared, owner: preparation.owner,
+                previousPayload: preparation.previousPayload,
+                previousSignature: preparation.previousSignature,
+                candidatePayload: preparation.candidatePayload,
+                candidateSignature: preparation.candidateSignature,
+                transitionPayload: preparation.transitionPayload,
+                transitionSignature: preparation.transitionSignature)
+            try replace(journalName, with: encodeJournal(journal))
+            #if VPN_RELEASE_STORE_TESTING
+            Self.checkpoint?("preparation.json:after-journal")
+            #endif
+            guard journalMatchesPreparation(journal, preparation) else {
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            let result = try validateJournal(journal)
+            try unlinkPreparation()
+            return result
+        }
     }
 
     func loadUpdateCleanupReceipt() throws -> VPNUpdateCleanupReceiptSnapshot? {
@@ -212,6 +373,7 @@ final class VPNReleaseStore {
                               expectedSequence: UInt64) throws -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             let (currentEnvelope, current) = try readCurrent()
             guard currentEnvelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
@@ -237,6 +399,7 @@ final class VPNReleaseStore {
     func markUpdateReplacementPending(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
             guard record.phase == .prepared else { throw VPNReleaseStoreError.invalidUpdateJournal }
             try advanceJournal(&record, to: .replacementPending)
@@ -252,6 +415,7 @@ final class VPNReleaseStore {
     func selectUpdateCandidate(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             var (record, snapshot) = try requireJournal(transactionID, revision: expectedRevision)
             guard record.phase == .replacementPending else { throw VPNReleaseStoreError.invalidUpdateJournal }
             let (_, current) = try readCurrent()
@@ -274,6 +438,7 @@ final class VPNReleaseStore {
     func completeUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
             guard record.phase == .selected else { throw VPNReleaseStoreError.invalidUpdateJournal }
             try advanceJournal(&record, to: .completed)
@@ -285,6 +450,7 @@ final class VPNReleaseStore {
     func cancelUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
             guard record.phase == .prepared else { throw VPNReleaseStoreError.invalidUpdateJournal }
             try advanceJournal(&record, to: .cancelled)
@@ -299,6 +465,7 @@ final class VPNReleaseStore {
         -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
             guard record.phase == expectedPhase else { throw VPNReleaseStoreError.invalidUpdateJournal }
             let valid = expectedPhase == .cancelled && phase == .cancellationApplicationRetired
@@ -318,6 +485,7 @@ final class VPNReleaseStore {
         -> VPNUpdateJournalSnapshot {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
             guard record.phase == .cancellationUpdateRetired,
                   record.cleanupRoots == nil,
@@ -332,6 +500,7 @@ final class VPNReleaseStore {
 
     func retireUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws {
         try withLock {
+            try requireNoPreparation()
             let cleanup = try readCleanupReceipt()
             guard let (record, _) = try readJournal() else {
                 // A crash after unlink is an ordinary retry, not lost evidence.
@@ -383,8 +552,117 @@ final class VPNReleaseStore {
         }
     }
 
+    private func requireNoPreparation() throws {
+        guard try readFile(preparationName, limit: Self.maximumPreparationBytes) == nil else {
+            throw VPNReleaseStoreError.updateInProgress
+        }
+    }
+
     private func requireNoCleanupReceipt() throws {
         guard try readCleanupReceipt() == nil else { throw VPNReleaseStoreError.cleanupPending }
+    }
+
+    @discardableResult
+    func authorizeUpdatePreparationCleanup(transactionID: UUID,
+                                           roots: [VPNUpdateCleanupRootIdentity]) throws
+        -> VPNUpdatePreparationSnapshot {
+        try withLock {
+            try requireNoCleanupReceipt(); try requireNoJournal()
+            guard var (record, _) = try readPreparation(),
+                  record.transactionID == transactionID,
+                  record.phase == .staging,
+                  validPreparationCleanupRoots(roots) else {
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            record.phase = .gcAuthorized; record.cleanupRoots = roots
+            try replace(preparationName, with: encodePreparation(record))
+            return try validatePreparation(record)
+        }
+    }
+
+    func retireUpdatePreparation(transactionID: UUID) throws {
+        try withLock {
+            try requireNoCleanupReceipt(); try requireNoJournal()
+            guard let (record, _) = try readPreparation(),
+                  record.transactionID == transactionID,
+                  record.phase == .gcAuthorized else {
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            try unlinkPreparation()
+        }
+    }
+
+    private func unlinkPreparation() throws {
+        guard unlinkat(directory, preparationName, 0) == 0 else {
+            throw VPNReleaseStoreError.writeFailed
+        }
+        #if VPN_RELEASE_STORE_TESTING
+        Self.checkpoint?("preparation.json:after-unlink")
+        #endif
+        guard fsync(directory) == 0 else { throw VPNReleaseStoreError.commitUncertain }
+    }
+
+    private func journalMatchesPreparation(_ journal: UpdateJournal,
+                                           _ preparation: UpdatePreparation) -> Bool {
+        journal.schema == 1 && journal.transactionID == preparation.transactionID
+            && journal.revision == 0 && journal.phase == .prepared
+            && journal.owner == preparation.owner
+            && journal.previousPayload == preparation.previousPayload
+            && journal.previousSignature == preparation.previousSignature
+            && journal.candidatePayload == preparation.candidatePayload
+            && journal.candidateSignature == preparation.candidateSignature
+            && journal.transitionPayload == preparation.transitionPayload
+            && journal.transitionSignature == preparation.transitionSignature
+            && journal.cleanupRoots == nil
+    }
+
+    private func readPreparation() throws -> (UpdatePreparation, VPNUpdatePreparationSnapshot)? {
+        guard let data = try readFile(preparationName,
+                                      limit: Self.maximumPreparationBytes) else { return nil }
+        do {
+            let record = try JSONDecoder().decode(UpdatePreparation.self, from: data)
+            guard try encodePreparation(record) == data else {
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            return (record, try validatePreparation(record))
+        } catch { throw VPNReleaseStoreError.invalidUpdatePreparation }
+    }
+
+    private func validatePreparation(_ record: UpdatePreparation) throws
+        -> VPNUpdatePreparationSnapshot {
+        guard record.schema == 1,
+              (record.phase == .gcAuthorized) == (record.cleanupRoots != nil),
+              record.cleanupRoots.map(validPreparationCleanupRoots) ?? true else {
+            throw VPNReleaseStoreError.invalidUpdatePreparation
+        }
+        let previous = try authority.verify(payload: record.previousPayload,
+                                            signature: record.previousSignature,
+                                            previous: nil)
+        let transition = try authority.verifyUpdateTransition(
+            payload: record.transitionPayload, signature: record.transitionSignature,
+            previous: previous, candidatePayload: record.candidatePayload,
+            candidateSignature: record.candidateSignature)
+        let candidate = try authority.verify(payload: record.candidatePayload,
+                                             signature: record.candidateSignature,
+                                             previous: previous)
+        let (envelope, current) = try readCurrent()
+        guard envelope.schema == 2, current.ownerUserID == record.owner,
+              current.release.isSameRelease(as: previous) else {
+            throw VPNReleaseStoreError.invalidUpdatePreparation
+        }
+        return VPNUpdatePreparationSnapshot(record,
+            previous: VPNAuthorizedDeployment(VPNAuthorizedRelease(
+                ownerUserID: record.owner, release: previous)),
+            candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(
+                ownerUserID: record.owner, release: candidate)), transition: transition)
+    }
+
+    private func validPreparationCleanupRoots(_ roots: [VPNUpdateCleanupRootIdentity]) -> Bool {
+        let names = roots.map(\.name)
+        let allowed = Set(["current", "candidate", "pending-current", "pending-candidate"])
+        return names == names.sorted() && Set(names).count == names.count
+            && Set(names).isSubset(of: allowed) && roots.count <= 4
+            && roots.allSatisfy { $0.device != 0 && $0.inode != 0 }
     }
 
     @discardableResult
@@ -578,6 +856,15 @@ final class VPNReleaseStore {
         return data
     }
 
+    private func encodePreparation(_ record: UpdatePreparation) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(record)
+        guard data.count <= Self.maximumPreparationBytes else {
+            throw VPNReleaseStoreError.invalidUpdatePreparation
+        }
+        return data
+    }
+
     private func encodeCleanupReceipt(_ receipt: CleanupReceipt) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(receipt)
@@ -593,6 +880,7 @@ final class VPNReleaseStore {
                            expectedSequence: UInt64) throws -> VPNPreparedDeployment {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             let (envelope, state) = try readCurrent()
             guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
@@ -609,6 +897,7 @@ final class VPNReleaseStore {
     func commitPreparedDeployment(_ prepared: VPNPreparedDeployment) throws -> VPNAuthorizedDeployment {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             let (envelope, current) = try readCurrent()
             guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
@@ -631,6 +920,7 @@ final class VPNReleaseStore {
                              trustedOwnerUserID: uid_t) throws -> VPNAuthorizedDeployment {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             guard try readFile(markerName) == nil, try readFile(recordName) == nil else {
                 throw VPNReleaseStoreError.alreadyInitialized
@@ -653,6 +943,7 @@ final class VPNReleaseStore {
                           expectedSequence: UInt64) throws -> VPNAuthorizedDeployment {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             let (previous, current) = try readCurrent()
             guard previous.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
@@ -675,6 +966,7 @@ final class VPNReleaseStore {
     func bootstrap(payload: Data, signature: Data, trustedOwnerUserID: uid_t) throws -> VPNAuthorizedRelease {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             guard try readFile(markerName) == nil, try readFile(recordName) == nil else {
                 throw VPNReleaseStoreError.alreadyInitialized
@@ -699,6 +991,7 @@ final class VPNReleaseStore {
     func accept(payload: Data, signature: Data, expectedSequence: UInt64) throws -> VPNAuthorizedRelease {
         try withLock {
             try requireNoCleanupReceipt()
+            try requireNoPreparation()
             try requireNoJournal()
             let (previous, current) = try readCurrent()
             guard previous.schema == 1 else { throw VPNReleaseStoreError.deploymentRequired }

@@ -59,6 +59,8 @@ class VPNJointUpdateCleanupTests(unittest.TestCase):
         self.update = self.work / 'Update'; self.update.mkdir(mode=0o700)
         self.retired = self.work / 'Retired'; self.retired.mkdir(mode=0o700)
         self.applications = self.work / 'Applications'; self.applications.mkdir(mode=0o700)
+        shutil.copytree(b_source / 'ProxyPilot.app',
+                        self.applications / 'ProxyPilot.app', symlinks=True)
         (self.update / 'current').mkdir(mode=0o700)
         shutil.copytree(b_source / 'ProxyPilot.app', self.update / 'current/ProxyPilot.app', symlinks=True)
         for name in ('candidate', 'executor'):
@@ -97,7 +99,7 @@ class VPNJointUpdateCleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse((self.service / 'cleanup.json').exists())
         self.assertEqual(list(self.retired.iterdir()), [])
-        self.assertEqual(list(self.applications.iterdir()), [])
+        self.assertEqual([p.name for p in self.applications.iterdir()], ['ProxyPilot.app'])
         self.assertEqual([p.name for p in self.update.iterdir()], ['lifecycle.lock'])
 
     def assert_crash_recovers(self, point):
@@ -144,6 +146,52 @@ class VPNJointUpdateCleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
         self.assertTrue((displaced / 'ProxyPilot.app').is_dir())
         self.assertTrue((self.service / 'cleanup.json').exists())
+
+    def reset_for_preparation(self):
+        for path in (self.service, self.update, self.retired, self.applications):
+            shutil.rmtree(path)
+            path.mkdir(mode=0o700)
+        setup = self.invoke('setup-preparation')
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        return setup.stdout.strip()
+
+    def test_interrupted_preparation_is_quarantined_and_removed(self):
+        self.reset_for_preparation()
+        (self.update / 'current').mkdir(mode=0o700)
+        shutil.copytree(self.work / 'a-source/ProxyPilot.app',
+                        self.update / 'current/ProxyPilot.app', symlinks=True)
+        (self.update / '.candidate.preparing').mkdir(mode=0o700)
+        # clonefileat may be interrupted after publishing part of the child
+        # tree. The durable preparation authorizes quarantining the fixed outer
+        # slot even though an incomplete bundle cannot pass signature checks.
+        partial = self.update / '.candidate.preparing/ProxyPilot.app/Contents'
+        partial.mkdir(parents=True)
+        (partial / 'partial').write_text('incomplete')
+        result = self.invoke('cleanup-preparation')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / 'preparation.json').exists())
+        self.assertEqual([p.name for p in self.update.iterdir()], ['lifecycle.lock'])
+        self.assertEqual(list(self.retired.iterdir()), [])
+
+    def test_interrupted_preparation_cleanup_resumes_after_each_rename(self):
+        self.reset_for_preparation()
+        for name, source in (('current', 'a-source'), ('candidate', 'b-source')):
+            (self.update / name).mkdir(mode=0o700)
+            shutil.copytree(self.work / source / 'ProxyPilot.app',
+                            self.update / name / 'ProxyPilot.app', symlinks=True)
+        crash = self.invoke('preparation-crash:preparation:after-current')
+        self.assertEqual(crash.returncode, 86, crash.stdout + crash.stderr)
+        result = self.invoke('cleanup-preparation')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / 'preparation.json').exists())
+
+    def test_interrupted_preparation_with_extra_entry_fails_closed(self):
+        self.reset_for_preparation()
+        (self.update / 'foreign').write_text('keep')
+        result = self.invoke('cleanup-preparation')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue((self.service / 'preparation.json').exists())
+        self.assertTrue((self.update / 'foreign').exists())
 
 
 if __name__ == '__main__':

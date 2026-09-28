@@ -48,8 +48,17 @@ import Foundation
         let candidateManifest = manifest(11, "1.7.0", a[9], a[10])
         let previousSignature = try key.signature(
             for: VPNReleaseAuthority.signatureDomain + previousManifest)
-        let candidateSignature = try key.signature(
-            for: VPNReleaseAuthority.signatureDomain + candidateManifest)
+        let candidateSignatureURL = URL(fileURLWithPath: a[2]).appendingPathComponent("test-candidate.signature")
+        let candidateSignature: Data
+        if operation == "mismatch-signature" {
+            candidateSignature = try key.signature(
+                for: VPNReleaseAuthority.signatureDomain + candidateManifest)
+        } else if let saved = try? Data(contentsOf: candidateSignatureURL) { candidateSignature = saved }
+        else {
+            candidateSignature = try key.signature(
+                for: VPNReleaseAuthority.signatureDomain + candidateManifest)
+            try candidateSignature.write(to: candidateSignatureURL, options: .atomic)
+        }
         let previous = try authority.verify(
             payload: previousManifest, signature: previousSignature, previous: nil)
         let candidate = try authority.verify(
@@ -60,8 +69,14 @@ import Foundation
         let edge = Data("format=1\nproduct=kz.documentolog.proxypilot\n"
             .appending("from-sequence=10\nfrom-sha256=\(hex(previousManifest))\n")
             .appending("to-sequence=11\nto-sha256=\(hex(candidateManifest))\n").utf8)
-        let edgeSignature = try key.signature(
-            for: VPNReleaseAuthority.updateTransitionDomain + edge)
+        let edgeSignatureURL = URL(fileURLWithPath: a[2]).appendingPathComponent("test-transition.signature")
+        let edgeSignature: Data
+        if let saved = try? Data(contentsOf: edgeSignatureURL) { edgeSignature = saved }
+        else {
+            edgeSignature = try key.signature(
+                for: VPNReleaseAuthority.updateTransitionDomain + edge)
+            try edgeSignature.write(to: edgeSignatureURL, options: .atomic)
+        }
         let transition = try authority.verifyUpdateTransition(
             payload: edge, signature: edgeSignature, previous: previous,
             candidatePayload: candidateManifest,
@@ -91,6 +106,11 @@ import Foundation
         }
         defer { held?.release() }
         do {
+            if operation == "crash-during-conversion" {
+                VPNReleaseStore.checkpoint = { point in
+                    if point == "preparation.json:after-journal" { _exit(86) }
+                }
+            }
             let result: VPNJointUpdatePreparation.Result
             if operation == "production" {
                 result = try VPNJointUpdatePreparation.prepare(
@@ -102,6 +122,8 @@ import Foundation
                     previousSource: previousSource,
                     candidateSource: candidateSource,
                     payload: joint, authority: authority) { point in
+                    if operation == "throw-after-preparation",
+                       point == "afterPreparation" { throw Injected.failure }
                     if operation == "throw-after-staging",
                        point == "afterApplicationStaging" { throw Injected.failure }
                     if operation == "throw-after-journal",

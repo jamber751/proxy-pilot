@@ -33,6 +33,10 @@ enum VPNJointUpdateCleanup {
                                authority: VPNReleaseAuthority) throws {
         try lease.check()
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+        // update.json is committed first. If a crash left both canonical
+        // records, equality and artifact validation are sufficient to finish
+        // the conversion before any later mutation is considered.
+        _ = try store.finishUpdatePreparationConversion()
         guard try store.loadUpdateCleanupReceipt() != nil else { return }
         let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: false)
         defer { close(update) }
@@ -69,6 +73,28 @@ enum VPNJointUpdateCleanup {
                              productionApplications: true, lease: lease)
     }
 
+    /// Retires a preparation which never acquired journal authority. Creating
+    /// an absent Update namespace is intentional: it gives the cleanup a fixed,
+    /// root-owned lock and an empty exact layout instead of treating every open
+    /// failure as absence. The preparation remains authoritative through GC.
+    static func completePreparationSystem(service: Int32, lease: VPNLifecycleLease,
+                                          authority: VPNReleaseAuthority) throws {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNJointUpdateCleanupError.requiresRoot
+        }
+        try lease.check()
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service,
+                                        authority: authority)
+        guard try store.loadUpdatePreparation() != nil else { return }
+        let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true)
+        defer { close(update) }
+        let retired = try VPNDirectoryProvisioner.openSystemRetirementDirectory(create: true)
+        defer { close(retired) }
+        try performPreparation(service: service, update: update,
+                               retirement: retired, authority: authority,
+                               lease: lease)
+    }
+
     #if VPN_JOINT_UPDATE_CLEANUP_TESTING
     static func testComplete(service: Int32, update: Int32, retirement: Int32,
                              applications: Int32,
@@ -94,7 +120,125 @@ enum VPNJointUpdateCleanup {
                              transactionID: transactionID,
                              productionApplications: false, lease: lease)
     }
+
+    static func testCompletePreparation(service: Int32, update: Int32,
+                                        retirement: Int32,
+                                        authority: VPNReleaseAuthority,
+                                        lease: VPNLifecycleLease) throws {
+        guard getuid() != 0, geteuid() == getuid() else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        try performPreparation(service: service, update: update,
+                               retirement: retirement, authority: authority,
+                               lease: lease)
+    }
     #endif
+
+    private static func performPreparation(service: Int32, update: Int32,
+                                           retirement: Int32,
+                                           authority: VPNReleaseAuthority,
+                                           lease: VPNLifecycleLease) throws {
+        try requirePrivateDirectory(service); try requirePrivateDirectory(update)
+        try requirePrivateDirectory(retirement)
+        try requireDistinct([service, update, retirement])
+        try lease.check()
+        let updateLease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: update)
+        defer { updateLease.release() }
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service,
+                                        authority: authority)
+        guard var preparation = try store.loadUpdatePreparation() else { return }
+        guard try store.loadUpdateJournal() == nil else {
+            // Both records are a conversion checkpoint, not abandoned staging.
+            throw VPNReleaseStoreError.invalidUpdatePreparation
+        }
+        let archiveName = preparation.transactionID.uuidString.lowercased() + "-preparation"
+        let archive = try openArchive(parent: retirement, name: archiveName)
+        defer { close(archive) }
+        let slots: [(String, String, VerifiedVPNRelease, Bool)] = [
+            ("current", "current", preparation.previous.release, true),
+            ("candidate", "candidate", preparation.candidate.release, true),
+            (".current.preparing", "pending-current", preparation.previous.release, false),
+            (".candidate.preparing", "pending-candidate", preparation.candidate.release, false)
+        ]
+        if preparation.phase == .staging {
+            try validatePreparationLayout(update: update, archive: archive,
+                                          slots: slots, allowSources: true)
+            for (source, destination, _, _) in slots {
+                try retireOptionalExact(from: update, source: source, to: archive,
+                                        destination: destination)
+                testCheckpoint("preparation:after-\(destination)")
+            }
+            try validatePreparationLayout(update: update, archive: archive,
+                                          slots: slots, allowSources: false)
+            var roots: [VPNUpdateCleanupRootIdentity] = []
+            for (_, destination, _, _) in slots where try directoryExists(archive, destination) {
+                roots.append(try rootIdentity(logical: destination,
+                                              parent: archive, name: destination))
+            }
+            roots.sort { $0.name < $1.name }
+            preparation = try store.authorizeUpdatePreparationCleanup(
+                transactionID: preparation.transactionID, roots: roots)
+            testCheckpoint("preparation:gc-authorized")
+        }
+        guard preparation.phase == .gcAuthorized,
+              let roots = preparation.cleanupRoots else {
+            throw VPNReleaseStoreError.invalidUpdatePreparation
+        }
+        let identities = Dictionary(uniqueKeysWithValues: roots.map { ($0.name, $0) })
+        var remainingEntries = 200_000
+        for (_, destination, _, _) in slots {
+            if let identity = identities[destination] {
+                try removeTree(parent: archive, name: destination,
+                               identity: identity, owner: preparation.ownerUserID,
+                               remainingEntries: &remainingEntries)
+            }
+        }
+        guard (try names(archive)).isEmpty else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        if unlinkat(retirement, archiveName, AT_REMOVEDIR) != 0, errno != ENOENT {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        guard fsync(retirement) == 0 else {
+            throw VPNJointUpdateCleanupError.commitUncertain
+        }
+        try lease.check(); try updateLease.check()
+        try store.retireUpdatePreparation(transactionID: preparation.transactionID)
+    }
+
+    private static func directoryExists(_ parent: Int32, _ name: String) throws -> Bool {
+        guard let child = try directory(parent, name) else { return false }
+        close(child); return true
+    }
+
+    private static func validatePreparationLayout(
+        update: Int32, archive: Int32,
+        slots: [(String, String, VerifiedVPNRelease, Bool)], allowSources: Bool) throws {
+        for (source, destination, release, requiresExactBundle) in slots {
+            let sourceFD = try directory(update, source)
+            let archiveFD = try directory(archive, destination)
+            defer { if let sourceFD { close(sourceFD) }; if let archiveFD { close(archiveFD) } }
+            guard sourceFD == nil || archiveFD == nil,
+                  allowSources || sourceFD == nil else {
+                throw VPNJointUpdateCleanupError.invalidLayout
+            }
+            if let selected = sourceFD ?? archiveFD, requiresExactBundle {
+                let contents = try names(selected)
+                guard contents == ["ProxyPilot.app"] else {
+                    throw VPNJointUpdateCleanupError.invalidLayout
+                }
+                try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: selected)
+                _ = try VPNStagedApplication.inspect(
+                    inTrustedDirectory: selected, release: release)
+            }
+        }
+        let permitted = Set([VPNLifecycleLease.lockName] + (allowSources ? slots.map(\.0) : []))
+        guard Set(try names(update)).isSubset(of: permitted),
+              Set(try names(update)).contains(VPNLifecycleLease.lockName),
+              Set(try names(archive)).isSubset(of: Set(slots.map(\.1))) else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+    }
 
     private static func performCancelled(service: Int32, update: Int32,
                                          retirement: Int32, applications: Int32,
@@ -311,6 +455,14 @@ enum VPNJointUpdateCleanup {
 
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
         guard var receipt = try store.loadUpdateCleanupReceipt() else { return }
+        // The selected floor says B, but cleanup must also observe the exact
+        // live installed B before retiring anything and again before deleting
+        // the final durable authority.
+        _ = try VPNStagedApplication.inspectInstalled(
+            inApplicationsDirectory: applications,
+            ownerUserID: productionApplications ? 0 : geteuid(),
+            productionParent: productionApplications,
+            release: receipt.candidate.release)
         let transactionName = receipt.transactionID.uuidString.lowercased()
         let archive = try openArchive(parent: retirement, name: transactionName)
         defer { close(archive) }
@@ -318,6 +470,7 @@ enum VPNJointUpdateCleanup {
 
         if receipt.cleanupPhase == .pending {
             try validateApplicationPair(parent: applications, archiveName: applicationArchiveName(receipt),
+                                        owner: receipt.ownerUserID,
                                         release: receipt.previous.release)
             testCheckpoint("begin:application-validated")
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
@@ -328,6 +481,7 @@ enum VPNJointUpdateCleanup {
             testCheckpoint("application:after-rename")
             try validateApplicationRetired(parent: applications,
                                            archiveName: applicationArchiveName(receipt),
+                                           owner: receipt.ownerUserID,
                                            release: receipt.previous.release)
             receipt = try store.advanceUpdateCleanupReceipt(
                 transactionID: receipt.transactionID, expectedPhase: .pending,
@@ -337,6 +491,7 @@ enum VPNJointUpdateCleanup {
         if receipt.cleanupPhase == .applicationRetired {
             try validateApplicationRetired(parent: applications,
                                            archiveName: applicationArchiveName(receipt),
+                                           owner: receipt.ownerUserID,
                                            release: receipt.previous.release)
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
                                      allowSources: true)
@@ -354,6 +509,7 @@ enum VPNJointUpdateCleanup {
         if receipt.cleanupPhase == .updateRetired {
             try validateApplicationRetired(parent: applications,
                                            archiveName: applicationArchiveName(receipt),
+                                           owner: receipt.ownerUserID,
                                            release: receipt.previous.release)
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
                                      allowSources: false)
@@ -384,6 +540,11 @@ enum VPNJointUpdateCleanup {
             throw VPNJointUpdateCleanupError.commitUncertain
         }
         try serviceLease.check(); try updateLease.check()
+        _ = try VPNStagedApplication.inspectInstalled(
+            inApplicationsDirectory: applications,
+            ownerUserID: productionApplications ? 0 : geteuid(),
+            productionParent: productionApplications,
+            release: receipt.candidate.release)
         try store.retireUpdateCleanupReceipt(transactionID: receipt.transactionID)
     }
 
@@ -400,17 +561,36 @@ enum VPNJointUpdateCleanup {
     }
 
     private static func validateApplicationPair(parent: Int32, archiveName: String,
+                                                owner: uid_t,
                                                 release: VerifiedVPNRelease) throws {
-        try validateOneOf(parent: parent, source: applicationStage,
-                          archiveParent: parent, archiveName: archiveName,
-                          release: release, sourceMayExist: true)
+        try validateApplicationOneOf(parent: parent, source: applicationStage,
+                                     archiveName: archiveName, owner: owner,
+                                     release: release, sourceMayExist: true)
     }
 
     private static func validateApplicationRetired(parent: Int32, archiveName: String,
+                                                   owner: uid_t,
                                                    release: VerifiedVPNRelease) throws {
-        try validateOneOf(parent: parent, source: applicationStage,
-                          archiveParent: parent, archiveName: archiveName,
-                          release: release, sourceMayExist: false)
+        try validateApplicationOneOf(parent: parent, source: applicationStage,
+                                     archiveName: archiveName, owner: owner,
+                                     release: release, sourceMayExist: false)
+    }
+
+    private static func validateApplicationOneOf(parent: Int32, source: String,
+                                                 archiveName: String, owner: uid_t,
+                                                 release: VerifiedVPNRelease,
+                                                 sourceMayExist: Bool) throws {
+        let sourceFD = try directory(parent, source)
+        let archiveFD = try directory(parent, archiveName)
+        guard (sourceFD == nil) != (archiveFD == nil), sourceMayExist || sourceFD == nil else {
+            if let sourceFD { close(sourceFD) }; if let archiveFD { close(archiveFD) }
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        let selected = sourceFD ?? archiveFD!
+        defer { if let sourceFD { close(sourceFD) }; if let archiveFD { close(archiveFD) } }
+        try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: selected)
+        _ = try VPNStagedApplication.inspectProtected(
+            inTrustedDirectory: selected, contentOwnerUserID: owner, release: release)
     }
 
     private static func validateUpdateLayout(update: Int32, archive: Int32,
@@ -534,6 +714,24 @@ enum VPNJointUpdateCleanup {
             guard fsync(root) == 0 else { throw VPNJointUpdateCleanupError.commitUncertain }
             close(root)
             rootOpen = false
+            // Bind the final name removal to the same quarantined root. A
+            // privileged concurrent rebind cannot turn the earlier open/fstat
+            // into authority to remove a different empty directory.
+            var rebound = stat()
+            if fstatat(parent, name, &rebound, AT_SYMLINK_NOFOLLOW) != 0 {
+                guard errno == ENOENT else {
+                    throw VPNJointUpdateCleanupError.unsafeStorage
+                }
+                guard fsync(parent) == 0 else {
+                    throw VPNJointUpdateCleanupError.commitUncertain
+                }
+                return
+            }
+            guard rebound.st_mode & S_IFMT == S_IFDIR,
+                  UInt64(truncatingIfNeeded: rebound.st_dev) == identity.device,
+                  UInt64(rebound.st_ino) == identity.inode else {
+                throw VPNJointUpdateCleanupError.invalidLayout
+            }
             guard unlinkat(parent, name, AT_REMOVEDIR) == 0 || errno == ENOENT,
                   fsync(parent) == 0 else {
                 throw VPNJointUpdateCleanupError.commitUncertain

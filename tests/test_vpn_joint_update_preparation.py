@@ -26,6 +26,7 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
             'VPNJointUpdateCleanup.swift',
             'VPNJointUpdatePreparation.swift')]
         cls.command(['swiftc', '-D', 'VPN_APPLICATION_TRANSACTION_STAGING_TESTING',
+                     '-D', 'VPN_RELEASE_STORE_TESTING',
                      '-D', 'VPN_APPLICATION_SWAP_TESTING',
                      '-D', 'VPN_EXECUTOR_PROVISIONING_TESTING',
                      '-D', 'VPN_EXECUTOR_HANDOFF_TESTING',
@@ -111,6 +112,22 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
         self.assertFalse((self.service / 'update.json').exists())
         self.assertFalse((self.update / 'executor').exists())
         self.assert_result(output='resumed:0')
+
+    def test_preparation_precedes_namespace_and_rejects_other_signed_bytes(self):
+        self.assert_rejected('throw-after-preparation', 'failure')
+        self.assertTrue((self.service / 'preparation.json').is_file())
+        self.assertEqual(list(self.update.iterdir()), [])
+        self.assert_rejected('mismatch-signature', 'invalidUpdatePreparation')
+        self.assertEqual(list(self.update.iterdir()), [])
+        self.assert_result(output='prepared:0')
+
+    def test_conversion_both_records_resumes_and_unlinks_preparation(self):
+        result = self.invoke('crash-during-conversion')
+        self.assertEqual(result.returncode, 86, result.stdout + result.stderr)
+        self.assertTrue((self.service / 'preparation.json').is_file())
+        self.assertTrue((self.service / 'update.json').is_file())
+        self.assert_result(output='resumed:0')
+        self.assertFalse((self.service / 'preparation.json').exists())
 
     def test_interruption_after_journal_resumes_executor(self):
         self.assert_rejected('throw-after-journal', 'failure')

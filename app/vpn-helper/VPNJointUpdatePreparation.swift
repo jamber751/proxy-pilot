@@ -122,11 +122,6 @@ enum VPNJointUpdatePreparation {
         // cleanup while this same service lease owns the transition.
         try cleanupCompleted(lease)
         try lease.check()
-        // Opening/creating the Update namespace is itself provisioning. It is
-        // intentionally after the prior receipt gate while the service lease
-        // remains held.
-        let update = try openUpdate()
-        defer { close(update) }
         let current = try store.loadDeployment()
         guard current.release.isSameRelease(as: payload.previous),
               payload.transition.matchesSource(current.release),
@@ -151,7 +146,47 @@ enum VPNJointUpdatePreparation {
             return journal
         }
 
-        let before = try existingJournal()
+        var before = try existingJournal()
+        if before == nil {
+            let preparation = try store.beginUpdatePreparation(
+                payload: payload.candidate.manifest,
+                signature: payload.candidate.signature,
+                helper: payload.candidate.helper, engine: payload.candidate.engine,
+                transitionPayload: payload.transitionPayload,
+                transitionSignature: payload.transitionSignature,
+                expectedSequence: payload.previous.sequence)
+            try checkpoint("afterPreparation")
+            try lease.check()
+            // A crash after update.json commit leaves both records. The same
+            // package proves equality and completes the ordered unlink before
+            // any namespace is touched again.
+            if try store.loadUpdateJournal() != nil {
+                _ = try store.commitUpdatePreparation(
+                    transactionID: preparation.transactionID,
+                    helper: payload.candidate.helper,
+                    engine: payload.candidate.engine)
+                before = try existingJournal()
+            }
+        } else if try store.loadUpdatePreparation() != nil {
+            // Existing-journal behavior is unchanged except for finishing the
+            // crash-safe conversion when both canonical records are present.
+            let preparation = try store.beginUpdatePreparation(
+                payload: payload.candidate.manifest,
+                signature: payload.candidate.signature,
+                helper: payload.candidate.helper, engine: payload.candidate.engine,
+                transitionPayload: payload.transitionPayload,
+                transitionSignature: payload.transitionSignature,
+                expectedSequence: payload.previous.sequence)
+            _ = try store.commitUpdatePreparation(
+                transactionID: preparation.transactionID,
+                helper: payload.candidate.helper,
+                engine: payload.candidate.engine)
+            before = try existingJournal()
+        }
+        // The canonical preparation authority is durable before creating or
+        // opening the application staging namespace.
+        let update = try openUpdate()
+        defer { close(update) }
         if let before, before.phase == .replacementPending {
             // Once replacement is pending, A may already have left
             // /Applications and the protected slots may already be B/A. Resume
@@ -181,14 +216,12 @@ enum VPNJointUpdatePreparation {
         if let before {
             journal = before
         } else {
-            journal = try store.prepareUpdateJournal(
-                payload: payload.candidate.manifest,
-                signature: payload.candidate.signature,
-                helper: payload.candidate.helper,
-                engine: payload.candidate.engine,
-                transitionPayload: payload.transitionPayload,
-                transitionSignature: payload.transitionSignature,
-                expectedSequence: payload.previous.sequence)
+            guard let preparation = try store.loadUpdatePreparation() else {
+                throw VPNJointUpdatePreparationError.commitUncertain
+            }
+            journal = try store.commitUpdatePreparation(
+                transactionID: preparation.transactionID,
+                helper: payload.candidate.helper, engine: payload.candidate.engine)
         }
         try checkpoint("afterJournal")
         try lease.check()
