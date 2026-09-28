@@ -84,7 +84,13 @@ enum VPNInstaller {
         defer { close(directory) }
         return try managePreparedJointUpdate(action, transactionID: transactionID,
             expectedRevision: expectedRevision, authority: authority, directory: directory,
-            testPolicy: false, runtime: { try VPNLaunchdRuntime.system(storageDirectory: directory) })
+            testPolicy: false,
+            cancelledCleanup: { journal, lease in
+                try VPNJointUpdateCleanup.completeCancelledSystem(
+                    service: directory, lease: lease, authority: authority,
+                    transactionID: journal.transactionID)
+            },
+            runtime: { try VPNLaunchdRuntime.system(storageDirectory: directory) })
     }
 
     /// Stop the service, take its launchd description away so no boot brings it
@@ -166,13 +172,17 @@ enum VPNInstaller {
     static func testManagePreparedJointUpdate(_ action: JointUpdateSourceAction,
                                              transactionID: UUID, expectedRevision: UInt64,
                                              authority: VPNReleaseAuthority, base: Int32,
+                                             cancelledCleanup: ((VPNUpdateJournalSnapshot, VPNLifecycleLease) throws -> Void)? = nil,
                                              runtime: (Int32) throws -> VPNActivationRuntime) throws -> VPNUpdateJournalSnapshot? {
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
         let directory = try openInstalled { try VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false) }
         defer { close(directory) }
         return try managePreparedJointUpdate(action, transactionID: transactionID,
             expectedRevision: expectedRevision, authority: authority, directory: directory,
-            testPolicy: true, runtime: { try runtime(directory) })
+            testPolicy: true,
+            cancelledCleanup: cancelledCleanup ?? { _, _ in
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }, runtime: { try runtime(directory) })
     }
 
     private static func testPreflight(payload: Data, signature: Data, helper: Data, engine: Data?, authority: VPNReleaseAuthority) throws {
@@ -220,6 +230,7 @@ enum VPNInstaller {
                                                  transactionID: UUID, expectedRevision: UInt64,
                                                  authority: VPNReleaseAuthority, directory: Int32,
                                                  testPolicy: Bool,
+                                                 cancelledCleanup: (VPNUpdateJournalSnapshot, VPNLifecycleLease) throws -> Void,
                                                  runtime: () throws -> VPNActivationRuntime) throws -> VPNUpdateJournalSnapshot? {
         let lease = try lifecycleLease(directory)
         defer { lease.release() }
@@ -228,8 +239,19 @@ enum VPNInstaller {
         guard journal.transactionID == transactionID, journal.revision == expectedRevision else {
             throw VPNReleaseStoreError.staleRevision
         }
-        let expectedPhase: VPNUpdateJournalPhase = action == .retireCancelled ? .cancelled : .prepared
-        guard journal.phase == expectedPhase else { throw VPNReleaseStoreError.invalidUpdateJournal }
+        if action == .retireCancelled {
+            let cancellableCleanup: Set<VPNUpdateJournalPhase> = [
+                .cancelled, .cancellationApplicationRetired,
+                .cancellationUpdateRetired, .cancellationGCAuthorized,
+            ]
+            guard cancellableCleanup.contains(journal.phase), journal.recovery == .cancelled else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+        } else {
+            guard journal.phase == .prepared else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+        }
         // The store proves the selector is still exact A in these phases.
         try authenticateSource(journal.previous.release, owner: journal.previous.ownerUserID, testPolicy: testPolicy)
         try lease.check()
@@ -237,7 +259,11 @@ enum VPNInstaller {
         case .cancel:
             return try store.cancelUpdateJournal(transactionID: transactionID, expectedRevision: expectedRevision)
         case .retireCancelled:
-            try store.retireUpdateJournal(transactionID: transactionID, expectedRevision: expectedRevision)
+            try cancelledCleanup(journal, lease)
+            try lease.check()
+            guard try store.loadUpdateJournal() == nil else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
             return nil
         case .beginReplacement:
             // No runtime construction, endpoint provisioning or stop before all

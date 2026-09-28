@@ -178,6 +178,11 @@ class VPNUpdateJournalTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return re.search(r"id=([A-F0-9-]+)", r.stdout).group(1)
 
+    def authorize_cancelled_cleanup(self, tid):
+        self.run_journal("cancel-app", tid=tid, rev=1, ok=True)
+        self.run_journal("cancel-update", tid=tid, rev=2, ok=True)
+        self.run_journal("cancel-gc", tid=tid, rev=3, ok=True)
+
     def test_happy_lifecycle_across_processes_and_selector_recovery(self):
         tid = self.prepare()
         self.assertIn("canCancelOrReplace", self.run_journal("load", ok=True).stdout)
@@ -217,7 +222,8 @@ class VPNUpdateJournalTests(unittest.TestCase):
         ):
             self.assertIn("updateInProgress", self.run_journal(op).stdout)
         self.assertNotEqual(self.run_journal("pending", tid=tid, rev=1).returncode, 0)
-        self.run_journal("retire", tid=tid, rev=1, ok=True)
+        self.authorize_cancelled_cleanup(tid)
+        self.run_journal("retire", tid=tid, rev=4, ok=True)
 
     def test_stale_identity_revision_phase_and_old_token_are_rejected(self):
         tid = self.prepare()
@@ -233,12 +239,14 @@ class VPNUpdateJournalTests(unittest.TestCase):
         )
         # A separately seeded store proves a token prepared before journal creation cannot commit afterwards.
         self.run_journal("cancel", tid=tid, rev=0, ok=True)
-        self.run_journal("retire", tid=tid, rev=1, ok=True)
+        self.authorize_cancelled_cleanup(tid)
+        self.run_journal("retire", tid=tid, rev=4, ok=True)
         self.assertIn("updateInProgress", self.run_journal("old-token").stdout)
         out = self.run_journal("load", ok=True).stdout
         old_token_id = re.search(r"id=([A-F0-9-]+)", out).group(1)
         self.run_journal("cancel", tid=old_token_id, rev=0, ok=True)
-        self.run_journal("retire", tid=old_token_id, rev=1, ok=True)
+        self.authorize_cancelled_cleanup(old_token_id)
+        self.run_journal("retire", tid=old_token_id, rev=4, ok=True)
         tid = self.prepare()
         self.run_journal("pending", tid=tid, rev=0, ok=True)
         self.assertIn(
@@ -331,13 +339,14 @@ class VPNUpdateJournalTests(unittest.TestCase):
     def test_retirement_checkpoints_and_hostile_files_locks_modes(self):
         tid = self.prepare()
         self.run_journal("cancel", tid=tid, rev=0, ok=True)
+        self.authorize_cancelled_cleanup(tid)
         r = self.run_journal(
-            "retire", checkpoint="update.json:before-unlink", tid=tid, rev=1
+            "retire", checkpoint="update.json:before-unlink", tid=tid, rev=4
         )
         self.assertEqual(r.returncode, 86)
         self.assertTrue((self.dir / "update.json").exists())
         r = self.run_journal(
-            "retire", checkpoint="update.json:after-unlink", tid=tid, rev=1
+            "retire", checkpoint="update.json:after-unlink", tid=tid, rev=4
         )
         self.assertEqual(r.returncode, 86)
         self.assertFalse((self.dir / "update.json").exists())

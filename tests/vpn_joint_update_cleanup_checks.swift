@@ -29,13 +29,27 @@ import Foundation
                 "to-sequence=\(bv.sequence)\nto-sha256=\(hex(Data(SHA256.hash(data: bp))))\n").utf8)
             let edgeSignature = try key.signature(for: VPNReleaseAuthority.updateTransitionDomain + edge)
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
-            if a[1] == "setup" {
+            if a[1] == "prepare-next" {
+                let journal = try store.prepareUpdateJournal(
+                    payload: bp, signature: bsig, helper: helper,
+                    transitionPayload: edge, transitionSignature: edgeSignature,
+                    expectedSequence: av.sequence)
+                print("next:\(journal.candidate.release.sequence)")
+                return
+            }
+            if a[1] == "setup" || a[1] == "setup-cancelled" {
                 _ = try store.bootstrapDeployment(payload: ap, signature: asig, helper: helper,
                                                   trustedOwnerUserID: geteuid())
                 var journal = try store.prepareUpdateJournal(
                     payload: bp, signature: bsig, helper: helper,
                     transitionPayload: edge, transitionSignature: edgeSignature,
                     expectedSequence: av.sequence)
+                if a[1] == "setup-cancelled" {
+                    journal = try store.cancelUpdateJournal(
+                        transactionID: journal.transactionID, expectedRevision: journal.revision)
+                    print(journal.transactionID.uuidString.lowercased())
+                    return
+                }
                 journal = try store.markUpdateReplacementPending(
                     transactionID: journal.transactionID, expectedRevision: journal.revision)
                 journal = try store.selectUpdateCandidate(
@@ -50,6 +64,21 @@ import Foundation
             if a[1].hasPrefix("crash:") {
                 let wanted = String(a[1].dropFirst(6))
                 VPNJointUpdateCleanup.checkpoint = { if $0 == wanted { _exit(86) } }
+            }
+            if a[1] == "cleanup-cancelled" || a[1].hasPrefix("cancel-crash:") {
+                if a[1].hasPrefix("cancel-crash:") {
+                    let wanted = String(a[1].dropFirst("cancel-crash:".count))
+                    VPNJointUpdateCleanup.checkpoint = { if $0 == wanted { _exit(86) } }
+                }
+                guard let journal = try store.loadUpdateJournal() else { exit(77) }
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+                defer { lease.release() }
+                try VPNJointUpdateCleanup.testCompleteCancelled(
+                    service: service, update: update, retirement: retired,
+                    applications: applications, authority: authority,
+                    transactionID: journal.transactionID, lease: lease)
+                print("cancel-clean")
+                return
             }
             try VPNJointUpdateCleanup.testComplete(
                 service: service, update: update, retirement: retired,

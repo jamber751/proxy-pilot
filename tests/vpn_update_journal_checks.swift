@@ -63,6 +63,20 @@ enum VPNUpdateJournalChecks {
             case "select": show(try store.selectUpdateCandidate(transactionID: id!, expectedRevision: revision))
             case "complete": show(try store.completeUpdateJournal(transactionID: id!, expectedRevision: revision))
             case "cancel": show(try store.cancelUpdateJournal(transactionID: id!, expectedRevision: revision))
+            case "cancel-app": show(try store.advanceCancelledUpdateCleanup(
+                transactionID: id!, expectedRevision: revision,
+                expectedPhase: .cancelled, to: .cancellationApplicationRetired))
+            case "cancel-update": show(try store.advanceCancelledUpdateCleanup(
+                transactionID: id!, expectedRevision: revision,
+                expectedPhase: .cancellationApplicationRetired,
+                to: .cancellationUpdateRetired))
+            case "cancel-gc":
+                show(try store.authorizeCancelledUpdateCleanupGC(
+                    transactionID: id!, expectedRevision: revision,
+                    roots: [
+                        VPNUpdateCleanupRootIdentity(name: "candidate", device: 1, inode: 2),
+                        VPNUpdateCleanupRootIdentity(name: "current", device: 1, inode: 1),
+                    ]))
             case "retire": try store.retireUpdateJournal(transactionID: id!, expectedRevision: revision); print("journal=none")
             case "ordinary-commit":
                 _ = try store.commitDeployment(payload: bp, signature: bsig, helper: bh, expectedSequence: 10)

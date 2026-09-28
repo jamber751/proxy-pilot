@@ -46,6 +46,29 @@ enum VPNJointUpdateCleanup {
                     productionApplications: true, existingServiceLease: lease)
     }
 
+    /// Cancellation keeps the signed journal as authority until every staged
+    /// application copy has been quarantined, garbage-collected and fsynced.
+    /// The caller already owns the service lifecycle lease.
+    static func completeCancelledSystem(service: Int32, lease: VPNLifecycleLease,
+                                        authority: VPNReleaseAuthority,
+                                        transactionID: UUID) throws {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNJointUpdateCleanupError.requiresRoot
+        }
+        try lease.check()
+        let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: false)
+        defer { close(update) }
+        let retired = try VPNDirectoryProvisioner.openSystemRetirementDirectory(create: true)
+        defer { close(retired) }
+        let applications = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard applications >= 0 else { throw VPNJointUpdateCleanupError.unsafeStorage }
+        defer { close(applications) }
+        try performCancelled(service: service, update: update, retirement: retired,
+                             applications: applications, authority: authority,
+                             transactionID: transactionID,
+                             productionApplications: true, lease: lease)
+    }
+
     #if VPN_JOINT_UPDATE_CLEANUP_TESTING
     static func testComplete(service: Int32, update: Int32, retirement: Int32,
                              applications: Int32,
@@ -57,7 +80,215 @@ enum VPNJointUpdateCleanup {
                     applications: applications, authority: authority,
                     productionApplications: false, existingServiceLease: nil)
     }
+
+    static func testCompleteCancelled(service: Int32, update: Int32,
+                                      retirement: Int32, applications: Int32,
+                                      authority: VPNReleaseAuthority,
+                                      transactionID: UUID,
+                                      lease: VPNLifecycleLease) throws {
+        guard getuid() != 0, geteuid() == getuid() else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        try performCancelled(service: service, update: update, retirement: retirement,
+                             applications: applications, authority: authority,
+                             transactionID: transactionID,
+                             productionApplications: false, lease: lease)
+    }
     #endif
+
+    private static func performCancelled(service: Int32, update: Int32,
+                                         retirement: Int32, applications: Int32,
+                                         authority: VPNReleaseAuthority,
+                                         transactionID: UUID,
+                                         productionApplications: Bool,
+                                         lease: VPNLifecycleLease) throws {
+        try requirePrivateDirectory(service); try requirePrivateDirectory(update)
+        try requirePrivateDirectory(retirement)
+        try requireApplications(applications, production: productionApplications)
+        try requireDistinct([service, update, retirement, applications])
+        try lease.check()
+        let updateLease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: update)
+        defer { updateLease.release() }
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+        guard var journal = try store.loadUpdateJournal(),
+              journal.transactionID == transactionID,
+              journal.recovery == .cancelled else {
+            throw VPNReleaseStoreError.invalidUpdateJournal
+        }
+        let archiveName = transactionID.uuidString.lowercased() + "-cancelled"
+        let archive = try openArchive(parent: retirement, name: archiveName)
+        defer { close(archive) }
+        let applicationArchive = applicationStage + ".cancelled-" + transactionID.uuidString.lowercased()
+
+        if journal.phase == .cancelled {
+            try validateOptionalApplication(parent: applications,
+                                            source: applicationStage,
+                                            archiveName: applicationArchive,
+                                            release: journal.candidate.release,
+                                            sourceMayExist: true)
+            try validateCancelledUpdateLayout(update: update, archive: archive,
+                                              journal: journal, allowSources: true)
+            try retireOptionalExact(from: applications, source: applicationStage,
+                                    to: applications, destination: applicationArchive)
+            testCheckpoint("cancel:application-retired")
+            journal = try store.advanceCancelledUpdateCleanup(
+                transactionID: transactionID, expectedRevision: journal.revision,
+                expectedPhase: .cancelled, to: .cancellationApplicationRetired)
+        }
+        if journal.phase == .cancellationApplicationRetired {
+            try validateOptionalApplication(parent: applications,
+                                            source: applicationStage,
+                                            archiveName: applicationArchive,
+                                            release: journal.candidate.release,
+                                            sourceMayExist: false)
+            try validateCancelledUpdateLayout(update: update, archive: archive,
+                                              journal: journal, allowSources: true)
+            for name in ["current", "candidate", "executor"] {
+                try retireOptionalExact(from: update, source: name, to: archive,
+                                        destination: name)
+                testCheckpoint("cancel:update-after-\(name)")
+            }
+            try validateCancelledUpdateLayout(update: update, archive: archive,
+                                              journal: journal, allowSources: false)
+            journal = try store.advanceCancelledUpdateCleanup(
+                transactionID: transactionID, expectedRevision: journal.revision,
+                expectedPhase: .cancellationApplicationRetired,
+                to: .cancellationUpdateRetired)
+        }
+        if journal.phase == .cancellationUpdateRetired {
+            try validateOptionalApplication(parent: applications,
+                                            source: applicationStage,
+                                            archiveName: applicationArchive,
+                                            release: journal.candidate.release,
+                                            sourceMayExist: false)
+            try validateCancelledUpdateLayout(update: update, archive: archive,
+                                              journal: journal, allowSources: false)
+            var roots: [VPNUpdateCleanupRootIdentity] = []
+            if let fd = try directory(applications, applicationArchive) {
+                close(fd)
+                roots.append(try rootIdentity(logical: "application", parent: applications,
+                                              name: applicationArchive))
+            }
+            for name in ["candidate", "current", "executor"] {
+                if let fd = try directory(archive, name) {
+                    close(fd)
+                    roots.append(try rootIdentity(logical: name, parent: archive, name: name))
+                }
+            }
+            roots.sort { $0.name < $1.name }
+            journal = try store.authorizeCancelledUpdateCleanupGC(
+                transactionID: transactionID, expectedRevision: journal.revision,
+                roots: roots)
+            testCheckpoint("cancel:gc-authorized")
+        }
+        guard journal.phase == .cancellationGCAuthorized,
+              let roots = journal.cancellationGCRoots else {
+            throw VPNReleaseStoreError.invalidUpdateJournal
+        }
+        let identities = Dictionary(uniqueKeysWithValues: roots.map { ($0.name, $0) })
+        var remainingEntries = 200_000
+        if let identity = identities["application"] {
+            try removeTree(parent: applications, name: applicationArchive,
+                           identity: identity, owner: journal.previous.ownerUserID,
+                           remainingEntries: &remainingEntries)
+        }
+        for name in ["current", "candidate", "executor"] {
+            if let identity = identities[name] {
+                try removeTree(parent: archive, name: name, identity: identity,
+                               owner: journal.previous.ownerUserID,
+                               remainingEntries: &remainingEntries)
+            }
+        }
+        guard (try names(archive)).isEmpty else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        if unlinkat(retirement, archiveName, AT_REMOVEDIR) != 0, errno != ENOENT {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        guard fsync(retirement) == 0 else { throw VPNJointUpdateCleanupError.commitUncertain }
+        try lease.check(); try updateLease.check()
+        try store.retireUpdateJournal(transactionID: transactionID,
+                                      expectedRevision: journal.revision)
+    }
+
+    private static func validateOptionalApplication(parent: Int32, source: String,
+                                                    archiveName: String,
+                                                    release: VerifiedVPNRelease,
+                                                    sourceMayExist: Bool) throws {
+        let sourceFD = try directory(parent, source)
+        let archiveFD = try directory(parent, archiveName)
+        defer { if let sourceFD { close(sourceFD) }; if let archiveFD { close(archiveFD) } }
+        guard sourceFD == nil || archiveFD == nil, sourceMayExist || sourceFD == nil else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        if let selected = sourceFD ?? archiveFD {
+            try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: selected)
+            _ = try VPNStagedApplication.inspect(inTrustedDirectory: selected, release: release)
+        }
+    }
+
+    private static func validateCancelledUpdateLayout(update: Int32, archive: Int32,
+                                                      journal: VPNUpdateJournalSnapshot,
+                                                      allowSources: Bool) throws {
+        try validateOneOf(parent: update, source: "current", archiveParent: archive,
+                          archiveName: "current", release: journal.previous.release,
+                          sourceMayExist: allowSources)
+        try validateOneOf(parent: update, source: "candidate", archiveParent: archive,
+                          archiveName: "candidate", release: journal.candidate.release,
+                          sourceMayExist: allowSources)
+        let sourceExecutor = try directory(update, "executor")
+        let archivedExecutor = try directory(archive, "executor")
+        defer { if let sourceExecutor { close(sourceExecutor) }; if let archivedExecutor { close(archivedExecutor) } }
+        guard sourceExecutor == nil || archivedExecutor == nil,
+              allowSources || sourceExecutor == nil else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        if let executor = sourceExecutor ?? archivedExecutor {
+            try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: executor)
+            _ = try VPNStagedApplication.inspect(inTrustedDirectory: executor,
+                                                 release: journal.previous.release)
+        }
+        let allowedUpdate = Set([VPNLifecycleLease.lockName, "current", "candidate", "executor"])
+        let actualUpdate = Set(try names(update))
+        guard actualUpdate.isSubset(of: allowedUpdate),
+              actualUpdate.contains(VPNLifecycleLease.lockName) else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        guard Set(try names(archive)).isSubset(of: ["current", "candidate", "executor"]) else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+    }
+
+    private static func retireOptionalExact(from sourceParent: Int32, source: String,
+                                            to destinationParent: Int32,
+                                            destination: String) throws {
+        let sourceFD = try directory(sourceParent, source)
+        let destinationFD = try directory(destinationParent, destination)
+        defer { if let sourceFD { close(sourceFD) }; if let destinationFD { close(destinationFD) } }
+        if sourceFD == nil, destinationFD == nil { return }
+        if sourceFD == nil, destinationFD != nil { return }
+        guard sourceFD != nil, destinationFD == nil else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        guard renameatx_np(sourceParent, source, destinationParent, destination,
+                           UInt32(RENAME_EXCL)) == 0,
+              fsync(sourceParent) == 0,
+              sourceParent == destinationParent || fsync(destinationParent) == 0 else {
+            throw VPNJointUpdateCleanupError.commitUncertain
+        }
+    }
+
+    private static func rootIdentity(logical: String, parent: Int32,
+                                     name: String) throws -> VPNUpdateCleanupRootIdentity {
+        guard let fd = try directory(parent, name) else {
+            throw VPNJointUpdateCleanupError.invalidLayout
+        }
+        defer { close(fd) }
+        var value = stat()
+        guard fstat(fd, &value) == 0 else { throw VPNJointUpdateCleanupError.unsafeStorage }
+        return VPNUpdateCleanupRootIdentity(name: logical,
+            device: UInt64(truncatingIfNeeded: value.st_dev), inode: UInt64(value.st_ino))
+    }
 
     private static func perform(service: Int32, update: Int32, retirement: Int32,
                                 applications: Int32, authority: VPNReleaseAuthority,

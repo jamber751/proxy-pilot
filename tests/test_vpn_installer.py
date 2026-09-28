@@ -362,7 +362,7 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
         self.assertEqual(self.journal_record()['phase'], 'replacementPending')
 
-    def test_cancel_and_retire_prepared_do_not_stop_or_restart_a(self):
+    def test_cancel_keeps_authority_when_fixture_has_no_app_staging_to_clean(self):
         self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
         self.prepare_joint_update()
         before = self.running_snapshot()
@@ -374,9 +374,9 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertEqual(after_cancel[1]['release.json'], before[1]['release.json'])
         self.assertEqual(after_cancel[1]['activation.json'], before[1]['activation.json'])
         result = self.journal_action('journal-retire')
-        self.assertEqual(result.stdout.strip(), 'journal:retired', result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'rejected:invalidUpdateJournal', result.stdout + result.stderr)
         self.assertFalse((self.support / 'runtime-built').exists())
-        self.assertFalse((self.storage / 'update.json').exists())
+        self.assertTrue((self.storage / 'update.json').exists())
         after_retire = self.running_snapshot()
         self.assertEqual(after_retire[0], before[0])
         self.assertEqual(after_retire[1]['activation.json'], before[1]['activation.json'])
@@ -443,7 +443,8 @@ class VPNInstallerTests(unittest.TestCase):
         self.assertFalse(self.loaded())
         self.assertFalse((self.support / 'runtime-built').exists())
         self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)
-        self.assertEqual(self.journal_action('journal-retire').stdout.strip(), 'journal:retired')
+        self.assertEqual(self.journal_action('journal-retire').stdout.strip(),
+                         'rejected:invalidUpdateJournal')
         self.assertFalse(self.loaded())
         self.assertFalse((self.support / 'runtime-built').exists())
         self.assertEqual((self.storage / 'activation.json').read_bytes(), budget)

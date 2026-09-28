@@ -18,6 +18,8 @@ enum VPNReleaseStoreError: Error {
 
 enum VPNUpdateJournalPhase: String, Codable {
     case prepared, replacementPending, selected, completed, cancelled
+    case cancellationApplicationRetired, cancellationUpdateRetired
+    case cancellationGCAuthorized
 }
 
 enum VPNUpdateCleanupPhase: String, Codable {
@@ -44,6 +46,7 @@ struct VPNUpdateJournalSnapshot {
     let previous: VPNAuthorizedDeployment
     let candidate: VPNAuthorizedDeployment
     let transition: VerifiedVPNUpdateTransition
+    let cancellationGCRoots: [VPNUpdateCleanupRootIdentity]?
     fileprivate init(_ record: VPNReleaseStore.UpdateJournal, previous: VPNAuthorizedDeployment,
                      candidate: VPNAuthorizedDeployment, recovery: VPNUpdateRecovery,
                      transition: VerifiedVPNUpdateTransition) {
@@ -51,6 +54,7 @@ struct VPNUpdateJournalSnapshot {
         phase = record.phase; self.previous = previous; self.candidate = candidate
         self.recovery = recovery
         self.transition = transition
+        cancellationGCRoots = record.cleanupRoots
     }
 }
 
@@ -130,6 +134,7 @@ final class VPNReleaseStore {
         let candidateSignature: Data
         let transitionPayload: Data
         let transitionSignature: Data
+        var cleanupRoots: [VPNUpdateCleanupRootIdentity]? = nil
     }
     fileprivate struct CleanupReceipt: Codable {
         let schema: Int
@@ -287,6 +292,44 @@ final class VPNReleaseStore {
         }
     }
 
+    @discardableResult
+    func advanceCancelledUpdateCleanup(transactionID: UUID, expectedRevision: UInt64,
+                                       expectedPhase: VPNUpdateJournalPhase,
+                                       to phase: VPNUpdateJournalPhase) throws
+        -> VPNUpdateJournalSnapshot {
+        try withLock {
+            try requireNoCleanupReceipt()
+            var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == expectedPhase else { throw VPNReleaseStoreError.invalidUpdateJournal }
+            let valid = expectedPhase == .cancelled && phase == .cancellationApplicationRetired
+                || expectedPhase == .cancellationApplicationRetired && phase == .cancellationUpdateRetired
+            guard valid, record.cleanupRoots == nil else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+            try advanceJournal(&record, to: phase)
+            return try validateJournal(record)
+        }
+    }
+
+    @discardableResult
+    func authorizeCancelledUpdateCleanupGC(transactionID: UUID,
+                                            expectedRevision: UInt64,
+                                            roots: [VPNUpdateCleanupRootIdentity]) throws
+        -> VPNUpdateJournalSnapshot {
+        try withLock {
+            try requireNoCleanupReceipt()
+            var (record, _) = try requireJournal(transactionID, revision: expectedRevision)
+            guard record.phase == .cancellationUpdateRetired,
+                  record.cleanupRoots == nil,
+                  validCancelledCleanupRoots(roots) else {
+                throw VPNReleaseStoreError.invalidUpdateJournal
+            }
+            record.cleanupRoots = roots
+            try advanceJournal(&record, to: .cancellationGCAuthorized)
+            return try validateJournal(record)
+        }
+    }
+
     func retireUpdateJournal(transactionID: UUID, expectedRevision: UInt64) throws {
         try withLock {
             let cleanup = try readCleanupReceipt()
@@ -303,7 +346,7 @@ final class VPNReleaseStore {
             guard record.transactionID == transactionID, record.revision == expectedRevision else {
                 throw VPNReleaseStoreError.staleRevision
             }
-            guard record.phase == .completed || record.phase == .cancelled else {
+            guard record.phase == .completed || record.phase == .cancellationGCAuthorized else {
                 throw VPNReleaseStoreError.invalidUpdateJournal
             }
             if record.phase == .completed {
@@ -472,8 +515,15 @@ final class VPNReleaseStore {
         case .replacementPending, .cancelled: expectedRevision = 1
         case .selected: expectedRevision = 2
         case .completed: expectedRevision = 3
+        case .cancellationApplicationRetired: expectedRevision = 2
+        case .cancellationUpdateRetired: expectedRevision = 3
+        case .cancellationGCAuthorized: expectedRevision = 4
         }
         guard record.schema == 1, record.revision == expectedRevision else {
+            throw VPNReleaseStoreError.invalidUpdateJournal
+        }
+        guard (record.phase == .cancellationGCAuthorized) == (record.cleanupRoots != nil),
+              record.cleanupRoots.map(validCancelledCleanupRoots) ?? true else {
             throw VPNReleaseStoreError.invalidUpdateJournal
         }
         let previous = try authority.verify(payload: record.previousPayload, signature: record.previousSignature, previous: nil)
@@ -494,12 +544,24 @@ final class VPNReleaseStore {
         case .selected where destinationSelected: recovery = .recoverCandidate
         case .completed where destinationSelected: recovery = .completed
         case .cancelled where sourceSelected: recovery = .cancelled
+        case .cancellationApplicationRetired where sourceSelected: recovery = .cancelled
+        case .cancellationUpdateRetired where sourceSelected: recovery = .cancelled
+        case .cancellationGCAuthorized where sourceSelected: recovery = .cancelled
         default: throw VPNReleaseStoreError.invalidUpdateJournal
         }
         return VPNUpdateJournalSnapshot(record,
             previous: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: previous)),
             candidate: VPNAuthorizedDeployment(VPNAuthorizedRelease(ownerUserID: record.owner, release: candidate)),
             recovery: recovery, transition: transition)
+    }
+
+    private func validCancelledCleanupRoots(_ roots: [VPNUpdateCleanupRootIdentity]) -> Bool {
+        let names = roots.map(\.name)
+        let allowed = Set(["application", "current", "candidate", "executor"])
+        guard names == names.sorted(), Set(names).count == names.count,
+              Set(names).isSubset(of: allowed), Set(names).isSuperset(of: ["current", "candidate"]),
+              roots.count >= 2, roots.count <= 4 else { return false }
+        return roots.allSatisfy { $0.device != 0 && $0.inode != 0 }
     }
 
     private func advanceJournal(_ record: inout UpdateJournal, to phase: VPNUpdateJournalPhase) throws {
