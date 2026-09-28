@@ -60,6 +60,16 @@ returns the same inbox; another candidate, a changed published inbox, or another
 pending identity is refused without overwrite. This copier is not yet reachable
 from an endpoint and does not call the mutation pipeline.
 
+The transport foundation now accepts one fixed binary request per authenticated
+local Unix connection. The live kernel peer is checked before parsing the frame;
+`submit` requires exactly one `SCM_RIGHTS` directory descriptor and `status`
+requires none. Malformed, appended, truncated, timed-out, or descriptor-bearing
+status requests are refused, and every received descriptor is close-on-exec and
+closed on all refusal and completion paths. The fixed `update-broker.sock`
+endpoint is private (`0600`) inside an already-open trusted directory. This
+transport is still not registered with launchd and cannot invoke the inbox or
+mutation pipeline.
+
 ## Broker lifecycle
 
 The broker is a separate root process and endpoint, not the selected VPN helper

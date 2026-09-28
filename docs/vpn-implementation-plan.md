@@ -2458,3 +2458,23 @@ executor handoff с идемпотентным status/receipt.
 Следующий узел: локальный Unix transport с descriptor passing и взаимной live
 process authentication, затем единая транзакция `inbox → authorize → prepare →
 executor handoff`; до неё endpoint и UI остаются отключены.
+
+### Продолжение 1.5aa — authenticated broker transport (29 сентября)
+
+- [x] Добавлен фиксированный local Unix transport: одна connection принимает
+  ровно один bounded binary request и возвращает один bounded numeric response.
+- [x] Caller определяется только live kernel peer credential и existing signed
+  process policy; UID, путь, command, argv и environment из frame не принимаются.
+- [x] `submit` требует ровно один directory FD через `SCM_RIGHTS`, `status` — ни
+  одного. FD получает `CLOEXEC` и закрывается на каждом отказе и после handler.
+- [x] Truncated control, missing/extra FD, не-directory, malformed/appended frame,
+  EOF и timeout fail closed. Endpoint имеет фиксированное имя
+  `update-broker.sock`, создаётся mode `0600` внутри pre-opened trusted parent.
+- [x] Реальные socketpair/sendmsg tests проходят 12/12; typecheck всех
+  VPN-компонентов проходит без ошибок.
+
+Transport пока не зарегистрирован и не запускается в production. Следующий узел:
+отдельный root broker daemon и launchd lifecycle, затем единая идемпотентная
+транзакция `receive → inbox → authorize → prepare → executor handoff → status`.
+UI и one-click update остаются выключены до завершения этой цепочки и recovery
+acceptance.
