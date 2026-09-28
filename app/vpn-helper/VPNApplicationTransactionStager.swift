@@ -205,8 +205,7 @@ enum VPNApplicationTransactionStager {
             try lease.check()
             try VPNStagedApplication.revalidate(sourceInspection,
                                                  inTrustedDirectory: source)
-            let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) | cloneResolveBeneath
-            guard clonefileat(source, app, staging, app, flags) == 0 else {
+            guard cloneDirectChild(source, app, staging, app) == 0 else {
                 if errno == ENOTSUP || errno == EXDEV {
                     throw VPNApplicationTransactionStagingError.cloneUnavailable
                 }
@@ -241,6 +240,23 @@ enum VPNApplicationTransactionStager {
             throw VPNApplicationTransactionStagingError.commitUncertain
         }
         return resumed ? .resumed : .staged
+    }
+
+    /// Compatibility for macOS 14. The fallback is limited to EINVAL from the
+    /// unsupported beneath flag, fixed direct-child names and an absent target.
+    private static func cloneDirectChild(_ source: Int32, _ sourceName: String,
+                                         _ destination: Int32, _ destinationName: String) -> Int32 {
+        let basic = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+        if clonefileat(source, sourceName, destination, destinationName,
+                       basic | cloneResolveBeneath) == 0 { return 0 }
+        guard errno == EINVAL else { return -1 }
+        var attributes = stat()
+        guard fstatat(destination, destinationName, &attributes, AT_SYMLINK_NOFOLLOW) != 0,
+              errno == ENOENT else {
+            errno = EEXIST
+            return -1
+        }
+        return clonefileat(source, sourceName, destination, destinationName, basic)
     }
 
     private static func validatePublished(base: Int32, name: String,

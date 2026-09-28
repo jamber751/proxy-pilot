@@ -68,8 +68,7 @@ enum VPNApplicationDestinationStage {
             return .alreadyStaged
         }
 
-        let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) | cloneResolveBeneath
-        guard clonefileat(base, "current", destination, stageName, flags) == 0 else {
+        guard cloneDirectChild(base, "current", destination, stageName) == 0 else {
             if errno == ENOTSUP || errno == EXDEV {
                 throw VPNApplicationDestinationStageError.cloneUnavailable
             }
@@ -112,6 +111,25 @@ enum VPNApplicationDestinationStage {
         } catch {
             throw VPNApplicationDestinationStageError.stagingUncertain
         }
+    }
+
+    /// macOS 14 rejects CLONE_RESOLVE_BENEATH with EINVAL. These are fixed
+    /// single-component names under already validated descriptors; on that one
+    /// legacy result, confirm the destination is still absent and retry with the
+    /// older no-follow/no-owner-copy contract. Other errors never downgrade.
+    private static func cloneDirectChild(_ source: Int32, _ sourceName: String,
+                                         _ destination: Int32, _ destinationName: String) -> Int32 {
+        let basic = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+        if clonefileat(source, sourceName, destination, destinationName,
+                       basic | cloneResolveBeneath) == 0 { return 0 }
+        guard errno == EINVAL else { return -1 }
+        var attributes = stat()
+        guard fstatat(destination, destinationName, &attributes, AT_SYMLINK_NOFOLLOW) != 0,
+              errno == ENOENT else {
+            errno = EEXIST
+            return -1
+        }
+        return clonefileat(source, sourceName, destination, destinationName, basic)
     }
 
     private static func checkDestination(_ destination: Int32, production: Bool) throws {

@@ -67,8 +67,7 @@ enum VPNReplacementExecutorProvisioner {
             return .recoveredPrepared
         }
 
-        let flags = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) | cloneResolveBeneath
-        guard clonefileat(base, "current", base, preparing, flags) == 0 else {
+        guard cloneDirectChild(base, "current", base, preparing) == 0 else {
             if errno == ENOTSUP || errno == EXDEV { throw VPNExecutorProvisioningError.cloneUnavailable }
             throw VPNExecutorProvisioningError.unsafeStorage
         }
@@ -85,6 +84,23 @@ enum VPNReplacementExecutorProvisioner {
                     pending: cloned, copy: copy, release: release,
                     lease: lease, checkpoint: checkpoint)
         return .prepared
+    }
+
+    /// Compatibility for macOS 14, whose runtime rejects the newer beneath
+    /// flag. Both names are fixed direct children of one already trusted base.
+    private static func cloneDirectChild(_ source: Int32, _ sourceName: String,
+                                         _ destination: Int32, _ destinationName: String) -> Int32 {
+        let basic = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+        if clonefileat(source, sourceName, destination, destinationName,
+                       basic | cloneResolveBeneath) == 0 { return 0 }
+        guard errno == EINVAL else { return -1 }
+        var attributes = stat()
+        guard fstatat(destination, destinationName, &attributes, AT_SYMLINK_NOFOLLOW) != 0,
+              errno == ENOENT else {
+            errno = EEXIST
+            return -1
+        }
+        return clonefileat(source, sourceName, destination, destinationName, basic)
     }
 
     private static func publish(base: Int32, current: Int32,
