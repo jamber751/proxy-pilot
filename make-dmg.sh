@@ -21,13 +21,17 @@ VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' "$HERE/bin/proxypilot")
 
 print -- "ProxyPilot $VERSION → dmg"
 
-# 1) свежая сборка приложения
-"$HERE/app/build.sh" >/dev/null
-APP="$HERE/app/build/ProxyPilot.app"
+# 1) свежая сборка приложения. Не используем общий app/build: там могут лежать
+# preview/root-артефакты, и две параллельные сборки не должны удалять файлы друг
+# друга.
+BUILD_ROOT=$(mktemp -d /tmp/proxypilot-app-build.XXXXXX)
+STAGE=""
+trap 'rm -rf "$BUILD_ROOT"; [[ -z "$STAGE" ]] || rm -rf "$STAGE"' EXIT
+"$HERE/app/build.sh" "$BUILD_ROOT" >/dev/null
+APP="$BUILD_ROOT/ProxyPilot.app"
 
 # 2) staging: приложение + вложенные CLI и gost + ссылка на /Applications
 STAGE=$(mktemp -d /tmp/proxypilot-dmg.XXXXXX)
-trap "rm -rf '$STAGE'" EXIT
 cp -R "$APP" "$STAGE/"
 
 RES_BIN="$STAGE/ProxyPilot.app/Contents/Resources/bin"
@@ -75,8 +79,11 @@ else
   print -u2 "предупреждение: вложен gost только для $(lipo -archs "$RES_BIN/gost") (нет vendor/gost-universal)"
 fi
 
-# бандл менялся после подписи в build.sh — переподписать (ad-hoc)
-codesign --force --sign - --identifier kz.documentolog.proxypilot "$STAGE/ProxyPilot.app"
+# Бандл менялся после подписи в build.sh — переподписать (ad-hoc), не снимая
+# защиту с основного процесса. Sparkle остаётся только во вложенном обычном
+# user-процессе; VPN/root полномочий у него нет.
+codesign --force --sign - --options runtime,hard,kill \
+  --identifier kz.documentolog.proxypilot "$STAGE/ProxyPilot.app"
 codesign --verify --deep --strict "$STAGE/ProxyPilot.app"
 
 ln -s /Applications "$STAGE/Applications"

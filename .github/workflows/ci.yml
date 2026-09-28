@@ -89,6 +89,7 @@ jobs:
         run: |
           APP=app/build/ProxyPilot.app
           BIN=$APP/Contents/MacOS/ProxyPilot
+          WORKER="$APP/Contents/Helpers/ProxyPilot Updater.app/Contents/MacOS/ProxyPilotUpdater"
           archs=$(lipo -archs "$BIN")
           echo "  архитектуры: $archs"
           [[ "$archs" == *x86_64* && "$archs" == *arm64* ]] || { echo "не universal"; exit 1; }
@@ -96,7 +97,14 @@ jobs:
           echo "  minos: $minos"
           [[ "$minos" == "11.0" ]] || { echo "ожидалась планка macOS 11.0"; exit 1; }
           test -f "$APP/Contents/Resources/AppIcon.icns" || { echo "нет иконки"; exit 1; }
-          codesign --verify --verbose=1 "$APP"
+          test -x "$WORKER" || { echo "нет изолированного updater"; exit 1; }
+          ! otool -L "$BIN" | grep -q Sparkle.framework || { echo "Sparkle загружен в основном процессе"; exit 1; }
+          otool -L "$WORKER" | grep -q Sparkle.framework || { echo "worker не содержит Sparkle"; exit 1; }
+          signature=$(codesign -dvv "$BIN" 2>&1)
+          [[ "$signature" == *runtime* && "$signature" == *hard* && "$signature" == *kill* ]] || {
+            echo "нет hardened flags у основного процесса"; exit 1;
+          }
+          codesign --verify --deep --strict --verbose=1 "$APP"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -15,8 +15,11 @@ SPARKLE=$(zsh "$HERE/fetch-sparkle.sh")
 FRAMEWORK_DIR="$SPARKLE/Sparkle.xcframework/macos-arm64_x86_64"
 PUBLIC_KEY=$(< "$HERE/updater-public-key.txt")
 [[ ${#PUBLIC_KEY} == 44 ]] || { print -u2 "Invalid Sparkle public key"; exit 1; }
-# Staging only: do not switch release packaging until install/relaunch passes.
-ISOLATED_UPDATER="${PROXYPILOT_ISOLATED_UPDATER:-0}"
+# The release/default frontend must never load Sparkle in-process. The nested
+# ordinary-user worker owns updates and refuses an app-only update before
+# download whenever VPN support is present or uncertain. Keep 0 only as an
+# explicit legacy test/development escape hatch.
+ISOLATED_UPDATER="${PROXYPILOT_ISOLATED_UPDATER:-1}"
 [[ "$ISOLATED_UPDATER" == 0 || "$ISOLATED_UPDATER" == 1 ]] || { print -u2 "Invalid updater build mode"; exit 1; }
 VPN_INSTALLER="${PROXYPILOT_VPN_INSTALLER:-0}"
 [[ "$VPN_INSTALLER" == 0 || "$VPN_INSTALLER" == 1 ]] || { print -u2 "Invalid VPN installer build mode"; exit 1; }

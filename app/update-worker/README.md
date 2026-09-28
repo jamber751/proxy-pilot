@@ -1,6 +1,6 @@
-# Isolated updater candidate
+# Isolated updater
 
-This is an opt-in staging build, **not the release/default updater**. It keeps
+This is the release/default updater. It keeps
 Sparkle out of the app process so the same app executable can eventually meet
 the VPN peer policy (`runtime,hard,kill`, no runtime exceptions/entitlements).
 It does not install or authorize a VPN helper.
@@ -8,16 +8,16 @@ It does not install or authorize a VPN helper.
 Latest joint-update status (28 September 2026): the separately authorized VPN
 package successfully replaced signed A119 with signed B120, selected helper B,
 proved readiness and retired its recovery job on Apple Silicon/macOS 26.1. This
-was a direct native package acceptance run, not Sparkle integration. The default
-updater is still unchanged and publication remains blocked on that integration,
-reboot/crash recovery and Intel/macOS 11 runtime acceptance. The corrected
+was a direct native package acceptance run, not Sparkle integration. Publication
+remains blocked on a safe one-click joint-update handoff, early reboot/crash
+recovery and Intel/macOS 11 runtime acceptance. The corrected
 removal path passed a separate authorized sequence-121 system run.
 
 Build into a new disposable output directory:
 
 ```sh
 candidate_dir=$(mktemp -d /tmp/proxypilot-updater-candidate.XXXXXX)
-PROXYPILOT_ISOLATED_UPDATER=1 zsh app/build.sh "$candidate_dir"
+zsh app/build.sh "$candidate_dir"
 ```
 
 Do not launch this production-identified bundle alongside the installed app as
@@ -25,7 +25,9 @@ a test. The automated tests build uniquely identified disposable hosts instead.
 The small hosts use an inert CLI; the full-app fixture below runs selected CLI
 functions with loopback GOST and substituted OS boundaries. Neither launches the
 installed app/full CLI, accesses a real VPN profile or installs a system service.
-The ordinary build and release scripts continue to use the existing updater.
+The ordinary build and release scripts use this updater. An explicit
+`PROXYPILOT_ISOLATED_UPDATER=0` remains only for legacy test/development
+comparison and must not be used for release packaging.
 
 ## Process and trust boundaries
 
@@ -69,10 +71,10 @@ The ordinary build and release scripts continue to use the existing updater.
 ## Early VPN update veto (12 September)
 
 An ordinary app-only update can strand an installed VPN helper with pins for the
-previous app. Until joint replacement is implemented, the staging worker uses
+previous app. Until joint replacement is implemented, the default worker uses
 Sparkle's supported `shouldProceedWithUpdate` delegate to refuse a selected update
 **before its offer or download** when a VPN installation marker is present or
-inspection cannot establish absence. The ordinary/default updater is unchanged.
+inspection cannot establish absence. This guard is part of the default build.
 
 `VPNUpdateAdmission` only opens the fixed `/Library/Application Support` and
 `/Library/LaunchDaemons` directories and checks the three fixed private/public
@@ -85,10 +87,10 @@ Each selected update gets a fresh inspection; no allow decision is cached.
 
 This is a conservative compatibility check, **not an atomic update protocol or
 security authorization**. Installing a helper after this early check, or resuming
-an already staged update, is not protected by this veto. The updater must remain
-opt-in until late installation, restart and failure recovery are coordinated with
-the independently signed root policy. Do not remove a live VPN installation to
-work around this guard.
+an already staged update, is not protected by this veto. The default updater
+therefore refuses app-only replacement while VPN support is installed until late
+installation, restart and failure recovery are coordinated with the independently
+signed root policy. Do not remove a live VPN installation to work around this guard.
 
 Verified with 10 disposable filesystem tests and 3 actual Sparkle integration
 tests (all passed on this Mac):
@@ -310,10 +312,11 @@ a window whose height is still zero, and presenting its popover silently fails.
 The App now briefly waits for a usable anchor. Closing or showing updater UI
 cancels a pending request; a newer request supersedes the previous one. Four
 `test_popover_startup.py` regressions exercise the actual methods with inert
-window boundaries, including the bounded timeout. Both ordinary and isolated
+window boundaries, including the bounded timeout. Both legacy and isolated
 Universal builds pass strict signature verification. Execution was on the current
 Apple Silicon Mac, not Intel/macOS 11 runtime acceptance. The isolated updater
-remains opt-in; no public release or default build-mode change is made here.
+became the default on 28 September; publication still requires the joint-update
+and remaining runtime gates above.
 
 The combined regression run with both installer opt-ins enabled completed 300
 tests in 358.739 seconds: 299 passed, one legacy opt-in Sparkle installation test

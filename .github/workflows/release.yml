@@ -78,6 +78,17 @@ jobs:
           test -x "$BIN/proxypilot" && test -x "$BIN/gost" || { echo "бандл не самодостаточен"; exit 1; }
           echo "  gost: $(lipo -archs $BIN/gost)"
           lipo -archs "$BIN/gost" | grep -q x86_64 || { echo "gost не universal"; exit 1; }
+          APP=/tmp/ppdmg/ProxyPilot.app
+          MAIN="$APP/Contents/MacOS/ProxyPilot"
+          WORKER="$APP/Contents/Helpers/ProxyPilot Updater.app/Contents/MacOS/ProxyPilotUpdater"
+          test -x "$WORKER" || { echo "нет изолированного updater"; exit 1; }
+          ! otool -L "$MAIN" | grep -q Sparkle.framework || { echo "Sparkle загружен в основном процессе"; exit 1; }
+          otool -L "$WORKER" | grep -q Sparkle.framework || { echo "worker не содержит Sparkle"; exit 1; }
+          signature=$(codesign -dvv "$MAIN" 2>&1)
+          [[ "$signature" == *runtime* && "$signature" == *hard* && "$signature" == *kill* ]] || {
+            echo "нет hardened flags у основного процесса"; exit 1;
+          }
+          codesign --verify --deep --strict "$APP"
           hdiutil detach /tmp/ppdmg -quiet
 
       - name: Publish release

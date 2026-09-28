@@ -2383,3 +2383,18 @@ staging-остатки. До этого они сохраняются как д�
 Intel/macOS 11 и интеграции
 совместной app/helper транзакции с release/default Sparkle flow. Профиль, маршруты,
 DNS и VPN-туннель в этой приёмке не включались.
+
+### Продолжение 1.5w — безопасный default updater (28 сентября)
+
+- [x] Default/release сборка переведена на отдельный ordinary-user Sparkle worker.
+  Основной процесс больше не линкует Sparkle и сохраняет `runtime,hard,kill` также
+  после финальной упаковки DMG.
+- [x] В default flow действует fail-closed проверка VPN-маркеров до предложения и
+  скачивания ZIP. Установленный, частичный или недоступный VPN не может быть
+  перезаписан обычным app-only обновлением.
+- [x] CI и release-проверка требуют nested worker, отсутствие Sparkle в основном
+  бинарнике, наличие Sparkle только в worker, hardened flags и deep/strict подпись.
+- [ ] Это ещё не one-click совместное обновление. Sparkle не получает root/VPN
+  полномочий; запуск скачанного scripts-package как root запрещён моделью доверия.
+  Следующий безопасный узел — заранее установленный фиксированный root broker с
+  ограниченным handoff и ранний recovery job до drain/prepared фаз.

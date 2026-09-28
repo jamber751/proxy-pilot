@@ -73,6 +73,7 @@ print(String(data: try JSONSerialization.data(withJSONObject: result), encoding:
 class UpdatePolicyTests(unittest.TestCase):
     def test_build_security_defaults(self):
         build = (ROOT / 'app/build.sh').read_text()
+        package = (ROOT / 'make-dmg.sh').read_text()
         for key in ['SUVerifyUpdateBeforeExtraction', 'SURequireSignedFeed', 'SUEnableAutomaticChecks']:
             self.assertIn(f'<key>{key}</key> <true/>', build)
         for key in ['SUAutomaticallyUpdate', 'SUAllowsAutomaticUpdates', 'SUEnableSystemProfiling']:
@@ -80,6 +81,10 @@ class UpdatePolicyTests(unittest.TestCase):
         self.assertIn('<key>CFBundleVersion</key>         <string>$VERSION</string>', build)
         self.assertIn('<key>SUScheduledCheckInterval</key> <integer>86400</integer>', build)
         self.assertIn('<key>SUSignedFeedFailureExpirationInterval</key> <integer>0</integer>', build)
+        self.assertIn('ISOLATED_UPDATER="${PROXYPILOT_ISOLATED_UPDATER:-1}"', build)
+        self.assertIn('SIGN_FLAGS=(--options runtime,hard,kill)', build)
+        self.assertIn('BUILD_ROOT=$(mktemp -d /tmp/proxypilot-app-build.XXXXXX)', package)
+        self.assertIn('codesign --force --sign - --options runtime,hard,kill', package)
 
     @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
     def test_relaunch_preserves_preview_state_and_can_be_cancelled(self):

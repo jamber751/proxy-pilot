@@ -8,6 +8,8 @@ notarized: macOS Gatekeeper prompts still apply.
 ## User experience
 
 - Checks once per day while the app is running; no separate background daemon.
+- The main ProxyPilot process does not load Sparkle. A fixed nested updater runs
+  as the same ordinary user and has no VPN/helper/root authority.
 - Settings shows the installed version, **Проверить обновления**, and an opt-out
   **Проверять автоматически** checkbox.
 - Scheduled discoveries add a dot to the gear and an update button in Settings;
@@ -23,6 +25,9 @@ notarized: macOS Gatekeeper prompts still apply.
   the new CLI replaces that engine once on relaunch (`bridge-version`). The
   enabled flag, selected route and system proxy settings are not changed by the
   updater. Existing connections may briefly drop when GOST restarts.
+- If VPN support is installed, or its state cannot be proven absent, an ordinary
+  app-only update is refused before download. Do not remove VPN components as a
+  workaround; a future jointly signed app/helper path must perform that update.
 - Normal **Выйти** still disables the proxy. Update relaunch is a separate path.
 - Version 1.4.0 has no updater: users must install the first updater-enabled
   version manually once. A release feed becomes live only when published.
