@@ -246,8 +246,25 @@ enum VPNJointApplicationReplacement {
         }
         var adapter: VPNActivationRuntime?
         var drained = false
+        var recoveryArmed = false
         func authorizeMutation() throws {
             try recheck()
+            if !recoveryArmed && !testPolicy {
+                // Persist a protected recovery path before constructing the
+                // runtime or stopping A. A crash from this point onward can
+                // reconcile exact installed A, or continue forward from exact B.
+                do {
+                    let recovery = try VPNRecoveryLaunchdJob.system(
+                        storageDirectory: directory)
+                    try recovery.installAndArm(
+                        initial.candidate,
+                        deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
+                    try recheck()
+                    recoveryArmed = true
+                } catch {
+                    throw VPNJointApplicationReplacementFailure.recoveryArm
+                }
+            }
             if !drained {
                 // Invalid staged copies must never interrupt the service. Construct
                 // the adapter lazily, only after the swap validated both trees.
@@ -344,18 +361,6 @@ enum VPNJointApplicationReplacement {
             #endif
             failureStage = .applicationDestinationRecheck
             try recheck()
-            if !testPolicy {
-                // Arm the protected candidate helper before B is allowed to
-                // commit the selector. If this process dies after selection,
-                // launchd finishes readiness/reconciliation from the durable
-                // journal without executing the mutable app path.
-                failureStage = .recoveryArm
-                let recovery = try VPNRecoveryLaunchdJob.system(storageDirectory: directory)
-                try recovery.installAndArm(
-                    initial.candidate,
-                    deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
-                try recheck()
-            }
             #if VPN_APPLICATION_DESTINATION_TESTING && VPN_INSTALLED_CANDIDATE_HANDOFF_TESTING
             if testPolicy {
                 // The standalone handoff suite owns the disposable child role.

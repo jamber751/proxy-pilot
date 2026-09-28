@@ -103,15 +103,31 @@ enum VPNRecoveryDaemonEntryTestHarness {
             payload: candidate, signature: candidateSignature, helper: helper,
             transitionPayload: transition, transitionSignature: transitionSignature,
             expectedSequence: 10)
-        let pending = try store.markUpdateReplacementPending(
-            transactionID: prepared.transactionID, expectedRevision: prepared.revision)
-        let selected = try store.selectUpdateCandidate(
-            transactionID: pending.transactionID, expectedRevision: pending.revision)
+        var result = prepared
+        switch arguments[1] {
+        case "fixture-prepare-prepared":
+            break
+        case "fixture-prepare-pending-a", "fixture-prepare-pending-b":
+            result = try store.markUpdateReplacementPending(
+                transactionID: prepared.transactionID,
+                expectedRevision: prepared.revision)
+        case "fixture-prepare-cancelled":
+            result = try store.cancelUpdateJournal(
+                transactionID: prepared.transactionID,
+                expectedRevision: prepared.revision)
+        default:
+            let pending = try store.markUpdateReplacementPending(
+                transactionID: prepared.transactionID,
+                expectedRevision: prepared.revision)
+            result = try store.selectUpdateCandidate(
+                transactionID: pending.transactionID,
+                expectedRevision: pending.revision)
+        }
         if arguments[1] == "fixture-prepare-off" {
             let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
             try budget.recordManualOff()
         }
-        print("prepared:selected:\(selected.revision)")
+        print("prepared:\(result.phase.rawValue):\(result.revision)")
         return 0
     }
 
@@ -192,7 +208,10 @@ enum VPNRecoveryDaemonEntryTestHarness {
         guard arguments.count >= 2 else { return nil }
         do {
             switch arguments[1] {
-            case "fixture-prepare", "fixture-prepare-off": return try prepare(arguments)
+            case "fixture-prepare", "fixture-prepare-off",
+                 "fixture-prepare-prepared", "fixture-prepare-pending-a",
+                 "fixture-prepare-pending-b", "fixture-prepare-cancelled":
+                return try prepare(arguments)
             case "fixture-arm": return try arm(arguments, holdLease: false)
             case "fixture-arm-held": return try arm(arguments, holdLease: true)
             case "serve": return try serve(arguments)

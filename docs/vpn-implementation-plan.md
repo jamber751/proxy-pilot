@@ -2398,3 +2398,25 @@ DNS и VPN-туннель в этой приёмке не включались.
   полномочий; запуск скачанного scripts-package как root запрещён моделью доверия.
   Следующий безопасный узел — заранее установленный фиксированный root broker с
   ограниченным handoff и ранний recovery job до drain/prepared фаз.
+
+### Продолжение 1.5x — recovery до остановки VPN (28 сентября)
+
+- [x] Recovery job теперь сохраняется после повторной проверки полномочий, но до
+  создания runtime и `stopAndDrain`. Ошибка arm не останавливает работающий A и
+  оставляет journal в исходной подготовленной фазе.
+- [x] После crash/reboot worker различает exact установленный A и B. Для A он
+  сохраняет selector и resumable prepared/pending journal, уважает manual-off и
+  при desired-on поднимает только подписанный A с readiness. Для B продолжает
+  существующий forward-only путь без отката selector.
+- [x] `cancelled` надёжно снимает recovery job; занятый lifecycle lease возвращает
+  retry-код 75. Самоудаление job больше не ждёт синхронный bootout собственного
+  процесса и потому не входит в launchd deadlock.
+- [x] Автоматизированная приёмка покрывает prepared+A, pending+A, pending+B,
+  cancelled и lease contention реальными disposable launchd jobs. Физический
+  power-loss/reboot и Intel/macOS 11 остаются отдельными release-гейтами.
+
+Следующий узел one-click VPN update — узкий заранее установленный root broker:
+он принимает только descriptor staging-каталога и ожидаемый sequence, сам копирует
+fixed layout в root-private inbox, проверяет полный signed переход A→B и передаёт
+его существующему journal/recovery pipeline. URL, shell, argv и произвольные пути
+через IPC не передаются.

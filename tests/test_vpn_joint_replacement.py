@@ -195,6 +195,19 @@ class VPNJointReplacementTests(VPNStagedApplicationTests):
         self.assertEqual(self.code_pins(self.destination / 'ProxyPilot.app'), self.b)
         self.assertEqual((self.destination / 'Other.app/sentinel').read_text(), 'untouched')
 
+    def test_recovery_arm_precedes_runtime_construction_and_drain(self):
+        source = (HELPER / 'VPNJointApplicationReplacement.swift').read_text()
+        authorization = source.split('func authorizeMutation() throws {', 1)[1]
+        authorization = authorization.split('\n        let outcome:', 1)[0]
+        arm = authorization.index('installAndArm(')
+        runtime = authorization.index('runtime()')
+        drain = authorization.index('stopAndDrain(')
+        self.assertLess(arm, runtime)
+        self.assertLess(runtime, drain)
+        # A failed arm therefore returns while the journal is still prepared,
+        # before constructing a runtime or stopping/mutating the live service.
+        self.assertIn('try recheck()', authorization[:arm])
+
     def test_selected_desired_off_completes_without_starting_helper(self):
         self.setup_journal('setup-selected')
         result = self.invoke('finalize-off')

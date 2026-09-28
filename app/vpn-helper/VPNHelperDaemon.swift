@@ -56,19 +56,24 @@ enum VPNHelperDaemon {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
         let stamp = try selectionStamp(directory)
         let selected = try store.loadDeployment()
-        func lateUpdateJournal() throws -> VPNUpdateJournalSnapshot? {
+        func recoveryJournal() throws -> VPNUpdateJournalSnapshot? {
             guard let journal = try store.loadUpdateJournal() else { return nil }
+            let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
+                || journal.phase == .replacementPending && journal.recovery == .inspectApplication
             let late = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
                 || journal.phase == .selected && journal.recovery == .recoverCandidate
                 || journal.phase == .completed && journal.recovery == .completed
-            guard late,
-                  journal.candidate.ownerUserID == selected.ownerUserID,
-                  journal.candidate.release.isSameRelease(as: selected.release) else {
+            let matches = early
+                ? journal.previous.ownerUserID == selected.ownerUserID
+                    && journal.previous.release.isSameRelease(as: selected.release)
+                : journal.candidate.ownerUserID == selected.ownerUserID
+                    && journal.candidate.release.isSameRelease(as: selected.release)
+            guard (early || late), matches else {
                 throw VPNReleaseStoreError.invalidUpdateJournal
             }
             return journal
         }
-        _ = try lateUpdateJournal()
+        _ = try recoveryJournal()
         guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
         try VPNPeerAuthentication.validateCurrentProcess(policy: policy(selected.release))
         let runtime = try VPNHelperRuntime(storageDirectory: directory)
@@ -82,10 +87,10 @@ enum VPNHelperDaemon {
         // A selected/completed journal is allowed only as a readiness-only
         // recovery launch. Earlier, corrupt or mismatched journals fail before
         // endpoint creation and never spend an automatic attempt.
-        let startsForRecovery = try lateUpdateJournal() != nil
+        let startsForRecovery = try recoveryJournal() != nil
         func mayServeReadiness() -> Bool {
             guard startsForRecovery else { return true }
-            if (try? lateUpdateJournal()) != nil { return true }
+            if (try? recoveryJournal()) != nil { return true }
             // Once the terminal journal is retired, this same selected helper
             // becomes the ordinary idle service. A corrupt or mismatched
             // journal still fails both checks and cannot cross this boundary.
@@ -98,13 +103,15 @@ enum VPNHelperDaemon {
         }
         try runtime.prepareEndpoint(directory: endpoint, shared: shared)
         let readinessPolicies: () throws -> [VPNPeerPolicy] = {
-            guard let journal = try lateUpdateJournal() else { return [] }
+            guard let journal = try recoveryJournal() else { return [] }
             if let testing = recoveryReadinessPolicies {
                 return try testing(journal, selected)
             }
+            let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
+                || journal.phase == .replacementPending && journal.recovery == .inspectApplication
             return [
                 try journal.previous.release.installerPolicy(),
-                try selected.release.helperPolicy(),
+                try (early ? journal.candidate.release : selected.release).helperPolicy(),
             ]
         }
         let listener: VPNHelperListener

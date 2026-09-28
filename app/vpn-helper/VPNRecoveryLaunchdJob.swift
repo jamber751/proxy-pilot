@@ -103,17 +103,25 @@ final class VPNRecoveryLaunchdJob {
         try removeDescription()
     }
 
-    /// Disarms the recovery job from inside that job itself. The description is
-    /// durably removed first because a successful `bootout` may terminate the
-    /// caller before it can execute another instruction. A failed bootout leaves
-    /// the already-loaded KeepAlive job able to retry, but it cannot return after
-    /// reboot because its persistent description is gone.
+    /// Disarms the recovery job from inside that job itself. Removing the
+    /// persistent description is the durable operation; the current invocation
+    /// then returns successfully and launchd retires it naturally. Synchronously
+    /// asking launchctl to boot out its own parent job can deadlock (the child
+    /// waits for this process while this process waits for the child).
     func removeCurrent(deadline: UInt64) throws {
         try removeDescription()
-        let status = try launchctl(["bootout", "\(domain)/\(label)"], deadline: deadline)
-        guard status == 0 || status == ESRCH || status == EINPROGRESS else {
-            throw VPNLaunchdError.launchFailed
+        guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw VPNLaunchdError.timeout
         }
+        // Do not wait for our own bootout. launchctl must be able to submit the
+        // request after this process returns and releases its lifecycle lease.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.launchctlPath)
+        process.arguments = ["bootout", "\(domain)/\(label)"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { throw VPNLaunchdError.launchFailed }
     }
 
     private func removeDescription() throws {

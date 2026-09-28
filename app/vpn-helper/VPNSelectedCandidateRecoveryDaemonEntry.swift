@@ -90,33 +90,61 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
             }
             return 0
         }
-        let armed = journal.phase == .replacementPending && journal.recovery == .inspectApplication
+        let sourceRecoverable = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
+            || journal.phase == .replacementPending && journal.recovery == .inspectApplication
+        let cancelled = journal.phase == .cancelled && journal.recovery == .cancelled
         let recoverable = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
             || journal.phase == .selected && journal.recovery == .recoverCandidate
             || journal.phase == .completed && journal.recovery == .completed
-        guard armed || recoverable else { return 0 }
+        guard sourceRecoverable || cancelled || recoverable else { return 0 }
         try VPNPeerAuthentication.validateCurrentProcess(
             policy: currentPolicy(journal.candidate.release))
-        let installed = try installedApplication(journal.candidate.release)
-        if armed {
-            let transactionID = journal.transactionID
-            let candidate = journal.candidate.release
-            let deadline = DispatchTime.now().uptimeNanoseconds + 30_000_000_000
-            while journal.phase == .replacementPending && journal.recovery == .inspectApplication {
-                guard DispatchTime.now().uptimeNanoseconds < deadline else { return 75 }
-                usleep(100_000)
-                guard let fresh = try store.loadUpdateJournal() else { return 0 }
-                guard fresh.transactionID == transactionID,
-                      fresh.candidate.release.isSameRelease(as: candidate) else { return 0 }
-                journal = fresh
-            }
-            let advanced = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
-                || journal.phase == .selected && journal.recovery == .recoverCandidate
-                || journal.phase == .completed && journal.recovery == .completed
-            guard advanced else { return 0 }
-        }
         let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
         defer { lease.release() }
+        guard let fresh = try store.loadUpdateJournal(),
+              fresh.transactionID == journal.transactionID,
+              fresh.revision == journal.revision,
+              fresh.phase == journal.phase,
+              fresh.recovery == journal.recovery,
+              fresh.previous.ownerUserID == journal.previous.ownerUserID,
+              fresh.candidate.ownerUserID == journal.candidate.ownerUserID,
+              fresh.previous.release.isSameRelease(as: journal.previous.release),
+              fresh.candidate.release.isSameRelease(as: journal.candidate.release) else {
+            return 0
+        }
+        journal = fresh
+        if cancelled {
+            try removeRecoveryJob(
+                directory, DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+            return 0
+        }
+
+        var installed: VPNInstalledApplication
+        if sourceRecoverable {
+            if let candidate = try? installedApplication(journal.candidate.release) {
+                // Exact B with a still-source selector means the app exchange
+                // committed but the updater died before selector commit. Only
+                // replacementPending is forward recoverable; prepared+B is an
+                // impossible/hostile state and remains untouched.
+                guard journal.phase == .replacementPending else { return 0 }
+                try candidate.revalidate()
+                journal = try store.selectUpdateCandidate(
+                    transactionID: journal.transactionID,
+                    expectedRevision: journal.revision)
+                installed = candidate
+            } else {
+                let previous = try installedApplication(journal.previous.release)
+                try reconcilePrevious(
+                    store: store, runtime: try runtime(directory), lease: lease,
+                    budget: VPNActivationBudget(trustedDirectoryDescriptor: directory),
+                    journal: journal, installed: previous)
+                try removeRecoveryJob(
+                    directory, DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                return 0
+            }
+        } else {
+            installed = try installedApplication(journal.candidate.release)
+        }
         try installed.revalidate()
         let activationRuntime = try runtime(directory)
         let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
@@ -136,6 +164,70 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
                 }
             })
         return 0
+    }
+
+    /// Restores exact A after a crash before B became authoritative. The signed
+    /// journal remains prepared/pending and resumable; this method changes
+    /// neither selector nor journal. Manual-off remains off, and automatic
+    /// restart is charged before launch so a broken A cannot loop forever.
+    private static func reconcilePrevious(
+        store: VPNReleaseStore, runtime: VPNActivationRuntime,
+        lease: VPNLifecycleLease, budget: VPNActivationBudget,
+        journal: VPNUpdateJournalSnapshot, installed: VPNInstalledApplication
+    ) throws {
+        try lease.check()
+        let selected = try store.loadDeployment()
+        guard selected.ownerUserID == journal.previous.ownerUserID,
+              selected.release.isSameRelease(as: journal.previous.release) else {
+            throw VPNSelectedCandidateRecoveryError.invalidJournal
+        }
+        try installed.revalidate()
+        let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        try runtime.stopAndDrain(deadline: deadline)
+        let state = try budget.snapshot()
+        if state.desired {
+            try budget.beginAttempt(intent: .automatic)
+            var socket: Int32 = -1
+            do {
+                socket = try runtime.startIdleAndConnect(journal.previous, deadline: deadline)
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { throw VPNLaunchdError.timeout }
+                let remaining = max(1, min(2000, Int((deadline - now) / 1_000_000)))
+                // The readiness probe owns and closes the descriptor on every
+                // result. Clear our fallback owner before handing it over so a
+                // failed probe cannot close a subsequently reused descriptor.
+                let probeSocket = socket
+                socket = -1
+                #if VPN_HELPER_READINESS_TESTING
+                _ = try VPNHelperReadiness.testProbe(
+                    takingSocket: probeSocket, release: journal.previous.release,
+                    timeoutMilliseconds: remaining)
+                #else
+                _ = try VPNHelperReadiness.probe(
+                    takingSocket: probeSocket, release: journal.previous.release,
+                    timeoutMilliseconds: remaining)
+                #endif
+                try lease.check()
+                try installed.revalidate()
+                let currentSelection = try store.loadDeployment()
+                guard let current = try store.loadUpdateJournal(),
+                      current.transactionID == journal.transactionID,
+                      current.revision == journal.revision,
+                      current.phase == journal.phase,
+                      current.recovery == journal.recovery,
+                      currentSelection.ownerUserID == journal.previous.ownerUserID,
+                      currentSelection.release.isSameRelease(as: journal.previous.release) else {
+                    throw VPNSelectedCandidateRecoveryError.invalidJournal
+                }
+                try budget.recordSuccess()
+            } catch {
+                if socket >= 0 { close(socket) }
+                try? runtime.stopAndDrain(
+                    deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                throw error
+            }
+        }
+        try lease.check()
     }
 
     /// Once the transaction is durably retired, an uncertain maintenance
@@ -184,6 +276,12 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
         case VPNActivationBudgetError.turnedOff,
              VPNActivationBudgetError.exhausted:
             return 0
+        case VPNActivationBudgetError.writeFailed:
+            return 75
+        case VPNReleaseStoreError.busy,
+             VPNReleaseStoreError.writeFailed,
+             VPNReleaseStoreError.commitUncertain:
+            return 75
         case let error as VPNSelectedCandidateFinalizerError:
             switch error {
             case .invalidJournal: return 0
