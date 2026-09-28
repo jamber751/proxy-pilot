@@ -1,14 +1,19 @@
-# VPN helper security boundary (not yet integrated)
+# VPN helper security boundary
 
-Latest status (12 September 2026): the opt-in idle helper's root/user installation,
-pin rotation, reapplication and removal have passed system acceptance, including
-the format-2 helper/engine deployment. The test service is now removed; the
-ordinary app and VPN networking are not enabled. The staging updater now refuses
-an ordinary app-only update early when VPN markers are present or inspection
-fails; this is not joint app/helper replacement or late-stage race protection.
-See `../update-worker/README.md`. Earlier sections below retain the chronological
-history of isolated checks, including requirements that were subsequently met;
-current acceptance and open gates are tracked in `docs/vpn-implementation-plan.md`.
+Latest status (28 September 2026): in addition to the earlier standalone system
+acceptance, an authorized Apple Silicon/macOS 26.1 run installed signed A119 and
+completed the exact signed A119 → B120 joint application/helper update. Installed
+B matched its expected hashes, reported release 120 through the user status entry,
+the selected helper was ready, and the recovery job retired. The first B120 removal
+then exposed a shared-parent cleanup bug after the service and VPN directory had
+already been removed: the intentionally retained `ProxyPilot/Update` sibling made
+the parent `rmdir` fail with `ENOTEMPTY`. The fix preserves that sibling and passes
+focused tests, but the corrected removal package has not yet been rerun as root.
+A scoped recovery package restored the original 1.5.1 app, archived retained
+evidence, and left system labels/directories/stages clean. No VPN networking was
+enabled. See `../update-worker/README.md`. Earlier sections below retain the
+chronological history; current acceptance and open gates are tracked in
+`docs/vpn-implementation-plan.md`.
 
 Format 2 is now supported by the common verifier, protected store, package loader,
 installer and daemon startup. Both component files must validate together;

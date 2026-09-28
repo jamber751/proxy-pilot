@@ -2355,3 +2355,30 @@ staging-остатки. До этого они сохраняются как д�
 Следующий узел: отдельный launchd recovery job должен запускать только этот
 защищённый helper, стартовать до selector window и на boot, а uninstall обязан
 сначала выгрузить job и удалить только его фиксированный plist.
+
+### Продолжение 1.5v — нативная приёмка joint update (28 сентября)
+
+- [x] На Apple Silicon/macOS 26.1 через системный Installer установлена подписанная
+  A119, затем выполнен точный подписанный переход A119 → B120 приложения и helper.
+  Установленная B совпала с ожидаемыми CDHash arm64
+  `f6ac22185acc7ffc4dfc8e663bf8f8cde7761c7b` и x86_64
+  `afe6d7ad8ff1bf4587b84a241a55c113ce4f5899`; status вернул
+  `VPN support is available. Release 120.`, выбранный helper подтвердил readiness,
+  recovery job retired.
+- [x] После приёмки scoped recovery package восстановил исходное приложение
+  ProxyPilot 1.5.1, сохранил retained evidence в архиве и подтвердил отсутствие
+  системных labels, VPN support directories и application transaction stages.
+  Это восстановление не считается штатным remove-flow.
+- [ ] Первый B120 remove остановил службу и удалил VPN-каталог, но завершился
+  ошибкой стадии удаления: общий parent нельзя было удалить из-за намеренно
+  сохранённого `ProxyPilot/Update` (`rmdir` вернул `ENOTEMPTY`). Код теперь
+  сохраняет этот sibling и проходит focused tests, однако исправленный package
+  ещё не перезапускался с root-авторизацией.
+- [ ] `/Applications/.ProxyPilot.vpn-update` очищается отдельной аутентифицированной
+  транзакцией; отсутствие VPN support directory само по себе не доказывает его
+  очистку. Не объединять эти две границы в uninstall-доказательстве.
+
+Публикация по-прежнему заблокирована до успешного root-прогона исправленного
+remove package, crash/reboot приёмки, исполнения на Intel/macOS 11 и интеграции
+совместной app/helper транзакции с release/default Sparkle flow. Профиль, маршруты,
+DNS и VPN-туннель в этой приёмке не включались.

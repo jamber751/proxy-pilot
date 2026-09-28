@@ -5,6 +5,14 @@ Sparkle out of the app process so the same app executable can eventually meet
 the VPN peer policy (`runtime,hard,kill`, no runtime exceptions/entitlements).
 It does not install or authorize a VPN helper.
 
+Latest joint-update status (28 September 2026): the separately authorized VPN
+package successfully replaced signed A119 with signed B120, selected helper B,
+proved readiness and retired its recovery job on Apple Silicon/macOS 26.1. This
+was a direct native package acceptance run, not Sparkle integration. The default
+updater is still unchanged and publication remains blocked on that integration,
+an authorized rerun of the corrected removal package, reboot/crash recovery and
+Intel/macOS 11 runtime acceptance.
+
 Build into a new disposable output directory:
 
 ```sh
@@ -209,14 +217,17 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
    test is an API test, not evidence of a native cancellation button. No custom
    final window is added here. Remaining system, sleep and accessibility
    acceptance is separate from the native cases below.
-3. Coordinate app replacement with the separately authorized root-helper release
-   policy, including a late-stage helper installation race, cancellation and
-   restart recovery. The early veto above does not complete this boundary. Never
-   accept a new VPN client pin merely because Sparkle installed it.
-4. Integrate the opt-in hardened app's fixed installation mode and authorized
-   support package into that joint update flow. Standalone cross-UID acceptance
-   of install/retry/pin rotation/removal is complete, but not an app/helper update
-   transaction. No OpenVPN tunnel has been started.
+3. Integrate the proven, separately authorized joint package transaction with
+   Sparkle without weakening the root-helper release policy. The native signed
+   A119 → B120 package path passed once, but the early veto is still the only
+   protection in the opt-in Sparkle worker. Late-stage races plus crash/reboot
+   recovery remain release blockers. Never accept a new VPN client pin merely
+   because Sparkle installed it.
+4. Rerun the corrected remove package with authorization. The first B120 removal
+   removed the service/VPN directory but failed on the non-empty shared parent
+   containing the intentionally retained updater directory; focused tests cover
+   the fix, while scoped recovery—not the corrected remover—restored 1.5.1 and
+   cleaned the system acceptance state. No OpenVPN tunnel has been started.
 
 ## Additional native acceptance (8 September)
 

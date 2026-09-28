@@ -2,9 +2,18 @@
 
 This is an opt-in, scripts-only macOS 11 package. It installs an authenticated
 **idle support service** and, with format 2, stores a verified OpenVPN engine.
-It never executes that engine or applies a profile, routes or DNS. It neither replaces
-the app in Applications nor changes the normal release build. Do not publish it
-as a working VPN feature.
+It never executes that engine or applies a profile, routes or DNS. The install
+package does not replace the app in Applications; the separately signed joint
+update package can replace the exact authorized app and helper together. Neither
+path changes the normal release build. Do not publish it as a working VPN feature.
+
+Latest status (28 September 2026): an authorized native Apple Silicon/macOS 26.1
+run installed signed A119 and completed the exact signed A119 → B120 joint app/helper
+update. Installed B matched both expected architecture hashes, its ordinary-user
+status reported release 120, the selected helper was ready, and the recovery job
+retired. This closes one clean joint-update path, not release acceptance. The fixed
+remove path still needs a new authorized root run; crash/reboot recovery,
+Intel/macOS 11 execution, and integration with the default Sparkle flow remain open.
 
 ## Build and sign
 
@@ -63,11 +72,18 @@ not entered, and no paths, owner IDs or shell commands are accepted as arguments
   installed. The complete joint input is staged without stopping the service;
   candidate B then mutually authenticates and hands control to protected executor
   A. A owns drain, application replacement, live-B proof, helper readiness and
-  forward recovery. This path compiles and passes disposable tests, but has not
-  had an authorized real-system install/reboot acceptance; do not publish it yet.
+  forward recovery. One authorized native A119 → B120 joint replacement passed on
+  Apple Silicon/macOS 26.1. Reboot/crash recovery, Intel/macOS 11 and the default
+  release updater remain unaccepted; do not publish it yet.
 - `--vpn-support-remove`: root only, stops the exact service and removes only
   recognized files; unexpected content aborts removal.
   Recognized content-addressed old engine versions are included in that cleanup.
+  The first B120 system removal stopped the service and removed VPN storage, then
+  failed when the shared parent still contained the intentionally retained
+  `ProxyPilot/Update` directory. The implementation now preserves that sibling and
+  passes focused tests, but that fixed package has not yet been rerun as root.
+  `/Applications/.ProxyPilot.vpn-update` has its own authenticated transaction
+  cleanup and must not be treated as part of this directory-removal proof.
 
 The normal GUI is never allowed to run as root, including in non-candidate builds.
 The separate updater cannot enroll a new VPN release through IPC.
@@ -90,6 +106,11 @@ may leave the selected idle service on disk; inspect it and use the known remove
 package, never recursively delete an unknown directory. Native Installer history
 is not erased. A real reboot and execution on macOS 11/Intel remain distinct from
 simulated per-user service restart and cross-compilation.
+
+The 28 September recovery package restored the original ProxyPilot 1.5.1 after
+the acceptance run, archived the retained test evidence, and left the system
+labels, VPN support directories and application transaction stages clean. That
+scoped recovery result is not a successful rerun of the corrected remove package.
 
 Automated package/payload tests use a disposable embedded public key, synthetic
 helper and an app whose normal GUI/CLI bootstrap traps. An optional complete

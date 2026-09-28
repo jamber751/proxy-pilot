@@ -1,7 +1,33 @@
 # Installed-app verification: next integration boundary
 
-Date: 2026-09-13. This is a read-only investigation and implementation constraint,
-not evidence that application replacement or B activation is implemented.
+Date: 2026-09-13. This began as a read-only investigation and implementation
+constraint. The historical sections retain the boundary as it existed at each
+increment; the current native result is recorded below.
+
+## Native acceptance update — 28 September 2026
+
+An authorized Apple Silicon/macOS 26.1 run installed signed A119 and completed
+the exact signed A119 → B120 application/helper update. The installed B bundle
+matched the expected arm64 CDHash
+`f6ac22185acc7ffc4dfc8e663bf8f8cde7761c7b` and x86_64 CDHash
+`afe6d7ad8ff1bf4587b84a241a55c113ce4f5899`. Its ordinary-user status returned
+`VPN support is available. Release 120.`, selected helper B was ready, and the
+temporary recovery job retired.
+This is evidence for one clean native joint-update path, not for reboot/crash
+recovery, Intel/macOS 11, Sparkle coordination or a working VPN tunnel.
+
+The subsequent B120 removal stopped and removed the service and VPN directory,
+then failed in the removal stage because the shared `ProxyPilot` parent still
+contained the intentionally retained `Update` sibling. The implementation now
+preserves that sibling and passes focused tests, but the fixed package has not
+yet been rerun with root authorization. A scoped recovery package restored the
+original ProxyPilot 1.5.1, archived retained evidence, and verified clean system
+labels, support directories and application transaction stages. That recovery
+does not turn the failed removal into acceptance of the corrected remover.
+
+The `/Applications/.ProxyPilot.vpn-update` transaction area is governed by its
+separate authenticated cleanup. Its lifecycle must not be inferred from removal
+of the VPN support directory or from the final scoped recovery result.
 
 ## Observed installation
 
