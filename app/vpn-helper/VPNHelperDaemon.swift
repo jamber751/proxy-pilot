@@ -17,6 +17,8 @@ enum VPNHelperDaemon {
         defer { close(endpoint) }
         try serve(directory: directory, endpoint: endpoint, shared: true,
                   authority: VPNReleaseTrust.authority(), policy: { try $0.helperPolicy() },
+                  recoveryReadinessPolicies: nil,
+                  recoveryFixtureInstaller: false,
                   recoveryCleanup: { lease in
                       try VPNJointUpdateCleanup.completeSystem(
                         service: directory, lease: lease,
@@ -31,10 +33,15 @@ enum VPNHelperDaemon {
     #if VPN_DAEMON_TESTING
     static func testServe(directory: Int32, endpoint: Int32, shared: Bool,
                           authority: VPNReleaseAuthority,
+                          recoveryReadinessPolicies: ((VPNUpdateJournalSnapshot,
+                              VPNAuthorizedDeployment) throws -> [VPNPeerPolicy])? = nil,
+                          recoveryFixtureInstaller: Bool = false,
                           recoveryCleanup: (VPNLifecycleLease) throws -> Void = { _ in }) throws {
         guard getuid() != 0, getuid() == geteuid() else { throw VPNPeerAuthenticationError.denied }
         try serve(directory: directory, endpoint: endpoint, shared: shared,
                   authority: authority, policy: { try $0.testHelperPolicy() },
+                  recoveryReadinessPolicies: recoveryReadinessPolicies,
+                  recoveryFixtureInstaller: recoveryFixtureInstaller,
                   recoveryCleanup: recoveryCleanup)
     }
     #endif
@@ -42,6 +49,9 @@ enum VPNHelperDaemon {
     private static func serve(directory: Int32, endpoint: Int32, shared: Bool,
                               authority: VPNReleaseAuthority,
                               policy: (VerifiedVPNRelease) throws -> VPNPeerPolicy,
+                              recoveryReadinessPolicies: ((VPNUpdateJournalSnapshot,
+                                  VPNAuthorizedDeployment) throws -> [VPNPeerPolicy])?,
+                              recoveryFixtureInstaller: Bool,
                               recoveryCleanup: (VPNLifecycleLease) throws -> Void) throws {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
         let stamp = try selectionStamp(directory)
@@ -87,18 +97,38 @@ enum VPNHelperDaemon {
             try budget.beginAttempt(intent: .automatic)
         }
         try runtime.prepareEndpoint(directory: endpoint, shared: shared)
-        let listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: selected.release,
-                                                  ownerUserID: selected.ownerUserID,
-                                                  endpointDirectory: shared ? endpoint : nil,
-                                                  additionalReadinessPolicies: {
-                                                      guard let journal = try lateUpdateJournal() else {
-                                                          return []
-                                                      }
-                                                      return [
-                                                          try journal.previous.release.installerPolicy(),
-                                                          try selected.release.helperPolicy(),
-                                                      ]
-                                                  })
+        let readinessPolicies: () throws -> [VPNPeerPolicy] = {
+            guard let journal = try lateUpdateJournal() else { return [] }
+            if let testing = recoveryReadinessPolicies {
+                return try testing(journal, selected)
+            }
+            return [
+                try journal.previous.release.installerPolicy(),
+                try selected.release.helperPolicy(),
+            ]
+        }
+        let listener: VPNHelperListener
+        #if VPN_DAEMON_TESTING && VPN_HELPER_LISTENER_TESTING
+        if recoveryFixtureInstaller {
+            listener = try VPNHelperListener.testBindInstaller(
+                inTrustedDirectory: directory, release: selected.release,
+                ownerUserID: selected.ownerUserID,
+                additionalReadinessPolicies: readinessPolicies)
+        } else {
+            listener = try VPNHelperListener.bind(
+                inTrustedDirectory: directory, release: selected.release,
+                ownerUserID: selected.ownerUserID,
+                endpointDirectory: shared ? endpoint : nil,
+                additionalReadinessPolicies: readinessPolicies)
+        }
+        #else
+        _ = recoveryFixtureInstaller
+        listener = try VPNHelperListener.bind(
+            inTrustedDirectory: directory, release: selected.release,
+            ownerUserID: selected.ownerUserID,
+            endpointDirectory: shared ? endpoint : nil,
+            additionalReadinessPolicies: readinessPolicies)
+        #endif
         defer { listener.close() }
         func stillSelected() throws {
             try runtime.check()
