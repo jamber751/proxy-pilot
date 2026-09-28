@@ -1,5 +1,6 @@
 """Offline build-boundary checks; never compile, install or connect a VPN."""
 import hashlib
+import gzip
 import importlib.util
 import io
 import os
@@ -64,13 +65,15 @@ class VPNEngineBuildTests(unittest.TestCase):
         self.assertFalse((self.base / 'out').exists())
 
     def test_expansion_limit_is_checked_before_extraction(self):
-        output = io.BytesIO()
-        with tarfile.open(fileobj=output, mode='w:gz') as archive:
-            info = tarfile.TarInfo('source/oversized')
-            info.size = 512 * 1024 * 1024 + 1
-            archive.addfile(info)
+        # A header is enough: extract() must reject the declared expansion
+        # before it reads file contents. Python 3.14 correctly refuses to make
+        # a non-empty regular member without a fileobj, so build the same
+        # bounded 512-byte tar header directly instead of allocating 512 MiB.
+        info = tarfile.TarInfo('source/oversized')
+        info.size = 512 * 1024 * 1024 + 1
+        output = gzip.compress(info.tobuf(format=tarfile.PAX_FORMAT))
         with self.assertRaises(ValueError):
-            builder.extract(output.getvalue(), self.base / 'out', 'source')
+            builder.extract(output, self.base / 'out', 'source')
         self.assertFalse((self.base / 'out').exists())
 
     def test_does_not_overwrite_an_existing_extraction(self):
