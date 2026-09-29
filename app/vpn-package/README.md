@@ -37,7 +37,9 @@ DMG against its signed metadata, and preserves the new signed release sidecars
 for the next forward update. It also emits one bounded
 `ProxyPilot-<version>-vpn-engine-sources.tar.gz` containing the exact reviewed
 source archives, recipe, provenance and notices corresponding to the signed
-engine. It never tags, uploads, installs or elevates.
+engine. Finally it builds the public first-install DMG, Sparkle ZIP and signed
+`appcast.xml` from that same sealed application instead of compiling a second
+ad-hoc bundle. It never tags, uploads, installs or elevates.
 
 1. Choose the next canonical positive release sequence, then build a fresh app
    with `PROXYPILOT_ISOLATED_UPDATER=1`, `PROXYPILOT_VPN_INSTALLER=1` and

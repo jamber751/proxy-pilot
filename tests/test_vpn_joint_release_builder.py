@@ -39,6 +39,9 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
             "verify-companion-artifact",
             'tar --format ustar -czf',
             "verify-engine-sources",
+            'PROXYPILOT_PREBUILT_APP="$WORK/app/ProxyPilot.app"',
+            'zsh "$ROOT/make-dmg.sh"',
+            'zsh "$HERE/sign-update.sh"',
         ]
         positions = [source.index(value) for value in required]
         self.assertEqual(positions, sorted(positions))
@@ -49,7 +52,9 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
         self.assertIn('! -e "$OUTPUT" && ! -L "$OUTPUT"', source)
         self.assertIn('mkdir -m 700 "$OUTPUT"', source)
         self.assertIn('vpn-engine-sources.tar.gz', source)
+        self.assertIn('vpn-release-sequence.txt', source)
         self.assertIn('COPYFILE_DISABLE=1', source)
+        self.assertIn('"$OUTPUT/appcast.xml"', source)
         self.assertNotIn("--clobber", source)
 
 

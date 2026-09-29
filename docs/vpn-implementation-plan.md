@@ -2853,3 +2853,29 @@ durable Broker ready → relaunch, затем checkpoint fault/reboot matrix. Т
 Следующий узел: один local release-candidate assembly должен выдать exact app для
 обычного DMG/ZIP и joint companion. CI только проверяет один draft snapshot и
 подписывает/публикует feed, но не пересобирает pinned app. Tag пока запрещён.
+
+### Продолжение 1.5ar — единый exact app release candidate (30 сентября)
+
+- [x] Добавлен committed canonical VPN sequence; обычный `make-dmg.sh` теперь
+  строит release app с isolated updater, VPN installer entry и sealed sequence,
+  затем перепроверяет identity/version/sequence в подписанном Info.plist.
+- [x] `make-dmg.sh` получил fail-closed prebuilt mode: принимает только absolute
+  non-symlink `ProxyPilot.app`, не заменяет CLI/GOST и не переподписывает app,
+  требует self-contained exact universal GOST и strict codesign.
+- [x] `sign-update.sh` принимает отдельный absolute non-symlink distribution
+  directory, сохраняя тот же Sparkle signing/verification path.
+- [x] Joint builder требует sequence из committed файла и после VPN sidecars
+  создаёт first-install DMG, Sparkle ZIP и signed `appcast.xml` из того же app.
+- [x] Полный production-key B125 local candidate собран. Recursive diff показал
+  byte-for-byte одинаковый app в normal DMG, Sparkle ZIP и VPN companion; exact
+  CDHash совпали: arm64 `ce618808dbf92458bca569a8c3ace404031d077b`,
+  x86_64 `b78c6aca1067e55b52c082d6cdab6294fc12a265`. Joint verification,
+  universal GOST, strict codesign и Sparkle signature прошли.
+- [x] Static unification/update regression 14/14. Ничего не установлено, не
+  загружено и не опубликовано.
+- [ ] Кандидат всё ещё 1.5.1 и нужен только как доказательство assembly. Перед
+  native discovery нужен новый semver и новый sequence; B125 не публиковать.
+
+Следующий узел: перевести GitHub workflow на двухфазный draft gate, который не
+пересобирает app и публикует только неизменившийся, полностью проверенный local
+snapshot. Затем собрать новый-semver candidate и пройти native system acceptance.

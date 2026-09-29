@@ -8,7 +8,15 @@ emulate -L zsh
 set -euo pipefail
 
 HERE="${0:A:h}"
-DIST="$HERE/dist"
+DIST="${PROXYPILOT_DIST_DIR:-$HERE/dist}"
+PREBUILT_APP="${PROXYPILOT_PREBUILT_APP:-}"
+VPN_SEQUENCE=$(< "$HERE/app/vpn-release-sequence.txt")
+print -r -- "$VPN_SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
+  print -u2 "invalid committed VPN release sequence"; exit 1
+}
+[[ "$DIST" == /* && ! -L "$DIST" ]] || {
+  print -u2 "distribution output must be an absolute non-symlink path"; exit 1
+}
 # gost для вкладывания в DMG. Бинарь в git не храним (25 МБ навсегда в истории) —
 # качаем официальный релиз go-gost и проверяем по прибитой сумме: мы раздаём
 # этот бинарь коллегам, поэтому «скачали и вложили не глядя» недопустимо.
@@ -27,8 +35,28 @@ print -- "ProxyPilot $VERSION → dmg"
 BUILD_ROOT=$(mktemp -d /tmp/proxypilot-app-build.XXXXXX)
 STAGE=""
 trap 'rm -rf "$BUILD_ROOT"; [[ -z "$STAGE" ]] || rm -rf "$STAGE"' EXIT
-"$HERE/app/build.sh" "$BUILD_ROOT" >/dev/null
+if [[ -n "$PREBUILT_APP" ]]; then
+  PREBUILT_APP="${PREBUILT_APP:A}"
+  [[ "$PREBUILT_APP" == /*/ProxyPilot.app && -d "$PREBUILT_APP" \
+     && ! -L "$PREBUILT_APP" ]] || {
+    print -u2 "prebuilt app must be an absolute regular ProxyPilot.app"; exit 1
+  }
+  /usr/bin/ditto --noextattr --norsrc "$PREBUILT_APP" "$BUILD_ROOT/ProxyPilot.app"
+else
+  PROXYPILOT_ISOLATED_UPDATER=1 PROXYPILOT_VPN_INSTALLER=1 \
+    PROXYPILOT_VPN_RELEASE_SEQUENCE="$VPN_SEQUENCE" \
+    "$HERE/app/build.sh" "$BUILD_ROOT" >/dev/null
+fi
 APP="$BUILD_ROOT/ProxyPilot.app"
+INFO="$APP/Contents/Info.plist"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")" \
+      == "kz.documentolog.proxypilot" \
+   && "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" == "$VERSION" \
+   && "$(/usr/libexec/PlistBuddy -c 'Print :ProxyPilotVPNInstaller' "$INFO")" == true \
+   && "$(/usr/libexec/PlistBuddy -c 'Print :ProxyPilotVPNReleaseSequence' "$INFO")" \
+      == "$VPN_SEQUENCE" ]] || {
+  print -u2 "release app identity, version or sealed VPN sequence mismatch"; exit 1
+}
 
 # 2) staging: приложение + вложенные CLI и gost + ссылка на /Applications
 STAGE=$(mktemp -d /tmp/proxypilot-dmg.XXXXXX)
@@ -36,8 +64,9 @@ cp -R "$APP" "$STAGE/"
 
 RES_BIN="$STAGE/ProxyPilot.app/Contents/Resources/bin"
 mkdir -p "$RES_BIN"
-cp "$HERE/bin/proxypilot" "$RES_BIN/proxypilot"
-chmod +x "$RES_BIN/proxypilot"
+if [[ -z "$PREBUILT_APP" ]]; then
+  cp "$HERE/bin/proxypilot" "$RES_BIN/proxypilot"
+  chmod +x "$RES_BIN/proxypilot"
 
 # gost: нужен universal-бинарь (Intel + Apple Silicon). В git он не лежит
 # (25 МБ), поэтому при первой сборке скачиваем официальные релизы go-gost
@@ -84,6 +113,15 @@ fi
 # user-процессе; VPN/root полномочий у него нет.
 codesign --force --sign - --options runtime,hard,kill \
   --identifier kz.documentolog.proxypilot "$STAGE/ProxyPilot.app"
+else
+  [[ -x "$RES_BIN/proxypilot" && -x "$RES_BIN/gost" ]] || {
+    print -u2 "prebuilt release app is not self-contained"; exit 1
+  }
+  GOST_ARCHES=$(lipo -archs "$RES_BIN/gost")
+  [[ "$GOST_ARCHES" == "arm64 x86_64" || "$GOST_ARCHES" == "x86_64 arm64" ]] || {
+    print -u2 "prebuilt GOST is not exactly Universal"; exit 1
+  }
+fi
 codesign --verify --deep --strict "$STAGE/ProxyPilot.app"
 
 ln -s /Applications "$STAGE/Applications"

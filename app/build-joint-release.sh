@@ -18,6 +18,10 @@ OUTPUT="${6:A}"
 print -r -- "$SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
   print -u2 "Expected a canonical positive sequence"; exit 64
 }
+RELEASE_SEQUENCE=$(< "$HERE/vpn-release-sequence.txt")
+[[ "$SEQUENCE" == "$RELEASE_SEQUENCE" ]] || {
+  print -u2 "Sequence must match app/vpn-release-sequence.txt"; exit 64
+}
 [[ -f "$PREVIOUS_MANIFEST" && ! -L "$PREVIOUS_MANIFEST" \
    && -f "$PREVIOUS_SIGNATURE" && ! -L "$PREVIOUS_SIGNATURE" \
    && -d "$ENGINE_ARTIFACT" && ! -L "$ENGINE_ARTIFACT" \
@@ -111,6 +115,18 @@ python3 "$HERE/vpn-package/package.py" verify-engine-sources \
   "$OUTPUT/ProxyPilot-$VERSION-vpn-release.manifest"
 /bin/cp "$WORK/stage/Payload/vpn-release.sig" \
   "$OUTPUT/ProxyPilot-$VERSION-vpn-release.sig"
+
+# Build the public DMG, Sparkle ZIP and signed appcast from this exact sealed app.
+# A second ad-hoc build can have different CDHashes even from identical source.
+mkdir -m 700 "$WORK/distribution"
+PROXYPILOT_PREBUILT_APP="$WORK/app/ProxyPilot.app" \
+  PROXYPILOT_DIST_DIR="$WORK/distribution" \
+  zsh "$ROOT/make-dmg.sh"
+PROXYPILOT_DIST_DIR="$WORK/distribution" zsh "$HERE/sign-update.sh"
+/bin/cp "$WORK/distribution/ProxyPilot-$VERSION.dmg" "$OUTPUT/"
+/bin/cp "$WORK/distribution/updates/ProxyPilot-$VERSION.zip" "$OUTPUT/"
+/bin/cp "$WORK/distribution/updates/appcast.xml" \
+  "$OUTPUT/appcast.xml"
 /bin/chmod 600 "$OUTPUT"/*
 SUCCESS=1
 print -- "Prepared and verified local joint release assets: $OUTPUT"
