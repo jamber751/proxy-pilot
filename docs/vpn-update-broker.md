@@ -1,7 +1,9 @@
 # VPN one-click update broker
 
-Status: design boundary for the next implementation stage. The broker is not a
-general privileged helper and Sparkle is never a root authority.
+Status: the bounded Broker transaction and ordinary-user one-click coordinator
+are implemented. The broker is not a general privileged helper and Sparkle is
+never a root authority. Native clean/fault/reboot acceptance and Intel/macOS 11
+runtime acceptance remain release gates.
 
 ## User flow
 
@@ -71,15 +73,19 @@ the fixed public endpoint directory (`0755`, socket `0666`) so the ordinary owne
 application can reach it; reachability is never authority, and the exact UID plus
 live application code signature is checked before any request bytes are read.
 
-The production lifecycle foundation runs the exact content-addressed helper of
+The production lifecycle runs the exact content-addressed helper of
 selected release A as a separate broker job. It uses the fixed label
 `kz.documentolog.proxypilot.vpn-update-broker`, fixed `serve-update-broker`
 argument, and launchd-owned `update-broker.sock`. A separate root-private
 `Broker` directory (`0700`) holds a checksummed fixed-size numeric status mirror.
 Status publication is atomic, fsynced, revisioned, restart-safe, and not an
-authorization record. The broker currently serves bounded status and explicitly
-refuses submit without copying or mutating anything. Its job is not installed by
-the installer yet.
+authorization record. Submit now copies the fixed payload into a durable private
+inbox, rechecks the signed release and exact A-to-B edge, prepares recovery, and
+returns one `.ready` acknowledgement before executor handoff. Timeout or EOF after
+descriptor transfer is deliberately indeterminate: the app does not retry,
+terminate A, or release the mounted artifact immediately. Broker installation,
+rotation and retirement are part of the signed package transaction rather than
+ordinary updater authority.
 
 ## Broker lifecycle
 

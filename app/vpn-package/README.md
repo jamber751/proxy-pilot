@@ -7,7 +7,7 @@ package does not replace the app in Applications; the separately signed joint
 update package can replace the exact authorized app and helper together. Neither
 path changes the normal release build. Do not publish it as a working VPN feature.
 
-Latest status (28 September 2026): an authorized native Apple Silicon/macOS 26.1
+Latest system status (28 September 2026): an authorized native Apple Silicon/macOS 26.1
 run installed signed A119 and completed the exact signed A119 → B120 joint app/helper
 update. Installed B matched both expected architecture hashes, its ordinary-user
 status reported release 120, the selected helper was ready, and the recovery job
@@ -15,6 +15,17 @@ retired. This closes one clean joint-update path, not release acceptance. The fi
 remove path passed a separate authorized sequence-121 system run; crash/reboot
 recovery, Intel/macOS 11 execution, and integration with the default Sparkle flow
 remain open.
+
+Latest local transport status (29 September 2026): the production release key
+assembled an unpublished universal B123 companion for the signed A122 → B123
+edge. Its metadata, signature, exact byte count and SHA-256 verified; the
+production read-only mount boundary accepted the real DMG; and the sealed B app
+inside it accepted the complete joint payload through
+`--vpn-support-verify-update`. Truncated metadata, signature and artifact copies
+were rejected. Before/after checks showed no change to the installed app, system
+VPN/Broker directories or launchd plists. Both candidates use technical version
+1.5.1, so this is pre-Broker artifact acceptance only, not Sparkle discovery or
+release evidence.
 
 ## Build and sign
 

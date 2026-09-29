@@ -2662,7 +2662,7 @@ coordinator, затем полные fault/reboot acceptance и Intel/macOS 11. 
 - [x] Release-key умеет отдельно подписать/проверить metadata и проверить сам
   artifact по открытому descriptor. Parser/signature/artifact 15/15, packager
   5/5; подмена, лишние поля, uppercase hash и non-forward edge отклоняются.
-- [ ] До downloader исправить submit acknowledgment: timeout после отправки не
+- [x] До downloader исправить submit acknowledgment: timeout после отправки не
   доказывает, что Broker уже скопировал inbox. Mount нельзя освобождать и A нельзя
   завершать на неоднозначном timeout. Нужен явный durable ready/accepted boundary.
 
@@ -2777,8 +2777,18 @@ end-to-end A→B fault/reboot acceptance и Intel/macOS 11. Tag пока зап�
   сохраняются как обязательный input следующего forward update.
 - [x] Shell/source gate 3/3. Скрипт намеренно не содержит `gh release`, git tag,
   push, Installer, sudo или launchctl.
-- [ ] Реальные assets ещё не собраны: нужен exact previous signed release и
-  reviewed engine artifact. Публикация/тег запрещены до native A→B acceptance.
+- [x] Локальные production-key assets A122 → B123 собраны из reviewed universal
+  engine: DMG, metadata/signature и новый release manifest/signature. Финальный
+  artifact повторно прошёл public-key verification; ничего не установлено и не
+  опубликовано.
+- [x] Реальный B123 DMG прошёл pre-Broker acceptance: production readonly mount,
+  sealed app `--vpn-support-verify-update`, отказы на повреждённых metadata,
+  signature и artifact, а также before/after проверку отсутствия изменений в
+  `/Applications`, system VPN/Broker storage и launchd plist.
+- [ ] Версии A122/B123 обе 1.5.1, поэтому этот прогон намеренно не доказывает
+  Sparkle discovery. Для release-candidate нужен новый semver, новый exact набор
+  sidecars и native coordinator → durable Broker ready → relaunch прогон.
 
-Следующий узел: disposable local assembly fixture без production key, затем
-native clean A→B и fault/reboot matrix; после этого — draft upload verification.
+Следующий узел: test-only end-to-end coordinator harness без ослабления fixed
+production URL/socket, затем native clean A→B и fault/reboot matrix; после этого —
+draft upload verification. Tag пока запрещён.
