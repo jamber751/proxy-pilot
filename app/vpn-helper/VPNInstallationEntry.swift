@@ -10,8 +10,10 @@ enum VPNInstallationEntry {
     enum Action: String {
         case verify = "--vpn-support-verify"
         case verifyUpdate = "--vpn-support-verify-update"
+        case verifyFirstInstall = "--vpn-support-verify-first-install"
         case status = "--vpn-support-status"
         case install = "--vpn-support-install"
+        case firstInstall = "--vpn-support-first-install"
         case update = "--vpn-support-update"
         case remove = "--vpn-support-remove"
     }
@@ -59,6 +61,16 @@ enum VPNInstallationEntry {
                 throw VPNInstallationPayloadError.versionMismatch
             }
             let packageDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+            if action == .verifyFirstInstall {
+                stage = .payload
+                let payload = try VPNInstallationPayload.load(
+                    directory: packageDirectory, version: version, authority: authority)
+                try VPNPeerAuthentication.validateCurrentProcess(
+                    policy: payload.release.installerPolicy())
+                try requireCleanFirstInstallation()
+                print("ProxyPilot clean installation package verified.")
+                return 0
+            }
             if action == .verifyUpdate {
                 stage = .payload
                 let joint = try VPNJointUpdatePayload.load(
@@ -114,6 +126,8 @@ enum VPNInstallationEntry {
                 print("VPN support package verified.")
             case .verifyUpdate:
                 fatalError("handled before loading the ordinary package")
+            case .verifyFirstInstall:
+                fatalError("handled before loading the ordinary package")
             case .status:
                 stage = .serviceStatus
                 // Ordinary-user cross-UID readiness; not a VPN connect action.
@@ -135,6 +149,18 @@ enum VPNInstallationEntry {
                     helper: payload.helper, engine: payload.engine,
                     authority: authority, trustedOwnerUserID: owner)
                 print("VPN support installed.")
+            case .firstInstall:
+                stage = .installation
+                let installed = try VPNInstalledApplication.inspect(
+                    release: payload.release)
+                try installed.revalidate()
+                let owner = try consoleOwner()
+                _ = try VPNUpdateBrokerInstallerCoordinator.install(
+                    payload: payload.manifest, signature: payload.signature,
+                    helper: payload.helper, engine: payload.engine,
+                    authority: authority, trustedOwnerUserID: owner)
+                try installed.revalidate()
+                print("ProxyPilot and VPN support installed.")
             case .update:
                 fatalError("handled by the coordinated update boundary")
             case .remove:
@@ -149,6 +175,27 @@ enum VPNInstallationEntry {
             FileHandle.standardError.write(Data(
                 "VPN support operation failed at \(stage.rawValue). No authorization was bypassed.\n".utf8))
             return 77
+        }
+    }
+
+    /// A first-install package may not become an alternate update or repair
+    /// path. Any existing app, protected state, public endpoint or launchd
+    /// description requires the authenticated update/removal workflow instead.
+    private static func requireCleanFirstInstallation() throws {
+        let paths = [
+            "/Applications/ProxyPilot.app",
+            "/Applications/.ProxyPilot.vpn-update",
+            "/Library/Application Support/ProxyPilot",
+            "/Library/Application Support/kz.documentolog.proxypilot.vpn",
+            "/Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-helper.plist",
+            "/Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-recovery.plist",
+            "/Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-update-broker.plist",
+        ]
+        for path in paths {
+            var attributes = stat()
+            if lstat(path, &attributes) == 0 || errno != ENOENT {
+                throw VPNInstallationPayloadError.unsafePackage
+            }
         }
     }
 

@@ -71,6 +71,12 @@ ad-hoc bundle. It never tags, uploads, installs or elevates.
 5. Run `python3 app/vpn-package/package.py build --stage <absolute-stage-directory>
    --action install --output <new-absolute-package.pkg>`.
    Build `update` and `remove` packages the same way with distinct output paths.
+   For a clean, no-Terminal installation of both the exact app and VPN support,
+   use `package.py build-first-install --stage <stage> --output
+   <new-absolute-package.pkg>`. This separate mode installs the finalized app as
+   a normal `/Applications` payload and keeps an exact second copy beside the
+   signed VPN sidecars in the scripts area for pre/postflight verification. It
+   refuses any existing app or VPN/update footprint; it is not an update path.
 6. For the one-click Broker flow, build the separate read-only transport image:
    `python3 app/vpn-package/package.py build-companion --stage <stage>
    --output <new-absolute-ProxyPilot-version-vpn-joint.dmg>`. This requires the

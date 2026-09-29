@@ -43,7 +43,8 @@ class ReleaseWorkflowGateTests(unittest.TestCase):
             "verify-companion-artifact", "verify-engine-sources",
             "verify-transition", "--vpn-support-verify-update",
             "verify-update.swift", "/usr/bin/diff -qr",
-            "vpn-release-sequence.txt",
+            "vpn-release-sequence.txt", "Install ProxyPilot + VPN Support.pkg",
+            "--vpn-support-verify-first-install", "--vpn-support-first-install",
         ):
             self.assertIn(required, source)
         for forbidden in (

@@ -82,6 +82,9 @@ python3 "$HERE/vpn-package/package.py" prepare \
   --output "$WORK/stage"
 "$KEY_TOOL" sign "$WORK/stage/Payload/vpn-release.manifest" \
   "$WORK/stage/Payload/vpn-release.sig"
+FIRST_INSTALL_PACKAGE="$WORK/Install ProxyPilot + VPN Support.pkg"
+python3 "$HERE/vpn-package/package.py" build-first-install \
+  --stage "$WORK/stage" --output "$FIRST_INSTALL_PACKAGE"
 python3 "$HERE/vpn-package/package.py" prepare-update --stage "$WORK/stage" \
   --previous-manifest "$PREVIOUS_MANIFEST" \
   --previous-signature "$PREVIOUS_SIGNATURE"
@@ -120,6 +123,7 @@ python3 "$HERE/vpn-package/package.py" verify-engine-sources \
 # A second ad-hoc build can have different CDHashes even from identical source.
 mkdir -m 700 "$WORK/distribution"
 PROXYPILOT_PREBUILT_APP="$WORK/app/ProxyPilot.app" \
+  PROXYPILOT_FIRST_INSTALL_PACKAGE="$FIRST_INSTALL_PACKAGE" \
   PROXYPILOT_DIST_DIR="$WORK/distribution" \
   zsh "$ROOT/make-dmg.sh"
 PROXYPILOT_DIST_DIR="$WORK/distribution" zsh "$HERE/sign-update.sh"

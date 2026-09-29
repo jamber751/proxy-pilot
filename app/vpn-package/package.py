@@ -380,6 +380,71 @@ def build(stage, action, output):
     print(f'Built {action} package. Nothing installed: {output}')
 
 
+def build_first_install(stage, output):
+    """Build a clean-machine app + VPN support package; never install it.
+
+    The release manifest must stay outside the application because it pins the
+    completed app's CDHashes. The package therefore wraps two byte-identical app
+    copies: the normal /Applications payload and a private scripts-side copy
+    used by the fixed verification/installation entry points.
+    """
+    new_path(output)
+    if not stage.is_absolute() or stage.is_symlink():
+        raise ValueError('Expected an absolute staging directory')
+    payload = stage / 'Payload'
+    version = verify(payload)
+    if (payload / 'vpn-engine').exists():
+        lock, record, _ = source_material(stage / 'EngineSources')
+        engine_data = regular_bytes(payload / 'vpn-engine', 64 * 1024 * 1024)
+        values = dict(line.split('=', 1) for line in regular_bytes(
+            payload / 'vpn-release.manifest', 4096).decode().splitlines())
+        if (record.get('binarySHA256') != hashlib.sha256(engine_data).hexdigest()
+                or values.get('engine-version') != lock['openvpn']['version']
+                or values.get('engine-crypto-version') != lock['openssl']['version']):
+            raise ValueError('Signed engine does not match corresponding source material')
+    with tempfile.TemporaryDirectory(prefix='pp-vpn-first-install-') as temporary:
+        root = Path(temporary) / 'Root'
+        scripts = Path(temporary) / 'Scripts'
+        applications = root / 'Applications'
+        copied = scripts / 'Payload'
+        applications.mkdir(mode=0o755, parents=True)
+        copied.mkdir(mode=0o700, parents=True)
+        run('/usr/bin/ditto', '--noextattr', '--norsrc',
+            payload / 'ProxyPilot.app', applications / 'ProxyPilot.app')
+        run('/usr/bin/ditto', '--noextattr', '--norsrc',
+            payload / 'ProxyPilot.app', copied / 'ProxyPilot.app')
+        sidecars = ['vpn-helper', 'vpn-release.manifest', 'vpn-release.sig']
+        if (payload / 'vpn-engine').exists(): sidecars.append('vpn-engine')
+        for name in sidecars:
+            shutil.copyfile(payload / name, copied / name)
+            (copied / name).chmod(0o700 if name in ('vpn-helper', 'vpn-engine') else 0o600)
+        if verify(copied) != version:
+            raise ValueError('Package changed while copying')
+        if pins(applications / 'ProxyPilot.app', APP_ID) != pins(copied / 'ProxyPilot.app', APP_ID):
+            raise ValueError('Application payload and verifier copy differ')
+        for source, destination in (
+                (HERE / 'first-install-preinstall', scripts / 'preinstall'),
+                (HERE / 'first-install-postinstall', scripts / 'postinstall')):
+            shutil.copyfile(source, destination)
+            destination.chmod(0o755)
+        components = Path(temporary) / 'components.plist'
+        components.write_bytes(plistlib.dumps([{
+            'RootRelativeBundlePath': 'Applications/ProxyPilot.app',
+            'BundleIsRelocatable': False,
+            'BundleIsVersionChecked': False,
+            'BundleHasStrictIdentifier': True,
+            'BundleOverwriteAction': 'upgrade',
+        }]))
+        run('/usr/bin/codesign', '--verify', '--deep', '--strict',
+            applications / 'ProxyPilot.app')
+        run('/usr/bin/pkgbuild', '--root', root, '--install-location', '/',
+            '--component-plist', components, '--ownership', 'recommended',
+            '--identifier', APP_ID + '.first-install', '--version', version,
+            '--compression', 'legacy', '--min-os-version', '11.0',
+            '--scripts', scripts, output)
+    print(f'Built clean first-install package. Nothing installed: {output}')
+
+
 def build_companion(stage, output):
     """Build one read-only joint-update artifact; never install or mount it."""
     new_path(output)
@@ -527,6 +592,9 @@ def main():
     package.add_argument('--stage', type=Path, required=True)
     package.add_argument('--action', choices=('install', 'update', 'remove'), required=True)
     package.add_argument('--output', type=Path, required=True)
+    first = modes.add_parser('build-first-install')
+    first.add_argument('--stage', type=Path, required=True)
+    first.add_argument('--output', type=Path, required=True)
     companion = modes.add_parser('build-companion')
     companion.add_argument('--stage', type=Path, required=True)
     companion.add_argument('--output', type=Path, required=True)
@@ -544,6 +612,7 @@ def main():
         if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output, args.engine_artifact)
         elif args.mode == 'prepare-update': prepare_update(args.stage, args.previous_manifest, args.previous_signature)
         elif args.mode == 'build': build(args.stage, args.action, args.output)
+        elif args.mode == 'build-first-install': build_first_install(args.stage, args.output)
         elif args.mode == 'build-companion': build_companion(args.stage, args.output)
         elif args.mode == 'prepare-companion-metadata':
             prepare_companion_metadata(args.stage, args.companion, args.output)

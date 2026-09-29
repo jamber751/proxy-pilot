@@ -10,6 +10,7 @@ set -euo pipefail
 HERE="${0:A:h}"
 DIST="${PROXYPILOT_DIST_DIR:-$HERE/dist}"
 PREBUILT_APP="${PROXYPILOT_PREBUILT_APP:-}"
+FIRST_INSTALL_PACKAGE="${PROXYPILOT_FIRST_INSTALL_PACKAGE:-}"
 VPN_SEQUENCE=$(< "$HERE/app/vpn-release-sequence.txt")
 print -r -- "$VPN_SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
   print -u2 "invalid committed VPN release sequence"; exit 1
@@ -126,6 +127,17 @@ codesign --verify --deep --strict "$STAGE/ProxyPilot.app"
 
 ln -s /Applications "$STAGE/Applications"
 
+if [[ -n "$FIRST_INSTALL_PACKAGE" ]]; then
+  FIRST_INSTALL_PACKAGE="${FIRST_INSTALL_PACKAGE:A}"
+  [[ "$FIRST_INSTALL_PACKAGE" == /* && -f "$FIRST_INSTALL_PACKAGE" \
+     && ! -L "$FIRST_INSTALL_PACKAGE" \
+     && "$FIRST_INSTALL_PACKAGE" == *.pkg ]] || {
+    print -u2 "first-install package must be an absolute regular .pkg"; exit 1
+  }
+  /usr/bin/cp "$FIRST_INSTALL_PACKAGE" \
+    "$STAGE/Install ProxyPilot + VPN Support.pkg"
+fi
+
 # installer script: right-click → Open and it does the rest (copy to
 # /Applications, clear quarantine, optional login item, first launch)
 cat > "$STAGE/Install.command" <<'INSTALLER'
@@ -138,6 +150,23 @@ DST="/Applications/ProxyPilot.app"
 
 echo "ProxyPilot: installing…"
 [[ -d "$SRC" ]] || { echo "ProxyPilot.app is not next to this script"; exit 1 }
+
+# A first-install script must never become an unauthenticated app-only update
+# path after VPN support has been installed or an update has been staged.
+for footprint in \
+  "/Applications/.ProxyPilot.vpn-update" \
+  "/Library/Application Support/ProxyPilot" \
+  "/Library/Application Support/kz.documentolog.proxypilot.vpn" \
+  "/Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-helper.plist" \
+  "/Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-recovery.plist" \
+  "/Library/LaunchDaemons/kz.documentolog.proxypilot.vpn-update-broker.plist"
+do
+  if [[ -e "$footprint" || -L "$footprint" ]]; then
+    echo "VPN support is already installed or pending an update."
+    echo "Open ProxyPilot and use Settings → Check for Updates instead."
+    exit 77
+  fi
+done
 
 pkill -f "ProxyPilot.app/Contents/MacOS/ProxyPilot" 2>/dev/null || true
 rm -rf "$DST"
@@ -187,6 +216,13 @@ QUICK PATH:
   start at login, wires up the terminal and launches ProxyPilot.
   Press Find automatically (Найти автоматически) in the app. If needed,
   open Settings (gear), press +, enter the host/IP and port, and choose SOCKS5 or HTTP.
+
+VPN SUPPORT (when the package is present):
+  Open "Install ProxyPilot + VPN Support.pkg" and follow macOS Installer.
+  It installs the exact app and the matching idle VPN support service together,
+  with the normal administrator authorization dialog and no Terminal commands.
+  Use this only for a clean first installation. Existing installations update
+  from ProxyPilot Settings so the app and VPN service stay matched.
 
   (A plain double-click is blocked by macOS — the app is not signed with an
    Apple certificate. Alternative: drag "Install.command" into a Terminal

@@ -31,6 +31,7 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
             'codesign --force --sign - --options runtime,hard,kill',
             "vpn-package/package.py\" prepare",
             '"$KEY_TOOL" sign ',
+            "build-first-install",
             "prepare-update",
             "sign-transition",
             "build-companion",
@@ -40,6 +41,7 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
             'tar --format ustar -czf',
             "verify-engine-sources",
             'PROXYPILOT_PREBUILT_APP="$WORK/app/ProxyPilot.app"',
+            'PROXYPILOT_FIRST_INSTALL_PACKAGE="$FIRST_INSTALL_PACKAGE"',
             'zsh "$ROOT/make-dmg.sh"',
             'zsh "$HERE/sign-update.sh"',
         ]

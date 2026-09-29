@@ -85,6 +85,19 @@ joint_dmg="$ASSETS/ProxyPilot-$VERSION-vpn-joint.dmg"
   -mountpoint "$joint_mount" "$joint_dmg" >/dev/null
 /usr/bin/ditto -x -k "$ASSETS/ProxyPilot-$VERSION.zip" "$scratch/zip"
 
+normal_names=(Applications Install.command "Install ProxyPilot + VPN Support.pkg"
+  ProxyPilot.app READ_ME_FIRST.txt)
+actual_normal=("${(@f)$(/usr/bin/find "$normal_mount" -mindepth 1 -maxdepth 1 -print | /usr/bin/sed 's|.*/||' | /usr/bin/sort)}")
+normal_names=("${(@f)$(print -l -- $normal_names | /usr/bin/sort)}")
+[[ "${(j:\n:)actual_normal}" == "${(j:\n:)normal_names}" ]] || {
+  print -u2 "First-install image layout mismatch"; exit 1
+}
+first_install_pkg="$normal_mount/Install ProxyPilot + VPN Support.pkg"
+[[ -f "$first_install_pkg" && ! -L "$first_install_pkg" ]] || {
+  print -u2 "First-install package is missing or unsafe"; exit 1
+}
+/usr/sbin/pkgutil --expand-full "$first_install_pkg" "$scratch/first-install"
+
 joint_names=("${(@f)$(/usr/bin/find "$joint_mount" -mindepth 1 -maxdepth 1 -print | /usr/bin/sed 's|.*/||' | /usr/bin/sort)}")
 joint_expected=(ProxyPilot.app vpn-engine vpn-helper vpn-previous-release.manifest
   vpn-previous-release.sig vpn-release.manifest vpn-release.sig
@@ -105,13 +118,33 @@ joint_expected=("${(@f)$(print -l -- $joint_expected | /usr/bin/sort)}")
 normal_app="$normal_mount/ProxyPilot.app"
 joint_app="$joint_mount/ProxyPilot.app"
 zip_app="$scratch/zip/ProxyPilot.app"
-[[ -d "$normal_app" && -d "$joint_app" && -d "$zip_app" ]] || {
+package_app="$scratch/first-install/Payload/Applications/ProxyPilot.app"
+package_verifier_app="$scratch/first-install/Scripts/Payload/ProxyPilot.app"
+[[ -d "$normal_app" && -d "$joint_app" && -d "$zip_app" \
+   && -d "$package_app" && -d "$package_verifier_app" ]] || {
   print -u2 "A release container has no ProxyPilot.app"; exit 1
 }
 /usr/bin/diff -qr "$normal_app" "$joint_app" >/dev/null
 /usr/bin/diff -qr "$normal_app" "$zip_app" >/dev/null
+/usr/bin/diff -qr "$normal_app" "$package_app" >/dev/null
+/usr/bin/diff -qr "$normal_app" "$package_verifier_app" >/dev/null
+/usr/bin/cmp "$manifest" "$scratch/first-install/Scripts/Payload/vpn-release.manifest"
+/usr/bin/cmp "$manifest_signature" "$scratch/first-install/Scripts/Payload/vpn-release.sig"
+/usr/bin/cmp "$joint_mount/vpn-helper" "$scratch/first-install/Scripts/Payload/vpn-helper"
+/usr/bin/cmp "$joint_mount/vpn-engine" "$scratch/first-install/Scripts/Payload/vpn-engine"
 /usr/bin/codesign --verify --deep --strict "$normal_app"
 /usr/bin/codesign --verify --deep --strict "$joint_app"
+first_install_names=(ProxyPilot.app vpn-engine vpn-helper vpn-release.manifest vpn-release.sig)
+actual_first_install=("${(@f)$(/usr/bin/find "$scratch/first-install/Scripts/Payload" -mindepth 1 -maxdepth 1 -print | /usr/bin/sed 's|.*/||' | /usr/bin/sort)}")
+first_install_names=("${(@f)$(print -l -- $first_install_names | /usr/bin/sort)}")
+[[ "${(j:\n:)actual_first_install}" == "${(j:\n:)first_install_names}" ]] || {
+  print -u2 "First-install package verifier layout mismatch"; exit 1
+}
+[[ "$(< "$scratch/first-install/Scripts/preinstall")" == *"--vpn-support-verify-first-install"* \
+   && "$(< "$scratch/first-install/Scripts/postinstall")" == *"--vpn-support-first-install"* ]] || {
+  print -u2 "First-install package entry points mismatch"; exit 1
+}
+"$package_verifier_app/Contents/MacOS/ProxyPilot" --vpn-support-verify
 "$joint_app/Contents/MacOS/ProxyPilot" --vpn-support-verify-update
 
 /usr/bin/python3 - "$VERSION" "$metadata" "$manifest" \

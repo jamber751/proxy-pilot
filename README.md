@@ -52,6 +52,13 @@ no terminal.
 
 > Ad-hoc signed, not Developer ID — the first launch needs right-click → Open.
 
+For a clean installation with the optional VPN support service, open
+**`Install ProxyPilot + VPN Support.pkg`** from the DMG and follow macOS
+Installer. It installs the exact matching app and support service without
+Terminal commands. Existing installations must use **Settings → Check for
+Updates** instead; the first-install package deliberately refuses to replace an
+installed or pending VPN release.
+
 Starting with 1.5.0, Settings can check for and install updates with Sparkle.
 Checks run daily (can be disabled); installation requires confirmation. Updates
 preserve proxy settings and verify a signed feed and archive. Users of older

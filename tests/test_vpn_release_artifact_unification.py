@@ -33,6 +33,9 @@ class VPNReleaseArtifactUnificationTests(unittest.TestCase):
 
     def test_joint_builder_emits_public_update_from_the_same_app(self):
         builder = (ROOT / "app/build-joint-release.sh").read_text()
+        self.assertIn('build-first-install', builder)
+        self.assertIn('PROXYPILOT_FIRST_INSTALL_PACKAGE="$FIRST_INSTALL_PACKAGE"',
+                      builder)
         self.assertIn(
             'PROXYPILOT_PREBUILT_APP="$WORK/app/ProxyPilot.app"', builder)
         self.assertIn('PROXYPILOT_DIST_DIR="$WORK/distribution"', builder)
@@ -47,6 +50,29 @@ class VPNReleaseArtifactUnificationTests(unittest.TestCase):
             source = path.read_text()
             self.assertIn('PROXYPILOT_DIST_DIR', source)
             self.assertIn('== /* && ! -L "$DIST"', source)
+
+    def test_first_install_package_is_external_to_the_sealed_app(self):
+        package = (ROOT / "make-dmg.sh").read_text()
+        self.assertIn('PROXYPILOT_FIRST_INSTALL_PACKAGE', package)
+        self.assertIn('Install ProxyPilot + VPN Support.pkg', package)
+        self.assertIn('"$STAGE/Install ProxyPilot + VPN Support.pkg"', package)
+        self.assertNotIn('Contents/Resources/Install ProxyPilot + VPN Support.pkg',
+                         package)
+        self.assertLess(package.index('codesign --verify --deep --strict'),
+                        package.index('Install ProxyPilot + VPN Support.pkg'))
+
+    def test_manual_installer_refuses_vpn_footprints_before_replacement(self):
+        package = (ROOT / "make-dmg.sh").read_text()
+        guard = package.index('VPN support is already installed or pending an update')
+        replacement = package.index('rm -rf "$DST"')
+        self.assertLess(guard, replacement)
+        for footprint in (
+            '/Applications/.ProxyPilot.vpn-update',
+            '/Library/Application Support/ProxyPilot',
+            'kz.documentolog.proxypilot.vpn-helper.plist',
+            'kz.documentolog.proxypilot.vpn-update-broker.plist',
+        ):
+            self.assertIn(footprint, package)
 
 
 if __name__ == "__main__":

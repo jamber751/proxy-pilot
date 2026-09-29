@@ -70,6 +70,8 @@ final class ProxyModel:''' + model
                          'VPNUpdateBrokerInstallerCoordinator',
                          'VPNUpdateBrokerStateRemoval',
                          'VPNJointUpdateStartupStatus', 'VPNJointUpdateCoordinator')]
+        app_sources += [HELPER / f'{name}.swift' for name in
+                        ('VPNApplicationSpec', 'VPNTunnelStateStore')]
         app_sources += [HELPER / f'{name}.swift' for name in ('VPNInstallationPayload', 'VPNInstallationEntry')]
         app_sources += [ROOT / 'app' / f'{name}.swift' for name in
                         ('Controls', 'Updates', 'VPNConfiguration', 'VPNProfileImporter', 'VPNStore')]
@@ -134,6 +136,17 @@ final class ProxyModel:''' + model
         if not success: self.assertFalse(output.exists())
         return output
 
+    def first_install_package(self, *, success=True):
+        output = self.work / 'first-install.pkg'
+        result = subprocess.run(
+            [sys.executable, str(PACKAGER), 'build-first-install',
+             '--stage', str(self.stage), '--output', str(output)], env=ENV,
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode == 0, success,
+                         result.stdout + result.stderr)
+        if not success: self.assertFalse(output.exists())
+        return output
+
     def test_full_app_verification_exits_before_gui_proxy_and_updater(self):
         result = self.app_run('--vpn-support-verify')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -185,7 +198,8 @@ final class ProxyModel:''' + model
 
     def test_admin_operations_reject_nonroot_before_any_sidecar_read(self):
         (self.payload / 'vpn-release.manifest').unlink()
-        for mode in ('install', 'update', 'remove'):
+        for mode in ('install', 'first-install', 'verify-first-install',
+                     'update', 'remove'):
             result = self.app_run('--vpn-support-' + mode)
             self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
             self.assertEqual(result.stderr, '')
@@ -243,6 +257,54 @@ final class ProxyModel:''' + model
                 self.command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(scripts / 'Payload/ProxyPilot.app')])
                 result = self.command([str(scripts / 'Payload/ProxyPilot.app/Contents/MacOS/ProxyPilot'), '--vpn-support-verify'])
                 self.assertIn('package verified', result.stdout)
+
+    def test_clean_first_install_wraps_exact_app_without_weakening_scripts_only_packages(self):
+        package = self.first_install_package()
+        expanded = self.work / 'expanded-first-install'
+        self.command(['/usr/sbin/pkgutil', '--expand-full', str(package),
+                      str(expanded)])
+        info = ET.parse(expanded / 'PackageInfo').getroot()
+        self.assertEqual(info.attrib['minimumSystemVersion'], '11.0')
+        self.assertEqual(info.attrib['identifier'],
+                         'kz.documentolog.proxypilot.first-install')
+        installed = expanded / 'Payload/Applications/ProxyPilot.app'
+        verifier = expanded / 'Scripts/Payload/ProxyPilot.app'
+        self.assertTrue(installed.is_dir())
+        self.assertTrue(verifier.is_dir())
+        self.command(['/usr/bin/codesign', '--verify', '--deep', '--strict',
+                      str(installed)])
+        self.command(['/usr/bin/codesign', '--verify', '--deep', '--strict',
+                      str(verifier)])
+        self.assertEqual(
+            subprocess.run(['/usr/bin/diff', '-qr', str(installed), str(verifier)],
+                           env=ENV, capture_output=True, text=True).returncode, 0)
+        self.assertIn('--vpn-support-verify-first-install',
+                      (expanded / 'Scripts/preinstall').read_text())
+        self.assertIn('--vpn-support-first-install',
+                      (expanded / 'Scripts/postinstall').read_text())
+        ordinary = self.app_run('--vpn-support-verify-first-install')
+        self.assertEqual(ordinary.returncode, 77)
+
+        legacy = self.package('install')
+        legacy_expanded = self.work / 'expanded-legacy-install'
+        self.command(['/usr/sbin/pkgutil', '--expand-full', str(legacy),
+                      str(legacy_expanded)])
+        self.assertFalse((legacy_expanded / 'Payload').exists(),
+                         'Existing support packages must remain scripts-only')
+
+    def test_clean_first_install_refuses_tampered_or_existing_output(self):
+        (self.payload / 'vpn-release.sig').write_text('')
+        self.first_install_package(success=False)
+
+    def test_clean_first_install_does_not_overwrite_output(self):
+        output = self.first_install_package()
+        original = output.read_bytes()
+        result = subprocess.run(
+            [sys.executable, str(PACKAGER), 'build-first-install',
+             '--stage', str(self.stage), '--output', str(output)], env=ENV,
+            capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output.read_bytes(), original)
 
     def test_update_package_requires_complete_joint_sidecars(self):
         self.package('update')

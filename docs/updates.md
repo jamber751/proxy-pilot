@@ -83,6 +83,10 @@ The signing tool requests Keychain access. Outputs:
 The joint builder additionally emits the signed VPN companion and metadata,
 candidate release manifest/signature, verified corresponding engine sources,
 and those three public artifacts from one exact sealed application.
+The public DMG produced by the joint builder also contains
+`Install ProxyPilot + VPN Support.pkg`. The package is nested inside that DMG,
+not added as a tenth release asset. It wraps the same sealed app and signed VPN
+payload without modifying or re-signing the app.
 
 The release-time verifier checks the archive signature against the public key
 committed in the app, its byte count, version and GitHub URL. Sparkle's own tool

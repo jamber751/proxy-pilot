@@ -1,0 +1,10 @@
+#!/bin/zsh -f
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[[ $EUID == 0 && $UID == 0 && ${3:-} == / ]] || exit 77
+PACKAGE_ROOT="${0:A:h}/Payload"
+# The fixed entry re-verifies both this signed release and the exact root-owned
+# application that Installer has just placed at /Applications/ProxyPilot.app.
+exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  "$PACKAGE_ROOT/ProxyPilot.app/Contents/MacOS/ProxyPilot" \
+  --vpn-support-first-install
