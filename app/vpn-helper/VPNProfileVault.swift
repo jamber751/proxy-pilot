@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 enum VPNProfileVaultError: Error { case unsafeStorage, writeFailed, tooLarge }
@@ -24,11 +25,31 @@ final class VPNProfileVault {
 
     deinit { if directory >= 0 { close(directory) } }
 
-    func save(_ data: Data) throws {
+    @discardableResult
+    func save(_ data: Data) throws -> String {
         guard !data.isEmpty, data.count <= Self.maximumBytes else {
             throw VPNProfileVaultError.tooLarge
         }
         try checkDirectory()
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let addressed = Self.fileName(digest: digest)
+        if let existing = try loadFile(addressed) {
+            guard existing == data else { throw VPNProfileVaultError.unsafeStorage }
+        } else {
+            try replace(addressed, with: data)
+        }
+        // Keep the historical fixed name as the most recently accepted profile.
+        // Active/pending transactions use the immutable digest-addressed copy.
+        try replace(Self.name, with: data)
+        return digest
+    }
+
+    func load(digest: String) throws -> Data? {
+        guard Self.validDigest(digest) else { throw VPNProfileVaultError.unsafeStorage }
+        return try loadFile(Self.fileName(digest: digest))
+    }
+
+    private func replace(_ name: String, with data: Data) throws {
         let temporary = ".profile-\(UUID().uuidString).tmp"
         let file = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard file >= 0 else { throw VPNProfileVaultError.writeFailed }
@@ -45,13 +66,18 @@ final class VPNProfileVault {
         }
         // Rename only after the bytes are on disk: an interrupted save must not
         // replace a working profile with a truncated one.
-        guard fsync(file) == 0, renameat(directory, temporary, directory, Self.name) == 0,
+        guard fsync(file) == 0, renameat(directory, temporary, directory, name) == 0,
               fsync(directory) == 0 else { throw VPNProfileVaultError.writeFailed }
     }
 
     func load() throws -> Data? {
         try checkDirectory()
-        let file = openat(directory, Self.name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        return try loadFile(Self.name)
+    }
+
+    private func loadFile(_ name: String) throws -> Data? {
+        try checkDirectory()
+        let file = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard file >= 0 else {
             guard errno == ENOENT else { throw VPNProfileVaultError.unsafeStorage }
             return nil
@@ -66,6 +92,14 @@ final class VPNProfileVault {
             if count == 0 { return data }
             guard data.count + count <= Self.maximumBytes else { throw VPNProfileVaultError.tooLarge }
             data.append(contentsOf: bytes.prefix(count))
+        }
+    }
+
+    static func fileName(digest: String) -> String { "profile-\(digest).ovpn" }
+
+    static func validDigest(_ digest: String) -> Bool {
+        digest.utf8.count == 64 && digest.allSatisfy {
+            $0.isASCII && ($0.isNumber || ("a"..."f").contains(String($0)))
         }
     }
 

@@ -103,6 +103,36 @@ enum VPNReadinessChecks {
         let fd = connect(path)
         do {
             let release = try fixtureRelease(pin: pin)
+            if scenario.hasPrefix("application=") {
+                let path = String(scenario.dropFirst("application=".count))
+                let data = try Data(contentsOf: URL(fileURLWithPath: path))
+                let imported = try VPNProfileImporter.inspect(data: data, name: "profile.ovpn")
+                let digest = SHA256.hash(data: imported.protectedContents)
+                    .map { String(format: "%02x", $0) }.joined()
+                let session = try VPNHelperSession.testOpen(takingSocket: fd, release: release,
+                                                            timeoutMilliseconds: timeout)
+                print("store:\(try session.request(.storeProfile, payload: [UInt8](data)).0.rawValue)")
+                let resource = try VPNResource(address: "10.20.0.0/16")
+                let authentication = try VPNAuthentication(mode: .password, login: "employee")
+                let spec = try VPNApplicationSpec(revision: 7, profileSHA256: digest,
+                                                  resources: [resource], corporateDNS: [],
+                                                  authentication: authentication)
+                print("apply:\(try session.apply(spec).rawValue)")
+                let connected = try session.connect()
+                guard let challenge = connected.1 else { throw VPNApplicationSpecError.invalid }
+                print("connect:\(connected.0.rawValue) kind:\(challenge.kind.rawValue) generation:\(challenge.generation)")
+                let before = try session.tunnelStatus().1!
+                print("before:\(before.phase.rawValue)")
+                let response = VPNCredentialResponse(challenge: challenge,
+                    secret: Data("NEVER-PERSIST-THIS-CREDENTIAL".utf8))
+                print("submit:\(try session.submitCredential(response).rawValue)")
+                print("replay:\(try session.submitCredential(response).rawValue)")
+                let after = try session.tunnelStatus().1!
+                print("after:\(after.phase.rawValue) challenge:\(after.challenge != nil)")
+                let stopped = try session.disconnectTunnel()
+                print("disconnect:\(stopped.rawValue)")
+                return
+            }
             if scenario.hasPrefix("profile=") {
                 let path = String(scenario.dropFirst("profile=".count))
                 let bytes = [UInt8](try Data(contentsOf: URL(fileURLWithPath: path)))

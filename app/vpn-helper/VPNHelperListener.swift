@@ -17,6 +17,7 @@ final class VPNHelperListener {
     private let installerPolicy: VPNPeerPolicy
     private let additionalReadinessPolicies: () throws -> [VPNPeerPolicy]
     private let vault: VPNProfileVault
+    private let tunnelState: VPNTunnelStateStore
 
     #if VPN_HELPER_LISTENER_TESTING
     private var fixtureInstaller = false
@@ -97,10 +98,12 @@ final class VPNHelperListener {
         }
         do {
             let vault = try VPNProfileVault(trustedDirectoryDescriptor: directory)
+            let tunnelState = try VPNTunnelStateStore(trustedDirectoryDescriptor: directory)
+            _ = try tunnelState.invalidateChallengeAfterRestart()
             return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy,
                                      installerPolicy: try release.installerPolicy(),
                                      additionalReadinessPolicies: additionalReadinessPolicies,
-                                     vault: vault)
+                                     vault: vault, tunnelState: tunnelState)
         } catch {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unsafeStorage
@@ -110,13 +113,14 @@ final class VPNHelperListener {
     private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy,
                  installerPolicy: VPNPeerPolicy,
                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
-                 vault: VPNProfileVault) {
+                 vault: VPNProfileVault, tunnelState: VPNTunnelStateStore) {
         self.listener = listener
         self.release = release
         self.policy = policy
         self.installerPolicy = installerPolicy
         self.additionalReadinessPolicies = additionalReadinessPolicies
         self.vault = vault
+        self.tunnelState = tunnelState
     }
 
     deinit { close() }
@@ -286,6 +290,72 @@ final class VPNHelperListener {
                 guard !payload.isEmpty,
                       let profile = try? VPNProfileImporter.inspect(data: Data(payload), name: "profile.ovpn"),
                       (try? vault.save(profile.protectedContents)) != nil else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                try answer(.ok, payload: [], to: client, deadline: deadline)
+            case .applyConfiguration:
+                guard let spec = try? VPNApplicationSpec.decodeCanonical(Data(payload)),
+                      let profileBytes = try? vault.load(digest: spec.profileSHA256),
+                      let profile = try? VPNProfileImporter.inspect(data: profileBytes, name: "profile.ovpn"),
+                      profile.supports(authentication: spec.authentication),
+                      (try? tunnelState.stage(VPNValidatedApplication(
+                        spec: spec, requiresVPNCredentials: profile.requiresCredentials,
+                        requiresPrivateKeyPassword: profile.requiresKeyPassword))) != nil else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                try answer(.ok, payload: [], to: client, deadline: deadline)
+            case .connect:
+                guard payload.isEmpty, let snapshot = try? tunnelState.load(),
+                      let application = snapshot.pending ?? snapshot.active else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                let kind: VPNCredentialKind? = application.requiresPrivateKeyPassword
+                    ? .privateKeyPassword
+                    : (application.requiresVPNCredentials ? .vpnPassword : nil)
+                guard let begun = try? tunnelState.beginConnect(challengeKind: kind) else {
+                    try answer(.failed, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                if let challenge = begun.challenge, let body = try? challenge.encoded() {
+                    try answer(.needsCredential, payload: [UInt8](body), to: client, deadline: deadline)
+                } else {
+                    _ = try? tunnelState.failCurrent()
+                    // Stage A has no engine and can never claim a connection.
+                    try answer(.notReady, payload: [], to: client, deadline: deadline)
+                }
+            case .disconnect:
+                guard payload.isEmpty, (try? tunnelState.disconnect()) != nil else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                try answer(.ok, payload: [], to: client, deadline: deadline)
+            case .tunnelStatus:
+                guard payload.isEmpty, let snapshot = try? tunnelState.load(),
+                      let body = try? snapshot.encoded() else {
+                    try answer(.failed, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                try answer(.ok, payload: [UInt8](body), to: client, deadline: deadline)
+            case .submitCredential:
+                guard var response = try? VPNCredentialResponse.decode(Data(payload)) else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                // Consume first. Even an unusable credential can never be retried
+                // against this challenge, and its bytes never enter durable state.
+                guard (try? tunnelState.consume(response.challenge)) != nil else {
+                    response.secret.resetBytes(in: 0..<response.secret.count)
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                response.secret.resetBytes(in: 0..<response.secret.count)
+                try answer(.notReady, payload: [], to: client, deadline: deadline)
+            case .cancelCredential:
+                guard let challenge = try? VPNCredentialChallenge.decodeCanonical(Data(payload)),
+                      (try? tunnelState.cancel(challenge)) != nil else {
                     try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
                     break
                 }

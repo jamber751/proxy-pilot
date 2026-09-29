@@ -82,7 +82,8 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
   LINK_FLAGS+=(-D VPN_INSTALLER_ENTRY)
   for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact VPNStagedApplication VPNApplicationTransactionStager VPNJointUpdateCleanup VPNJointUpdatePreparation VPNInstalledApplication VPNInstalledCandidateHandoff VPNInstalledCandidateEntry VPNSelectedCandidateFinalizer VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryEntry VPNReplacementExecutor VPNReplacementExecutorProvisioner VPNProtectedApplicationSwap VPNReplacementExecutorHandoff VPNJointApplicationReplacement VPNReplacementExecutorEntry VPNApplicationDestinationStage VPNApplicationDestinationExchange \
     VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
-    VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
+    VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNApplicationSpec VPNTunnelStateStore \
+    VPNHelperTunnelSession VPNProfileVault VPNActivationBudget \
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
     VPNUpdateBrokerProtocol VPNUpdateBrokerClient VPNJointArtifactMount VPNCompanionMetadata VPNCompanionMetadataFetcher VPNCompanionStaging VPNCompanionDownloader VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
     VPNUpdateBrokerInbox VPNUpdateBrokerRotation VPNUpdateBrokerInstallerCoordinator \

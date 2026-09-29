@@ -5,6 +5,7 @@ probe. Both are separate signed processes over a local socket in a disposable
 directory. Unprivileged only: no root helper, no launchd, no VPN operation.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -43,20 +44,23 @@ class VPNHelperListenerTests(unittest.TestCase):
         cls.work = Path(cls.build.name)
         for name, sources, flags in [
             ('service', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-                         'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
+                         'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNApplicationSpec.swift',
+                         'VPNTunnelStateStore.swift', 'VPNProfileVault.swift',
                          'VPNHelperListener.swift', 'VPNEndpointDirectory.swift'], ['-D', 'VPN_HELPER_LISTENER_TESTING']),
             # The probe's normal build demands a root server, which no test may
             # run: only the client side uses the narrow test-policy seam here.
             ('client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
-                        'VPNHelperReadiness.swift', 'VPNHelperSession.swift'],
+                        'VPNHelperReadiness.swift', 'VPNHelperSession.swift', 'VPNApplicationSpec.swift',
+                        'VPNTunnelStateStore.swift', 'VPNHelperTunnelSession.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING']),
             ('previous', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
-                          'VPNHelperReadiness.swift', 'VPNHelperSession.swift'],
+                          'VPNHelperReadiness.swift', 'VPNHelperSession.swift', 'VPNApplicationSpec.swift',
+                          'VPNTunnelStateStore.swift', 'VPNHelperTunnelSession.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_PREVIOUS_CLIENT']),
         ]:
             main = 'vpn_helper_service.swift' if name == 'service' else 'vpn_readiness_checks.swift'
             files = [HELPER / source for source in sources] + [ROOT / 'tests' / main]
-            if name == 'service':
+            if name in ('service', 'client', 'previous'):
                 # The helper re-validates profiles with the application's own importer.
                 files += [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
             slices = []
@@ -311,6 +315,22 @@ class VPNHelperListenerTests(unittest.TestCase):
         text = PROFILE + ('#\n' * (padding // 2)) + ('\n' if padding % 2 else '')
         self.assertEqual(len(text.encode()), 1_048_576)
         self.assertEqual(self.store_profile(text), ['answer:0 body:0'])
+
+    def test_inert_application_transaction_and_one_shot_credential(self):
+        self.seed()
+        self.serve()
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(PROFILE)
+        self.assertEqual(self.session(f'application={candidate}'), [
+            'store:0', 'apply:0', 'connect:4 kind:1 generation:1',
+            'before:needsCredential', 'submit:5', 'replay:2',
+            'after:failed challenge:false', 'disconnect:0'])
+        state = (self.storage / 'tunnel-state.json').read_text()
+        self.assertNotIn('NEVER-PERSIST-THIS-CREDENTIAL', state)
+        self.assertNotIn('secret', state.lower())
+        decoded = json.loads(state)
+        self.assertFalse(decoded['desiredEnabled'])
+        self.assertEqual(decoded['phase'], 'off')
 
     def test_public_endpoint_keeps_profile_in_private_storage(self):
         self.seed()

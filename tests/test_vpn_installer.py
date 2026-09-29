@@ -30,7 +30,8 @@ COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'V
               'VPNJointUpdateCleanup.swift',
               'VPNInstaller.swift', 'VPNEndpointDirectory.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
-           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNProfileVault.swift',
+           'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNApplicationSpec.swift',
+           'VPNTunnelStateStore.swift', 'VPNProfileVault.swift',
            'VPNHelperListener.swift', 'VPNEndpointDirectory.swift']
 # The helper re-validates profiles with the application's own importer.
 IMPORTER = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
@@ -494,6 +495,8 @@ class VPNInstallerTests(unittest.TestCase):
 
     def test_uninstall_stops_the_service_and_removes_every_file(self):
         self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
+        (self.storage / ('profile-' + 'a' * 64 + '.ovpn')).write_bytes(b'profile')
+        (self.storage / 'tunnel-state.json').write_bytes(b'state')
         result = self.run_installer('uninstall')
         self.assertEqual(result.stdout.strip(), 'uninstalled', result.stdout + result.stderr)
         self.assertFalse(self.loaded())

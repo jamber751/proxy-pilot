@@ -12,6 +12,12 @@ enum VPNHelperOperation: UInt16 {
     /// Hands the helper profile bytes to re-validate and keep. It never makes
     /// the helper connect, route or resolve anything.
     case storeProfile = 2
+    case applyConfiguration = 3
+    case connect = 4
+    case disconnect = 5
+    case tunnelStatus = 6
+    case submitCredential = 7
+    case cancelCredential = 8
 }
 
 enum VPNHelperStatus: UInt16 {
@@ -19,6 +25,8 @@ enum VPNHelperStatus: UInt16 {
     case unsupported = 1
     case invalidRequest = 2
     case failed = 3
+    case needsCredential = 4
+    case notReady = 5
 }
 
 enum VPNHelperProtocol {
