@@ -23,6 +23,29 @@ enum VPNJointUpdatePreparation {
         }
         try VPNPeerAuthentication.validateCurrentProcess(
             policy: payload.candidate.release.installerPolicy())
+        return try prepareProduction(candidateDirectory: candidateDirectory,
+                                     payload: payload, authority: authority)
+    }
+
+    /// Separate broker role: the already-selected helper A may prepare only an
+    /// exact signed A→B payload. This does not weaken the candidate-app entry
+    /// above and still rechecks selected A under the service lifecycle lease.
+    static func prepareFromBroker(candidateDirectory: Int32,
+                                  payload: VPNJointUpdatePayload,
+                                  authority: VPNReleaseAuthority) throws -> Result {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNJointUpdatePreparationError.requiresRoot
+        }
+        try VPNPeerAuthentication.validateCurrentProcess(
+            policy: payload.previous.helperPolicy())
+        return try prepareProduction(candidateDirectory: candidateDirectory,
+                                     payload: payload, authority: authority)
+    }
+
+    private static func prepareProduction(candidateDirectory: Int32,
+                                          payload: VPNJointUpdatePayload,
+                                          authority: VPNReleaseAuthority) throws
+        -> Result {
         let service = try VPNDirectoryProvisioner.openSystemDirectory(create: false)
         defer { close(service) }
         return try perform(

@@ -8,7 +8,10 @@ import Foundation
 enum VPNReplacementExecutorEntry {
     static func runIfRequested(arguments: [String]) -> Int32? {
         guard arguments.count == 2,
-              arguments[1] == VPNReplacementExecutorHandoff.childArgument else { return nil }
+              arguments[1] == VPNReplacementExecutorHandoff.childArgument
+                || arguments[1] == VPNReplacementExecutorHandoff.brokerChildArgument else {
+            return nil
+        }
         guard getuid() == 0, geteuid() == 0 else { return 77 }
         do {
             let authority = try VPNReleaseTrust.authority()
@@ -31,20 +34,33 @@ enum VPNReplacementExecutorEntry {
                 journal = loaded
             }
             let selfPolicy = try journal.previous.release.installerPolicy()
-            let parentPolicy = try journal.candidate.release.installerPolicy()
-            return VPNReplacementExecutorHandoff.runChildIfRequested(
-                arguments: arguments, selfPolicy: selfPolicy,
-                parentPolicy: parentPolicy,
-                failureDiagnostic: { error in
-                    (error as? VPNJointApplicationReplacementFailure)?.diagnosticByte
-                },
-                operation: { request, applicationDirectory in
+            let brokerRole = arguments[1]
+                == VPNReplacementExecutorHandoff.brokerChildArgument
+            let parentPolicy = try brokerRole
+                ? journal.previous.release.helperPolicy()
+                : journal.candidate.release.installerPolicy()
+            let operation: (VPNExecutorHandoffRequest, Int32) throws
+                -> VPNProtectedApplicationSwap.Outcome = { request, applicationDirectory in
                     try VPNJointApplicationReplacement.installPreparedOrPendingApplication(
                         applicationDirectory: applicationDirectory,
                         transactionID: request.transactionID,
                         expectedRevision: request.expectedRevision,
                         authority: authority)
-                }) ?? 77
+                }
+            if brokerRole {
+                return VPNReplacementExecutorHandoff.runBrokerChildIfRequested(
+                    arguments: arguments, selfPolicy: selfPolicy,
+                    parentPolicy: parentPolicy,
+                    failureDiagnostic: { error in
+                        (error as? VPNJointApplicationReplacementFailure)?.diagnosticByte
+                    }, operation: operation) ?? 77
+            }
+            return VPNReplacementExecutorHandoff.runChildIfRequested(
+                arguments: arguments, selfPolicy: selfPolicy,
+                parentPolicy: parentPolicy,
+                failureDiagnostic: { error in
+                    (error as? VPNJointApplicationReplacementFailure)?.diagnosticByte
+                }, operation: operation) ?? 77
         } catch {
             return 77
         }

@@ -161,6 +161,16 @@ final class VPNUpdateBrokerInbox {
         return (root.st_mode, facts.owned, facts.writable)
     }
 
+    /// Opens the exact immutable publication identified by a receipt returned
+    /// from `ingest`. The caller owns the descriptor. No pathname from IPC is
+    /// accepted or reconstructed outside this private directory.
+    func openPublished(identity: Data) throws -> Int32 {
+        guard identity.count == 32 else {
+            throw VPNUpdateBrokerInboxError.publishedChanged
+        }
+        return try published(identity)
+    }
+
     #if VPN_UPDATE_BROKER_INBOX_TESTING
     func corruptPublished(identity: Data) throws {
         let directory = try published(identity)
@@ -177,6 +187,9 @@ final class VPNUpdateBrokerInbox {
     #endif
 
     private func published(_ identity: Data) throws -> Int32 {
+        guard identity.count == 32 else {
+            throw VPNUpdateBrokerInboxError.publishedChanged
+        }
         let suffix = identity.map { String(format: "%02x", $0) }.joined()
         guard let directory = try Self.openDirectory(parent, "inbox-\(suffix)") else {
             throw VPNUpdateBrokerInboxError.publishedChanged

@@ -68,6 +68,7 @@ enum VPNReplacementExecutorHandoff {
     }
 
     static let childArgument = "--vpn-protected-replacement-executor"
+    static let brokerChildArgument = "--vpn-protected-broker-replacement-executor"
     static let childSocket: Int32 = 20
     static let childApplicationDirectory: Int32 = 21
     private static let ready: UInt8 = 0x52
@@ -89,6 +90,7 @@ enum VPNReplacementExecutorHandoff {
         do {
             return try performLaunch(base: base, release: release, request: request,
                                      childPolicy: childPolicy, parentPolicy: parentPolicy,
+                                     childArgument: childArgument,
                                      checkpoint: { _ in })
         } catch let error as VPNExecutorHandoffError {
             report(stage(for: error))
@@ -96,6 +98,34 @@ enum VPNReplacementExecutorHandoff {
         } catch {
             report(.preparation)
             throw error
+        }
+    }
+
+    /// Broker A may hand an already signed/prepared transition only to exact
+    /// protected application A. Both policies are derived from signed release A;
+    /// no caller-provided identity or union with the legacy B-app role exists.
+    static func launchPreparedFromBroker(
+        inTrustedDirectory base: Int32,
+        release: VerifiedVPNRelease,
+        request: VPNExecutorHandoffRequest
+    ) throws -> VPNProtectedApplicationSwap.Outcome {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNExecutorHandoffError.requiresRoot
+        }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
+        do {
+            try VPNPeerAuthentication.validateCurrentProcess(
+                policy: release.helperPolicy())
+            return try performLaunch(
+                base: base, release: release, request: request,
+                childPolicy: release.installerPolicy(),
+                parentPolicy: release.helperPolicy(),
+                childArgument: brokerChildArgument,
+                checkpoint: { _ in })
+        } catch let error as VPNExecutorHandoffError {
+            report(stage(for: error)); throw error
+        } catch {
+            report(.preparation); throw error
         }
     }
 
@@ -125,9 +155,10 @@ enum VPNReplacementExecutorHandoff {
                                    checkpoint: (String) throws -> Void = { _ in }) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
-        return try performLaunch(base: base, release: release, request: request,
-                                 childPolicy: childPolicy, parentPolicy: parentPolicy,
-                                 checkpoint: checkpoint)
+            return try performLaunch(base: base, release: release, request: request,
+                                     childPolicy: childPolicy, parentPolicy: parentPolicy,
+                                     childArgument: childArgument,
+                                     checkpoint: checkpoint)
     }
 
     #endif
@@ -140,7 +171,34 @@ enum VPNReplacementExecutorHandoff {
                                     failureDiagnostic: (Error) -> UInt8? = { _ in nil },
                                     operation: (VPNExecutorHandoffRequest, Int32) throws
                                         -> VPNProtectedApplicationSwap.Outcome) -> Int32? {
-        guard arguments.count == 2, arguments[1] == childArgument else { return nil }
+        runChildIfRequested(
+            arguments: arguments, expectedArgument: childArgument,
+            selfPolicy: selfPolicy, parentPolicy: parentPolicy,
+            failureDiagnostic: failureDiagnostic, operation: operation)
+    }
+
+    static func runBrokerChildIfRequested(
+        arguments: [String], selfPolicy: VPNPeerPolicy,
+        parentPolicy: VPNPeerPolicy,
+        failureDiagnostic: (Error) -> UInt8? = { _ in nil },
+        operation: (VPNExecutorHandoffRequest, Int32) throws
+            -> VPNProtectedApplicationSwap.Outcome
+    ) -> Int32? {
+        runChildIfRequested(
+            arguments: arguments, expectedArgument: brokerChildArgument,
+            selfPolicy: selfPolicy, parentPolicy: parentPolicy,
+            failureDiagnostic: failureDiagnostic, operation: operation)
+    }
+
+    private static func runChildIfRequested(
+        arguments: [String], expectedArgument: String,
+        selfPolicy: VPNPeerPolicy, parentPolicy: VPNPeerPolicy,
+        failureDiagnostic: (Error) -> UInt8?,
+        operation: (VPNExecutorHandoffRequest, Int32) throws
+            -> VPNProtectedApplicationSwap.Outcome
+    ) -> Int32? {
+        guard arguments.count == 2,
+              arguments[1] == expectedArgument else { return nil }
         return runChild(selfPolicy: selfPolicy, parentPolicy: parentPolicy,
                         failureDiagnostic: failureDiagnostic, operation: operation)
     }
@@ -149,6 +207,7 @@ enum VPNReplacementExecutorHandoff {
                                       request: VPNExecutorHandoffRequest,
                                       childPolicy: VPNPeerPolicy,
                                       parentPolicy: VPNPeerPolicy,
+                                      childArgument: String,
                                       checkpoint: (String) throws -> Void) throws
         -> VPNProtectedApplicationSwap.Outcome {
         let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: base)
@@ -182,7 +241,8 @@ enum VPNReplacementExecutorHandoff {
         }
         let processID: pid_t
         do {
-            processID = try spawn(path: executablePath, socket: movedSocket, base: movedBase)
+            processID = try spawn(path: executablePath, socket: movedSocket,
+                                  base: movedBase, childArgument: childArgument)
         } catch {
             close(movedSocket); close(movedBase)
             throw error
@@ -321,7 +381,8 @@ enum VPNReplacementExecutorHandoff {
         #endif
     }
 
-    private static func spawn(path: String, socket: Int32, base: Int32) throws -> pid_t {
+    private static func spawn(path: String, socket: Int32, base: Int32,
+                              childArgument: String) throws -> pid_t {
         var actions: posix_spawn_file_actions_t? = nil
         var attributes: posix_spawnattr_t? = nil
         guard posix_spawn_file_actions_init(&actions) == 0,
