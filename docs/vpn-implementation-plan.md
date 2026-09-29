@@ -2901,3 +2901,28 @@ snapshot. Затем собрать новый-semver candidate и пройти 
 Следующий узел: поднять semver и sequence, подготовить English release notes и
 новый exact local candidate. Затем пройти native system acceptance: installed
 A→B coordinator/Broker/relaunch, fault/reboot matrix и Intel/macOS 11 runtime.
+
+### Продолжение 1.5at — проверка release assembly 1.6.0 / 126 (30 сентября)
+
+- [x] Во временной локальной сборке версия поднята с 1.5.1 до 1.6.0, а VPN
+  sequence 125 → 126. B125 не переиспользован; B126 также не публикуется.
+- [x] Draft English release notes подготовлены и проверены внутри Sparkle feed,
+  но возвращены к 1.5.1 в рабочем дереве: описывать VPN как готовую функцию до
+  runtime/UI/first-install acceptance нельзя.
+- [x] Из verified B125 read-only companion восстановлены exact reviewed engine
+  и universal GOST; corresponding source bundle повторно проверен до сборки.
+- [x] Production-key local candidate создан в отдельном новом output с signed
+  transition 125 → 126. Ничего не установлено, не загружено и не опубликовано.
+- [x] Полный release verifier подтвердил все девять assets, обе подписи,
+  corresponding sources, read-only DMG layout, strict codesign, sealed sequence,
+  Sparkle feed и byte-identical app в public DMG/ZIP/VPN companion.
+- [x] Release-note/VPN discovery/coordinator/artifact/workflow regression 29/29.
+- [ ] Этот результат доказывает только доставку. В приложении ещё нет VPN UI;
+  helper запускает idle service, а не OpenVPN tunnel; пароль/OTP, routes/DNS и
+  beginner-friendly first install не подключены. Поэтому tag/draft/finalize
+  остаются запрещены. Следующий реальный sequence после тестового B126 — 127.
+
+Следующий узел: сначала закрыть пользовательский VPN vertical slice — first
+install, import/drop UI, secure per-attempt credentials/OTP, реальный OpenVPN
+process, routes/DNS/status/cleanup. После этого пройти native installed update,
+fault/reboot matrix и реальный Intel/macOS 11 runtime.
