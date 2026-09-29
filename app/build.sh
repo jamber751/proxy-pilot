@@ -75,7 +75,7 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
     VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
-    VPNUpdateBrokerProtocol VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
+    VPNUpdateBrokerProtocol VPNUpdateBrokerClient VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
     VPNUpdateBrokerInbox VPNUpdateBrokerRotation VPNUpdateBrokerInstallerCoordinator \
     VPNUpdateBrokerStateRemoval \
     VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
