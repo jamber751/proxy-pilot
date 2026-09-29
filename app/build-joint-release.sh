@@ -88,6 +88,13 @@ python3 "$HERE/vpn-package/package.py" prepare-companion-metadata \
   "$HERE/vpn-release-public-key.txt" "$DMG"
 
 # Preserve the exact signed endpoint as input for the next forward release.
+/usr/bin/env COPYFILE_DISABLE=1 /usr/bin/tar --format ustar -czf \
+  "$OUTPUT/ProxyPilot-$VERSION-vpn-engine-sources.tar.gz" \
+  -C "$WORK/stage" EngineSources
+python3 "$HERE/vpn-package/package.py" verify-engine-sources \
+  --archive "$OUTPUT/ProxyPilot-$VERSION-vpn-engine-sources.tar.gz" \
+  --release-manifest "$WORK/stage/Payload/vpn-release.manifest" \
+  --version "$VERSION"
 /bin/cp "$WORK/stage/Payload/vpn-release.manifest" \
   "$OUTPUT/ProxyPilot-$VERSION-vpn-release.manifest"
 /bin/cp "$WORK/stage/Payload/vpn-release.sig" \

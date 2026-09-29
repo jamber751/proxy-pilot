@@ -34,6 +34,8 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
             "prepare-companion-metadata",
             "sign-companion",
             "verify-companion-artifact",
+            'tar --format ustar -czf',
+            "verify-engine-sources",
         ]
         positions = [source.index(value) for value in required]
         self.assertEqual(positions, sorted(positions))
@@ -43,6 +45,8 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
         source = SCRIPT.read_text()
         self.assertIn('! -e "$OUTPUT" && ! -L "$OUTPUT"', source)
         self.assertIn('mkdir -m 700 "$OUTPUT"', source)
+        self.assertIn('vpn-engine-sources.tar.gz', source)
+        self.assertIn('COPYFILE_DISABLE=1', source)
         self.assertNotIn("--clobber", source)
 
 

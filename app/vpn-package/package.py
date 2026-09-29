@@ -12,7 +12,7 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import plistlib
 import re
 import shutil
@@ -76,6 +76,114 @@ def source_material(directory):
         raise ValueError('Engine provenance does not match reviewed inputs')
     files['provenance.json'] = provenance
     return lock, record, files
+
+
+def canonical_record(data):
+    try: text = data.decode('ascii')
+    except UnicodeDecodeError: raise ValueError('Expected a canonical ASCII record')
+    if not text.endswith('\n') or not text:
+        raise ValueError('Expected a canonical signed record')
+    result = {}
+    for line in text.splitlines():
+        if line.count('=') != 1:
+            raise ValueError('Expected a canonical signed record')
+        key, value = line.split('=', 1)
+        if not key or not value or key in result:
+            raise ValueError('Expected a canonical signed record')
+        result[key] = value
+    return result
+
+
+def verify_engine_sources_archive(archive_path, release_manifest, version):
+    """Verify bounded corresponding sources against one signed release record.
+
+    Signature verification stays in vpn-release-key; this verifier binds the
+    exact reviewed source material and provenance to fields that signature covers.
+    Nothing from either archive is executed or extracted to the filesystem.
+    """
+    if (not archive_path.is_absolute() or archive_path.is_symlink()
+            or not release_manifest.is_absolute() or release_manifest.is_symlink()
+            or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version)):
+        raise ValueError('Expected absolute source inputs and canonical version')
+    outer = regular_bytes(archive_path, 220 * 1024 * 1024)
+    release = canonical_record(regular_bytes(release_manifest, 4096))
+    if release.get('format') != '2' or release.get('product') != APP_ID or release.get('version') != version:
+        raise ValueError('Source archive does not match release identity')
+
+    files, names, total = {}, set(), 0
+    with tarfile.open(fileobj=io.BytesIO(outer), mode='r:gz') as bundle:
+        if bundle.pax_headers: raise ValueError('Source bundle must use the fixed archive format')
+        members = bundle.getmembers()
+        if not members or len(members) > 32:
+            raise ValueError('Unexpected source bundle entry count')
+        for member in members:
+            raw = member.name[:-1] if member.name.endswith('/') else member.name
+            name = PurePosixPath(raw)
+            if (not name.parts or name.is_absolute() or '..' in name.parts
+                    or '\\' in raw or raw in names or member.pax_headers
+                    or not (member.isfile() or member.isdir())):
+                raise ValueError('Unsafe source bundle entry')
+            names.add(raw)
+            if member.isdir(): continue
+            total += member.size
+            if member.size <= 0 or total > 210 * 1024 * 1024:
+                raise ValueError('Unbounded source bundle')
+            stream = bundle.extractfile(member)
+            if stream is None: raise ValueError('Unreadable source bundle entry')
+            data = stream.read(member.size + 1)
+            if len(data) != member.size: raise ValueError('Truncated source bundle entry')
+            files[raw] = data
+
+    recipe = HERE.parent / 'vpn-engine'
+    lock_bytes = (recipe / 'sources.json').read_bytes()
+    build_bytes = (recipe / 'build.py').read_bytes()
+    lock = json.loads(lock_bytes)
+    expected = {
+        'EngineSources/sources/sources.json',
+        'EngineSources/sources/build.py',
+        'EngineSources/provenance.json',
+        'EngineSources/OpenVPN-COPYING.txt',
+        'EngineSources/OpenVPN-GPL-2.0.txt',
+        'EngineSources/OpenSSL-LICENSE.txt',
+    }
+    for name, item in lock.items():
+        expected.add(f'EngineSources/sources/{name}-{item["version"]}.tar.gz')
+    if set(files) != expected:
+        raise ValueError('Source bundle has missing or unexpected files')
+    if (files['EngineSources/sources/sources.json'] != lock_bytes
+            or files['EngineSources/sources/build.py'] != build_bytes):
+        raise ValueError('Source bundle recipe is not the reviewed recipe')
+
+    licenses = {
+        'openvpn': [('COPYING', 'OpenVPN-COPYING.txt'),
+                    ('COPYRIGHT.GPL', 'OpenVPN-GPL-2.0.txt')],
+        'openssl': [('LICENSE.txt', 'OpenSSL-LICENSE.txt')],
+    }
+    for name, item in lock.items():
+        source_name = f'EngineSources/sources/{name}-{item["version"]}.tar.gz'
+        source = files[source_name]
+        if hashlib.sha256(source).hexdigest() != item['sha256']:
+            raise ValueError('Published engine source checksum mismatch')
+        with tarfile.open(fileobj=io.BytesIO(source), mode='r:gz') as upstream:
+            for upstream_name, notice_name in licenses[name]:
+                member = upstream.getmember(
+                    f'{name}-{item["version"]}/{upstream_name}')
+                if not member.isfile() or not 0 < member.size <= 1024 * 1024:
+                    raise ValueError('Invalid upstream license member')
+                with upstream.extractfile(member) as stream:
+                    notice = stream.read()
+                if files['EngineSources/' + notice_name] != notice:
+                    raise ValueError('Published license does not match source')
+
+    provenance = json.loads(files['EngineSources/provenance.json'])
+    if (not isinstance(provenance, dict) or provenance.get('sources') != lock
+            or provenance.get('minimumOS') != '11.0'
+            or provenance.get('architectures') != ['arm64', 'x86_64']
+            or provenance.get('binarySHA256') != release.get('engine-sha256')
+            or release.get('engine-version') != lock['openvpn']['version']
+            or release.get('engine-crypto-version') != lock['openssl']['version']):
+        raise ValueError('Published sources do not match the signed engine release')
+    print(f'Verified engine source bundle for ProxyPilot {version}')
 
 
 def engine_candidate(directory):
@@ -426,6 +534,10 @@ def main():
     metadata.add_argument('--stage', type=Path, required=True)
     metadata.add_argument('--companion', type=Path, required=True)
     metadata.add_argument('--output', type=Path, required=True)
+    sources = modes.add_parser('verify-engine-sources')
+    sources.add_argument('--archive', type=Path, required=True)
+    sources.add_argument('--release-manifest', type=Path, required=True)
+    sources.add_argument('--version', required=True)
     args = parser.parse_args()
     if os.geteuid() == 0: parser.error('Build as an ordinary user, never root')
     try:
@@ -433,7 +545,11 @@ def main():
         elif args.mode == 'prepare-update': prepare_update(args.stage, args.previous_manifest, args.previous_signature)
         elif args.mode == 'build': build(args.stage, args.action, args.output)
         elif args.mode == 'build-companion': build_companion(args.stage, args.output)
-        else: prepare_companion_metadata(args.stage, args.companion, args.output)
+        elif args.mode == 'prepare-companion-metadata':
+            prepare_companion_metadata(args.stage, args.companion, args.output)
+        else:
+            verify_engine_sources_archive(
+                args.archive, args.release_manifest, args.version)
     except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error: parser.error(str(error))
 
 

@@ -34,7 +34,10 @@ The preferred local assembly is `app/build-joint-release.sh <next-sequence>
 <new-absolute-output-directory>`. It verifies that the existing Keychain key
 matches the embedded public key, performs all steps below, verifies the final
 DMG against its signed metadata, and preserves the new signed release sidecars
-for the next forward update. It never tags, uploads, installs or elevates.
+for the next forward update. It also emits one bounded
+`ProxyPilot-<version>-vpn-engine-sources.tar.gz` containing the exact reviewed
+source archives, recipe, provenance and notices corresponding to the signed
+engine. It never tags, uploads, installs or elevates.
 
 1. Choose the next canonical positive release sequence, then build a fresh app
    with `PROXYPILOT_ISOLATED_UPDATER=1`, `PROXYPILOT_VPN_INSTALLER=1` and
@@ -79,6 +82,12 @@ for the next forward update. It never tags, uploads, installs or elevates.
    The canonical metadata binds version, forward A→B sequence, byte count and
    SHA-256 in a domain separate from root authorization. Its artifact name and
    HTTPS GitHub release URL are derived by the app; neither is supplied by IPC.
+8. Publish the generated engine-source archive beside the companion. The builder
+   verifies it in memory before completion: only the fixed `EngineSources`
+   layout is accepted, upstream hashes/notices and reviewed recipe must match,
+   and provenance `binarySHA256` must equal the engine SHA-256 in the signed
+   release manifest. Links, traversal, duplicate/extra entries and unbounded
+   archives are refused; no carried code is executed or extracted.
 
 No output is overwritten. `Payload` contains exactly the sealed app, helper,
 manifest, signature and (for format 2) the fixed `vpn-engine` sidecar. `EngineSources`

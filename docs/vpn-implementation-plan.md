@@ -2817,3 +2817,22 @@ draft upload verification. Tag пока запрещён.
 Следующий узел: новый-semver release candidate и native clean coordinator →
 durable Broker ready → relaunch, затем checkpoint fault/reboot matrix. Только
 после этого — draft upload verification; tag пока запрещён.
+
+### Продолжение 1.5ap — соответствующие исходники VPN engine (30 сентября)
+
+- [x] Local joint builder теперь сохраняет отдельный fixed-name
+  `vpn-engine-sources.tar.gz` из уже проверенного `EngineSources` stage; runtime
+  DMG не раздувается исходниками.
+- [x] Новый in-memory verifier ограничивает compressed/expanded bytes и entry
+  count, запрещает links/devices/FIFO/PAX, traversal, duplicates и лишние файлы.
+- [x] Обязательны exact reviewed `sources.json` и `build.py`, обе upstream
+  archive SHA-256, три соответствующих upstream notice и canonical provenance.
+- [x] Provenance `binarySHA256`, OpenVPN/OpenSSL versions, minimum macOS и exact
+  arm64/x86_64 связываются с полями проверяемого signed release manifest.
+- [x] Source-bundle tests 3/3 и совместный builder/packager regression 11/11;
+  настоящий архив для 1.5.1 дополнительно прошёл verifier.
+
+Следующий узел: двухфазный draft release gate. CI не получает VPN private key:
+локально подписанные companion/source assets загружаются только в draft, CI
+проверяет exact snapshot публичным ключом и лишь затем может publish. До этого
+нужно устранить расхождение обычной CI-сборки без sealed VPN sequence и joint app.
