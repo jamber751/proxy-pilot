@@ -83,6 +83,17 @@ class VPNUpdateBrokerHandlerSourceContractTests(unittest.TestCase):
         serve = daemon.index("try serve(listener:", resume)
         self.assertLess(resume, serve)
 
+    def test_durable_ready_ack_precedes_executor_handoff(self):
+        handler = HANDLER.read_text()
+        daemon = DAEMON.read_text()
+        ready_publish = handler.index("state: .ready")
+        ready_callback = handler.index("try ready?(response)", ready_publish)
+        handoff = handler.index("VPNReplacementExecutorHandoff", ready_callback)
+        self.assertLess(ready_publish, ready_callback)
+        self.assertLess(ready_callback, handoff)
+        self.assertIn("var acknowledged = false", daemon)
+        self.assertIn("if !acknowledged", daemon)
+
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"),
                      "macOS Swift required")

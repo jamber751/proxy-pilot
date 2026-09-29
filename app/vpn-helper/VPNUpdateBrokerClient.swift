@@ -9,7 +9,7 @@ enum VPNUpdateBrokerClientError: Error {
 
 enum VPNUpdateBrokerSubmitOutcome {
     case response(VPNUpdateBrokerResponse)
-    case handoffExpected
+    case indeterminate
 }
 
 /// Ordinary-user side of the fixed update-broker protocol. The caller supplies
@@ -40,7 +40,7 @@ enum VPNUpdateBrokerClient {
                 socket: socket, deadline: deadline)
         } catch SubmitWriteError.indeterminate {
             close(socket)
-            return .handoffExpected
+            return .indeterminate
         } catch {
             close(socket)
             throw error
@@ -50,7 +50,7 @@ enum VPNUpdateBrokerClient {
             response = try receive(socket: socket, deadline: deadline)
         } catch {
             close(socket)
-            return .handoffExpected
+            return .indeterminate
         }
         close(socket)
         // A valid response for another transaction is not a rotation signal.
@@ -152,11 +152,13 @@ enum VPNUpdateBrokerClient {
                     || response.toSequence > expectedFromSequence else {
                 throw VPNUpdateBrokerClientError.mismatchedTransaction
             }
-        case .accepted, .checking, .ready, .installing, .complete, .failed:
+        case .ready:
             guard response.toSequence > expectedFromSequence,
                   response.revision > 0 else {
                 throw VPNUpdateBrokerClientError.mismatchedTransaction
             }
+        case .accepted, .checking, .installing, .complete, .failed:
+            throw VPNUpdateBrokerClientError.mismatchedTransaction
         }
     }
 

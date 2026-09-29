@@ -71,18 +71,34 @@ enum VPNUpdateBrokerDaemon {
                 let received = try VPNUpdateBrokerTransport.receive(
                     socket: client, clientPolicy: clientPolicy,
                     deadline: deadline)
-                let response: VPNUpdateBrokerResponse
                 switch received.request.operation {
                 case .status:
-                    response = try handler.status(
+                    let response = try handler.status(
                         selectedSequence: selected.release.sequence)
+                    try VPNUpdateBrokerTransport.send(
+                        response, socket: client,
+                        deadline: DispatchTime.now().uptimeNanoseconds
+                            + 2_000_000_000)
                 case .submit:
                     let directory = try received.takeCandidateDirectory()
-                    response = try handler.submit(
-                        received.request, candidateDirectory: directory)
+                    var acknowledged = false
+                    let response = try handler.submit(
+                        received.request, candidateDirectory: directory,
+                        ready: { ready in
+                            try VPNUpdateBrokerTransport.send(
+                                ready, socket: client,
+                                deadline: DispatchTime.now().uptimeNanoseconds
+                                    + 2_000_000_000)
+                            acknowledged = true
+                        })
+                    // Busy/stale never reach the durable ready boundary.
+                    if !acknowledged {
+                        try VPNUpdateBrokerTransport.send(
+                            response, socket: client,
+                            deadline: DispatchTime.now().uptimeNanoseconds
+                                + 2_000_000_000)
+                    }
                 }
-                try VPNUpdateBrokerTransport.send(
-                    response, socket: client, deadline: deadline)
             } catch {
                 // A refused connection carries no diagnostic payload. The next
                 // peer gets a fresh live-code check and independent deadline.

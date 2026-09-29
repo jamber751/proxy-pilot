@@ -1,9 +1,8 @@
 """Ordinary-user update-broker client contract.
 
-The model fixes the important identity boundary at broker rotation: once app A
-has sent a submit frame, EOF can mean that broker A handed the launchd endpoint
-to broker B.  App A must return an explicit handoff outcome, not reconnect to a
-broker which correctly pins app B.  Newly launched app B may independently read
+The model fixes the important durable-ready boundary before broker rotation.
+EOF or timeout before that ACK is indeterminate and must never release a mount
+or terminate app A. Newly launched app B may independently read
 the bounded durable status, using a fresh one-request connection and no FD.
 """
 from collections import deque
@@ -55,7 +54,7 @@ class MismatchedTransaction(Exception):
 
 
 class SubmitOutcome(Enum):
-    HANDOFF_EXPECTED = 'handoffExpected'
+    INDETERMINATE = 'indeterminate'
 
 
 class ScriptedConnection:
@@ -97,7 +96,7 @@ class BrokerClientModel:
         except Disconnected as error:
             if not error.after_send:
                 raise
-            return SubmitOutcome.HANDOFF_EXPECTED
+            return SubmitOutcome.INDETERMINATE
         return response
 
     def status(self, deadline):
@@ -111,17 +110,17 @@ def status(state, revision):
 
 
 class VPNUpdateBrokerClientModelTests(unittest.TestCase):
-    def test_post_submit_disconnect_returns_handoff_without_reconnecting(self):
+    def test_post_submit_disconnect_is_indeterminate_without_reconnecting(self):
         endpoint = ScriptedEndpoint([
             [Disconnected(after_send=True)],
         ])
         result = BrokerClientModel(endpoint).submit(73, 41, deadline=9)
 
-        self.assertEqual(result, SubmitOutcome.HANDOFF_EXPECTED)
+        self.assertEqual(result, SubmitOutcome.INDETERMINATE)
         self.assertEqual(endpoint.requests, [('submit', 73, 41)])
         self.assertEqual(len(endpoint.scripts), 0)
 
-    def test_disconnect_before_submit_is_sent_is_not_reported_as_rotation(self):
+    def test_disconnect_before_submit_is_sent_is_not_reported_as_ready(self):
         endpoint = ScriptedEndpoint([[Disconnected(after_send=False)]])
         with self.assertRaises(Disconnected):
             BrokerClientModel(endpoint).submit(73, 41, deadline=9)
@@ -180,14 +179,14 @@ class VPNUpdateBrokerClientSourceTests(unittest.TestCase):
         self.assertNotIn('endpoint:', self.source)
         self.assertNotIn('socketPath:', self.source)
 
-    def test_expected_disconnect_returns_handoff_and_never_reconnects(self):
-        for required in ('decodeResponse', 'handoffExpected'):
+    def test_disconnect_is_indeterminate_and_never_reconnects(self):
+        for required in ('decodeResponse', 'indeterminate'):
             self.assertIn(required, self.source)
         submit = self.function_source('submit')
         self.assertNotIn('VPNUpdateBrokerRequest.status', submit)
         self.assertNotIn('reconnect(', submit)
         # Validation must occur outside the receive/disconnect catch; otherwise
-        # a valid frame for another transaction could be mislabeled as handoff.
+        # a valid frame for another transaction could be mislabeled as transport.
         self.assertGreater(submit.index('try validate('),
                            submit.index('catch {', submit.index('try receive(')))
 
@@ -212,6 +211,12 @@ class VPNUpdateBrokerClientSourceTests(unittest.TestCase):
         validate = self.function_source('validate')
         self.assertIn('case .busy, .stale', validate)
         self.assertIn('response.toSequence == 0', validate)
+
+    def test_only_durable_ready_is_a_successful_submit_response(self):
+        validate = self.function_source('validate')
+        self.assertIn('case .ready:', validate)
+        self.assertIn('case .accepted, .checking, .installing, .complete, .failed:',
+                      validate)
 
 
 if __name__ == '__main__':

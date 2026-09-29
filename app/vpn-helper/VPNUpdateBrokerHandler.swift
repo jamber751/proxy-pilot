@@ -50,9 +50,11 @@ final class VPNUpdateBrokerHandler {
 
     /// Consumes and closes `candidateDirectory`, including every failure path.
     func submit(_ request: VPNUpdateBrokerRequest,
-                candidateDirectory: Int32) throws -> VPNUpdateBrokerResponse {
+                candidateDirectory: Int32,
+                ready: ((VPNUpdateBrokerResponse) throws -> Void)? = nil) throws
+        -> VPNUpdateBrokerResponse {
         try performSubmit(request, candidateDirectory: candidateDirectory,
-                          checkpoint: { _ in })
+                          checkpoint: { _ in }, ready: ready)
     }
 
     func status(selectedSequence: UInt64) throws -> VPNUpdateBrokerResponse {
@@ -93,13 +95,14 @@ final class VPNUpdateBrokerHandler {
                     checkpoint: (String) throws -> Void) throws
         -> VPNUpdateBrokerResponse {
         try performSubmit(request, candidateDirectory: candidateDirectory,
-                          checkpoint: checkpoint)
+                          checkpoint: checkpoint, ready: nil)
     }
     #endif
 
     private func performSubmit(
         _ request: VPNUpdateBrokerRequest, candidateDirectory: Int32,
-        checkpoint: (String) throws -> Void
+        checkpoint: (String) throws -> Void,
+        ready: ((VPNUpdateBrokerResponse) throws -> Void)?
     ) throws -> VPNUpdateBrokerResponse {
         guard request.operation == .submit, request.expectedFromSequence > 0,
               candidateDirectory >= 0 else {
@@ -151,13 +154,14 @@ final class VPNUpdateBrokerHandler {
 
         return try continueAuthorized(
             identity: receipt.identity, published: published,
-            authorization: authorization, checkpoint: checkpoint)
+            authorization: authorization, checkpoint: checkpoint, ready: ready)
     }
 
     private func continueAuthorized(
         identity: Data, published: Int32,
         authorization: VPNUpdateBrokerAuthorization,
-        checkpoint: (String) throws -> Void
+        checkpoint: (String) throws -> Void,
+        ready: ((VPNUpdateBrokerResponse) throws -> Void)? = nil
     ) throws -> VPNUpdateBrokerResponse {
 
         let from = authorization.selected.release.sequence
@@ -192,8 +196,11 @@ final class VPNUpdateBrokerHandler {
         }
         try checkpoint("afterBrokerRotationReady")
         if transaction.phase == .prepared {
-            _ = try statusStore.publish(
+            let response = try statusStore.publish(
                 state: .ready, fromSequence: from, toSequence: to)
+            // This is the only safe point for app A to release its read-only
+            // mount: the private inbox and recovery journal are now durable.
+            try ready?(response)
         }
         try checkpoint("beforeHandoff")
 
