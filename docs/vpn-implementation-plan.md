@@ -2763,9 +2763,9 @@ end-to-end A→B fault/reboot acceptance и Intel/macOS 11. Tag пока зап�
 ### Продолжение 1.5an — local signed joint release assembly (29 сентября)
 
 - [x] Добавлен один local-only entrypoint `app/build-joint-release.sh`: принимает
-  next sequence, exact предыдущие signed sidecars, reviewed engine artifact и
-  новый absolute output. Ничего не устанавливает, не повышает права и не меняет
-  system state.
+  next sequence, exact предыдущие signed sidecars, reviewed engine artifact,
+  exact universal GOST и новый absolute output. Ничего не устанавливает, не
+  повышает права и не меняет system state.
 - [x] До сборки инструмент сравнивает public half существующего Keychain VPN key
   с embedded key и проверяет предыдущий manifest/signature. Новый ключ не
   создаётся и rotation ради прохождения сборки запрещена.
@@ -2836,3 +2836,20 @@ durable Broker ready → relaunch, затем checkpoint fault/reboot matrix. Т
 локально подписанные companion/source assets загружаются только в draft, CI
 проверяет exact snapshot публичным ключом и лишь затем может publish. До этого
 нужно устранить расхождение обычной CI-сборки без sealed VPN sequence и joint app.
+
+### Продолжение 1.5aq — exact proxy app внутри joint release (30 сентября)
+
+- [x] Joint builder больше не подписывает app без GOST: требует отдельный regular
+  input с exact arm64+x86_64 slices, копирует его в `Contents/Resources/bin`,
+  переподписывает полный bundle и проверяет strict codesign до вычисления app
+  CDHashes для VPN release manifest.
+- [x] CLI уже добавляется тем же `app/build.sh`; поэтому joint B теперь сохраняет
+  обе пользовательские функции — локальные HTTP/SOCKS5 bridges и VPN support.
+- [ ] Обычный GitHub workflow всё ещё собирает ad-hoc app независимо. Даже при
+  одинаковом source его CDHash с другого macOS runner не является доверенным
+  входом для локально подписанного VPN manifest. Нельзя публиковать две разные
+  сборки как один релиз.
+
+Следующий узел: один local release-candidate assembly должен выдать exact app для
+обычного DMG/ZIP и joint companion. CI только проверяет один draft snapshot и
+подписывает/публикует feed, но не пересобирает pinned app. Tag пока запрещён.

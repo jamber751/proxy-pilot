@@ -5,23 +5,25 @@ set -euo pipefail
 
 HERE="${0:A:h}"
 ROOT="${HERE:h}"
-[[ $# == 5 ]] || {
-  print -u2 "Usage: $0 SEQUENCE PREVIOUS_MANIFEST PREVIOUS_SIGNATURE ENGINE_ARTIFACT NEW_OUTPUT_DIR"
+[[ $# == 6 ]] || {
+  print -u2 "Usage: $0 SEQUENCE PREVIOUS_MANIFEST PREVIOUS_SIGNATURE ENGINE_ARTIFACT UNIVERSAL_GOST NEW_OUTPUT_DIR"
   exit 64
 }
 SEQUENCE="$1"
 PREVIOUS_MANIFEST="${2:A}"
 PREVIOUS_SIGNATURE="${3:A}"
 ENGINE_ARTIFACT="${4:A}"
-OUTPUT="${5:A}"
+UNIVERSAL_GOST="${5:A}"
+OUTPUT="${6:A}"
 print -r -- "$SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
   print -u2 "Expected a canonical positive sequence"; exit 64
 }
 [[ -f "$PREVIOUS_MANIFEST" && ! -L "$PREVIOUS_MANIFEST" \
    && -f "$PREVIOUS_SIGNATURE" && ! -L "$PREVIOUS_SIGNATURE" \
    && -d "$ENGINE_ARTIFACT" && ! -L "$ENGINE_ARTIFACT" \
+   && -f "$UNIVERSAL_GOST" && ! -L "$UNIVERSAL_GOST" \
    && "$OUTPUT" == /* && ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || {
-  print -u2 "Expected fixed regular previous sidecars, engine artifact and a new absolute output"
+  print -u2 "Expected fixed previous sidecars, engine artifact, Universal GOST and a new absolute output"
   exit 64
 }
 
@@ -57,6 +59,16 @@ ACTUAL_KEY=$("$KEY_TOOL" public)
 PROXYPILOT_ISOLATED_UPDATER=1 PROXYPILOT_VPN_INSTALLER=1 \
   PROXYPILOT_VPN_RELEASE_SEQUENCE="$SEQUENCE" \
   zsh "$HERE/build.sh" "$WORK/app"
+GOST_ARCHES=$(/usr/bin/lipo -archs "$UNIVERSAL_GOST")
+[[ "$GOST_ARCHES" == "arm64 x86_64" || "$GOST_ARCHES" == "x86_64 arm64" ]] || {
+  print -u2 "GOST must contain arm64 and x86_64"; exit 1
+}
+/bin/cp "$UNIVERSAL_GOST" \
+  "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
+/bin/chmod 700 "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
+/usr/bin/codesign --force --sign - --options runtime,hard,kill \
+  --identifier kz.documentolog.proxypilot "$WORK/app/ProxyPilot.app"
+/usr/bin/codesign --verify --deep --strict "$WORK/app/ProxyPilot.app"
 zsh "$HERE/vpn-helper/build.sh" "$WORK/helper/release"
 
 python3 "$HERE/vpn-package/package.py" prepare \

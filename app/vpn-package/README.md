@@ -31,7 +31,7 @@ release evidence.
 
 The preferred local assembly is `app/build-joint-release.sh <next-sequence>
 <previous-manifest> <previous-signature> <engine-artifact>
-<new-absolute-output-directory>`. It verifies that the existing Keychain key
+<universal-gost> <new-absolute-output-directory>`. It verifies that the existing Keychain key
 matches the embedded public key, performs all steps below, verifies the final
 DMG against its signed metadata, and preserves the new signed release sidecars
 for the next forward update. It also emits one bounded
@@ -43,7 +43,10 @@ engine. It never tags, uploads, installs or elevates.
    with `PROXYPILOT_ISOLATED_UPDATER=1`, `PROXYPILOT_VPN_INSTALLER=1` and
    `PROXYPILOT_VPN_RELEASE_SEQUENCE=<next-sequence>` using `app/build.sh`.
    The same value must be passed to `package.py prepare`; the packager refuses a
-   mismatch after the value has been sealed by the app signature. Build the Universal helper
+   mismatch after the value has been sealed by the app signature. The joint
+   builder also requires an exact arm64+x86_64 GOST input, copies it into the
+   app resources and re-signs/verifies the complete bundle before its CDHashes
+   enter the release manifest. Build the Universal helper
    using `zsh app/vpn-helper/build.sh <new-absolute-output-directory>`.
 2. Run `python3 app/vpn-package/package.py prepare --app <absolute-ProxyPilot.app>
    --helper <absolute-vpn-helper> --sequence <next-sequence>
