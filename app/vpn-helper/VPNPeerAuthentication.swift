@@ -148,6 +148,24 @@ enum VPNPeerAuthentication {
         try validate(code: code, policy: policy)
     }
 
+    /// Validates a launchd-reported process. A PID is not an authority token:
+    /// callers must bracket this check with their own trusted job identity and
+    /// executable-inode checks so PID reuse cannot redirect authorization.
+    static func validate(processID: pid_t, policy: VPNPeerPolicy) throws {
+        guard processID > 0 else { throw VPNPeerAuthenticationError.denied }
+        let attributes: [String: Any] = [
+            kSecGuestAttributePid as String: NSNumber(value: processID),
+            kSecGuestAttributeDynamicCode as String: true,
+        ]
+        var code: SecCode?
+        guard SecCodeCopyGuestWithAttributes(
+                nil, attributes as CFDictionary, [], &code) == errSecSuccess,
+              let code else {
+            throw VPNPeerAuthenticationError.denied
+        }
+        try validate(code: code, policy: policy)
+    }
+
     /// Shared live-code gate for our own installer and a kernel-identified peer.
     /// Keeping one policy avoids weaker self-checks than the helper will apply.
     private static func validate(code: SecCode, policy: VPNPeerPolicy) throws {

@@ -116,6 +116,11 @@ final class VPNUpdateBrokerLaunchdJob {
         guard try launchctl(["bootstrap", domain, plist.path], deadline: deadline) == 0 else {
             throw VPNUpdateBrokerLaunchdJobError.launchFailed
         }
+        // A successful bootstrap proves only that launchd accepted the plist.
+        // Do not let a future transaction retire A on that evidence alone:
+        // connect to the fixed endpoint and authenticate the live peer against
+        // the exact selected helper B pins before reporting success.
+        try proveRunning(deployment, executable: executable, deadline: deadline)
     }
 
     /// Bootout and removal are independently idempotent. Only the exact label
@@ -172,6 +177,227 @@ final class VPNUpdateBrokerLaunchdJob {
             throw VPNUpdateBrokerLaunchdJobError.unsafeStorage
         }
         return resolved
+    }
+
+    private func proveRunning(_ deployment: VPNAuthorizedDeployment,
+                              executable: String, deadline: UInt64) throws {
+        #if VPN_UPDATE_BROKER_LAUNCHD_TESTING
+        let policy = try deployment.release.testHelperPolicy()
+        #else
+        let policy = try deployment.release.helperPolicy()
+        #endif
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            do {
+                let connection = try connectEndpoint(deadline: deadline)
+                defer { close(connection) }
+                // On a socket-activated service the client-side peer token may
+                // still identify launchd before accept(2). Use the connection
+                // only as the readiness trigger, then bind the exact fixed job's
+                // live PID to the already-verified B executable and code policy.
+                let processID = try launchedProcessID(deadline: deadline)
+                try requireProcess(processID, executes: executable)
+                try VPNPeerAuthentication.validate(
+                    processID: processID, policy: policy)
+                try requireAcceptedConnection(connection, deadline: deadline)
+                guard try launchedProcessID(deadline: deadline) == processID else {
+                    throw VPNUpdateBrokerLaunchdJobError.launchFailed
+                }
+                try requireProcess(processID, executes: executable)
+                return
+            } catch VPNPeerAuthenticationError.denied {
+                // The fixed socket reached a live process with the wrong code
+                // identity. Retrying would turn an identity violation into a
+                // race, so fail closed immediately.
+                throw VPNUpdateBrokerLaunchdJobError.launchFailed
+            } catch {
+                try pause(deadline: deadline)
+            }
+        }
+        throw VPNUpdateBrokerLaunchdJobError.timeout
+    }
+
+    /// Waits until the authenticated process has accepted the activation
+    /// trigger. Production rejects this root maintenance connection without
+    /// reading a frame; a test server may send a readiness byte. Either EOF or
+    /// readable data proves the daemon, rather than launchd alone, handled it.
+    private func requireAcceptedConnection(_ connection: Int32,
+                                           deadline: UInt64) throws {
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { throw VPNUpdateBrokerLaunchdJobError.timeout }
+            var item = pollfd(fd: connection,
+                events: Int16(POLLIN | POLLHUP), revents: 0)
+            let remaining = max(1, min(100,
+                Int((deadline - now + 999_999) / 1_000_000)))
+            let result = poll(&item, 1, Int32(remaining))
+            if result < 0, errno == EINTR { continue }
+            guard result >= 0 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+            if result == 0 { continue }
+            guard item.revents & Int16(POLLNVAL | POLLERR) == 0 else {
+                throw VPNUpdateBrokerLaunchdJobError.launchFailed
+            }
+            if item.revents & Int16(POLLIN) != 0 {
+                var bytes = [UInt8](repeating: 0, count: 64)
+                let count = Darwin.read(connection, &bytes, bytes.count)
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else {
+                    if errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                    throw VPNUpdateBrokerLaunchdJobError.launchFailed
+                }
+                return
+            }
+            if item.revents & Int16(POLLHUP) != 0 { return }
+        }
+    }
+
+    private func launchedProcessID(deadline: UInt64) throws -> pid_t {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: Self.launchctlPath)
+        process.arguments = ["print", "\(domain)/\(label)"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.environment = [:]
+        guard (try? process.run()) != nil else {
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
+        while process.isRunning {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+                throw VPNUpdateBrokerLaunchdJobError.timeout
+            }
+            usleep(20_000)
+        }
+        process.waitUntilExit()
+        guard process.terminationReason == .exit,
+              process.terminationStatus == 0,
+              let text = String(data: output.fileHandleForReading.readDataToEndOfFile(),
+                                encoding: .utf8) else {
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
+        let values = text.split(separator: "\n").compactMap { line -> pid_t? in
+            let value = line.trimmingCharacters(in: .whitespaces)
+            guard value.hasPrefix("pid = ") else { return nil }
+            let digits = value.dropFirst("pid = ".count)
+            guard !digits.isEmpty, digits.allSatisfy(\.isNumber),
+                  let parsed = Int32(digits), parsed > 0 else { return nil }
+            return parsed
+        }
+        guard values.count == 1 else {
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
+        return values[0]
+    }
+
+    private func requireProcess(_ processID: pid_t,
+                                executes expectedPath: String) throws {
+        var bytes = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = bytes.withUnsafeMutableBytes {
+            proc_pidpath(processID, $0.baseAddress!, UInt32($0.count))
+        }
+        guard length > 0, let end = bytes.firstIndex(of: 0), end > 0,
+              let path = String(bytes: bytes[..<end], encoding: .utf8),
+              path == expectedPath else {
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
+        let expected = open(expectedPath,
+                            O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        let running = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard expected >= 0, running >= 0 else {
+            if expected >= 0 { close(expected) }
+            if running >= 0 { close(running) }
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
+        defer { close(expected); close(running) }
+        var expectedInfo = stat(), runningInfo = stat()
+        guard fstat(expected, &expectedInfo) == 0,
+              fstat(running, &runningInfo) == 0,
+              expectedInfo.st_dev == runningInfo.st_dev,
+              expectedInfo.st_ino == runningInfo.st_ino,
+              runningInfo.st_mode & S_IFMT == S_IFREG,
+              runningInfo.st_nlink == 1 else {
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
+    }
+
+    private func connectEndpoint(deadline: UInt64) throws -> Int32 {
+        let url = URL(fileURLWithPath: endpoint)
+        let parent = open(url.deletingLastPathComponent().path,
+                          O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw VPNUpdateBrokerLaunchdJobError.unsafeStorage }
+        defer { close(parent) }
+        var parentInfo = stat(), endpointInfo = stat()
+        guard fstat(parent, &parentInfo) == 0,
+              parentInfo.st_mode & S_IFMT == S_IFDIR,
+              parentInfo.st_uid == geteuid(), parentInfo.st_mode & 0o022 == 0,
+              !requirePublicEndpoint || parentInfo.st_mode & 0o7777 == 0o755,
+              fstatat(parent, url.lastPathComponent, &endpointInfo,
+                      AT_SYMLINK_NOFOLLOW) == 0,
+              endpointInfo.st_mode & S_IFMT == S_IFSOCK,
+              endpointInfo.st_uid == geteuid(), endpointInfo.st_nlink == 1,
+              endpointInfo.st_mode & 0o7777 == 0o666 else {
+            throw VPNUpdateBrokerLaunchdJobError.unsafeStorage
+        }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let bytes = Array(endpoint.utf8) + [0]
+        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+            throw VPNUpdateBrokerLaunchdJobError.invalidConfiguration
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.copyBytes(from: bytes)
+        }
+        let connection = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard connection >= 0 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+        do {
+            guard fcntl(connection, F_SETFD, FD_CLOEXEC) == 0,
+                  fcntl(connection, F_SETFL, O_NONBLOCK) == 0 else {
+                throw VPNUpdateBrokerLaunchdJobError.launchFailed
+            }
+            let result = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(connection, $0,
+                        socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            if result != 0 {
+                guard errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK else {
+                    throw VPNUpdateBrokerLaunchdJobError.launchFailed
+                }
+                while true {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    guard now < deadline else { throw VPNUpdateBrokerLaunchdJobError.timeout }
+                    var item = pollfd(fd: connection, events: Int16(POLLOUT), revents: 0)
+                    let remaining = max(1, min(100,
+                        Int((deadline - now + 999_999) / 1_000_000)))
+                    let polled = poll(&item, 1, Int32(remaining))
+                    if polled < 0, errno == EINTR { continue }
+                    guard polled > 0 else {
+                        if polled == 0 { continue }
+                        throw VPNUpdateBrokerLaunchdJobError.launchFailed
+                    }
+                    var socketError: Int32 = 0
+                    var size = socklen_t(MemoryLayout<Int32>.size)
+                    guard getsockopt(connection, SOL_SOCKET, SO_ERROR,
+                                     &socketError, &size) == 0,
+                          socketError == 0 else {
+                        throw VPNUpdateBrokerLaunchdJobError.launchFailed
+                    }
+                    break
+                }
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                throw VPNUpdateBrokerLaunchdJobError.timeout
+            }
+            return connection
+        } catch {
+            close(connection)
+            throw error
+        }
     }
 
     private func writeDescription(executable: String) throws {

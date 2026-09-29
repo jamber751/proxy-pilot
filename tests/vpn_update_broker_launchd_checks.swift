@@ -102,6 +102,12 @@ enum VPNUpdateBrokerLaunchdChecks {
                 if errno == EINTR { continue }
                 exit(71)
             }
+            // The launchd adapter's readiness connection intentionally carries
+            // no broker request. Closing it after live identity proof must not
+            // terminate this disposable server before the behavioral probe.
+            var noSignal: Int32 = 1
+            _ = setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                           socklen_t(MemoryLayout.size(ofValue: noSignal)))
             _ = "broker-ready".withCString { bytes in
                 write(connection, bytes, strlen(bytes))
             }

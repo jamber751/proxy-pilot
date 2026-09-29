@@ -55,6 +55,7 @@ class VPNUpdateBrokerLaunchdTests(unittest.TestCase):
             output = cls.build / f'fixture-{architecture}'
             cls.command([
                 'swiftc', '-O', '-D', 'VPN_UPDATE_BROKER_LAUNCHD_TESTING',
+                '-D', 'VPN_HELPER_READINESS_TESTING',
                 '-target', f'{architecture}-apple-macosx11.0',
                 *map(str, SOURCES), '-o', str(output),
             ])
@@ -161,6 +162,10 @@ class VPNUpdateBrokerLaunchdTests(unittest.TestCase):
     def test_socket_activation_restart_and_exact_plist(self):
         result = self.run_fixture('install')
         self.assertEqual(result.stdout.strip(), 'installed', result.stdout + result.stderr)
+        # installAndStart must not return on plist/bootstrap acceptance alone.
+        # Its success is a receipt for a live peer authenticated against the
+        # exact selected helper pins.
+        self.assertIsNotNone(self.loaded_pid())
         self.assertEqual(self.request(), b'broker-ready')
         description = plistlib.loads(self.plist.read_bytes())
         self.assertEqual(description, {
