@@ -22,6 +22,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     private var channel: UpdateChannel!
     private var availableVersion: String?
     private var jointDiscovery = false
+    private var jointReleaseID: String?
     private var pendingInstall: (UUID, () -> Void)?
     private var handingOff = false
     private var orphaned = false
@@ -70,7 +71,8 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
                                             automatic: updater.automaticallyChecksForUpdates,
                                             inProgress: updater.sessionInProgress,
                                             availableVersion: availableVersion,
-                                            jointUpdate: jointDiscovery && availableVersion != nil)))
+                                            jointUpdate: jointDiscovery && availableVersion != nil && jointReleaseID != nil,
+                                            jointReleaseID: jointReleaseID)))
     }
 
     private func receive(_ message: UpdateMessage) {
@@ -79,7 +81,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
             guard updater.canCheckForUpdates, pendingInstall == nil else { publish(); return }
             switch updateAdmission() {
             case .allowed:
-                jointDiscovery = false
+                jointDiscovery = false; jointReleaseID = nil
                 channel.send(.present)
                 NSApp.activate(ignoringOtherApps: true)
                 updater.checkForUpdates()
@@ -87,7 +89,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
                 // Discovery and signed appcast parsing only. Never invoke the
                 // Sparkle downloader/installer while Broker owns replacement.
                 jointDiscovery = true
-                availableVersion = nil
+                availableVersion = nil; jointReleaseID = nil
                 updater.checkForUpdateInformation()
             case .inspectionFailed:
                 channel.send(.aborted); publish()
@@ -98,7 +100,8 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
             pendingInstall = nil; handingOff = true
             pending.1()
         case .armJointRelaunch(let token):
-            guard jointDiscovery, availableVersion != nil, pendingInstall == nil,
+            guard jointDiscovery, availableVersion != nil, jointReleaseID != nil,
+                  pendingInstall == nil,
                   !handingOff, !orphaned, jointRelaunch.arm() else { exit(65) }
             handingOff = true
             channel.send(.jointRelaunchArmed(token))
@@ -114,7 +117,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     }
     func standardUserDriverWillShowModalAlert() { channel.send(.present) }
     func standardUserDriverWillFinishUpdateSession() {
-        if !jointDiscovery { availableVersion = nil }
+        if !jointDiscovery { availableVersion = nil; jointReleaseID = nil }
         publish()
         if orphaned { exit(0) }
     }
@@ -125,13 +128,30 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     }
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         guard jointDiscovery else { return }
+        guard item.signingValidationStatus == .succeeded,
+              Self.canonicalVersion(item.versionString) else {
+            availableVersion = nil; jointReleaseID = nil; publish(); return
+        }
         availableVersion = item.displayVersionString
+        jointReleaseID = item.versionString
         publish()
     }
     func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
         guard jointDiscovery else { return }
         availableVersion = nil
+        jointReleaseID = nil
         publish()
+    }
+
+    private static func canonicalVersion(_ value: String) -> Bool {
+        let parts = value.components(separatedBy: ".")
+        guard parts.count == 3 else { return false }
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.utf8.count <= 19
+                && (part == "0" || !part.hasPrefix("0"))
+                && part.utf8.allSatisfy { (48...57).contains($0) }
+                && UInt64(part).map { $0 <= UInt64(Int64.max) } == true
+        }
     }
     func updater(_ updater: SPUUpdater, shouldProceedWithUpdate updateItem: SUAppcastItem, updateCheck: SPUUpdateCheck) throws {
         // Sparkle's supported veto occurs before showing/downloading the chosen

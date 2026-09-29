@@ -8,6 +8,18 @@ struct UpdateSnapshot: Codable, Equatable {
     let inProgress: Bool
     let availableVersion: String?
     let jointUpdate: Bool
+    let jointReleaseID: String?
+
+    init(canCheck: Bool, automatic: Bool, inProgress: Bool,
+         availableVersion: String?, jointUpdate: Bool,
+         jointReleaseID: String? = nil) {
+        self.canCheck = canCheck
+        self.automatic = automatic
+        self.inProgress = inProgress
+        self.availableVersion = availableVersion
+        self.jointUpdate = jointUpdate
+        self.jointReleaseID = jointReleaseID
+    }
 }
 
 enum UpdateMessage: Equatable {
@@ -79,10 +91,16 @@ enum UpdateWire {
             }
         case "state":
             guard let state = envelope.state, let values = fields["state"] as? [String: Any],
-                  Set(values.keys).isSubset(of: ["canCheck", "automatic", "inProgress", "availableVersion", "jointUpdate"]) else { throw Failure.malformed }
+                  Set(values.keys).isSubset(of: ["canCheck", "automatic", "inProgress", "availableVersion", "jointUpdate", "jointReleaseID"]) else { throw Failure.malformed }
             if let version = state.availableVersion {
                 guard !version.isEmpty, version.utf8.count <= 64,
                       !version.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.malformed }
+            }
+            if let release = state.jointReleaseID {
+                guard Self.canonicalVersion(release) else { throw Failure.malformed }
+            }
+            guard state.jointUpdate == (state.jointReleaseID != nil) else {
+                throw Failure.malformed
             }
             keys.insert("state"); message = .state(state)
         case "present": message = .present
@@ -92,6 +110,17 @@ enum UpdateWire {
         }
         guard Set(fields.keys) == keys else { throw Failure.malformed }
         return message
+    }
+
+    private static func canonicalVersion(_ value: String) -> Bool {
+        let parts = value.components(separatedBy: ".")
+        guard parts.count == 3 else { return false }
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.utf8.count <= 19
+                && (part == "0" || !part.hasPrefix("0"))
+                && part.utf8.allSatisfy { (48...57).contains($0) }
+                && UInt64(part).map { $0 <= UInt64(Int64.max) } == true
+        }
     }
 
     struct Decoder {

@@ -84,9 +84,9 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
     VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
-    VPNUpdateBrokerProtocol VPNUpdateBrokerClient VPNJointArtifactMount VPNCompanionMetadata VPNCompanionStaging VPNCompanionDownloader VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
+    VPNUpdateBrokerProtocol VPNUpdateBrokerClient VPNJointArtifactMount VPNCompanionMetadata VPNCompanionMetadataFetcher VPNCompanionStaging VPNCompanionDownloader VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
     VPNUpdateBrokerInbox VPNUpdateBrokerRotation VPNUpdateBrokerInstallerCoordinator \
-    VPNJointUpdateStartupStatus \
+    VPNJointUpdateStartupStatus VPNJointUpdateCoordinator \
     VPNUpdateBrokerStateRemoval \
     VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
     SOURCES+=("$HERE/vpn-helper/$COMPONENT.swift")

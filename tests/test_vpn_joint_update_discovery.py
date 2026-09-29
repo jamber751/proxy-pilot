@@ -20,16 +20,19 @@ class VPNJointUpdateDiscoveryTests(unittest.TestCase):
         self.assertNotIn("checkForUpdates()", branch)
         self.assertNotIn("installHandler", branch)
 
-    def test_discovery_publishes_only_bounded_version_and_boolean(self):
+    def test_discovery_publishes_only_bounded_display_and_technical_version(self):
         wire = WIRE.read_text()
         self.assertIn("let jointUpdate: Bool", wire)
         self.assertIn('"jointUpdate"', wire)
+        self.assertIn("let jointReleaseID: String?", wire)
         for forbidden in ('"artifactURL"', '"downloadURL"', '"path"',
                           '"destination"', '"expectedSequence"', '"command"'):
             self.assertNotIn(forbidden, wire)
         worker = WORKER.read_text()
         self.assertIn("didFindValidUpdate item: SUAppcastItem", worker)
         self.assertIn("item.displayVersionString", worker)
+        self.assertIn("item.versionString", worker)
+        self.assertIn("item.signingValidationStatus == .succeeded", worker)
         self.assertNotIn("propertiesDictionary", worker)
 
     def test_frontend_exposes_joint_offer_without_vpn_authority(self):

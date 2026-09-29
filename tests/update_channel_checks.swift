@@ -14,7 +14,7 @@ enum Checks {
             let token = UUID()
             let messages: [UpdateMessage] = [.check, .automatic(true), .automatic(false), .resume(token),
                 .armJointRelaunch(token), .jointRelaunchArmed(token),
-                .state(state), .state(UpdateSnapshot(canCheck: false, automatic: true, inProgress: true, availableVersion: nil, jointUpdate: true)),
+                .state(state), .state(UpdateSnapshot(canCheck: false, automatic: true, inProgress: true, availableVersion: "2.0", jointUpdate: true, jointReleaseID: "2.0.0")),
                 .present, .aborted, .prepare(token), .failed]
             var decoder = UpdateWire.Decoder()
             for message in messages {
@@ -37,6 +37,8 @@ enum Checks {
             }
             rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: String(repeating: "a", count: 65), jointUpdate: false))) }
             rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: "1.0\nInjected", jointUpdate: false))) }
+            rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: "2.0", jointUpdate: true, jointReleaseID: "2.00.0"))) }
+            rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: "2.0", jointUpdate: false, jointReleaseID: "2.0.0"))) }
             for header in [[UInt8](repeating: 0, count: 4), [0, 0, 16, 1], [255, 255, 255, 255]] {
                 rejects { var decoder = UpdateWire.Decoder(); _ = try decoder.append(Data(header)) }
             }

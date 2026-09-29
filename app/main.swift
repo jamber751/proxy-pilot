@@ -652,6 +652,13 @@ final class App: NSObject, NSApplicationDelegate {
         }
         updates.onAbort = { [weak self] in self?.model.cancelUpdatePreparation() }
         #if VPN_INSTALLER_ENTRY && ISOLATED_UPDATER
+        updates.onJointReady = { [weak self] in
+            guard let self else { return }
+            self.updates.armJointRelaunch { [weak self] in
+                guard let self else { return }
+                self.model.prepareForUpdate { NSApp.terminate(nil) }
+            }
+        }
         updates.checkJointUpdateCompletion(preview: model.preview)
         #endif
         updates.start(preview: model.preview)

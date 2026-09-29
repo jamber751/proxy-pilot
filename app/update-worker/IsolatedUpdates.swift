@@ -12,11 +12,14 @@ final class UpdateModel: NSObject, ObservableObject {
     @Published private(set) var isPreview = false
     @Published private(set) var sessionInProgress = false
     @Published private(set) var jointUpdateAvailable = false
+    @Published private(set) var jointReleaseID: String?
     @Published private(set) var jointCompletionStatus: String?
+    @Published private(set) var jointInstallStatus: String?
     let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     var onPresent: (() -> Void)?
     var onAbort: (() -> Void)?
     var prepareRelaunch: ((@escaping () -> Void) -> Void)?
+    var onJointReady: (() -> Void)?
     private var process: Process?
     private var channel: UpdateChannel?
     private var generation = UUID()
@@ -27,6 +30,9 @@ final class UpdateModel: NSObject, ObservableObject {
     private var failed = false
     private var receivedState = false
     private var checkAfterStart = false
+    #if VPN_INSTALLER_ENTRY
+    private var jointCoordinator: VPNJointUpdateCoordinator?
+    #endif
     var canChangeAutomaticChecks: Bool { !isPreview && !failed && receivedState }
 
     func start(preview: Bool) {
@@ -131,6 +137,9 @@ final class UpdateModel: NSObject, ObservableObject {
 
     func check() {
         guard canCheck, !isPreview else { return }
+        #if VPN_INSTALLER_ENTRY
+        if jointUpdateAvailable { startJointUpdate(); return }
+        #endif
         if failed {
             checkAfterStart = true
             launchWorker()
@@ -144,9 +153,45 @@ final class UpdateModel: NSObject, ObservableObject {
     var checkTitle: String {
         if isPreview { return "Недоступно в превью" }
         if failed { return "Повторить проверку" }
+        if let status = jointInstallStatus { return status }
         if !canCheck { return sessionInProgress ? "Проверяем…" : "Подождите…" }
         return availableVersion.map { "Обновить до \($0)" } ?? "Проверить обновления"
     }
+
+    #if VPN_INSTALLER_ENTRY
+    private func startJointUpdate() {
+        guard jointCoordinator == nil, let release = jointReleaseID,
+              let sealed = VPNJointUpdateStartupStatus.sealedRelease() else {
+            jointInstallStatus = "Не удалось начать обновление"; return
+        }
+        canCheck = false; sessionInProgress = true
+        let coordinator = VPNJointUpdateCoordinator(
+            releaseID: release, sealedSequence: sealed.sequence,
+            progress: { [weak self] progress in
+                switch progress {
+                case .metadata: self?.jointInstallStatus = "Проверяем обновление…"
+                case .downloading: self?.jointInstallStatus = "Загружаем обновление…"
+                case .verifying: self?.jointInstallStatus = "Проверяем файл…"
+                case .submitting: self?.jointInstallStatus = "Устанавливаем…"
+                }
+            }, completion: { [weak self] result in
+                guard let self else { return }
+                self.jointCoordinator = nil
+                self.sessionInProgress = false
+                switch result {
+                case .success:
+                    self.jointInstallStatus = "Перезапускаем…"
+                    self.onJointReady?()
+                case .failure:
+                    self.canCheck = true
+                    self.jointInstallStatus = "Повторить обновление"
+                    self.onAbort?()
+                }
+            })
+        jointCoordinator = coordinator
+        coordinator.start()
+    }
+    #endif
 
     func setAutomaticChecks(_ enabled: Bool) {
         guard canChangeAutomaticChecks else { return }
@@ -179,6 +224,7 @@ final class UpdateModel: NSObject, ObservableObject {
             canCheck = state.canCheck; automaticChecks = state.automatic
             sessionInProgress = state.inProgress; availableVersion = state.availableVersion
             jointUpdateAvailable = state.jointUpdate
+            jointReleaseID = state.jointReleaseID
             if checkAfterStart && canCheck { checkAfterStart = false; check() }
         case .present: onPresent?()
         case .aborted:
@@ -212,6 +258,7 @@ final class UpdateModel: NSObject, ObservableObject {
         guard generation == run, !failed else { return }
         failed = true; canCheck = true; sessionInProgress = false; availableVersion = nil
         jointUpdateAvailable = false
+        jointReleaseID = nil
         relaunchToken = nil; relaunchSent = false; checkAfterStart = false
         jointRelaunchToken = nil; jointRelaunchCompletion = nil
         channel?.close(); channel = nil
@@ -221,6 +268,9 @@ final class UpdateModel: NSObject, ObservableObject {
     }
 
     deinit {
+        #if VPN_INSTALLER_ENTRY
+        jointCoordinator?.cancel()
+        #endif
         channel?.close()
         // EOF lets a worker finish an acknowledged Sparkle handoff. Killing it
         // unconditionally here would race installation when the host quits.
