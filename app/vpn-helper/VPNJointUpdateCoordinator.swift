@@ -13,6 +13,15 @@ final class VPNJointUpdateCoordinator {
     typealias ProgressHandler = (Progress) -> Void
     typealias Completion = (Result<Void, Error>) -> Void
 
+    #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+    struct TestRuntime {
+        let metadataConfiguration: URLSessionConfiguration
+        let metadataAuthority: VPNCompanionMetadataAuthority
+        let downloadConfiguration: URLSessionConfiguration
+        let brokerSocket: () throws -> Int32
+    }
+    #endif
+
     private let queue = DispatchQueue(
         label: "kz.documentolog.proxypilot.joint-update")
     private let releaseID: String
@@ -26,6 +35,9 @@ final class VPNJointUpdateCoordinator {
     private var started = false
     private var finished = false
     private var submitting = false
+    #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+    private let testRuntime: TestRuntime?
+    #endif
 
     init(releaseID: String, sealedSequence: UInt64,
          progress: @escaping ProgressHandler,
@@ -34,11 +46,27 @@ final class VPNJointUpdateCoordinator {
         self.sealedSequence = sealedSequence
         progressHandler = progress
         self.completion = completion
+        #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+        testRuntime = nil
+        #endif
     }
 
     func start() {
         queue.async { [weak self] in self?.startOnQueue() }
     }
+
+    #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+    init(releaseID: String, sealedSequence: UInt64,
+         testRuntime: TestRuntime,
+         progress: @escaping ProgressHandler,
+         completion: @escaping Completion) {
+        self.releaseID = releaseID
+        self.sealedSequence = sealedSequence
+        self.testRuntime = testRuntime
+        progressHandler = progress
+        self.completion = completion
+    }
+    #endif
 
     func cancel() {
         queue.async { [weak self] in
@@ -63,6 +91,18 @@ final class VPNJointUpdateCoordinator {
         started = true
         report(.metadata)
         do {
+            #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+            if let runtime = testRuntime {
+                metadataFetcher = try VPNCompanionMetadataFetcher.testStart(
+                    releaseID: releaseID, currentSequence: sealedSequence,
+                    authority: runtime.metadataAuthority,
+                    configuration: runtime.metadataConfiguration) {
+                        [weak self] result in
+                        self?.queue.async { self?.receivedMetadata(result) }
+                    }
+                return
+            }
+            #endif
             metadataFetcher = try VPNCompanionMetadataFetcher.start(
                 releaseID: releaseID, currentSequence: sealedSequence) {
                     [weak self] result in
@@ -80,6 +120,19 @@ final class VPNJointUpdateCoordinator {
         case .success(let metadata):
             report(.downloading)
             do {
+                #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+                if let runtime = testRuntime {
+                    downloader = try VPNCompanionDownloader.testStart(
+                        metadata: metadata,
+                        configuration: runtime.downloadConfiguration) {
+                            [weak self] result in
+                            self?.queue.async {
+                                self?.receivedDownload(result, metadata: metadata)
+                            }
+                        }
+                    return
+                }
+                #endif
                 downloader = try VPNCompanionDownloader.start(
                     metadata: metadata) { [weak self] result in
                         self?.queue.async {
@@ -114,11 +167,28 @@ final class VPNJointUpdateCoordinator {
                 finish(.failure(VPNJointUpdateCoordinatorError.brokerRefused)); return
             }
             do {
-                let outcome = try VPNUpdateBrokerClient.submit(
+                let deadline = DispatchTime.now().uptimeNanoseconds
+                    + 120_000_000_000
+                let outcome: VPNUpdateBrokerSubmitOutcome
+                #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+                if let runtime = testRuntime {
+                    outcome = try VPNUpdateBrokerClient.testSubmit(
+                        candidateDirectory: directory,
+                        expectedFromSequence: sealedSequence,
+                        takingConnectedSocket: try runtime.brokerSocket(),
+                        deadline: deadline)
+                } else {
+                    outcome = try VPNUpdateBrokerClient.submit(
+                        candidateDirectory: directory,
+                        expectedFromSequence: sealedSequence,
+                        deadline: deadline)
+                }
+                #else
+                outcome = try VPNUpdateBrokerClient.submit(
                     candidateDirectory: directory,
                     expectedFromSequence: sealedSequence,
-                    deadline: DispatchTime.now().uptimeNanoseconds
-                        + 120_000_000_000)
+                    deadline: deadline)
+                #endif
                 submitting = false
                 switch outcome {
                 case .response(let response):

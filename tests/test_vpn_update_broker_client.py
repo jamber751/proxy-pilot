@@ -182,7 +182,7 @@ class VPNUpdateBrokerClientSourceTests(unittest.TestCase):
     def test_disconnect_is_indeterminate_and_never_reconnects(self):
         for required in ('decodeResponse', 'indeterminate'):
             self.assertIn(required, self.source)
-        submit = self.function_source('submit')
+        submit = self.function_source('exchangeSubmit')
         self.assertNotIn('VPNUpdateBrokerRequest.status', submit)
         self.assertNotIn('reconnect(', submit)
         # Validation must occur outside the receive/disconnect catch; otherwise

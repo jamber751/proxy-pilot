@@ -22,6 +22,49 @@ enum VPNUpdateBrokerClient {
     static func submit(candidateDirectory: Int32,
                        expectedFromSequence: UInt64,
                        deadline: UInt64) throws -> VPNUpdateBrokerSubmitOutcome {
+        let request = try validatedSubmitRequest(
+            candidateDirectory: candidateDirectory,
+            expectedFromSequence: expectedFromSequence,
+            deadline: deadline)
+        let socket = try connect(deadline: deadline)
+        return try exchangeSubmit(
+            request, candidateDirectory: candidateDirectory,
+            takingSocket: socket, deadline: deadline)
+    }
+
+    private static func exchangeSubmit(
+        _ request: VPNUpdateBrokerRequest,
+        candidateDirectory: Int32,
+        takingSocket socket: Int32,
+        deadline: UInt64) throws -> VPNUpdateBrokerSubmitOutcome {
+        defer { close(socket) }
+        do {
+            try sendSubmit(
+                request, candidateDirectory: candidateDirectory,
+                socket: socket, deadline: deadline)
+        } catch SubmitWriteError.indeterminate {
+            return .indeterminate
+        }
+        let response: VPNUpdateBrokerResponse
+        do {
+            response = try receive(socket: socket, deadline: deadline)
+        } catch {
+            return .indeterminate
+        }
+        // A valid response for another transaction is not a rotation signal.
+        do {
+            try validate(response,
+                         expectedFromSequence: request.expectedFromSequence)
+        } catch VPNUpdateBrokerClientError.mismatchedTransaction {
+            throw VPNUpdateBrokerClientError.mismatchedTransaction
+        }
+        return .response(response)
+    }
+
+    private static func validatedSubmitRequest(
+        candidateDirectory: Int32,
+        expectedFromSequence: UInt64,
+        deadline: UInt64) throws -> VPNUpdateBrokerRequest {
         guard candidateDirectory >= 0, expectedFromSequence > 0,
               DispatchTime.now().uptimeNanoseconds < deadline else {
             throw VPNUpdateBrokerClientError.invalidRequest
@@ -31,36 +74,61 @@ enum VPNUpdateBrokerClient {
               info.st_mode & S_IFMT == S_IFDIR, info.st_nlink > 0 else {
             throw VPNUpdateBrokerClientError.invalidRequest
         }
-        let request = try VPNUpdateBrokerRequest.submit(
+        return try VPNUpdateBrokerRequest.submit(
             expectedFromSequence: expectedFromSequence)
-        let socket = try connect(deadline: deadline)
+    }
+
+    #if VPN_JOINT_UPDATE_COORDINATOR_TESTING
+    /// Test-only connected transport seam. Production never accepts a socket,
+    /// endpoint or path from a caller and always uses the fixed system endpoint.
+    static func testSubmit(candidateDirectory: Int32,
+                           expectedFromSequence: UInt64,
+                           takingConnectedSocket socket: Int32,
+                           deadline: UInt64) throws
+        -> VPNUpdateBrokerSubmitOutcome {
+        guard socket >= 0 else { throw VPNUpdateBrokerClientError.invalidRequest }
+        let request: VPNUpdateBrokerRequest
         do {
-            try sendSubmit(
-                request, candidateDirectory: candidateDirectory,
-                socket: socket, deadline: deadline)
-        } catch SubmitWriteError.indeterminate {
-            close(socket)
-            return .indeterminate
+            request = try validatedSubmitRequest(
+                candidateDirectory: candidateDirectory,
+                expectedFromSequence: expectedFromSequence,
+                deadline: deadline)
         } catch {
             close(socket)
             throw error
         }
-        let response: VPNUpdateBrokerResponse
-        do {
-            response = try receive(socket: socket, deadline: deadline)
-        } catch {
+        var kind: Int32 = 0
+        var kindSize = socklen_t(MemoryLayout<Int32>.size)
+        var local = sockaddr_storage(), peer = sockaddr_storage()
+        var localSize = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        var peerSize = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let localResult = withUnsafeMutablePointer(to: &local) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(socket, $0, &localSize)
+            }
+        }
+        let peerResult = withUnsafeMutablePointer(to: &peer) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getpeername(socket, $0, &peerSize)
+            }
+        }
+        let descriptorFlags = fcntl(socket, F_GETFD)
+        let statusFlags = fcntl(socket, F_GETFL)
+        guard getsockopt(socket, SOL_SOCKET, SO_TYPE, &kind, &kindSize) == 0,
+              kind == SOCK_STREAM, localResult == 0, peerResult == 0,
+              local.ss_family == sa_family_t(AF_UNIX),
+              peer.ss_family == sa_family_t(AF_UNIX),
+              descriptorFlags >= 0, statusFlags >= 0,
+              fcntl(socket, F_SETFD, descriptorFlags | FD_CLOEXEC) == 0,
+              fcntl(socket, F_SETFL, statusFlags | O_NONBLOCK) == 0 else {
             close(socket)
-            return .indeterminate
+            throw VPNUpdateBrokerClientError.invalidRequest
         }
-        close(socket)
-        // A valid response for another transaction is not a rotation signal.
-        do {
-            try validate(response, expectedFromSequence: expectedFromSequence)
-        } catch VPNUpdateBrokerClientError.mismatchedTransaction {
-            throw VPNUpdateBrokerClientError.mismatchedTransaction
-        }
-        return .response(response)
+        return try exchangeSubmit(
+            request, candidateDirectory: candidateDirectory,
+            takingSocket: socket, deadline: deadline)
     }
+    #endif
 
     /// Called by the newly installed application B. It sends no descriptor and
     /// does not infer authority from a receipt; broker B authenticates live B.
