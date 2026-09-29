@@ -15,6 +15,7 @@ import Foundation
             exit(status)
         }
         #endif
+        #if !VPN_RECOVERY_DAEMON_TESTING
         if CommandLine.arguments.dropFirst().contains(
                 VPNUpdateBrokerDaemon.entryArgument) {
             do {
@@ -27,6 +28,7 @@ import Foundation
                 exit(77)
             }
         }
+        #endif
         do { try VPNHelperDaemon.runSystem(arguments: CommandLine.arguments) }
         catch {
             // No payloads, keys, account names or personal paths in launchd logs.

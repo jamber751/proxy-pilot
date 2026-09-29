@@ -37,6 +37,7 @@ protocol VPNUpdateBrokerInboxDriving {
     func publishedSnapshot(_ receipt: InboxReceipt) throws -> [String: Data]
     func publishedMetadata(_ receipt: InboxReceipt) throws -> InboxPublishedMetadata
     func publishedCount() throws -> Int
+    func retirePublished(_ receipt: InboxReceipt) throws
     func corruptPublished(_ receipt: InboxReceipt) throws
 }
 
@@ -281,6 +282,23 @@ typealias InboxDriver = VPNUpdateBrokerInboxContractHarness
         }
     }
 
+    static func retirement() throws {
+        try withFixture { source, _, sourceFD, trustedFD in
+            let broker = try InboxDriver(trustedParent: trustedFD)
+            let receipt = try broker.ingest(
+                sourceDirectory: sourceFD, checkpoint: { _ in })
+            let before = try broker.publishedCount()
+            try require(before == 1)
+            try broker.retirePublished(receipt)
+            let after = try broker.publishedCount()
+            try require(after == 0)
+            try broker.retirePublished(receipt)
+            let next = try broker.ingest(
+                sourceDirectory: sourceFD, checkpoint: { _ in })
+            try require(next.identity == receipt.identity)
+        }
+    }
+
     static func main() throws {
         guard CommandLine.arguments.count == 2 else { exit(64) }
         let group = CommandLine.arguments[1]
@@ -290,6 +308,7 @@ typealias InboxDriver = VPNUpdateBrokerInboxContractHarness
         case "mutable": try mutable()
         case "durability": try durability()
         case "retry": try retry()
+        case "retirement": try retirement()
         default: exit(64)
         }
         print("\(group) checks passed")

@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HANDLER = ROOT / "app/vpn-helper/VPNUpdateBrokerHandler.swift"
+DAEMON = ROOT / "app/vpn-helper/VPNUpdateBrokerDaemon.swift"
 FIXTURE = ROOT / "tests/vpn_update_broker_handler_checks.swift"
 
 
@@ -71,6 +72,16 @@ class VPNUpdateBrokerHandlerSourceContractTests(unittest.TestCase):
                       "afterRecoveryArm", "afterBrokerRotationReady",
                       "beforeHandoff", "afterHandoff"):
             self.assertIn(f'"{point}"', source)
+
+    def test_daemon_resumes_owned_work_before_accepting_clients(self):
+        handler = HANDLER.read_text()
+        daemon = DAEMON.read_text()
+        self.assertIn("func resumeIfNeeded()", handler)
+        for phase in (".accepted", ".authorized", ".prepared", ".handoffStarted"):
+            self.assertIn(f"transaction.phase == {phase}", handler)
+        resume = daemon.index("try handler.resumeIfNeeded()")
+        serve = daemon.index("try serve(listener:", resume)
+        self.assertLess(resume, serve)
 
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"),

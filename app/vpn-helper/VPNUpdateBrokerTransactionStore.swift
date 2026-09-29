@@ -180,6 +180,28 @@ final class VPNUpdateBrokerTransactionStore {
         }
     }
 
+    /// Forgets only an exact terminal receipt after its inbox was retired. The
+    /// bounded public status remains available independently for the client.
+    func retireCompleted(identity: Data, expectedRevision: UInt64) throws {
+        guard identity.count == 32 else {
+            throw VPNUpdateBrokerTransactionStoreError.invalidIdentity
+        }
+        try withLock {
+            guard let current = try readUnlocked(),
+                  current.identity == identity,
+                  current.revision == expectedRevision,
+                  current.phase == .complete,
+                  current.recovery == .complete,
+                  current.rotation == .complete else {
+                throw VPNUpdateBrokerTransactionStoreError.invalidState
+            }
+            guard unlinkat(directory, Self.fileName, 0) == 0,
+                  fsync(directory) == 0 else {
+                throw VPNUpdateBrokerTransactionStoreError.commitUncertain
+            }
+        }
+    }
+
     private func legalAdvance(from current: VPNUpdateBrokerTransactionSnapshot,
                               phase: VPNUpdateBrokerTransactionPhase,
                               journal: VPNUpdateBrokerJournalReference?,

@@ -148,6 +148,7 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
         try installed.revalidate()
         let activationRuntime = try runtime(directory)
         let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
+        #if VPN_RECOVERY_DAEMON_TESTING
         _ = try VPNSelectedCandidateRecovery.recover(
             store: store, runtime: activationRuntime, lease: lease, budget: budget,
             journal: journal, testPolicy: testPolicy,
@@ -163,6 +164,34 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
                         }
                 }
             })
+        #else
+        var brokerCompletion: VPNUpdateBrokerRotation.Completion?
+        _ = try VPNSelectedCandidateRecovery.recover(
+            store: store, runtime: activationRuntime, lease: lease, budget: budget,
+            journal: journal, testPolicy: testPolicy,
+            beforeJournalRetirement: { completed in
+                brokerCompletion = try VPNUpdateBrokerRotation.rotateIfRequired(
+                    serviceDirectory: directory, store: store, lease: lease,
+                    journal: completed, authority: authority)
+            }, afterJournalRetirement: { _, lease in
+                if let brokerCompletion {
+                    try VPNUpdateBrokerRotation.finish(
+                        brokerCompletion, serviceDirectory: directory,
+                        lease: lease, authority: authority)
+                }
+            }, retiredCleanup: { outcome in
+                guard outcome == .remainedOff else { return }
+                try retiredMaintenance {
+                    try completeCleanup(directory, lease)
+                    try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                        store: store, lease: lease, selected: journal.candidate) {
+                            try removeRecoveryJob(
+                                directory,
+                                DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+                        }
+                }
+            })
+        #endif
         return 0
     }
 

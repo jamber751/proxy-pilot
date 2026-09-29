@@ -181,6 +181,42 @@ final class VPNUpdateBrokerInbox {
         }
     }
 
+    /// Removes only the exact content-addressed tree after it has been fully
+    /// re-snapshotted. The broker transaction lease must serialize this with
+    /// ingest and recovery; every child is still rebound by inode before unlink.
+    func retirePublished(identity: Data) throws {
+        guard identity.count == 32 else {
+            throw VPNUpdateBrokerInboxError.publishedChanged
+        }
+        let suffix = identity.map { String(format: "%02x", $0) }.joined()
+        let name = "inbox-\(suffix)"
+        guard let directory = try Self.openDirectory(parent, name) else { return }
+        var root = stat()
+        do {
+            guard fstat(directory, &root) == 0,
+                  try Self.snapshot(directory, requireFixedLayout: true).identity
+                    == identity else {
+                throw VPNUpdateBrokerInboxError.publishedChanged
+            }
+            var budget = Self.maximumEntries
+            try Self.removeChildren(directory, depth: 0, budget: &budget)
+            guard fsync(directory) == 0 else {
+                throw VPNUpdateBrokerInboxError.commitUncertain
+            }
+        } catch {
+            close(directory)
+            throw error
+        }
+        close(directory)
+        var named = stat()
+        guard fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              named.st_dev == root.st_dev, named.st_ino == root.st_ino,
+              unlinkat(parent, name, AT_REMOVEDIR) == 0,
+              fsync(parent) == 0 else {
+            throw VPNUpdateBrokerInboxError.commitUncertain
+        }
+    }
+
     #if VPN_UPDATE_BROKER_INBOX_TESTING
     func corruptPublished(identity: Data) throws {
         let directory = try published(identity)
@@ -344,6 +380,73 @@ final class VPNUpdateBrokerInbox {
         guard fsync(directory) == 0 else { throw VPNUpdateBrokerInboxError.commitUncertain }
     }
 
+    private static func removeChildren(_ directory: Int32, depth: Int,
+                                       budget: inout Int) throws {
+        guard depth <= maximumDepth else {
+            throw VPNUpdateBrokerInboxError.limitExceeded
+        }
+        let children = try names(directory)
+        guard children.count <= budget else {
+            throw VPNUpdateBrokerInboxError.limitExceeded
+        }
+        budget -= children.count
+        for name in children {
+            var before = stat()
+            guard fstatat(directory, name, &before, AT_SYMLINK_NOFOLLOW) == 0,
+                  before.st_uid == geteuid(), before.st_mode & 0o0022 == 0 else {
+                throw VPNUpdateBrokerInboxError.publishedChanged
+            }
+            if before.st_mode & S_IFMT == S_IFDIR {
+                guard let child = try openDirectory(directory, name) else {
+                    throw VPNUpdateBrokerInboxError.publishedChanged
+                }
+                do {
+                    var held = stat()
+                    guard fstat(child, &held) == 0,
+                          held.st_dev == before.st_dev,
+                          held.st_ino == before.st_ino else {
+                        throw VPNUpdateBrokerInboxError.publishedChanged
+                    }
+                    try removeChildren(child, depth: depth + 1,
+                                       budget: &budget)
+                    guard fsync(child) == 0 else {
+                        throw VPNUpdateBrokerInboxError.commitUncertain
+                    }
+                } catch {
+                    close(child)
+                    throw error
+                }
+                close(child)
+                var rebound = stat()
+                guard fstatat(directory, name, &rebound,
+                              AT_SYMLINK_NOFOLLOW) == 0,
+                      rebound.st_dev == before.st_dev,
+                      rebound.st_ino == before.st_ino,
+                      unlinkat(directory, name, AT_REMOVEDIR) == 0 else {
+                    throw VPNUpdateBrokerInboxError.publishedChanged
+                }
+            } else if before.st_mode & S_IFMT == S_IFREG {
+                guard before.st_nlink == 1 else {
+                    throw VPNUpdateBrokerInboxError.publishedChanged
+                }
+                let file = openat(directory, name,
+                    O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                guard file >= 0 else {
+                    throw VPNUpdateBrokerInboxError.publishedChanged
+                }
+                var held = stat()
+                let exact = fstat(file, &held) == 0
+                    && held.st_dev == before.st_dev && held.st_ino == before.st_ino
+                close(file)
+                guard exact, unlinkat(directory, name, 0) == 0 else {
+                    throw VPNUpdateBrokerInboxError.publishedChanged
+                }
+            } else {
+                throw VPNUpdateBrokerInboxError.publishedChanged
+            }
+        }
+    }
+
     private static func metadata(_ directory: Int32) throws -> (owned: Bool, writable: Bool) {
         var owned = true, writable = false
         for name in try names(directory) {
@@ -484,6 +587,10 @@ final class VPNUpdateBrokerInboxContractHarness: VPNUpdateBrokerInboxDriving {
     }
 
     func publishedCount() throws -> Int { try inbox.publishedCount() }
+
+    func retirePublished(_ receipt: InboxReceipt) throws {
+        try inbox.retirePublished(identity: receipt.identity)
+    }
 
     func corruptPublished(_ receipt: InboxReceipt) throws {
         try inbox.corruptPublished(identity: receipt.identity)

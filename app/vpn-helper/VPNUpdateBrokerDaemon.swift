@@ -13,11 +13,11 @@ enum VPNUpdateBrokerDaemonError: Error {
     case requiresRoot, invalidArguments, unavailable, unsafeEndpoint
 }
 
-/// Release-bound, deliberately inert update-broker service. launchd owns the
+/// Release-bound update-broker service. launchd owns the
 /// public socket, so the pathname survives a broker crash without either the
 /// old or the replacement process unlinking another process's endpoint. The
-/// signed owner application may read bounded status; submit is refused until
-/// the inbox/authorization/preparation handler is connected in a later stage.
+/// signed owner application may read bounded status or submit one descriptor-
+/// only candidate to the authenticated transaction handler.
 enum VPNUpdateBrokerDaemon {
     static let entryArgument = "serve-update-broker"
     static let privateStatePath = "/Library/Application Support/ProxyPilot/Broker"
@@ -41,15 +41,17 @@ enum VPNUpdateBrokerDaemon {
         let listener = try activatedListener(endpointDirectory: endpoint)
         defer { close(listener) }
         let authority = try VPNReleaseTrust.authority()
-        let status = try VPNUpdateBrokerStatusStore(
-            trustedDirectoryDescriptor: privateState)
+        let handler = try VPNUpdateBrokerHandler(
+            serviceDirectory: service, privateDirectory: privateState,
+            authority: authority)
+        try handler.resumeIfNeeded()
         try serve(listener: listener, serviceDirectory: service,
-                  authority: authority, status: status)
+                  authority: authority, handler: handler)
     }
 
     private static func serve(listener: Int32, serviceDirectory: Int32,
                               authority: VPNReleaseAuthority,
-                              status: VPNUpdateBrokerStatusStore) throws {
+                              handler: VPNUpdateBrokerHandler) throws {
         while true {
             let store = try VPNReleaseStore(
                 trustedDirectoryDescriptor: serviceDirectory,
@@ -72,23 +74,12 @@ enum VPNUpdateBrokerDaemon {
                 let response: VPNUpdateBrokerResponse
                 switch received.request.operation {
                 case .status:
-                    response = try status.load().response
-                        ?? VPNUpdateBrokerResponse(
-                            state: .complete,
-                            fromSequence: selected.release.sequence,
-                            toSequence: selected.release.sequence,
-                            revision: 0)
+                    response = try handler.status(
+                        selectedSequence: selected.release.sequence)
                 case .submit:
-                    // Consume and close the descriptor, but make no copy and no
-                    // durable claim until the explicit transaction handler is
-                    // wired and independently accepted.
                     let directory = try received.takeCandidateDirectory()
-                    close(directory)
-                    response = VPNUpdateBrokerResponse(
-                        state: .failed,
-                        fromSequence: received.request.expectedFromSequence,
-                        toSequence: 0,
-                        revision: (try status.load()).revision)
+                    response = try handler.submit(
+                        received.request, candidateDirectory: directory)
                 }
                 try VPNUpdateBrokerTransport.send(
                     response, socket: client, deadline: deadline)

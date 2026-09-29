@@ -30,6 +30,9 @@ enum VPNSelectedCandidateRecovery {
                         lease: VPNLifecycleLease, budget: VPNActivationBudget,
                         journal initial: VPNUpdateJournalSnapshot,
                         testPolicy: Bool = false,
+                        beforeJournalRetirement: (VPNUpdateJournalSnapshot) throws -> Void = { _ in },
+                        afterJournalRetirement: (VPNReleaseStore,
+                            VPNLifecycleLease) throws -> Void = { _, _ in },
                         retiredCleanup: (VPNSelectedCandidateFinalizer.Outcome) throws -> Void = { _ in }) throws
         -> VPNSelectedCandidateFinalizer.Outcome {
         var current = initial
@@ -59,9 +62,18 @@ enum VPNSelectedCandidateRecovery {
                 expectedRevision: current.revision,
                 candidate: current.candidate, testPolicy: testPolicy)
         }
+        guard let completed = try store.loadUpdateJournal(),
+              completed.transactionID == current.transactionID,
+              completed.revision == 3,
+              completed.phase == .completed,
+              completed.recovery == .completed else {
+            throw VPNSelectedCandidateRecoveryError.invalidJournal
+        }
+        try beforeJournalRetirement(completed)
         try retireCompleted(store: store, lease: lease,
                             transactionID: current.transactionID,
                             expectedRevision: 3, candidate: current.candidate)
+        try afterJournalRetirement(store, lease)
         // Still under the same lifecycle lease: cleanup therefore cannot race a
         // following transaction's recovery-arm operation. The callback runs only
         // after durable retirement and can distinguish the no-helper/off outcome.

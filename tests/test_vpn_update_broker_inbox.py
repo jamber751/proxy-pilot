@@ -78,7 +78,8 @@ class VPNUpdateBrokerInboxProductionBindingTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=120,
             )
             self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
-            for group in ('layout', 'bounds', 'mutable', 'durability', 'retry'):
+            for group in ('layout', 'bounds', 'mutable', 'durability', 'retry',
+                          'retirement'):
                 with self.subTest(group=group):
                     result = subprocess.run([str(binary), group], capture_output=True,
                                             text=True, timeout=60)

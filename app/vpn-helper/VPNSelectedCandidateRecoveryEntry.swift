@@ -29,9 +29,21 @@ enum VPNSelectedCandidateRecoveryEntry {
             defer { lease.release() }
             let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
             let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
+            var brokerCompletion: VPNUpdateBrokerRotation.Completion?
             _ = try VPNSelectedCandidateRecovery.recover(
                 store: store, runtime: runtime, lease: lease, budget: budget,
-                journal: journal)
+                journal: journal,
+                beforeJournalRetirement: { completed in
+                    brokerCompletion = try VPNUpdateBrokerRotation.rotateIfRequired(
+                        serviceDirectory: directory, store: store, lease: lease,
+                        journal: completed, authority: authority)
+                }, afterJournalRetirement: { _, lease in
+                    if let brokerCompletion {
+                        try VPNUpdateBrokerRotation.finish(
+                            brokerCompletion, serviceDirectory: directory,
+                            lease: lease, authority: authority)
+                    }
+                })
             return 0
         } catch { return 77 }
     }

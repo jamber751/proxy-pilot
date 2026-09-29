@@ -62,6 +62,31 @@ final class VPNUpdateBrokerHandler {
             toSequence: selectedSequence, revision: 0)
     }
 
+    /// Restarts only a transaction already owned by this broker's private
+    /// receipt and inbox. No caller connection, path, or descriptor is needed.
+    func resumeIfNeeded() throws {
+        guard let transaction = try transactionStore.load(),
+              transaction.phase == .accepted
+                || transaction.phase == .authorized
+                || transaction.phase == .prepared
+                || transaction.phase == .handoffStarted else { return }
+        let ownership = try VPNLifecycleOwnership.acquire(
+            inTrustedDirectory: privateDirectory)
+        defer { ownership.release() }
+        let published = try inbox.openPublished(identity: transaction.identity)
+        defer { close(published) }
+        let authorization = try VPNUpdateBroker.authorizePrivateInbox(
+            published, expectedFromSequence: transaction.fromSequence,
+            serviceDirectory: serviceDirectory, authority: authority)
+        guard authorization.payload.candidate.release.sequence
+                == transaction.toSequence else {
+            throw VPNUpdateBrokerHandlerError.invalidRequest
+        }
+        _ = try continueAuthorized(
+            identity: transaction.identity, published: published,
+            authorization: authorization, checkpoint: { _ in })
+    }
+
     #if VPN_UPDATE_BROKER_HANDLER_TESTING
     func testSubmit(_ request: VPNUpdateBrokerRequest,
                     candidateDirectory: Int32,
@@ -91,6 +116,7 @@ final class VPNUpdateBrokerHandler {
             return try transient(.busy, from: request.expectedFromSequence)
         }
         defer { ownership.release() }
+        try retireCompletedTransactionIfPresent()
 
         let receipt: VPNUpdateBrokerInboxReceipt
         do {
@@ -109,47 +135,77 @@ final class VPNUpdateBrokerHandler {
 
         let published = try inbox.openPublished(identity: receipt.identity)
         defer { close(published) }
-        let authorization = try VPNUpdateBroker.authorizePrivateInbox(
-            published, expectedFromSequence: request.expectedFromSequence,
-            serviceDirectory: serviceDirectory, authority: authority)
+        let authorization: VPNUpdateBrokerAuthorization
+        do {
+            authorization = try VPNUpdateBroker.authorizePrivateInbox(
+                published, expectedFromSequence: request.expectedFromSequence,
+                serviceDirectory: serviceDirectory, authority: authority)
+        } catch {
+            try inbox.retirePublished(identity: receipt.identity)
+            _ = try statusStore.publish(
+                state: .failed,
+                fromSequence: request.expectedFromSequence, toSequence: 0)
+            throw error
+        }
         try checkpoint("afterAuthorization")
+
+        return try continueAuthorized(
+            identity: receipt.identity, published: published,
+            authorization: authorization, checkpoint: checkpoint)
+    }
+
+    private func continueAuthorized(
+        identity: Data, published: Int32,
+        authorization: VPNUpdateBrokerAuthorization,
+        checkpoint: (String) throws -> Void
+    ) throws -> VPNUpdateBrokerResponse {
 
         let from = authorization.selected.release.sequence
         let to = authorization.payload.candidate.release.sequence
         var transaction = try transactionStore.begin(
-            identity: receipt.identity, fromSequence: from, toSequence: to)
-        transaction = try advance(
-            transaction, phase: .authorized, journal: nil,
-            recovery: .inboxRetained, rotation: .notStarted)
+            identity: identity, fromSequence: from, toSequence: to)
+        if transaction.phase == .accepted {
+            transaction = try advance(
+                transaction, phase: .authorized, journal: nil,
+                recovery: .inboxRetained, rotation: .notStarted)
+        }
 
         let preparation = try VPNJointUpdatePreparation.prepareFromBroker(
             candidateDirectory: published, payload: authorization.payload,
             authority: authority)
         try checkpoint("afterPreparation")
         let journal = try brokerJournal(preparation.journal)
-        transaction = try advance(
-            transaction, phase: .prepared, journal: journal,
-            recovery: .journalRetained, rotation: .notStarted)
+        if transaction.phase == .authorized {
+            transaction = try advance(
+                transaction, phase: .prepared, journal: journal,
+                recovery: .journalRetained, rotation: .notStarted)
+        }
 
         // The signed journal plus the exact retained inbox are the recovery
         // evidence. The executor itself arms the launchd recovery job before it
         // drains A; no status or receipt is treated as authorization.
         try checkpoint("afterRecoveryArm")
-        transaction = try advance(
-            transaction, phase: .prepared, journal: journal,
-            recovery: .journalRetained, rotation: .pending)
+        if transaction.phase == .prepared {
+            transaction = try advance(
+                transaction, phase: .prepared, journal: journal,
+                recovery: .journalRetained, rotation: .pending)
+        }
         try checkpoint("afterBrokerRotationReady")
-        _ = try statusStore.publish(
-            state: .ready, fromSequence: from, toSequence: to)
+        if transaction.phase == .prepared {
+            _ = try statusStore.publish(
+                state: .ready, fromSequence: from, toSequence: to)
+        }
         try checkpoint("beforeHandoff")
 
         let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: false)
         defer { close(update) }
         _ = try statusStore.publish(
             state: .installing, fromSequence: from, toSequence: to)
-        transaction = try advance(
-            transaction, phase: .handoffStarted, journal: journal,
-            recovery: .journalRetained, rotation: .pending)
+        if transaction.phase != .handoffStarted {
+            transaction = try advance(
+                transaction, phase: .handoffStarted, journal: journal,
+                recovery: .journalRetained, rotation: .pending)
+        }
         _ = try VPNReplacementExecutorHandoff.launchPreparedFromBroker(
             inTrustedDirectory: update,
             release: authorization.payload.previous,
@@ -178,6 +234,14 @@ final class VPNUpdateBrokerHandler {
             identity: current.identity, expectedRevision: current.revision,
             phase: phase, journal: journal,
             recovery: recovery, rotation: rotation)
+    }
+
+    private func retireCompletedTransactionIfPresent() throws {
+        guard let current = try transactionStore.load(),
+              current.phase == .complete else { return }
+        try inbox.retirePublished(identity: current.identity)
+        try transactionStore.retireCompleted(
+            identity: current.identity, expectedRevision: current.revision)
     }
 
     private func transient(_ state: VPNUpdateBrokerState,

@@ -84,7 +84,11 @@ enum VPNJointApplicationReplacement {
     /// covers drain, prepared→replacementPending and every replacement step.
     static func installPreparedOrPendingApplication(
         applicationDirectory: Int32, transactionID: UUID,
-        expectedRevision: UInt64, authority: VPNReleaseAuthority) throws
+        expectedRevision: UInt64, authority: VPNReleaseAuthority,
+        beforeJournalRetirement: (VPNReleaseStore, VPNLifecycleLease,
+                                  VPNUpdateJournalSnapshot) throws -> Void = { _, _, _ in },
+        afterJournalRetirement: (VPNReleaseStore,
+                                 VPNLifecycleLease) throws -> Void = { _, _ in }) throws
         -> VPNProtectedApplicationSwap.Outcome {
         guard getuid() == 0, geteuid() == 0 else {
             throw VPNInstallerError.requiresRoot
@@ -97,6 +101,8 @@ enum VPNJointApplicationReplacement {
             transactionID: transactionID, expectedRevision: expectedRevision,
             authority: authority, directory: directory, testPolicy: false,
             destination: nil, installDestination: true, beginPrepared: true,
+            beforeJournalRetirement: beforeJournalRetirement,
+            afterJournalRetirement: afterJournalRetirement,
             runtime: { try VPNLaunchdRuntime.system(storageDirectory: directory) })
     }
 
@@ -158,6 +164,11 @@ enum VPNJointApplicationReplacement {
                                 directory: Int32, testPolicy: Bool,
                                 destination: Int32?, installDestination: Bool = false,
                                 beginPrepared: Bool = false,
+                                beforeJournalRetirement: (VPNReleaseStore,
+                                    VPNLifecycleLease,
+                                    VPNUpdateJournalSnapshot) throws -> Void = { _, _, _ in },
+                                afterJournalRetirement: (VPNReleaseStore,
+                                    VPNLifecycleLease) throws -> Void = { _, _ in },
                                 runtime: () throws -> VPNActivationRuntime) throws -> VPNProtectedApplicationSwap.Outcome {
         // Two distinct locks, always service first, then app namespace.
         var serviceInfo = stat(), applicationInfo = stat()
@@ -396,12 +407,17 @@ enum VPNJointApplicationReplacement {
                     expectedRevision: activeRevision + 1,
                     candidate: initial.candidate)
                 try completedContext()
+                guard let completed = try store.loadUpdateJournal() else {
+                    throw VPNReleaseStoreError.invalidUpdateJournal
+                }
+                try beforeJournalRetirement(store, lease, completed)
                 failureStage = .journalRetirement
                 try VPNSelectedCandidateRecovery.retireCompleted(
                     store: store, lease: lease,
                     transactionID: initial.transactionID,
                     expectedRevision: activeRevision + 2,
                     candidate: initial.candidate)
+                try afterJournalRetirement(store, lease)
             }
             return outcome == .exchanged || destinationOutcome == .exchanged
                 ? .exchanged : .alreadyExchanged

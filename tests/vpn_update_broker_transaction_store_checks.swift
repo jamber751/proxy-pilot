@@ -106,6 +106,12 @@ private enum Injected: Error { case crash }
                 phase: .failed, journal: journal(3, .completed),
                 recovery: .failed, rotation: .complete)
         }
+        try rejects(.invalidState) {
+            try store.retireCompleted(identity: identity, expectedRevision: 6)
+        }
+        try store.retireCompleted(identity: identity, expectedRevision: 7)
+        let retired = try store.load()
+        try require(retired == nil)
     }
 
     static func crash(_ path: String, checkpoint: String) throws {

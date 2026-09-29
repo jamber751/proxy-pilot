@@ -41,11 +41,31 @@ enum VPNReplacementExecutorEntry {
                 : journal.candidate.release.installerPolicy()
             let operation: (VPNExecutorHandoffRequest, Int32) throws
                 -> VPNProtectedApplicationSwap.Outcome = { request, applicationDirectory in
-                    try VPNJointApplicationReplacement.installPreparedOrPendingApplication(
+                    var brokerCompletion: VPNUpdateBrokerRotation.Completion?
+                    return try VPNJointApplicationReplacement.installPreparedOrPendingApplication(
                         applicationDirectory: applicationDirectory,
                         transactionID: request.transactionID,
                         expectedRevision: request.expectedRevision,
-                        authority: authority)
+                        authority: authority,
+                        beforeJournalRetirement: { store, lease, journal in
+                            guard brokerRole else { return }
+                            let service = try VPNDirectoryProvisioner
+                                .openSystemDirectory(create: false)
+                            defer { close(service) }
+                            brokerCompletion = try VPNUpdateBrokerRotation.rotateIfRequired(
+                                serviceDirectory: service, store: store,
+                                lease: lease, journal: journal,
+                                authority: authority)
+                        }, afterJournalRetirement: { _, lease in
+                            if let brokerCompletion {
+                                let service = try VPNDirectoryProvisioner
+                                    .openSystemDirectory(create: false)
+                                defer { close(service) }
+                                try VPNUpdateBrokerRotation.finish(
+                                    brokerCompletion, serviceDirectory: service,
+                                    lease: lease, authority: authority)
+                            }
+                        })
                 }
             if brokerRole {
                 return VPNReplacementExecutorHandoff.runBrokerChildIfRequested(

@@ -2504,3 +2504,31 @@ acceptance.
 authorize → prepare under lifecycle lease → executor handoff`, полный durable
 transaction receipt и crash-recovery. Затем — безопасная A→B rotation broker job,
 installer/uninstall integration и только после acceptance включение one-click UI.
+
+### Продолжение 1.5ac — handler, recovery и rotation A→B (29 сентября)
+
+- [x] Добавлен единый descriptor-only handler: private inbox → повторная signed
+  authorization → joint preparation → отдельный broker executor role. Caller не
+  выбирает путь, UUID, release, команду или identity.
+- [x] Durable transaction receipt связывает SHA-256 inbox, sequence A/B, signed
+  journal, recovery и rotation phases. Receipt и status остаются только индексом:
+  перед каждым привилегированным шагом заново проверяются inbox, journal и selector.
+- [x] После crash брокер A возобновляет уже принадлежащую ему prepared/handoff
+  транзакцию до приёма новых клиентов. Recovery job остаётся armed до drain и
+  завершает поздние selected/completed состояния без участия исходного клиента.
+- [x] Перед terminal journal retirement launchd job переводится на exact helper B.
+  Успех требует live PID фиксированного label, exact executable/inode и code policy
+  B. Только после retirement child фиксирует transaction/status complete.
+- [x] Завершённый inbox и receipt удаляются descriptor-relative под broker lease,
+  поэтому следующее обновление не блокируется старым content-addressed пакетом.
+- [x] Handler contract 15/15, rotation contract 8/8, replacement 23/23, recovery
+  daemon 8/8, inbox/receipt 7/7. Universal helper и полное universal приложение с
+  VPN installer собираются и подписываются.
+- [ ] Production installer пока не регистрирует broker job, updater UI ещё не
+  отправляет package descriptor и не переподключается к B после ожидаемого
+  разрыва соединения при rotation. End-to-end system acceptance поэтому не закрыт.
+
+Следующий узел: installer/uninstall ownership для broker job, клиентский submit /
+status reconnect flow и реальные acceptance-сценарии A→B: success, invalid package,
+caller death, broker SIGKILL, executor SIGKILL и reboot. До их прохождения release
+tag и включение one-click UI запрещены.
