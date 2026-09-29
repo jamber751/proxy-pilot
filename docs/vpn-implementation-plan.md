@@ -2688,3 +2688,22 @@ recovery preparation, затем bounded downloader. UI остаётся discove
 
 Следующий узел: bounded ordinary-user downloader во временный `0600` файл,
 проверка metadata/hash по FD и удержание mount до exact ready ACK.
+
+### Продолжение 1.5ak — приватный bounded companion staging (29 сентября)
+
+- [x] Добавлен streaming sink с exact signed byte limit: каждый chunk проверяется
+  до записи, resume/range и частичный результат не поддерживаются.
+- [x] Временный каталог создаётся `0700` только на local filesystem, artifact —
+  `0600`, regular, owner=current user, single-link и `CLOEXEC`; symlink/reopen
+  substitution отклоняется сравнением inode/device.
+- [x] Результат выдаёт только borrowed open descriptor через closure. Путь/URL
+  наружу не раскрываются; cleanup descriptor-relative удаляет файл и каталог при
+  success-release, cancel, overflow, short body, bad SHA и любой finish error.
+- [x] До выдачи FD обязательны exact byte count, `fsync` и SHA-256 из подписанной
+  metadata; file offset возвращается в начало для read-only mount boundary.
+- [x] Нативные staging checks 2/2 покрывают чанки, overflow, underflow, bad hash,
+  права, owner, `CLOEXEC`, содержимое и отсутствие residue. Arm64/x86_64
+  production typecheck прошёл.
+
+Следующий узел: ephemeral URLSession transport и строгая HTTPS/redirect policy,
+которая пишет только в этот staging sink; затем mount → Broker ready → sentinel.
