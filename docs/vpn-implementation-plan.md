@@ -2996,3 +2996,20 @@ certificate-only профиля, не допускает второй проце
 listener+coordinator tests, 48 daemon/update/recovery tests и universal
 arm64/x86_64 helper build с проверкой подписи. Release заблокирован пунктами
 3–5, 7–8; sequence 127 не выпускать.
+
+### Продолжение 1.5aw — one-shot credential primitive (30 сентября)
+
+Начата внутренняя часть пункта 3. Добавлен byte-only encoder фиксированных
+OpenVPN management-команд для логина/пароля, OTP-кода и пароля закрытого ключа.
+Попытка привязана к полному application spec и точному challenge UUID/generation;
+первое использование, несовпадение, отмена, ошибка sink и deinit необратимо
+сжигают попытку и затирают память через `memset_s`. Секрет не превращается в
+`String`, не сериализуется и не попадает в argv/config/journal/log/error.
+
+Согласованный OTP-режим передаёт код вместо пароля. Неоднозначный OpenVPN static
+challenge, который может означать склеенный password+OTP, fail-closed и не
+выдаётся за поддержанный. Пройдены 7 focused и 59 связанных regression tests,
+universal helper build и codesign. Production listener пока намеренно сохраняет
+старую границу consume → zeroize → `notReady`: хранить OTP в ожидании будущего
+route stage нельзя. Пункт 3 останется незакрытым до атомарной передачи движку,
+app Keychain с явным согласием и UI ввода.
