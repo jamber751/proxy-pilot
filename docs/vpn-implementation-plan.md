@@ -2646,3 +2646,24 @@ authenticated status с exact sealed VPN sequence.
 Следующий узел: подписанная companion metadata и ordinary-user download/staging
 coordinator, затем полные fault/reboot acceptance и Intel/macOS 11. Release tag
 запрещён, пока эти гейты не закрыты.
+
+### Продолжение 1.5ai — подписанная companion metadata (29 сентября)
+
+- [x] Добавлен отдельный canonical metadata format с domain-separated Ed25519
+  подписью существующим VPN release key: version, forward sequence A→B, SHA-256
+  и точный bounded byte count. URL, host, путь и команда в payload отсутствуют.
+- [x] Имя DMG и immutable GitHub release URL выводятся только из проверенной
+  canonical версии по фиксированному шаблону. Metadata не является root
+  authorization: Broker всё равно заново проверяет внутренние девять элементов.
+- [x] Packager строит metadata только из уже проверенного joint stage и точных
+  байтов companion DMG, публикует новый файл `0600` без overwrite и отказывает
+  при несовпадении version/transition/filename.
+- [x] Release-key умеет отдельно подписать/проверить metadata и проверить сам
+  artifact по открытому descriptor. Parser/signature/artifact 15/15, packager
+  5/5; подмена, лишние поля, uppercase hash и non-forward edge отклоняются.
+- [ ] До downloader исправить submit acknowledgment: timeout после отправки не
+  доказывает, что Broker уже скопировал inbox. Mount нельзя освобождать и A нельзя
+  завершать на неоднозначном timeout. Нужен явный durable ready/accepted boundary.
+
+Следующий узел: точный Broker ready ACK после private inbox + authorization +
+recovery preparation, затем bounded downloader. UI остаётся discovery-only.

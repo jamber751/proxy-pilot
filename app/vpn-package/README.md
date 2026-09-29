@@ -53,6 +53,14 @@ remain open.
    read-only APFS image, verifies it, and publishes it atomically without
    overwrite. Its printed SHA-256 and byte count are release metadata, not VPN
    authority; the Broker still revalidates every inner signature and code pin.
+7. Create and sign the transport-only sidecar without inventing release values:
+   `package.py prepare-companion-metadata --stage <stage> --companion <dmg>
+   --output <new-absolute-metadata>`, then `vpn-release-key sign-companion
+   <metadata> <signature>`. Finally run `vpn-release-key
+   verify-companion-artifact <metadata> <signature> <public-key-file> <dmg>`.
+   The canonical metadata binds version, forward A→B sequence, byte count and
+   SHA-256 in a domain separate from root authorization. Its artifact name and
+   HTTPS GitHub release URL are derived by the app; neither is supplied by IPC.
 
 No output is overwritten. `Payload` contains exactly the sealed app, helper,
 manifest, signature and (for format 2) the fixed `vpn-engine` sidecar. `EngineSources`
