@@ -2759,3 +2759,26 @@ recovery preparation, затем bounded downloader. UI остаётся discove
 
 Следующий узел: local signed joint-release assembly/publish gate, затем native
 end-to-end A→B fault/reboot acceptance и Intel/macOS 11. Tag пока запрещён.
+
+### Продолжение 1.5an — local signed joint release assembly (29 сентября)
+
+- [x] Добавлен один local-only entrypoint `app/build-joint-release.sh`: принимает
+  next sequence, exact предыдущие signed sidecars, reviewed engine artifact и
+  новый absolute output. Ничего не устанавливает, не повышает права и не меняет
+  system state.
+- [x] До сборки инструмент сравнивает public half существующего Keychain VPN key
+  с embedded key и проверяет предыдущий manifest/signature. Новый ключ не
+  создаётся и rotation ради прохождения сборки запрещена.
+- [x] Один проход строит exact universal VPN app/helper, подписывает release и
+  transition, создаёт read-only companion DMG, canonical metadata/signature и
+  перепроверяет финальные байты artifact публичным ключом.
+- [x] Output `0700` создаётся только новым; assets `0600`, overwrite отсутствует.
+  При любой ошибке partial output удаляется. Новый signed release manifest/sig
+  сохраняются как обязательный input следующего forward update.
+- [x] Shell/source gate 3/3. Скрипт намеренно не содержит `gh release`, git tag,
+  push, Installer, sudo или launchctl.
+- [ ] Реальные assets ещё не собраны: нужен exact previous signed release и
+  reviewed engine artifact. Публикация/тег запрещены до native A→B acceptance.
+
+Следующий узел: disposable local assembly fixture без production key, затем
+native clean A→B и fault/reboot matrix; после этого — draft upload verification.
