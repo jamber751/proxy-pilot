@@ -2564,8 +2564,9 @@ one-click UI остаются выключены до прохождения э�
   submit принимает только уже открытый directory descriptor, expected sequence и
   deadline; descriptor передаётся единственным `SCM_RIGHTS` без пути/URL/команды.
 - [x] Уточнена identity-модель rotation: приложение A не может читать Broker B,
-  потому что B принимает только exact подписанное приложение B. Post-submit EOF
-  возвращает `handoffExpected` без reconnect и без повторной отправки descriptor.
+  потому что B принимает только exact подписанное приложение B. Старый временный
+  `handoffExpected` позднее заменён точным durable ready ACK (см. 1.5aj): EOF до
+  ACK считается неоднозначным и не разрешает завершать A.
 - [x] Descriptor-free `status` вынесен в отдельную операцию для уже запущенного B.
   Mismatched transaction не маскируется как handoff; pre-send failure остаётся
   ошибкой. Client contract проходит 8/8, arm64 typecheck — без ошибок.
@@ -2667,3 +2668,23 @@ coordinator, затем полные fault/reboot acceptance и Intel/macOS 11. 
 
 Следующий узел: точный Broker ready ACK после private inbox + authorization +
 recovery preparation, затем bounded downloader. UI остаётся discovery-only.
+
+### Продолжение 1.5aj — durable Broker ready ACK (29 сентября)
+
+- [x] Успешный submit теперь отвечает ровно один раз состоянием `.ready` после
+  private inbox copy, повторной signed authorization, joint preparation и записи
+  recovery journal, но до executor handoff и broker rotation.
+- [x] Только этот exact response (`from`, forward `to`, `revision > 0`) считается
+  успешной передачей. Accepted/checking/installing/complete/failed в submit
+  response отклоняются как mismatched transaction; busy/stale остаются явными.
+- [x] EOF, timeout и частичная запись после начала submit возвращают
+  `indeterminate`, а не успех. Coordinator не имеет права освобождать mount,
+  вооружать sentinel или завершать A по такому результату.
+- [x] Daemon отправляет terminal status только для status-запроса; submit после
+  ready ACK продолжает recovery/replacement без второго frame. При busy/stale,
+  когда ready boundary не достигнута, отправляется единственный transient ответ.
+- [x] Handler/client contract 27/27, production universal helper arm64+x86_64
+  собран и прошёл strict codesign.
+
+Следующий узел: bounded ordinary-user downloader во временный `0600` файл,
+проверка metadata/hash по FD и удержание mount до exact ready ACK.
