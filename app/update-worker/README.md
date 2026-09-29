@@ -219,12 +219,16 @@ VoiceOver, scheduled focus behavior, or every macOS/language combination.
    test is an API test, not evidence of a native cancellation button. No custom
    final window is added here. Remaining system, sleep and accessibility
    acceptance is separate from the native cases below.
-3. Integrate the proven, separately authorized joint package transaction with
-   Sparkle without weakening the root-helper release policy. The native signed
-   A119 → B120 package path passed once, but the early veto is still the only
-   protection in the opt-in Sparkle worker. Late-stage races plus crash/reboot
-   recovery remain release blockers. Never accept a new VPN client pin merely
-   because Sparkle installed it.
+3. Complete native acceptance of the integrated one-click joint coordinator.
+   Signed appcast discovery now carries only a canonical release ID; the app
+   independently fetches signed VPN metadata, verifies/downloads a bounded DMG,
+   mounts it read-only, and submits only its directory descriptor to the Broker.
+   A local runtime harness passes this complete transport chain through exact
+   durable-ready protocol validation without parameterizing production URLs or
+   sockets. Root authorization, private-inbox/executor behavior, late-stage
+   races, relaunch, crash/reboot recovery and a new-semver discovery run remain
+   release blockers. Never accept a new VPN client pin merely because Sparkle
+   installed it.
 4. Preserve the accepted removal boundary. The first B120 removal failed on the
    non-empty shared parent containing the intentionally retained updater directory.
    The corrected sequence-121 remove package then passed with a root-private

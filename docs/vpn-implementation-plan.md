@@ -2792,3 +2792,28 @@ end-to-end A→B fault/reboot acceptance и Intel/macOS 11. Tag пока зап�
 Следующий узел: test-only end-to-end coordinator harness без ослабления fixed
 production URL/socket, затем native clean A→B и fault/reboot matrix; после этого —
 draft upload verification. Tag пока запрещён.
+
+### Продолжение 1.5ao — runtime coordinator transport harness (30 сентября)
+
+- [x] Добавлен compile-time-only runtime seam; production initializer по-прежнему
+  принимает только release ID и sealed sequence. В release build нельзя передать
+  URL, path, socket, configuration или готовый Broker response.
+- [x] Runtime test проходит одной цепочкой через fixed GitHub request URLs,
+  подписанную ephemeral metadata, настоящий bounded staging/hash, production
+  readonly DMG mount, `SCM_RIGHTS` directory FD и production Broker wire parser.
+- [x] Exact `.ready` для 122 → 123 с revision 1 завершает coordinator успешно и
+  даёт стадии metadata → download → verify → submit ровно по порядку. Bad digest
+  останавливается до mount/Broker и не открывает ни одного Broker соединения.
+- [x] Test-only Broker client принимает уже подключённый AF_UNIX/SOCK_STREAM FD,
+  проверяет connected socket и ownership, после чего использует тот же
+  send/receive/validation код. Production по-прежнему единолично открывает fixed
+  root-owned `/Library/.../update-broker.sock`.
+- [x] Coordinator/client/transport regression 29/29; universal production app
+  arm64+x86_64 собран, прошёл strict codesign, test-only symbols отсутствуют.
+- [ ] Harness не доказывает root authorization, private inbox durability,
+  executor handoff, relaunch или reboot recovery: server выдаёт только корректный
+  protocol ACK после проверки readonly layout. Эти пункты остаются native gate.
+
+Следующий узел: новый-semver release candidate и native clean coordinator →
+durable Broker ready → relaunch, затем checkpoint fault/reboot matrix. Только
+после этого — draft upload verification; tag пока запрещён.
