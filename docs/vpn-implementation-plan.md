@@ -2532,3 +2532,28 @@ installer/uninstall integration и только после acceptance включ
 status reconnect flow и реальные acceptance-сценарии A→B: success, invalid package,
 caller death, broker SIGKILL, executor SIGKILL и reboot. До их прохождения release
 tag и включение one-click UI запрещены.
+
+### Продолжение 1.5ad — installer/uninstall ownership Broker (29 сентября)
+
+- [x] Первый install и повтор после crash теперь сериализуются в едином порядке
+  `Broker → VPN service`. Retry принимается только для exact подписанного selected
+  release и owner; перед bootstrap нового Broker внешняя lease освобождается.
+- [x] Production install регистрирует fixed launchd job на exact selected helper и
+  доказывает живой процесс B, а не только успешный `launchctl bootstrap`.
+- [x] Uninstall сначала выполняет read-only fail-closed preflight Broker-каталога,
+  затем снимает broker job до удаления helper artifacts. Неизвестные имена,
+  symlink, hardlink, неверные права, ACL и повреждённые bounded records запрещают
+  любые изменения.
+- [x] Complete и crash-left partial inbox удаляются descriptor-relative с прежними
+  лимитами; status/receipt/locks удаляются только по фиксированным шаблонам,
+  lifecycle lock — последним. Legacy install без Broker остаётся удаляемым.
+- [x] Coordinator contract 6/6, state-removal refusals/partial cleanup 4/4,
+  inbox 6/6 и installer 37/37. Typecheck arm64/x86_64, universal helper strict
+  codesign и полная universal app-сборка с VPN installer прошли.
+- [ ] Updater UI ещё не отправляет package descriptor и не реализует reconnect /
+  status после ожидаемого разрыва при rotation. System acceptance A→B с fault
+  injection и reboot, Intel/macOS 11 также остаются release-гейтами.
+
+Следующий узел: ordinary-user updater client `submit → reconnect → status` без
+передачи путей или полномочий, затем end-to-end system acceptance. Release tag и
+one-click UI остаются выключены до прохождения этих гейтов.
