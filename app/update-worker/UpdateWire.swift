@@ -7,6 +7,7 @@ struct UpdateSnapshot: Codable, Equatable {
     let automatic: Bool
     let inProgress: Bool
     let availableVersion: String?
+    let jointUpdate: Bool
 }
 
 enum UpdateMessage: Equatable {
@@ -70,7 +71,7 @@ enum UpdateWire {
             keys.insert("token"); message = envelope.kind == "resume" ? .resume(token) : .prepare(token)
         case "state":
             guard let state = envelope.state, let values = fields["state"] as? [String: Any],
-                  Set(values.keys).isSubset(of: ["canCheck", "automatic", "inProgress", "availableVersion"]) else { throw Failure.malformed }
+                  Set(values.keys).isSubset(of: ["canCheck", "automatic", "inProgress", "availableVersion", "jointUpdate"]) else { throw Failure.malformed }
             if let version = state.availableVersion {
                 guard !version.isEmpty, version.utf8.count <= 64,
                       !version.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.malformed }

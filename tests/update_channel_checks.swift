@@ -9,11 +9,11 @@ enum Checks {
 
     static func main() throws {
         let mode = CommandLine.arguments[1]
-        let state = UpdateSnapshot(canCheck: true, automatic: false, inProgress: false, availableVersion: "1.5.1")
+        let state = UpdateSnapshot(canCheck: true, automatic: false, inProgress: false, availableVersion: "1.5.1", jointUpdate: false)
         if mode == "wire" {
             let token = UUID()
             let messages: [UpdateMessage] = [.check, .automatic(true), .automatic(false), .resume(token),
-                .state(state), .state(UpdateSnapshot(canCheck: false, automatic: true, inProgress: true, availableVersion: nil)),
+                .state(state), .state(UpdateSnapshot(canCheck: false, automatic: true, inProgress: true, availableVersion: nil, jointUpdate: true)),
                 .present, .aborted, .prepare(token), .failed]
             var decoder = UpdateWire.Decoder()
             for message in messages {
@@ -34,8 +34,8 @@ enum Checks {
                           "{\"version\":1,\"kind\":\"state\",\"state\":{\"canCheck\":true}}"] {
                 rejects { _ = try UpdateWire.decode(Data(value.utf8)) }
             }
-            rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: String(repeating: "a", count: 65)))) }
-            rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: "1.0\nInjected"))) }
+            rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: String(repeating: "a", count: 65), jointUpdate: false))) }
+            rejects { _ = try UpdateWire.frame(.state(UpdateSnapshot(canCheck: true, automatic: true, inProgress: false, availableVersion: "1.0\nInjected", jointUpdate: false))) }
             for header in [[UInt8](repeating: 0, count: 4), [0, 0, 16, 1], [255, 255, 255, 255]] {
                 rejects { var decoder = UpdateWire.Decoder(); _ = try decoder.append(Data(header)) }
             }

@@ -21,7 +21,7 @@ final class HandoffWorker {
     }
 
     private func state(canCheck: Bool, inProgress: Bool, version: String? = nil) {
-        channel.send(.state(UpdateSnapshot(canCheck: canCheck, automatic: false, inProgress: inProgress, availableVersion: version)))
+        channel.send(.state(UpdateSnapshot(canCheck: canCheck, automatic: false, inProgress: inProgress, availableVersion: version, jointUpdate: false)))
     }
 
     private func receive(_ message: UpdateMessage) {

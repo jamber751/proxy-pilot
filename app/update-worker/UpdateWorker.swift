@@ -21,6 +21,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     private var observations: [NSKeyValueObservation] = []
     private var channel: UpdateChannel!
     private var availableVersion: String?
+    private var jointDiscovery = false
     private var pendingInstall: (UUID, () -> Void)?
     private var handingOff = false
     private var orphaned = false
@@ -65,16 +66,29 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
         channel.send(.state(UpdateSnapshot(canCheck: updater.canCheckForUpdates,
                                             automatic: updater.automaticallyChecksForUpdates,
                                             inProgress: updater.sessionInProgress,
-                                            availableVersion: availableVersion)))
+                                            availableVersion: availableVersion,
+                                            jointUpdate: jointDiscovery && availableVersion != nil)))
     }
 
     private func receive(_ message: UpdateMessage) {
         switch message {
         case .check:
             guard updater.canCheckForUpdates, pendingInstall == nil else { publish(); return }
-            channel.send(.present)
-            NSApp.activate(ignoringOtherApps: true)
-            updater.checkForUpdates()
+            switch updateAdmission() {
+            case .allowed:
+                jointDiscovery = false
+                channel.send(.present)
+                NSApp.activate(ignoringOtherApps: true)
+                updater.checkForUpdates()
+            case .requiresCoordinatedUpdate:
+                // Discovery and signed appcast parsing only. Never invoke the
+                // Sparkle downloader/installer while Broker owns replacement.
+                jointDiscovery = true
+                availableVersion = nil
+                updater.checkForUpdateInformation()
+            case .inspectionFailed:
+                channel.send(.aborted); publish()
+            }
         case .automatic(let enabled): updater.automaticallyChecksForUpdates = enabled; publish()
         case .resume(let token):
             guard let pending = pendingInstall, pending.0 == token else { exit(65) }
@@ -92,13 +106,24 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     }
     func standardUserDriverWillShowModalAlert() { channel.send(.present) }
     func standardUserDriverWillFinishUpdateSession() {
-        availableVersion = nil; publish()
+        if !jointDiscovery { availableVersion = nil }
+        publish()
         if orphaned { exit(0) }
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         pendingInstall = nil; handingOff = false
         channel.send(.aborted); publish()
         if orphaned { exit(0) }
+    }
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        guard jointDiscovery else { return }
+        availableVersion = item.displayVersionString
+        publish()
+    }
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        guard jointDiscovery else { return }
+        availableVersion = nil
+        publish()
     }
     func updater(_ updater: SPUUpdater, shouldProceedWithUpdate updateItem: SUAppcastItem, updateCheck: SPUUpdateCheck) throws {
         // Sparkle's supported veto occurs before showing/downloading the chosen

@@ -11,6 +11,7 @@ final class UpdateModel: NSObject, ObservableObject {
     @Published private(set) var availableVersion: String?
     @Published private(set) var isPreview = false
     @Published private(set) var sessionInProgress = false
+    @Published private(set) var jointUpdateAvailable = false
     let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     var onPresent: (() -> Void)?
     var onAbort: (() -> Void)?
@@ -112,6 +113,7 @@ final class UpdateModel: NSObject, ObservableObject {
             receivedState = true
             canCheck = state.canCheck; automaticChecks = state.automatic
             sessionInProgress = state.inProgress; availableVersion = state.availableVersion
+            jointUpdateAvailable = state.jointUpdate
             if checkAfterStart && canCheck { checkAfterStart = false; check() }
         case .present: onPresent?()
         case .aborted:
@@ -138,6 +140,7 @@ final class UpdateModel: NSObject, ObservableObject {
     private func unavailable(_ run: UUID) {
         guard generation == run, !failed else { return }
         failed = true; canCheck = true; sessionInProgress = false; availableVersion = nil
+        jointUpdateAvailable = false
         relaunchToken = nil; relaunchSent = false; checkAfterStart = false
         channel?.close(); channel = nil
         if let child = process, child.isRunning { child.terminate() }
