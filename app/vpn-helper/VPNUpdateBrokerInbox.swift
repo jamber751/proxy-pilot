@@ -33,11 +33,13 @@ final class VPNUpdateBrokerInbox {
     private static let cloneResolveBeneath: UInt32 = 0x0010
     private let parent: Int32
 
+    private enum NodeKind: UInt8 { case directory = 0x44, file = 0x46, link = 0x4c }
     private struct Node: Equatable {
-        let directory: Bool
+        let kind: NodeKind
         let mode: mode_t
         let size: Int64
         let digest: Data
+        let target: String?
     }
     private struct Snapshot: Equatable {
         let nodes: [String: Node]
@@ -325,6 +327,7 @@ final class VPNUpdateBrokerInbox {
     private static func snapshot(_ root: Int32, requireFixedLayout: Bool) throws -> Snapshot {
         var nodes: [String: Node] = [:], bytes: Int64 = 0
         try walk(root, prefix: "", depth: 0, nodes: &nodes, bytes: &bytes)
+        try validateLinks(nodes)
         let topNames = Set(nodes.keys.compactMap { $0.split(separator: "/").first.map(String.init) })
         if requireFixedLayout {
             if !topNames.isSubset(of: Self.fixedLayout) {
@@ -353,37 +356,105 @@ final class VPNUpdateBrokerInbox {
             guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
                 throw VPNUpdateBrokerInboxError.sourceChanged
             }
-            if info.st_mode & S_IFMT == S_IFLNK { throw VPNUpdateBrokerInboxError.symlink }
-            if info.st_mode & S_IFMT != S_IFDIR && info.st_mode & S_IFMT != S_IFREG {
+            let type = info.st_mode & S_IFMT
+            if type != S_IFDIR && type != S_IFREG && type != S_IFLNK {
                 throw VPNUpdateBrokerInboxError.special
             }
-            if info.st_mode & S_IFMT == S_IFREG && info.st_nlink != 1 {
+            if type != S_IFDIR && info.st_nlink != 1 {
                 throw VPNUpdateBrokerInboxError.hardlink
             }
-            guard info.st_mode & 0o0022 == 0 else {
+            guard type == S_IFLNK || info.st_mode & 0o0022 == 0 else {
                 throw VPNUpdateBrokerInboxError.invalidLayout
             }
             guard nodes.count < maximumEntries else {
                 throw VPNUpdateBrokerInboxError.limitExceeded
             }
-            if info.st_mode & S_IFMT == S_IFDIR {
-                guard let child = try openDirectory(directory, name) else {
+            if type == S_IFDIR {
+                guard let child = try openDirectory(directory, name, privateMode: false) else {
                     throw VPNUpdateBrokerInboxError.sourceChanged
                 }
-                nodes[path] = Node(directory: true, mode: info.st_mode & 0o7777,
-                                   size: 0, digest: Data())
+                nodes[path] = Node(kind: .directory, mode: info.st_mode & 0o7777,
+                                   size: 0, digest: Data(), target: nil)
                 try walk(child, prefix: path, depth: depth + 1,
                          nodes: &nodes, bytes: &bytes)
                 close(child)
-            } else {
+            } else if type == S_IFREG {
                 guard info.st_size >= 0, info.st_size <= maximumBytes - bytes else {
                     throw VPNUpdateBrokerInboxError.limitExceeded
                 }
                 let data = try readFile(directory, name, expected: info)
                 bytes += Int64(data.count)
-                nodes[path] = Node(
-                    directory: false, mode: info.st_mode & 0o7777,
-                    size: Int64(data.count), digest: Data(SHA256.hash(data: data)))
+                nodes[path] = Node(kind: .file, mode: info.st_mode & 0o7777,
+                    size: Int64(data.count), digest: Data(SHA256.hash(data: data)),
+                    target: nil)
+            } else {
+                guard path.hasPrefix("ProxyPilot.app/") else {
+                    throw VPNUpdateBrokerInboxError.symlink
+                }
+                let target = try readLink(directory, name)
+                guard Int64(target.utf8.count) <= maximumBytes - bytes else {
+                    throw VPNUpdateBrokerInboxError.limitExceeded
+                }
+                bytes += Int64(target.utf8.count)
+                nodes[path] = Node(kind: .link, mode: 0,
+                    size: Int64(target.utf8.count),
+                    digest: Data(SHA256.hash(data: Data(target.utf8))),
+                    target: target)
+            }
+        }
+    }
+
+    private static func readLink(_ directory: Int32, _ name: String) throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 4097)
+        let count = bytes.withUnsafeMutableBytes {
+            readlinkat(directory, name, $0.baseAddress!, $0.count)
+        }
+        guard count > 0, count < bytes.count,
+              let target = String(bytes: bytes.prefix(count), encoding: .utf8),
+              !target.hasPrefix("/"), !target.utf8.contains(0) else {
+            throw VPNUpdateBrokerInboxError.symlink
+        }
+        return target
+    }
+
+    private static func validateLinks(_ nodes: [String: Node]) throws {
+        for (path, node) in nodes where node.kind == .link {
+            var resolved = path.split(separator: "/").dropLast().map(String.init)
+            var remaining = node.target!.split(
+                separator: "/", omittingEmptySubsequences: false).map(String.init)
+            var seen: Set<String> = [path], hops = 0
+            while !remaining.isEmpty {
+                let component = remaining.removeFirst()
+                if component.isEmpty || component == "." { continue }
+                if component == ".." {
+                    guard resolved.count > 1 else {
+                        throw VPNUpdateBrokerInboxError.symlink
+                    }
+                    resolved.removeLast(); continue
+                }
+                let key = (resolved + [component]).joined(separator: "/")
+                guard let next = nodes[key] else {
+                    throw VPNUpdateBrokerInboxError.symlink
+                }
+                if next.kind == .link {
+                    hops += 1
+                    guard hops <= 40, seen.insert(key).inserted else {
+                        throw VPNUpdateBrokerInboxError.symlink
+                    }
+                    remaining = next.target!.split(
+                        separator: "/", omittingEmptySubsequences: false)
+                        .map(String.init) + remaining
+                } else {
+                    guard remaining.isEmpty || next.kind == .directory else {
+                        throw VPNUpdateBrokerInboxError.symlink
+                    }
+                    resolved.append(component)
+                }
+            }
+            let target = resolved.joined(separator: "/")
+            guard target.hasPrefix("ProxyPilot.app/"), target != path,
+                  nodes[target] != nil else {
+                throw VPNUpdateBrokerInboxError.symlink
             }
         }
     }
@@ -423,7 +494,7 @@ final class VPNUpdateBrokerInbox {
         var hash = SHA256()
         for (path, node) in nodes.sorted(by: { $0.key < $1.key }) {
             hash.update(data: Data(path.utf8)); hash.update(data: Data([0]))
-            hash.update(data: Data(node.directory ? [0x44] : [0x46]))
+            hash.update(data: Data([node.kind.rawValue]))
             var mode = UInt32(node.mode).bigEndian
             withUnsafeBytes(of: &mode) { hash.update(data: Data($0)) }
             var size = UInt64(node.size).bigEndian
@@ -439,6 +510,7 @@ final class VPNUpdateBrokerInbox {
             guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
                 throw VPNUpdateBrokerInboxError.commitUncertain
             }
+            if info.st_mode & S_IFMT == S_IFLNK { continue }
             let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC
                 | (info.st_mode & S_IFMT == S_IFDIR ? O_DIRECTORY : O_NONBLOCK)
             let child = openat(directory, name, flags)
@@ -465,11 +537,13 @@ final class VPNUpdateBrokerInbox {
         for name in children {
             var before = stat()
             guard fstatat(directory, name, &before, AT_SYMLINK_NOFOLLOW) == 0,
-                  before.st_uid == geteuid(), before.st_mode & 0o0022 == 0 else {
+                  before.st_uid == geteuid(),
+                  (before.st_mode & S_IFMT == S_IFLNK
+                    || before.st_mode & 0o0022 == 0) else {
                 throw VPNUpdateBrokerInboxError.publishedChanged
             }
             if before.st_mode & S_IFMT == S_IFDIR {
-                guard let child = try openDirectory(directory, name) else {
+                guard let child = try openDirectory(directory, name, privateMode: false) else {
                     throw VPNUpdateBrokerInboxError.publishedChanged
                 }
                 do {
@@ -497,12 +571,15 @@ final class VPNUpdateBrokerInbox {
                       unlinkat(directory, name, AT_REMOVEDIR) == 0 else {
                     throw VPNUpdateBrokerInboxError.publishedChanged
                 }
-            } else if before.st_mode & S_IFMT == S_IFREG {
+            } else if before.st_mode & S_IFMT == S_IFREG
+                    || before.st_mode & S_IFMT == S_IFLNK {
                 guard before.st_nlink == 1 else {
                     throw VPNUpdateBrokerInboxError.publishedChanged
                 }
-                let file = openat(directory, name,
-                    O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                let flags = before.st_mode & S_IFMT == S_IFLNK
+                    ? O_RDONLY | O_SYMLINK | O_CLOEXEC
+                    : O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                let file = openat(directory, name, flags)
                 guard file >= 0 else {
                     throw VPNUpdateBrokerInboxError.publishedChanged
                 }
@@ -527,9 +604,11 @@ final class VPNUpdateBrokerInbox {
                 throw VPNUpdateBrokerInboxError.publishedChanged
             }
             owned = owned && info.st_uid == geteuid()
-            writable = writable || info.st_mode & 0o0022 != 0
+            if info.st_mode & S_IFMT != S_IFLNK {
+                writable = writable || info.st_mode & 0o0022 != 0
+            }
             if info.st_mode & S_IFMT == S_IFDIR {
-                guard let child = try openDirectory(directory, name) else {
+                guard let child = try openDirectory(directory, name, privateMode: false) else {
                     throw VPNUpdateBrokerInboxError.publishedChanged
                 }
                 let nested = try metadata(child); close(child)
@@ -570,14 +649,17 @@ final class VPNUpdateBrokerInbox {
         }
     }
 
-    private static func openDirectory(_ parent: Int32, _ name: String) throws -> Int32? {
+    private static func openDirectory(_ parent: Int32, _ name: String,
+                                      privateMode: Bool = true) throws -> Int32? {
         var info = stat()
         if fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
             guard errno == ENOENT else { throw VPNUpdateBrokerInboxError.unsafeStorage }
             return nil
         }
         guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(),
-              info.st_mode & 0o7777 == 0o700, info.st_nlink > 0 else {
+              info.st_nlink > 0,
+              privateMode ? info.st_mode & 0o7777 == 0o700
+                          : info.st_mode & 0o0022 == 0 else {
             throw VPNUpdateBrokerInboxError.unsafeStorage
         }
         let result = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)

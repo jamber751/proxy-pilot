@@ -76,6 +76,20 @@ typealias InboxDriver = VPNUpdateBrokerInboxContractHarness
             at: app, withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700])
         try write(Data("sealed-app-\(marker)".utf8), to: app, name: "fixture")
+        // Real Sparkle.framework uses chained relative links and ordinary 0755
+        // bundle directories. The broker must preserve them without following
+        // any target outside ProxyPilot.app.
+        let framework = app.appendingPathComponent("Contents/Frameworks/Sparkle.framework")
+        let version = framework.appendingPathComponent("Versions/B")
+        try FileManager.default.createDirectory(at: version,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o755])
+        try write(Data("sparkle-\(marker)".utf8), to: version, name: "Sparkle")
+        guard symlink("B", framework.appendingPathComponent("Versions/Current").path) == 0,
+              symlink("Versions/Current/Sparkle",
+                      framework.appendingPathComponent("Sparkle").path) == 0 else {
+            throw NSError(domain: "inbox-contract", code: 20)
+        }
         for name in exactLayout.subtracting(["ProxyPilot.app"]) {
             try write(Data("\(name):\(marker)".utf8), to: source, name: name)
         }
@@ -148,6 +162,19 @@ typealias InboxDriver = VPNUpdateBrokerInboxContractHarness
                 at: linked.appendingPathComponent("vpn-helper"),
                 withDestinationURL: linked.appendingPathComponent("vpn-release.sig"))
             try expectRejected(.symlink, source: linked, trustedFD: trustedFD)
+
+            for (marker, target) in [("absolute-link", "/tmp/outside"),
+                                     ("dangling-link", "Versions/Missing"),
+                                     ("cycle-link", "Cycle")] {
+                let unsafe = try candidate(root, marker: marker)
+                let framework = unsafe.appendingPathComponent(
+                    "ProxyPilot.app/Contents/Frameworks/Sparkle.framework")
+                let name = marker == "cycle-link" ? "Cycle" : "Unsafe"
+                guard symlink(target, framework.appendingPathComponent(name).path) == 0 else {
+                    throw NSError(domain: "inbox-contract", code: 21)
+                }
+                try expectRejected(.symlink, source: unsafe, trustedFD: trustedFD)
+            }
 
             let hard = try candidate(root, marker: "hardlink")
             try FileManager.default.removeItem(at: hard.appendingPathComponent("vpn-helper"))

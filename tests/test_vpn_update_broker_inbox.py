@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import os
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +86,23 @@ class VPNUpdateBrokerInboxProductionBindingTests(unittest.TestCase):
                                             text=True, timeout=60)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(result.stdout.strip(), f'{group} checks passed')
+
+    @unittest.skipUnless(os.environ.get('PROXYPILOT_BROKER_REAL_APP'),
+                         'set PROXYPILOT_BROKER_REAL_APP for signed bundle acceptance')
+    def test_real_signed_app_with_framework_links_survives_inbox(self):
+        app = Path(os.environ['PROXYPILOT_BROKER_REAL_APP'])
+        with tempfile.TemporaryDirectory(prefix='pp-real-inbox-build-') as temporary:
+            binary = Path(temporary) / 'real-checks'
+            compiled = subprocess.run(
+                ['swiftc', '-target', 'arm64-apple-macosx11.0',
+                 '-module-cache-path', str(Path(temporary) / 'ModuleCache'),
+                 str(INBOX), str(ROOT / 'tests/vpn_update_broker_real_app_checks.swift'),
+                 '-o', str(binary)], capture_output=True, text=True, timeout=120)
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+            result = subprocess.run([str(binary), str(app)], capture_output=True,
+                                    text=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.strip(), 'real app inbox check passed')
 
 
 if __name__ == '__main__':
