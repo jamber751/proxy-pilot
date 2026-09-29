@@ -143,10 +143,20 @@ enum VPNUpdateBrokerClient {
 
     private static func validate(_ response: VPNUpdateBrokerResponse,
                                  expectedFromSequence: UInt64) throws {
-        guard response.fromSequence == expectedFromSequence,
-              response.toSequence > expectedFromSequence,
-              response.revision > 0 else {
+        guard response.fromSequence == expectedFromSequence else {
             throw VPNUpdateBrokerClientError.mismatchedTransaction
+        }
+        switch response.state {
+        case .busy, .stale:
+            guard response.toSequence == 0
+                    || response.toSequence > expectedFromSequence else {
+                throw VPNUpdateBrokerClientError.mismatchedTransaction
+            }
+        case .accepted, .checking, .ready, .installing, .complete, .failed:
+            guard response.toSequence > expectedFromSequence,
+                  response.revision > 0 else {
+                throw VPNUpdateBrokerClientError.mismatchedTransaction
+            }
         }
     }
 

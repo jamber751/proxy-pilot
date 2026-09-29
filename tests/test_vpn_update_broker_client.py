@@ -208,6 +208,11 @@ class VPNUpdateBrokerClientSourceTests(unittest.TestCase):
         for required in ('deadline', 'POLL', 'EINTR'):
             self.assertIn(required, self.source)
 
+    def test_busy_and_stale_allow_an_unpublished_destination(self):
+        validate = self.function_source('validate')
+        self.assertIn('case .busy, .stale', validate)
+        self.assertIn('response.toSequence == 0', validate)
+
 
 if __name__ == '__main__':
     unittest.main()

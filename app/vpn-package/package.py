@@ -20,6 +20,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import uuid
 
 HERE = Path(__file__).resolve().parent
 APP_ID = 'kz.documentolog.proxypilot'
@@ -260,6 +261,57 @@ def build(stage, action, output):
     print(f'Built {action} package. Nothing installed: {output}')
 
 
+def build_companion(stage, output):
+    """Build one read-only joint-update artifact; never install or mount it."""
+    new_path(output)
+    if output.suffix != '.dmg' or not output.parent.is_absolute() or not output.parent.is_dir():
+        raise ValueError('Companion output must be a new absolute .dmg in an existing directory')
+    if not stage.is_absolute() or stage.is_symlink() or not stage.is_dir():
+        raise ValueError('Expected an existing absolute private stage')
+    payload = stage / 'Payload'
+    version = verify(payload, action='update')
+    actual = set(os.listdir(payload))
+    expected = {'ProxyPilot.app', 'vpn-helper', 'vpn-engine',
+                'vpn-release.manifest', 'vpn-release.sig'} | JOINT_FILES
+    if actual != expected:
+        raise ValueError('Companion requires the exact format-2 joint layout')
+
+    temporary = output.parent / f'.{output.name}.{uuid.uuid4()}.tmp.dmg'
+    try:
+        run('/usr/bin/hdiutil', 'create', '-quiet', '-fs', 'APFS',
+            '-format', 'UDZO', '-imagekey', 'zlib-level=9',
+            '-volname', 'ProxyPilot VPN Update', '-srcfolder', payload, temporary)
+        run('/usr/bin/hdiutil', 'verify', '-quiet', temporary)
+        descriptor = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 768 * 1024 * 1024:
+                raise ValueError('Companion image is not a bounded regular file')
+            digest = hashlib.sha256()
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block: break
+                digest.update(block)
+        finally:
+            os.close(descriptor)
+        temporary.chmod(0o600)
+        # Atomic no-overwrite publication. A concurrent release cannot replace
+        # an artifact that already acquired the final name.
+        os.link(temporary, output, follow_symlinks=False)
+        temporary.unlink()
+        published = os.open(output, os.O_RDONLY | os.O_NOFOLLOW)
+        try: os.fsync(published)
+        finally: os.close(published)
+        parent = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(parent)
+        finally: os.close(parent)
+    finally:
+        if temporary.exists() or temporary.is_symlink(): temporary.unlink()
+    print(f'Built companion joint artifact {version}: {output}')
+    print(f'sha256={digest.hexdigest()}')
+    print(f'bytes={info.st_size}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest='mode', required=True)
@@ -277,12 +329,16 @@ def main():
     package.add_argument('--stage', type=Path, required=True)
     package.add_argument('--action', choices=('install', 'update', 'remove'), required=True)
     package.add_argument('--output', type=Path, required=True)
+    companion = modes.add_parser('build-companion')
+    companion.add_argument('--stage', type=Path, required=True)
+    companion.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if os.geteuid() == 0: parser.error('Build as an ordinary user, never root')
     try:
         if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output, args.engine_artifact)
         elif args.mode == 'prepare-update': prepare_update(args.stage, args.previous_manifest, args.previous_signature)
-        else: build(args.stage, args.action, args.output)
+        elif args.mode == 'build': build(args.stage, args.action, args.output)
+        else: build_companion(args.stage, args.output)
     except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error: parser.error(str(error))
 
 

@@ -42,6 +42,14 @@ remain open.
 5. Run `python3 app/vpn-package/package.py build --stage <absolute-stage-directory>
    --action install --output <new-absolute-package.pkg>`.
    Build `update` and `remove` packages the same way with distinct output paths.
+6. For the one-click Broker flow, build the separate read-only transport image:
+   `python3 app/vpn-package/package.py build-companion --stage <stage>
+   --output <new-absolute-ProxyPilot-version-vpn-joint.dmg>`. This requires the
+   complete format-2 joint payload (app, helper, engine, both signed releases and
+   signed transition), runs the same update verification, creates a compressed
+   read-only APFS image, verifies it, and publishes it atomically without
+   overwrite. Its printed SHA-256 and byte count are release metadata, not VPN
+   authority; the Broker still revalidates every inner signature and code pin.
 
 No output is overwritten. `Payload` contains exactly the sealed app, helper,
 manifest, signature and (for format 2) the fixed `vpn-engine` sidecar. `EngineSources`
