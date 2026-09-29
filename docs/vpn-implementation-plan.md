@@ -2707,3 +2707,25 @@ recovery preparation, затем bounded downloader. UI остаётся discove
 
 Следующий узел: ephemeral URLSession transport и строгая HTTPS/redirect policy,
 которая пишет только в этот staging sink; затем mount → Broker ready → sentinel.
+
+### Продолжение 1.5al — bounded HTTPS companion downloader (29 сентября)
+
+- [x] Добавлена ephemeral URLSession без cache, cookies, credential storage и
+  custom TLS trust. Initial URL выводится только из подписанной metadata и обязан
+  быть exact HTTPS GitHub release URL без userinfo/query/fragment.
+- [x] Redirect ограничен тремя шагами и только `github.com` → exact
+  `release-assets.githubusercontent.com` по HTTPS/GET. Downgrade, suffix-host,
+  credentials, другой port/host, fragment и смена метода отклоняются.
+- [x] `Accept-Encoding: identity`; HTTP должен быть 200, declared Content-Length
+  при наличии обязан совпасть. Каждый chunk сразу проходит exact signed bound и
+  записывается в приватный staging; overflow отменяется до записи.
+- [x] Completion exactly-once: HTTP/encoding/length/short body/extra byte/bad SHA,
+  transport error и cancel закрывают сессию и удаляют staging. Успех возвращает
+  только `VPNDownloadedCompanion` с borrowed FD.
+- [x] Native transport tests 2/2 используют реальную URLSession delegate pipeline
+  и покрывают success chunks, status 500, encoding, length mismatch, underflow,
+  overflow, SHA mismatch и redirect matrix. Production arm64/x86_64 typecheck
+  прошёл.
+
+Следующий узел: bounded fetch пары metadata+signature с фиксированными именами,
+затем coordinator `download FD → readonly mount → Broker ready → sentinel`.
