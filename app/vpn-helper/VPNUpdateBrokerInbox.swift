@@ -168,7 +168,17 @@ final class VPNUpdateBrokerInbox {
         guard identity.count == 32 else {
             throw VPNUpdateBrokerInboxError.publishedChanged
         }
-        return try published(identity)
+        let directory = try published(identity)
+        do {
+            let actual = try Self.snapshot(directory, requireFixedLayout: true)
+            guard actual.identity == identity else {
+                throw VPNUpdateBrokerInboxError.publishedChanged
+            }
+            return directory
+        } catch {
+            close(directory)
+            throw error
+        }
     }
 
     #if VPN_UPDATE_BROKER_INBOX_TESTING

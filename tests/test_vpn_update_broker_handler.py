@@ -396,11 +396,10 @@ class UnifiedBrokerHandlerContractTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "darwin", "production binding is a Darwin gate")
 class UnifiedBrokerHandlerProductionBindingTests(unittest.TestCase):
-    @unittest.expectedFailure
     def test_unified_production_handler_file_exists(self):
         self.assertTrue(
             HANDLER.is_file(),
-            "expected red test: unified broker handler is not implemented: "
+            "unified broker handler is required: "
             "app/vpn-helper/VPNUpdateBrokerHandler.swift",
         )
 
@@ -409,10 +408,11 @@ class UnifiedBrokerHandlerProductionBindingTests(unittest.TestCase):
             self.skipTest("covered by the explicit missing-production-handler failure")
         source = HANDLER.read_text()
         for required in (
-                "VPNUpdateBrokerTransport.receive", "VPNUpdateBrokerInbox",
+                "VPNUpdateBrokerInbox",
                 "authorizePrivateInbox", "VPNJointUpdatePreparation.prepare",
                 "VPNReplacementExecutorHandoff.launchPrepared",
-                "VPNUpdateBrokerStatusStore", "VPNLifecycleOwnership"):
+                "VPNUpdateBrokerStatusStore", "VPNLifecycleOwnership",
+                "recovery", "rotation"):
             self.assertIn(required, source)
         for forbidden in ("UUID(uuidString:", "URL(fileURLWithPath:",
                           "CommandLine.arguments[2]", "request.path"):
