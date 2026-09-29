@@ -3013,3 +3013,19 @@ universal helper build и codesign. Production listener пока намерен�
 старую границу consume → zeroize → `notReady`: хранить OTP в ожидании будущего
 route stage нельзя. Пункт 3 останется незакрытым до атомарной передачи движку,
 app Keychain с явным согласием и UI ввода.
+
+### Продолжение 1.5ax — route plan и ownership journal (30 сентября)
+
+Начата несетевая часть пункта 4. Чистый planner принимает только нормализованные
+IP/IPv4/IPv6 CIDR, отклоняет домены до DNS-этапа, default route, дубликаты,
+пересечения и ресурс, захватывающий адрес VPN-сервера. Отдельная typed evidence
+фиксирует peer bypass через исходные gateway/interface; строковые значения из IPC
+не являются таким доказательством.
+
+Root-private canonical journal связан с generation/revision и хранит точную
+identity только принадлежащих ProxyPilot маршрутов. Перед каждым будущим add/delete
+пишется crash checkpoint; после сбоя решение возможно лишь через сравнение с
+kernel state. План и журнал сами не запускают `route`, `scutil`, subprocess и не
+могут утверждать, что маршрут применён. Пройдены 13 focused tests и universal
+helper build. Пункт 4 остаётся незакрытым до native routing-socket adapter,
+compare-before-delete recovery, реального TUN evidence и приёмки split routes.
