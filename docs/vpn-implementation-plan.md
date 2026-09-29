@@ -2605,3 +2605,18 @@ layout, staging в private app-owned каталог и handoff/relaunch `A → B
 Следующий узел: discovery-only Sparkle flow для VPN-present и relaunch sentinel,
 который не вызывает Sparkle installer. Затем B подтверждает success только своим
 authenticated status с exact sealed VPN sequence.
+
+### Продолжение 1.5ag — discovery-only update offer (29 сентября)
+
+- [x] При отсутствии VPN обычный Sparkle flow не изменён. При VPN-present ручная
+  проверка использует только `checkForUpdateInformation`: downloader, installer и
+  install handler не запускаются и не конкурируют с Broker replacement.
+- [x] Worker передаёт frontend только bounded display version и boolean
+  `jointUpdate`; URL, путь, destination, sequence и Broker-команда через updater
+  wire не добавлены. No-update очищает stale offer.
+- [x] Frontend хранит joint offer отдельно от обычного Sparkle состояния, но пока
+  не начинает download/submit. Wire/channel 24/24, isolated updater 13/13,
+  discovery contract 3/3 и production worker arm64 typecheck прошли.
+- [ ] Companion metadata ещё не добавлена в подписанный appcast, поэтому CTA
+  намеренно остаётся discovery-only. Relaunch sentinel и B-startup status —
+  следующий узел; Sparkle `installHandler` для joint flow вызывать запрещено.
