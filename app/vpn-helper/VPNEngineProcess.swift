@@ -15,6 +15,7 @@ enum VPNEngineProcessError: Error, Equatable, CustomStringConvertible {
     case invalidSelection
     case validationFailed
     case invalidProfile
+    case invalidManagementEndpoint
     case spawnFailed(Int32)
     case waitFailed(Int32)
 
@@ -23,9 +24,30 @@ enum VPNEngineProcessError: Error, Equatable, CustomStringConvertible {
         case .invalidSelection: return "The selected VPN engine is unavailable."
         case .validationFailed: return "The selected VPN engine could not be verified."
         case .invalidProfile: return "The protected VPN profile is unavailable."
+        case .invalidManagementEndpoint: return "The VPN management endpoint is unavailable."
         case .spawnFailed(let code): return "The VPN engine could not be started (code \(code))."
         case .waitFailed(let code): return "The VPN engine state could not be read (code \(code))."
         }
+    }
+}
+
+/// A local endpoint prepared inside the helper's private directory. OpenVPN
+/// creates this socket and remains on management hold until a later stage is
+/// explicitly allowed to release it.
+struct VPNEngineManagementConfiguration: Equatable {
+    let socketPath: String
+
+    init(unixSocketPath: String) throws {
+        let address = sockaddr_un()
+        var existing = stat()
+        let bytes = Array(unixSocketPath.utf8) + [0]
+        guard unixSocketPath.hasPrefix("/"), !unixSocketPath.utf8.contains(0),
+              bytes.count <= MemoryLayout.size(ofValue: address.sun_path),
+              unixSocketPath.utf8.count <= Int(UInt8.max),
+              lstat(unixSocketPath, &existing) == -1, errno == ENOENT else {
+            throw VPNEngineProcessError.invalidManagementEndpoint
+        }
+        socketPath = unixSocketPath
     }
 }
 
@@ -144,7 +166,8 @@ final class VPNEngineProcess {
     }
 
     static func start(selection: VPNEngineExecutableSelection,
-                      protectedProfileDescriptor profile: Int32) throws -> VPNEngineProcess {
+                      protectedProfileDescriptor profile: Int32,
+                      management: VPNEngineManagementConfiguration? = nil) throws -> VPNEngineProcess {
         try validateProfile(profile)
         let stagedProfile = fcntl(profile, F_DUPFD_CLOEXEC, 64)
         guard stagedProfile >= 0, lseek(stagedProfile, 0, SEEK_SET) == 0 else {
@@ -183,6 +206,12 @@ final class VPNEngineProcess {
             throw VPNEngineProcessError.spawnFailed(EINVAL)
         }
 
+        if let management = management {
+            var endpoint = stat()
+            guard lstat(management.socketPath, &endpoint) == -1, errno == ENOENT else {
+                throw VPNEngineProcessError.invalidManagementEndpoint
+            }
+        }
         let engine = try selection.openValidatedDescriptor()
         defer { close(engine) }
         var enginePath = [CChar](repeating: 0, count: Int(MAXPATHLEN))
@@ -192,11 +221,15 @@ final class VPNEngineProcess {
             throw VPNEngineProcessError.validationFailed
         }
         var pid: pid_t = 0
-        let argv = [
+        var argv = [
             "vpn-engine", "--config", "/dev/fd/\(profileDescriptor)",
             "--route-noexec", "--ifconfig-noexec", "--script-security", "1",
             "--auth-nocache", "--route-nopull"
         ]
+        if let management = management {
+            argv += ["--management", management.socketPath, "unix",
+                     "--management-hold", "--management-query-passwords"]
+        }
         var environment: [UnsafeMutablePointer<CChar>?] = [nil]
         guard let result = withCStrings(argv, { arguments in
             environment.withUnsafeMutableBufferPointer { environment in

@@ -115,6 +115,17 @@ import Foundation
         let addressed = URL(fileURLWithPath: path).appendingPathComponent(VPNProfileVault.fileName(digest: digest))
         let attributes = try FileManager.default.attributesOfItem(atPath: addressed.path)
         try require((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "profile mode")
+        let protected = try vault.openValidated(digest: digest)
+        var protectedBytes = [UInt8](repeating: 0, count: data.count)
+        let protectedCount = read(protected, &protectedBytes, protectedBytes.count)
+        close(protected)
+        try require(protectedCount == data.count && Data(protectedBytes) == data,
+                    "validated profile descriptor")
+        try Data("tampered profile".utf8).write(to: addressed)
+        chmod(addressed.path, 0o600)
+        var rejected = false
+        do { _ = try vault.openValidated(digest: digest) } catch { rejected = true }
+        try require(rejected, "digest-addressed profile tampering accepted")
         print("vault checks passed")
     }
 

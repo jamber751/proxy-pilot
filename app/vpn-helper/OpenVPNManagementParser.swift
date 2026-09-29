@@ -19,10 +19,14 @@ enum OpenVPNManagementParser {
         if line.hasPrefix(">INFO:") { return .ready }
         if line.hasPrefix("SUCCESS:") { return .commandSucceeded }
         if line.hasPrefix("ERROR:") { return .commandFailed }
+        if line == "END" { return .commandCompleted }
         if line.hasPrefix(">HOLD:") { return .hold }
         if line.hasPrefix(">FATAL:") { return .fatal }
         if line.hasPrefix(">STATE:") { return try parseState(String(line.dropFirst(7))) }
         if line.hasPrefix(">PASSWORD:") { return try parsePassword(line) }
+        // A direct `state` command returns the same CSV state without the
+        // asynchronous prefix, followed by an END marker.
+        if line.first?.isNumber == true, line.contains(",") { return try parseState(line) }
 
         // Known asynchronous messages are noise for this minimal client. The
         // caller caps how many may be skipped before yielding an error.

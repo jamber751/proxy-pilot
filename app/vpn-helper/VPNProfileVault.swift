@@ -49,6 +49,48 @@ final class VPNProfileVault {
         return try loadFile(Self.fileName(digest: digest))
     }
 
+    /// Opens the immutable, content-addressed profile for the engine. The hash,
+    /// inode and metadata are checked again while the descriptor remains open;
+    /// callers never need to create a second temporary profile.
+    func openValidated(digest: String) throws -> Int32 {
+        guard Self.validDigest(digest) else { throw VPNProfileVaultError.unsafeStorage }
+        try checkDirectory()
+        let name = Self.fileName(digest: digest)
+        let file = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard file >= 0 else { throw VPNProfileVaultError.unsafeStorage }
+        do {
+            try check(file)
+            var before = stat(), bytes = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+            guard fstat(file, &before) == 0, before.st_size > 0,
+                  before.st_size <= Self.maximumBytes else { throw VPNProfileVaultError.unsafeStorage }
+            while true {
+                let count = Darwin.read(file, &buffer, buffer.count)
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0, bytes.count + max(0, count) <= Self.maximumBytes else {
+                    throw VPNProfileVaultError.unsafeStorage
+                }
+                if count == 0 { break }
+                bytes.append(contentsOf: buffer.prefix(count))
+            }
+            let actual = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            var after = stat(), named = stat()
+            guard actual == digest, fstat(file, &after) == 0,
+                  fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+                  before.st_size == after.st_size,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                  before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+                  before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+                  before.st_dev == named.st_dev, before.st_ino == named.st_ino,
+                  lseek(file, 0, SEEK_SET) == 0 else { throw VPNProfileVaultError.unsafeStorage }
+            return file
+        } catch {
+            close(file)
+            throw error
+        }
+    }
+
     private func replace(_ name: String, with data: Data) throws {
         let temporary = ".profile-\(UUID().uuidString).tmp"
         let file = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)

@@ -33,6 +33,7 @@ enum OpenVPNManagementEvent: Equatable {
     case credentialRejected(OpenVPNCredentialKind)
     case commandSucceeded
     case commandFailed
+    case commandCompleted
     case fatal
 }
 
