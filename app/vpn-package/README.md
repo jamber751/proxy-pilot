@@ -18,8 +18,11 @@ remain open.
 
 ## Build and sign
 
-1. Build a fresh app with `PROXYPILOT_ISOLATED_UPDATER=1` and
-   `PROXYPILOT_VPN_INSTALLER=1` using `app/build.sh`. Build the Universal helper
+1. Choose the next canonical positive release sequence, then build a fresh app
+   with `PROXYPILOT_ISOLATED_UPDATER=1`, `PROXYPILOT_VPN_INSTALLER=1` and
+   `PROXYPILOT_VPN_RELEASE_SEQUENCE=<next-sequence>` using `app/build.sh`.
+   The same value must be passed to `package.py prepare`; the packager refuses a
+   mismatch after the value has been sealed by the app signature. Build the Universal helper
    using `zsh app/vpn-helper/build.sh <new-absolute-output-directory>`.
 2. Run `python3 app/vpn-package/package.py prepare --app <absolute-ProxyPilot.app>
    --helper <absolute-vpn-helper> --sequence <next-sequence>

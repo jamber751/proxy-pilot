@@ -2620,3 +2620,29 @@ authenticated status с exact sealed VPN sequence.
 - [ ] Companion metadata ещё не добавлена в подписанный appcast, поэтому CTA
   намеренно остаётся discovery-only. Relaunch sentinel и B-startup status —
   следующий узел; Sparkle `installHandler` для joint flow вызывать запрещено.
+
+### Продолжение 1.5ah — безопасный relaunch и подтверждение приложения B (29 сентября)
+
+- [x] Добавлен отдельный безадресный handshake для relaunch. Он не содержит URL,
+  пути, destination или команды и не вызывает Sparkle `installHandler`.
+- [x] Worker вооружает one-shot sentinel только для уже обнаруженного joint
+  update. После подтверждения он ждёт EOF и фактическое завершение процесса A,
+  затем в пределах 120 секунд открывает только `/Applications/ProxyPilot.app`.
+- [x] VPN release sequence теперь запечатывается в `Info.plist` до codesign.
+  Packager требует точного совпадения этого значения с sequence подписанного
+  payload и отказывает до создания output при несовпадении.
+- [x] Приложение B читает status асинхронно и считает обновление успешным только
+  для `.complete`, `revision > 0` и точного forward-перехода `from < to`, где
+  `to` равен его sealed sequence. Синтетический idle `complete/revision=0` не
+  принимается. Проверка не блокирует запуск и не показывает отдельное окно.
+- [x] Минимальный статус встроен в существующий блок обновлений: завершение,
+  краткое подтверждение успеха или retry при точном terminal failure.
+- [x] Wire/contract 22/22, isolated updater 13/13, package 17/17; полная universal
+  VPN-сборка arm64+x86_64 и strict codesign прошли.
+- [ ] Download/staging coordinator ещё должен получить companion metadata,
+  скачать bounded artifact, передать только FD mount boundary и после Broker
+  submit вызвать новый arm-handshake. До этого CTA остаётся discovery-only.
+
+Следующий узел: подписанная companion metadata и ordinary-user download/staging
+coordinator, затем полные fault/reboot acceptance и Intel/macOS 11. Release tag
+запрещён, пока эти гейты не закрыты.
