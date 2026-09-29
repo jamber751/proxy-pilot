@@ -2879,3 +2879,25 @@ durable Broker ready → relaunch, затем checkpoint fault/reboot matrix. Т
 Следующий узел: перевести GitHub workflow на двухфазный draft gate, который не
 пересобирает app и публикует только неизменившийся, полностью проверенный local
 snapshot. Затем собрать новый-semver candidate и пройти native system acceptance.
+
+### Продолжение 1.5as — двухфазный immutable draft gate (30 сентября)
+
+- [x] Tag push выполняет только prepare: непубликуемую smoke-сборку, полный
+  regression и создание пустого draft. CI-сборка не загружается и не публикуется.
+- [x] Sparkle/VPN private keys отсутствуют в Actions. Девять exact assets
+  создаются и подписываются локально; overwrite существующих draft assets запрещён.
+- [x] Finalize принимает только unpublished draft с exact allowlist, фиксирует
+  asset ID, name, size, state и server SHA-256 до скачивания.
+- [x] Полный verifier проверяет Sparkle/VPN подписи, source correspondence,
+  read-only layout, sealed sequence, strict codesign и byte-identical app во всех
+  DMG/ZIP/companion представлениях.
+- [x] Перед publish draft snapshot читается повторно и сравнивается с первым;
+  команда публикации остаётся последней и не выполняется при любом расхождении.
+- [x] Workflow/snapshot/unification regression 14/14; полный verifier на B125
+  прошёл локально.
+- [ ] Разрешения на tag/draft нет. B125 содержит старый semver и остаётся только
+  локальным доказательством сборочного и проверочного контура.
+
+Следующий узел: поднять semver и sequence, подготовить English release notes и
+новый exact local candidate. Затем пройти native system acceptance: installed
+A→B coordinator/Broker/relaunch, fault/reboot matrix и Intel/macOS 11 runtime.

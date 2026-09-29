@@ -6,8 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v1.0.1)"
+        description: "Existing tag to prepare or finalize (e.g. v1.6.0)"
         required: true
+      phase:
+        description: "Prepare a draft or verify and publish its exact assets"
+        required: true
+        type: choice
+        default: finalize
+        options:
+          - prepare
+          - finalize
 
 permissions:
   contents: write
@@ -17,99 +25,109 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  dmg:
-    name: Build and publish DMG
+  release:
+    name: Prepare or finalize immutable release
     runs-on: macos-14
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      RELEASE_PHASE: ${{ github.event_name == 'push' && 'prepare' || github.event.inputs.phase }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
-      - name: Require update signing key
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: test -n "$SPARKLE_PRIVATE_KEY" || { echo "::error::Set SPARKLE_PRIVATE_KEY (see docs/updates.md)"; exit 1; }
-
-      - name: Check version matches the tag
+      - name: Validate tag, version and phase
         run: |
-          TAG="$RELEASE_TAG"
           VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
-          echo "  тег: $TAG   PP_VERSION: $VERSION"
-          # расхождение здесь = релиз с чужим номером внутри; лучше упасть сейчас
-          [[ "$TAG" == "v$VERSION" ]] || {
-            echo "::error::тег $TAG не совпадает с PP_VERSION=$VERSION в bin/proxypilot"
-            exit 1
+          [[ "$RELEASE_TAG" == "v$VERSION" ]] || {
+            echo "::error::tag $RELEASE_TAG does not match PP_VERSION=$VERSION"; exit 1
+          }
+          [[ "$RELEASE_PHASE" == prepare || "$RELEASE_PHASE" == finalize ]] || {
+            echo "::error::unknown release phase"; exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")" || {
+            echo "::error::checkout is not the requested tag"; exit 1
           }
 
-      - name: Build DMG
+      - name: Build a non-published CI smoke package
+        if: env.RELEASE_PHASE == 'prepare'
         run: ./make-dmg.sh
 
       - name: Regression tests with packaged GOST
+        if: env.RELEASE_PHASE == 'prepare'
         env:
           PROXYPILOT_TEST_GOST: ${{ github.workspace }}/vendor/gost-universal
         run: python3 -m unittest discover -s tests -v
 
-      - name: Sign update archive and feed
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: zsh app/sign-update.sh
-
-      - name: Verify signed feed using real Sparkle
-        run: |
-          python3 -m unittest discover -s tests -p test_sparkle_feed.py -v
-          python3 -m unittest discover -s tests -p test_update_controls.py -v
-
-      - name: Test ad-hoc update installation and relaunch (disposable app)
-        env:
-          PROXYPILOT_TEST_INSTALLER: '1'
-        run: python3 -m unittest discover -s tests -p test_sparkle_install.py -v
-
-      - name: Verify DMG
+      - name: Verify CI smoke DMG
+        if: env.RELEASE_PHASE == 'prepare'
         run: |
           VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
           DMG="dist/ProxyPilot-$VERSION.dmg"
           hdiutil verify "$DMG"
-          hdiutil attach "$DMG" -quiet -mountpoint /tmp/ppdmg
-          test -x /tmp/ppdmg/Install.command        || { echo "нет установщика"; exit 1; }
-          test -f /tmp/ppdmg/READ_ME_FIRST.txt      || { echo "нет памятки"; exit 1; }
-          BIN=/tmp/ppdmg/ProxyPilot.app/Contents/Resources/bin
-          test -x "$BIN/proxypilot" && test -x "$BIN/gost" || { echo "бандл не самодостаточен"; exit 1; }
-          echo "  gost: $(lipo -archs $BIN/gost)"
-          lipo -archs "$BIN/gost" | grep -q x86_64 || { echo "gost не universal"; exit 1; }
-          APP=/tmp/ppdmg/ProxyPilot.app
-          MAIN="$APP/Contents/MacOS/ProxyPilot"
-          WORKER="$APP/Contents/Helpers/ProxyPilot Updater.app/Contents/MacOS/ProxyPilotUpdater"
-          test -x "$WORKER" || { echo "нет изолированного updater"; exit 1; }
-          ! otool -L "$MAIN" | grep -q Sparkle.framework || { echo "Sparkle загружен в основном процессе"; exit 1; }
-          otool -L "$WORKER" | grep -q Sparkle.framework || { echo "worker не содержит Sparkle"; exit 1; }
-          signature=$(codesign -dvv "$MAIN" 2>&1)
-          [[ "$signature" == *runtime* && "$signature" == *hard* && "$signature" == *kill* ]] || {
-            echo "нет hardened flags у основного процесса"; exit 1;
-          }
+          MOUNT=$(mktemp -d /tmp/proxypilot-ci-dmg.XXXXXX)
+          trap 'hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true' EXIT
+          hdiutil attach "$DMG" -quiet -readonly -nobrowse -mountpoint "$MOUNT"
+          APP="$MOUNT/ProxyPilot.app"
+          test -x "$MOUNT/Install.command"
+          test -f "$MOUNT/READ_ME_FIRST.txt"
+          test -x "$APP/Contents/Resources/bin/proxypilot"
+          test -x "$APP/Contents/Resources/bin/gost"
+          test "$(lipo -archs "$APP/Contents/Resources/bin/gost")" = "x86_64 arm64" \
+            || test "$(lipo -archs "$APP/Contents/Resources/bin/gost")" = "arm64 x86_64"
           codesign --verify --deep --strict "$APP"
-          hdiutil detach /tmp/ppdmg -quiet
+          test "$(/usr/libexec/PlistBuddy -c 'Print :ProxyPilotVPNReleaseSequence' "$APP/Contents/Info.plist")" \
+            = "$(tr -d '\n' < app/vpn-release-sequence.txt)"
+          hdiutil detach "$MOUNT" -quiet
 
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Create the draft only
+        if: env.RELEASE_PHASE == 'prepare'
         run: |
-          TAG="$RELEASE_TAG"
-          VERSION=$(awk -F'"' '/^readonly PP_VERSION=/{print $2}' bin/proxypilot)
-          DMG="dist/ProxyPilot-$VERSION.dmg"
-          ZIP="dist/updates/ProxyPilot-$VERSION.zip"
-          FEED="dist/updates/appcast.xml"
-          # Upload everything into a draft before exposing it to /latest.
-          # Published signed releases are immutable; fix forward with a new tag.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || {
-              echo "::error::Release is already published; use a new version"; exit 1;
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true || {
+              echo "::error::release is already published; use a new version"; exit 1
             }
           else
-            gh release create "$TAG" --verify-tag --draft \
-              --title "ProxyPilot $VERSION" \
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "ProxyPilot ${RELEASE_TAG#v}" \
               --notes-file .github/release-notes.md
           fi
-          gh release upload "$TAG" "$DMG" "$ZIP" "$FEED" --clobber
-          gh release edit "$TAG" --draft=false --latest
+          echo "Draft prepared. Upload the nine outputs of app/build-joint-release.sh without overwriting assets, then run phase=finalize."
+
+      - name: Require an unpublished draft
+        if: env.RELEASE_PHASE == 'finalize'
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true || {
+            echo "::error::finalize requires an existing draft"; exit 1
+          }
+
+      - name: Snapshot and download exact draft assets
+        if: env.RELEASE_PHASE == 'finalize'
+        run: |
+          VERSION=${RELEASE_TAG#v}
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.assets | sort_by(.name)[] | [.id,.name,.size,.state,(.digest // "")] | @tsv' \
+            > "$RUNNER_TEMP/assets-before.tsv"
+          python3 app/verify-release-asset-snapshot.py --version "$VERSION" \
+            --snapshot "$RUNNER_TEMP/assets-before.tsv"
+          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/release-assets"
+          python3 app/verify-release-asset-snapshot.py --version "$VERSION" \
+            --snapshot "$RUNNER_TEMP/assets-before.tsv" \
+            --assets "$RUNNER_TEMP/release-assets"
+
+      - name: Verify the complete release candidate
+        if: env.RELEASE_PHASE == 'finalize'
+        run: |
+          VERSION=${RELEASE_TAG#v}
+          zsh app/verify-release-candidate.sh "$VERSION" "$RUNNER_TEMP/release-assets"
+
+      - name: Publish unchanged verified snapshot
+        if: env.RELEASE_PHASE == 'finalize'
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.assets | sort_by(.name)[] | [.id,.name,.size,.state,(.digest // "")] | @tsv' \
+            > "$RUNNER_TEMP/assets-after.tsv"
+          cmp "$RUNNER_TEMP/assets-before.tsv" "$RUNNER_TEMP/assets-after.tsv"
+          gh release edit "$RELEASE_TAG" --draft=false --latest

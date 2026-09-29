@@ -53,6 +53,22 @@ vendor/sparkle-2.9.6/bin/generate_keys --account kz.documentolog.proxypilot -p
 
 ## Local release preparation
 
+For a release with VPN support, use the single local assembly entry so the
+public DMG/ZIP and VPN companion contain the exact same ad-hoc-signed app:
+
+```sh
+zsh app/build-joint-release.sh SEQUENCE PREVIOUS_MANIFEST PREVIOUS_SIGNATURE \
+  ENGINE_ARTIFACT UNIVERSAL_GOST NEW_OUTPUT_DIRECTORY
+```
+
+The sequence must match `app/vpn-release-sequence.txt`. The command uses the
+existing Sparkle and VPN keys in this Mac's login Keychain, never exports either
+private key, and produces exactly nine release assets. It does not tag, upload,
+install or publish. `app/verify-release-candidate.sh VERSION ASSET_DIRECTORY`
+rechecks that exact set using only committed public keys.
+
+The standalone commands remain useful for non-release smoke builds:
+
 ```sh
 ./make-dmg.sh
 zsh app/sign-update.sh
@@ -64,58 +80,39 @@ The signing tool requests Keychain access. Outputs:
 - `dist/updates/ProxyPilot-<version>.zip` — self-contained update bundle;
 - `dist/updates/appcast.xml` — signed feed with versioned download URL.
 
+The joint builder additionally emits the signed VPN companion and metadata,
+candidate release manifest/signature, verified corresponding engine sources,
+and those three public artifacts from one exact sealed application.
+
 The release-time verifier checks the archive signature against the public key
 committed in the app, its byte count, version and GitHub URL. Sparkle's own tool
 also verifies the signed feed. Do not edit a signed feed or archive afterward.
 
-## One-time CI setup
+## Private keys stay local
 
-Before publishing, add the existing private key to the repository's GitHub Actions
-secret **SPARKLE_PRIVATE_KEY**. The implementation does not create this remote
-secret or publish a release automatically.
-
-The maintainer can export it to a temporary, permission-restricted file using
-Sparkle's `generate_keys --account kz.documentolog.proxypilot -x <private-file>`.
-Upload with `gh secret set SPARKLE_PRIVATE_KEY < <private-file>` in this repository,
-then remove the temporary export. Keep a separate secure backup. Do not put the
-key in a GitHub variable: it must be an encrypted **Actions secret**.
-
-The workflow pipes the secret to Sparkle on stdin, never as a process argument.
-Release signing fails closed when it is absent or doesn't match the embedded key.
-For public repositories use standard GitHub runners and keep artifact retention
-within the free storage allowance; no large paid runner is needed.
-
-From the repository directory, the maintainer can run this once to transfer the
-existing key to this repository's encrypted Actions secret. The private export
-is permission-restricted and removed when the command finishes; Keychain keeps
-the original. Do not share the export or command output containing a key.
-
-```sh
-(
-  set -eu
-  umask 077
-  release_key_dir=$(mktemp -d /tmp/proxypilot-release-key.XXXXXX)
-  trap 'rm -f "$release_key_dir/key"; rmdir "$release_key_dir"' EXIT
-  vendor/sparkle-2.9.6/bin/generate_keys --account kz.documentolog.proxypilot -x "$release_key_dir/key"
-  gh secret set SPARKLE_PRIVATE_KEY --repo jamber751/proxy-pilot < "$release_key_dir/key"
-)
-```
+GitHub Actions receives neither the Sparkle private key nor the independent VPN
+release key. Both signatures are created locally through Keychain. The workflow
+only downloads draft assets and verifies them with committed public keys. Keep a
+separate secure backup of both local keys; losing either requires a fix-forward
+manual migration rather than silently rotating trust.
 
 ## Publishing
 
-Bump `PP_VERSION` (also used for the increasing `CFBundleVersion`), test, then
-publish a matching `vX.Y.Z` tag when authorized. The release workflow checks out
-the requested tag, tests the bundle, signs it, uploads all three assets to a
-draft and only then publishes it. Published signed releases are immutable; make
-a newer version instead of replacing an existing package.
+Bump `PP_VERSION` and the VPN release sequence, update both English release-note
+files, build and verify the nine local assets, then create and push the matching
+tag when authorized. The tag workflow runs tests and creates a **draft only**; it
+never uploads a separately rebuilt app and never publishes on the first run.
 
-For the prepared 1.5.1 release, after the signing secret is configured and CI is
-green, create and push the release tag from the reviewed commit on `main`:
+Upload the exact nine local files to that draft without overwrite, then manually
+run the Release workflow for the same tag with phase `finalize`. Finalize requires
+an unpublished draft, snapshots asset IDs/sizes/SHA-256, downloads the exact
+allowlist, verifies Sparkle and VPN signatures, versions/sequences, source
+correspondence, read-only joint layout, strict code signatures and byte-identical
+apps across DMG/ZIP/companion. It snapshots the draft again and publishes only as
+the final command if nothing changed. Any failure leaves the release as a draft.
 
-```sh
-git tag v1.5.1
-git push origin v1.5.1
-```
+Published signed releases are immutable; make a newer version instead of
+replacing an existing package. Never overwrite a draft asset.
 
 Feed URL: `https://github.com/jamber751/proxy-pilot/releases/latest/download/appcast.xml`.
 No GitHub Pages deployment or API token is needed on users' Macs. Every release
