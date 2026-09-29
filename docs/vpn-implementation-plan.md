@@ -2942,7 +2942,7 @@ protocol нет. Public DMG не содержит first-install VPN package.
 1. [x] Secret-free apply transaction: content-addressed profile, validated
    application spec, active/pending revision и durable tunnel journal. User store
    не является root-authority и сам по себе никогда не означает Connected.
-2. [ ] Supervised OpenVPN process + bounded management socket: fixed argv/empty
+2. [x] Supervised OpenVPN process + bounded management socket: fixed argv/empty
    environment, exact selected engine, waitpid, deadline stop/kill и redacted
    typed status. На этом шаге routes/DNS ещё не обещаются.
 3. [ ] Per-attempt credential challenge: static password только в app Keychain по
@@ -2975,4 +2975,24 @@ app controller ещё не подключены к `main.swift`. Пункт 6 с
 перезаписывать VPN footprint. Пройдено 37 focused release/package tests; 3
 optional engine tests пропущены без полного pinned engine artifact. Installer не
 запускался, root/network операций не было. Release остаётся заблокирован пунктами
-2–5, 7–8; следующий настоящий release sequence — 127.
+3–5, 7–8; следующий настоящий release sequence — 127.
+
+### Продолжение 1.5av — held OpenVPN runtime (30 сентября)
+
+Пункт 2 реализован без преждевременного сетевого обещания. Выбранный signed
+OpenVPN повторно проверяется прямо перед `posix_spawn`, получает только fixed argv,
+пустое окружение и проверенный content-addressed профиль через descriptor. Один
+сериализованный coordinator владеет процессом и приватным management Unix socket,
+запускает OpenVPN с `management-hold`, ограничивает строки/события/дедлайны и
+гарантированно делает SIGTERM → SIGKILL → waitpid/cleanup. Даже management-событие
+`CONNECTED` остаётся внутренним доказательством движка и не попадает в
+пользовательский статус.
+
+Production listener теперь запускает этот held runtime только для
+certificate-only профиля, не допускает второй процесс и останавливает coordinator
+до durable `off` при disconnect/teardown. Профили с password/OTP по-прежнему
+останавливаются на одноразовом challenge; secret не передаётся движку. Hold ни разу
+не освобождается, routes/DNS не применяются. Пройдены 26 component tests, 46
+listener+coordinator tests, 48 daemon/update/recovery tests и universal
+arm64/x86_64 helper build с проверкой подписи. Release заблокирован пунктами
+3–5, 7–8; sequence 127 не выпускать.
