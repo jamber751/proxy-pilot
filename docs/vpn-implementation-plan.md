@@ -2554,6 +2554,26 @@ tag и включение one-click UI запрещены.
   status после ожидаемого разрыва при rotation. System acceptance A→B с fault
   injection и reboot, Intel/macOS 11 также остаются release-гейтами.
 
-Следующий узел: ordinary-user updater client `submit → reconnect → status` без
+Следующий узел: ordinary-user updater client `submit → handoff A/B → status` без
 передачи путей или полномочий, затем end-to-end system acceptance. Release tag и
 one-click UI остаются выключены до прохождения этих гейтов.
+
+### Продолжение 1.5ae — descriptor-only client и граница A/B (29 сентября)
+
+- [x] Добавлен ordinary-user клиент фиксированного Broker endpoint. Публичный
+  submit принимает только уже открытый directory descriptor, expected sequence и
+  deadline; descriptor передаётся единственным `SCM_RIGHTS` без пути/URL/команды.
+- [x] Уточнена identity-модель rotation: приложение A не может читать Broker B,
+  потому что B принимает только exact подписанное приложение B. Post-submit EOF
+  возвращает `handoffExpected` без reconnect и без повторной отправки descriptor.
+- [x] Descriptor-free `status` вынесен в отдельную операцию для уже запущенного B.
+  Mismatched transaction не маскируется как handoff; pre-send failure остаётся
+  ошибкой. Client contract проходит 8/8, arm64 typecheck — без ошибок.
+- [ ] Sparkle не предоставляет поддерживаемый путь к extracted candidate, а его
+  installer не должен конкурировать с Broker за замену приложения. Для VPN-present
+  нужен отдельный joint artifact/download/staging flow; Sparkle остаётся discovery
+  и release-notes слоем. Этот слой и B-startup status ещё не подключены к UI.
+
+Следующий узел: безопасная доставка companion joint artifact с фиксированным
+layout, staging в private app-owned каталог и handoff/relaunch `A → B → status`.
+Нельзя ослаблять B client policy ради reconnect старого A.
