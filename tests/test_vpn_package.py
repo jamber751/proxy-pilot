@@ -60,6 +60,14 @@ final class ProxyModel:''' + model
                          'VPNReplacementExecutorHandoff', 'VPNJointApplicationReplacement',
                          'VPNInstalledCandidateEntry', 'VPNReplacementExecutorEntry',
                          'VPNApplicationDestinationExchange')]
+        app_sources += [HELPER / f'{name}.swift' for name in
+                        ('VPNUpdateBrokerLaunchdJob', 'VPNUpdateBrokerProtocol',
+                         'VPNUpdateBrokerClient', 'VPNJointArtifactMount',
+                         'VPNUpdateBrokerStatusStore', 'VPNUpdateBrokerTransactionStore',
+                         'VPNUpdateBrokerInbox', 'VPNUpdateBrokerRotation',
+                         'VPNUpdateBrokerInstallerCoordinator',
+                         'VPNUpdateBrokerStateRemoval',
+                         'VPNJointUpdateStartupStatus')]
         app_sources += [HELPER / f'{name}.swift' for name in ('VPNInstallationPayload', 'VPNInstallationEntry')]
         app_sources += [ROOT / 'app' / f'{name}.swift' for name in
                         ('Controls', 'Updates', 'VPNConfiguration', 'VPNProfileImporter', 'VPNStore')]
@@ -86,7 +94,7 @@ final class ProxyModel:''' + model
         info = dict(CFBundleIdentifier='kz.documentolog.proxypilot', CFBundleName='ProxyPilot',
                     CFBundleVersion='1.6.0', CFBundleShortVersionString='1.6.0', CFBundleExecutable='ProxyPilot',
                     CFBundlePackageType='APPL', LSMinimumSystemVersion='11.0', LSUIElement=True,
-                    ProxyPilotVPNInstaller=True)
+                    ProxyPilotVPNInstaller=True, ProxyPilotVPNReleaseSequence=2)
         (cls.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for path, identifier in [(cls.app, 'kz.documentolog.proxypilot'),
                                  (cls.build / 'helper', 'kz.documentolog.proxypilot.vpn-helper')]:
@@ -128,6 +136,17 @@ final class ProxyModel:''' + model
         result = self.app_run('--vpn-support-verify')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.strip(), 'VPN support package verified.')
+
+    def test_prepare_requires_package_sequence_to_match_sealed_app(self):
+        output = self.work / 'mismatched-stage'
+        result = subprocess.run(
+            [sys.executable, str(PACKAGER), 'prepare', '--app', str(self.app),
+             '--helper', str(self.build / 'helper'), '--sequence', '3',
+             '--output', str(output)], env=ENV, capture_output=True, text=True,
+            timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertIn('does not match package sequence', result.stderr)
 
     def prepare_joint_payload(self):
         candidate = (self.payload / 'vpn-release.manifest').read_text()

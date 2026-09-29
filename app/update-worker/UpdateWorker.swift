@@ -25,9 +25,11 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
     private var pendingInstall: (UUID, () -> Void)?
     private var handingOff = false
     private var orphaned = false
+    private var jointRelaunch: JointRelaunchSentinel!
     private let updateAdmission: () -> VPNUpdateAdmission.Decision = { VPNUpdateAdmission.inspectSystem() }
 
     func start(host: Bundle) throws {
+        jointRelaunch = JointRelaunchSentinel(parentPID: getppid())
         channel = try UpdateChannel(read: STDIN_FILENO, write: STDOUT_FILENO, receivesCommands: true,
                                     receive: { [weak self] message in
             DispatchQueue.main.async { self?.receive(message) }
@@ -36,6 +38,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
                 guard let self = self else { exit(0) }
                 self.orphaned = true
                 if !self.handingOff { exit(0) }
+                self.jointRelaunch.frontendEOF()
                 // Let Sparkle complete the already acknowledged installation,
                 // but never leave an orphan updater indefinitely.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 120) { exit(0) }
@@ -94,6 +97,11 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
             guard let pending = pendingInstall, pending.0 == token else { exit(65) }
             pendingInstall = nil; handingOff = true
             pending.1()
+        case .armJointRelaunch(let token):
+            guard jointDiscovery, availableVersion != nil, pendingInstall == nil,
+                  !handingOff, !orphaned, jointRelaunch.arm() else { exit(65) }
+            handingOff = true
+            channel.send(.jointRelaunchArmed(token))
         default: exit(65)
         }
     }

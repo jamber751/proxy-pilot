@@ -139,7 +139,9 @@ class IsolatedInstallFixture:
         for name, extras in [
             ('Frontend', cls.frontend_sources(build, proxy_model)),
             ('Worker', ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
-                        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(source), str(ROOT / 'tests/isolated-update-install/Driver.swift'), str(ROOT / 'tests/isolated-update-install/NativeProbe.swift')]),
+                        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks',
+                        str(ROOT / 'app/update-worker/JointRelaunchSentinel.swift'), str(source),
+                        str(ROOT / 'tests/isolated-update-install/Driver.swift'), str(ROOT / 'tests/isolated-update-install/NativeProbe.swift')]),
             ('LegacyFrontend', ['-D', 'LEGACY_UPDATER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle',
                                 '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(legacy),
                                 str(ROOT / 'tests/isolated-update-install/LegacyUIAdapter.swift'),

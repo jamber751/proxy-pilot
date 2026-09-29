@@ -123,7 +123,7 @@ extension UpdateWorker {
                   str(ROOT / 'app/update-worker/VPNUpdateAdmission.swift')]
         for name, output, extra in [
             ('Frontend', cls.binary, ['-D', 'ISOLATED_UPDATER', str(ROOT / 'app/update-worker/IsolatedUpdates.swift'), str(ROOT / 'tests/isolated_updates_frontend.swift')]),
-            ('Worker', cls.worker_binary, ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(test_worker), str(ROOT / 'tests/isolated_updates_handoff_worker.swift')])]:
+            ('Worker', cls.worker_binary, ['-D', 'UPDATE_WORKER_TESTING', '-F', str(FRAMEWORK.parent), '-framework', 'Sparkle', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks', str(ROOT / 'app/update-worker/JointRelaunchSentinel.swift'), str(test_worker), str(ROOT / 'tests/isolated_updates_handoff_worker.swift')])]:
             slices = []
             for arch in ('arm64', 'x86_64'):
                 binary = cls.work / f'{name}-{arch}'

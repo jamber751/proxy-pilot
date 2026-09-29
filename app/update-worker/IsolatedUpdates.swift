@@ -12,6 +12,7 @@ final class UpdateModel: NSObject, ObservableObject {
     @Published private(set) var isPreview = false
     @Published private(set) var sessionInProgress = false
     @Published private(set) var jointUpdateAvailable = false
+    @Published private(set) var jointCompletionStatus: String?
     let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     var onPresent: (() -> Void)?
     var onAbort: (() -> Void)?
@@ -21,6 +22,8 @@ final class UpdateModel: NSObject, ObservableObject {
     private var generation = UUID()
     private var relaunchToken: UUID?
     private var relaunchSent = false
+    private var jointRelaunchToken: UUID?
+    private var jointRelaunchCompletion: (() -> Void)?
     private var failed = false
     private var receivedState = false
     private var checkAfterStart = false
@@ -31,6 +34,50 @@ final class UpdateModel: NSObject, ObservableObject {
         guard !preview, process == nil else { return }
         launchWorker()
     }
+
+    #if VPN_INSTALLER_ENTRY
+    func checkJointUpdateCompletion(preview: Bool) {
+        guard !preview, let sealed = VPNJointUpdateStartupStatus.sealedRelease() else { return }
+        pollJointUpdateCompletion(sealed: sealed, attemptsLeft: 12)
+    }
+
+    func retryJointUpdateCompletion() {
+        guard let sealed = VPNJointUpdateStartupStatus.sealedRelease() else { return }
+        jointCompletionStatus = "Завершаем обновление…"
+        pollJointUpdateCompletion(sealed: sealed, attemptsLeft: 12)
+    }
+
+    private func pollJointUpdateCompletion(sealed: VPNJointUpdateStartupStatus.SealedRelease,
+                                           attemptsLeft: Int) {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 1_500_000_000
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = try? VPNJointUpdateStartupStatus.check(
+                sealedRelease: sealed, deadline: deadline)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .installed:
+                    self.jointCompletionStatus = "Обновление установлено"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                        if self?.jointCompletionStatus == "Обновление установлено" {
+                            self?.jointCompletionStatus = nil
+                        }
+                    }
+                case .verifying where attemptsLeft > 1:
+                    self.jointCompletionStatus = "Завершаем обновление…"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        self?.pollJointUpdateCompletion(sealed: sealed,
+                                                        attemptsLeft: attemptsLeft - 1)
+                    }
+                case .verifying, .failed:
+                    self.jointCompletionStatus = "Не удалось завершить обновление"
+                case .idle, .none:
+                    break
+                }
+            }
+        }
+    }
+    #endif
 
     private func launchWorker() {
         canCheck = false; failed = false; receivedState = false
@@ -106,6 +153,24 @@ final class UpdateModel: NSObject, ObservableObject {
         channel?.send(.automatic(enabled))
     }
 
+    /// Called only after Broker has accepted the complete joint payload. The
+    /// worker acknowledges that its fixed one-shot relaunch sentinel is armed;
+    /// the caller may then terminate app A without passing a path or command.
+    func armJointRelaunch(then completion: @escaping () -> Void) {
+        guard !isPreview, !failed, receivedState, jointUpdateAvailable,
+              jointRelaunchToken == nil, jointRelaunchCompletion == nil else { return }
+        let token = UUID()
+        jointRelaunchToken = token
+        jointRelaunchCompletion = completion
+        channel?.send(.armJointRelaunch(token))
+        let run = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self = self, self.generation == run,
+                  self.jointRelaunchToken == token else { return }
+            self.unavailable(run)
+        }
+    }
+
     private func receive(_ message: UpdateMessage, run: UUID) {
         guard generation == run, !failed else { return }
         switch message {
@@ -132,6 +197,12 @@ final class UpdateModel: NSObject, ObservableObject {
             }
             if let prepareRelaunch = prepareRelaunch { prepareRelaunch(completion) }
             else { completion() }
+        case .jointRelaunchArmed(let token):
+            guard jointRelaunchToken == token,
+                  let completion = jointRelaunchCompletion else { unavailable(run); return }
+            jointRelaunchToken = nil
+            jointRelaunchCompletion = nil
+            completion()
         case .failed: unavailable(run)
         default: unavailable(run)
         }
@@ -142,6 +213,7 @@ final class UpdateModel: NSObject, ObservableObject {
         failed = true; canCheck = true; sessionInProgress = false; availableVersion = nil
         jointUpdateAvailable = false
         relaunchToken = nil; relaunchSent = false; checkAfterStart = false
+        jointRelaunchToken = nil; jointRelaunchCompletion = nil
         channel?.close(); channel = nil
         if let child = process, child.isRunning { child.terminate() }
         process = nil

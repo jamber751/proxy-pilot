@@ -11,12 +11,12 @@ struct UpdateSnapshot: Codable, Equatable {
 }
 
 enum UpdateMessage: Equatable {
-    case check, automatic(Bool), resume(UUID)
-    case state(UpdateSnapshot), present, aborted, prepare(UUID), failed
+    case check, automatic(Bool), resume(UUID), armJointRelaunch(UUID)
+    case state(UpdateSnapshot), present, aborted, prepare(UUID), jointRelaunchArmed(UUID), failed
 
     var isCommand: Bool {
         switch self {
-        case .check, .automatic, .resume: return true
+        case .check, .automatic, .resume, .armJointRelaunch: return true
         default: return false
         }
     }
@@ -40,10 +40,12 @@ enum UpdateWire {
         case .check: envelope = Envelope(version: 1, kind: "check")
         case .automatic(let enabled): envelope = Envelope(version: 1, kind: "automatic", enabled: enabled)
         case .resume(let token): envelope = Envelope(version: 1, kind: "resume", token: token)
+        case .armJointRelaunch(let token): envelope = Envelope(version: 1, kind: "armJointRelaunch", token: token)
         case .state(let state): envelope = Envelope(version: 1, kind: "state", state: state)
         case .present: envelope = Envelope(version: 1, kind: "present")
         case .aborted: envelope = Envelope(version: 1, kind: "aborted")
         case .prepare(let token): envelope = Envelope(version: 1, kind: "prepare", token: token)
+        case .jointRelaunchArmed(let token): envelope = Envelope(version: 1, kind: "jointRelaunchArmed", token: token)
         case .failed: envelope = Envelope(version: 1, kind: "failed")
         }
         let payload = try JSONEncoder().encode(envelope)
@@ -66,9 +68,15 @@ enum UpdateWire {
         case "automatic":
             guard let enabled = envelope.enabled else { throw Failure.malformed }
             keys.insert("enabled"); message = .automatic(enabled)
-        case "resume", "prepare":
+        case "resume", "prepare", "armJointRelaunch", "jointRelaunchArmed":
             guard let token = envelope.token else { throw Failure.malformed }
-            keys.insert("token"); message = envelope.kind == "resume" ? .resume(token) : .prepare(token)
+            keys.insert("token")
+            switch envelope.kind {
+            case "resume": message = .resume(token)
+            case "prepare": message = .prepare(token)
+            case "armJointRelaunch": message = .armJointRelaunch(token)
+            default: message = .jointRelaunchArmed(token)
+            }
         case "state":
             guard let state = envelope.state, let values = fields["state"] as? [String: Any],
                   Set(values.keys).isSubset(of: ["canCheck", "automatic", "inProgress", "availableVersion", "jointUpdate"]) else { throw Failure.malformed }

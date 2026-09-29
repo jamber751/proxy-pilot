@@ -97,6 +97,18 @@ struct UpdatesView: View {
                 .accessibilityIdentifier("automaticUpdates")
                 .help(updates.isPreview ? "В тестовом макете автопроверка отключена." : "Раз в сутки. Установка и перезапуск — только после подтверждения.")
                 .disabled(busy || !updates.canChangeAutomaticChecks)
+            #if VPN_INSTALLER_ENTRY && ISOLATED_UPDATER
+            if let status = updates.jointCompletionStatus {
+                HStack(spacing: 6) {
+                    Text(status).foregroundColor(.secondary)
+                    Spacer()
+                    if status == "Не удалось завершить обновление" {
+                        Button("Повторить", action: updates.retryJointUpdateCompletion)
+                            .accessibilityIdentifier("retryJointUpdateCompletion")
+                    }
+                }.padding(.top, 4)
+            }
+            #endif
         }.font(.system(size: 10)).buttonStyle(PilotButtonStyle()).padding(.bottom, 4)
     }
 }

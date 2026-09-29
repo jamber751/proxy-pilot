@@ -651,6 +651,9 @@ final class App: NSObject, NSApplicationDelegate {
             self.model.prepareForUpdate(completion)
         }
         updates.onAbort = { [weak self] in self?.model.cancelUpdatePreparation() }
+        #if VPN_INSTALLER_ENTRY && ISOLATED_UPDATER
+        updates.checkJointUpdateCompletion(preview: model.preview)
+        #endif
         updates.start(preview: model.preview)
         DispatchQueue.main.async { [weak self] in self?.showWindow() }
     }

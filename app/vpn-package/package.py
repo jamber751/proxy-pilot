@@ -112,6 +112,15 @@ def version_of(app):
     return version
 
 
+def release_sequence_of(app):
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    sequence = info.get('ProxyPilotVPNReleaseSequence')
+    if (not isinstance(sequence, int) or isinstance(sequence, bool)
+            or sequence <= 0 or sequence > 2**63 - 1):
+        raise ValueError('Expected a sealed positive VPN release sequence')
+    return sequence
+
+
 def pins(path, identifier):
     run('/usr/bin/codesign', '--verify', '--deep', '--strict', path)
     result = {}
@@ -139,6 +148,8 @@ def prepare(app, helper, sequence, output, engine_artifact=None):
     if not re.fullmatch(r'[1-9][0-9]{0,18}', sequence) or int(sequence) > 2**63 - 1:
         raise ValueError('Expected a canonical positive release sequence')
     version = version_of(app)
+    if release_sequence_of(app) != int(sequence):
+        raise ValueError('App VPN release sequence does not match package sequence')
     app_pins, helper_pins = pins(app, APP_ID), pins(helper, APP_ID + '.vpn-helper')
     executable = app / 'Contents/MacOS/ProxyPilot'
     if 'Sparkle.framework' in run('/usr/bin/otool', '-L', executable):

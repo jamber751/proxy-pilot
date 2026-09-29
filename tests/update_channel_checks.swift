@@ -13,6 +13,7 @@ enum Checks {
         if mode == "wire" {
             let token = UUID()
             let messages: [UpdateMessage] = [.check, .automatic(true), .automatic(false), .resume(token),
+                .armJointRelaunch(token), .jointRelaunchArmed(token),
                 .state(state), .state(UpdateSnapshot(canCheck: false, automatic: true, inProgress: true, availableVersion: nil, jointUpdate: true)),
                 .present, .aborted, .prepare(token), .failed]
             var decoder = UpdateWire.Decoder()

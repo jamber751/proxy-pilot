@@ -24,6 +24,14 @@ ISOLATED_UPDATER="${PROXYPILOT_ISOLATED_UPDATER:-1}"
 VPN_INSTALLER="${PROXYPILOT_VPN_INSTALLER:-0}"
 [[ "$VPN_INSTALLER" == 0 || "$VPN_INSTALLER" == 1 ]] || { print -u2 "Invalid VPN installer build mode"; exit 1; }
 [[ "$VPN_INSTALLER" == 0 || "$ISOLATED_UPDATER" == 1 ]] || { print -u2 "VPN installer requires the isolated updater"; exit 1; }
+VPN_RELEASE_SEQUENCE="${PROXYPILOT_VPN_RELEASE_SEQUENCE:-0}"
+if [[ "$VPN_INSTALLER" == 1 ]]; then
+  print -r -- "$VPN_RELEASE_SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
+    print -u2 "VPN release sequence must be a canonical positive integer"; exit 1
+  }
+elif [[ "$VPN_RELEASE_SEQUENCE" != 0 ]]; then
+  print -u2 "VPN release sequence is only valid for a VPN installer build"; exit 1
+fi
 
 command -v swiftc >/dev/null || {
   print -u2 "нет swiftc. Установи: xcode-select --install"; exit 1
@@ -49,6 +57,7 @@ if [[ "$ISOLATED_UPDATER" == 1 ]]; then
       -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
       "$HERE/update-worker/UpdateWire.swift" "$HERE/update-worker/UpdateChannel.swift" \
       "$HERE/update-worker/VPNUpdateAdmission.swift" \
+      "$HERE/update-worker/JointRelaunchSentinel.swift" \
       "$HERE/update-worker/UpdateWorker.swift" -o "$OUT/Updater-$ARCH"
   done
   lipo -create "$OUT/Updater-arm64" "$OUT/Updater-x86_64" -output "$WORKER/Contents/MacOS/ProxyPilotUpdater"
@@ -77,6 +86,7 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
     VPNUpdateBrokerProtocol VPNUpdateBrokerClient VPNJointArtifactMount VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
     VPNUpdateBrokerInbox VPNUpdateBrokerRotation VPNUpdateBrokerInstallerCoordinator \
+    VPNJointUpdateStartupStatus \
     VPNUpdateBrokerStateRemoval \
     VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
     SOURCES+=("$HERE/vpn-helper/$COMPONENT.swift")
@@ -136,6 +146,7 @@ PLIST
 
 if [[ "$VPN_INSTALLER" == 1 ]]; then
   /usr/bin/plutil -insert ProxyPilotVPNInstaller -bool YES "$APP/Contents/Info.plist"
+  /usr/bin/plutil -insert ProxyPilotVPNReleaseSequence -integer "$VPN_RELEASE_SEQUENCE" "$APP/Contents/Info.plist"
 fi
 
 # ad-hoc подпись: без неё macOS не выдаёт стабильный идентификатор,
