@@ -31,6 +31,8 @@ class VPNReleaseKeyTests(unittest.TestCase):
         built = subprocess.run(['swiftc', '-target', 'arm64-apple-macosx11.0',
                                 str(ROOT / 'app/vpn-helper/VPNPeerAuthentication.swift'),
                                 str(ROOT / 'app/vpn-helper/VPNReleaseAuthorization.swift'),
+                                str(ROOT / 'app/vpn-helper/VPNReleaseTrust.swift'),
+                                str(ROOT / 'app/vpn-helper/VPNCompanionMetadata.swift'),
                                 str(ROOT / 'app/vpn-release-key.swift'), '-o', str(cls.tool)],
                                capture_output=True, text=True, timeout=180)
         if built.returncode:
@@ -117,6 +119,58 @@ class VPNReleaseKeyTests(unittest.TestCase):
                                  str(transition_signature), str(self.public), keychain=False)
         self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
         self.assertIn('Verified transition 7 to 8', verified.stdout)
+
+    def test_companion_metadata_sign_and_verify_round_trip(self):
+        self.generate()
+        metadata = self.base / 'companion.metadata'
+        metadata.write_text(
+            'format=1\nproduct=kz.documentolog.proxypilot\nversion=1.7.0\n'
+            'from-sequence=7\nto-sequence=8\nartifact-sha256=' + 'aa' * 32
+            + '\nartifact-bytes=4096\n')
+        signature = self.base / 'companion.sig'
+        signed = self.run_tool('sign-companion', str(metadata), str(signature))
+        self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
+        verified = self.run_tool('verify-companion', str(metadata), str(signature),
+                                 str(self.public), keychain=False)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertIn('Verified companion 7 to 8', verified.stdout)
+        artifact = self.base / 'ProxyPilot-1.7.0-vpn-joint.dmg'
+        artifact.write_bytes(b'x' * 4096)
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        metadata.write_text(metadata.read_text().replace('aa' * 32, digest))
+        self.run_tool('sign-companion', str(metadata), str(signature))
+        checked = self.run_tool('verify-companion-artifact', str(metadata),
+                                str(signature), str(self.public), str(artifact),
+                                keychain=False)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        artifact.write_bytes(b'y' * 4096)
+        refused_artifact = self.run_tool(
+            'verify-companion-artifact', str(metadata), str(signature),
+            str(self.public), str(artifact), keychain=False)
+        self.assertNotEqual(refused_artifact.returncode, 0)
+        metadata.write_text(metadata.read_text().replace('artifact-bytes=4096',
+                                                         'artifact-bytes=4097'))
+        refused = self.run_tool('verify-companion', str(metadata), str(signature),
+                                str(self.public), keychain=False)
+        self.assertNotEqual(refused.returncode, 0)
+
+    def test_companion_metadata_refuses_noncanonical_or_nonforward_values(self):
+        self.generate()
+        signature = self.base / 'companion.sig'
+        base = ('format=1\nproduct=kz.documentolog.proxypilot\nversion=1.7.0\n'
+                'from-sequence=7\nto-sequence=8\nartifact-sha256=' + 'aa' * 32
+                + '\nartifact-bytes=4096\n')
+        for malformed in (base.replace('to-sequence=8', 'to-sequence=7'),
+                          base.replace('from-sequence=7', 'from-sequence=07'),
+                          base.replace('version=1.7.0', 'version=1.07.0'),
+                          base + 'url=https://example.com/a\n',
+                          base.replace('artifact-sha256=' + 'aa' * 32,
+                                       'artifact-sha256=' + 'AA' * 32)):
+            with self.subTest(malformed=malformed):
+                metadata = self.base / ('bad-' + uuid.uuid4().hex)
+                metadata.write_text(malformed)
+                refused = self.run_tool('sign-companion', str(metadata), str(signature))
+                self.assertNotEqual(refused.returncode, 0)
 
     def test_transition_rejects_tampering_and_non_forward_edges(self):
         self.generate()

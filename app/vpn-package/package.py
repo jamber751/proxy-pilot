@@ -323,6 +323,85 @@ def build_companion(stage, output):
     print(f'bytes={info.st_size}')
 
 
+def prepare_companion_metadata(stage, companion, output):
+    """Bind one verified joint payload to one immutable transport image."""
+    new_path(output)
+    if (output.suffix != '.metadata' or not output.parent.is_dir()
+            or not stage.is_absolute() or stage.is_symlink() or not stage.is_dir()
+            or not companion.is_absolute() or companion.is_symlink()
+            or not companion.is_file()):
+        raise ValueError('Expected private stage, regular companion and new absolute .metadata output')
+    payload = stage / 'Payload'
+    version = verify(payload, action='update')
+    expected_name = f'ProxyPilot-{version}-vpn-joint.dmg'
+    if companion.name != expected_name:
+        raise ValueError('Companion filename does not match the verified release version')
+
+    def fields(name, limit):
+        text = regular_bytes(payload / name, limit).decode('ascii')
+        lines = text.splitlines()
+        if not lines or not text.endswith('\n'):
+            raise ValueError('Expected canonical signed release records')
+        result = {}
+        for line in lines:
+            if line.count('=') != 1:
+                raise ValueError('Expected canonical signed release records')
+            key, value = line.split('=', 1)
+            if not key or key in result: raise ValueError('Expected canonical signed release records')
+            result[key] = value
+        return result
+
+    previous = fields('vpn-previous-release.manifest', 4096)
+    candidate = fields('vpn-release.manifest', 4096)
+    transition = fields('vpn-update-transition', 512)
+    if (candidate.get('version') != version
+            or transition.get('from-sequence') != previous.get('sequence')
+            or transition.get('to-sequence') != candidate.get('sequence')):
+        raise ValueError('Signed transition does not match companion metadata inputs')
+    from_sequence, to_sequence = previous.get('sequence', ''), candidate.get('sequence', '')
+    if (not re.fullmatch(r'[1-9][0-9]{0,18}', from_sequence)
+            or not re.fullmatch(r'[1-9][0-9]{0,18}', to_sequence)
+            or int(to_sequence) <= int(from_sequence)
+            or int(to_sequence) > 2**63 - 1):
+        raise ValueError('Expected a canonical forward companion transition')
+
+    descriptor = os.open(companion, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or not 0 < info.st_size <= 768 * 1024 * 1024):
+            raise ValueError('Expected one bounded companion artifact')
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block: break
+            digest.update(block)
+    finally:
+        os.close(descriptor)
+    metadata = (f'format=1\nproduct={APP_ID}\nversion={version}\n'
+                f'from-sequence={from_sequence}\nto-sequence={to_sequence}\n'
+                f'artifact-sha256={digest.hexdigest()}\nartifact-bytes={info.st_size}\n').encode()
+    if len(metadata) > 512: raise ValueError('Companion metadata is oversized')
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(output, flags, 0o600)
+    try:
+        view = memoryview(metadata)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0: raise OSError('Cannot write companion metadata')
+            view = view[written:]
+        os.fsync(descriptor)
+    except Exception:
+        os.close(descriptor); output.unlink(missing_ok=True)
+        raise
+    else:
+        os.close(descriptor)
+    parent = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try: os.fsync(parent)
+    finally: os.close(parent)
+    print(f'Prepared companion metadata: {output}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest='mode', required=True)
@@ -343,13 +422,18 @@ def main():
     companion = modes.add_parser('build-companion')
     companion.add_argument('--stage', type=Path, required=True)
     companion.add_argument('--output', type=Path, required=True)
+    metadata = modes.add_parser('prepare-companion-metadata')
+    metadata.add_argument('--stage', type=Path, required=True)
+    metadata.add_argument('--companion', type=Path, required=True)
+    metadata.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if os.geteuid() == 0: parser.error('Build as an ordinary user, never root')
     try:
         if args.mode == 'prepare': prepare(args.app, args.helper, args.sequence, args.output, args.engine_artifact)
         elif args.mode == 'prepare-update': prepare_update(args.stage, args.previous_manifest, args.previous_signature)
         elif args.mode == 'build': build(args.stage, args.action, args.output)
-        else: build_companion(args.stage, args.output)
+        elif args.mode == 'build-companion': build_companion(args.stage, args.output)
+        else: prepare_companion_metadata(args.stage, args.companion, args.output)
     except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error: parser.error(str(error))
 
 

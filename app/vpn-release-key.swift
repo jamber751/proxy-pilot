@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Security
 
@@ -25,6 +26,9 @@ enum VPNReleaseKeyTool {
           vpn-release-key verify <manifest> <signature> <public-key-file>
           vpn-release-key sign-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature-file> [--keychain <path>]
           vpn-release-key verify-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature> <public-key-file>
+          vpn-release-key sign-companion <metadata> <signature-file> [--keychain <path>]
+          vpn-release-key verify-companion <metadata> <signature> <public-key-file>
+          vpn-release-key verify-companion-artifact <metadata> <signature> <public-key-file> <artifact>
         """)
     }
 
@@ -220,6 +224,52 @@ enum VPNReleaseKeyTool {
                 fail("Release transition or signature rejected.")
             }
             print("Verified transition \(edge.fromSequence) to \(edge.toSequence)")
+        case "sign-companion":
+            guard arguments.count >= 4,
+                  let key = storedKey(chain),
+                  let payload = file(arguments[2], limit: VPNCompanionMetadataAuthority.maximumPayloadBytes),
+                  let signed = try? key.signature(
+                    for: VPNCompanionMetadataAuthority.signatureDomain + payload),
+                  let authority = try? VPNCompanionMetadataAuthority(
+                    trustedPublicKey: key.publicKey.rawRepresentation),
+                  (try? authority.verify(payload: payload, signature: signed)) != nil else {
+                fail("Companion metadata rejected; signature not written.")
+            }
+            write(signed.base64EncodedString() + "\n", to: arguments[3])
+            print("Signed companion metadata")
+        case "verify-companion":
+            guard arguments.count >= 5,
+                  let payload = file(arguments[2], limit: VPNCompanionMetadataAuthority.maximumPayloadBytes),
+                  let signed = signature(arguments[3]),
+                  let publicText = try? String(contentsOfFile: arguments[4], encoding: .utf8),
+                  let publicKey = Data(base64Encoded:
+                    publicText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let authority = try? VPNCompanionMetadataAuthority(
+                    trustedPublicKey: publicKey),
+                  let metadata = try? authority.verify(
+                    payload: payload, signature: signed) else {
+                fail("Companion metadata or signature rejected.")
+            }
+            print("Verified companion \(metadata.fromSequence) to \(metadata.toSequence)")
+        case "verify-companion-artifact":
+            guard arguments.count >= 6,
+                  let payload = file(arguments[2], limit: VPNCompanionMetadataAuthority.maximumPayloadBytes),
+                  let signed = signature(arguments[3]),
+                  let publicText = try? String(contentsOfFile: arguments[4], encoding: .utf8),
+                  let publicKey = Data(base64Encoded:
+                    publicText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let authority = try? VPNCompanionMetadataAuthority(
+                    trustedPublicKey: publicKey),
+                  let metadata = try? authority.verify(
+                    payload: payload, signature: signed) else {
+                fail("Companion metadata or signature rejected.")
+            }
+            let descriptor = open(arguments[5], O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard descriptor >= 0 else { fail("Companion artifact rejected.") }
+            defer { close(descriptor) }
+            do { try metadata.validateArtifact(fileDescriptor: descriptor) }
+            catch { fail("Companion artifact rejected.") }
+            print("Verified companion artifact \(metadata.artifactName)")
         default:
             usage()
         }

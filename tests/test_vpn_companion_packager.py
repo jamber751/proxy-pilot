@@ -1,5 +1,6 @@
 """Release-side contract for the read-only VPN joint companion image."""
 import importlib.util
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -24,6 +25,14 @@ class VPNCompanionPackagerTests(unittest.TestCase):
         for name in ({"vpn-helper", "vpn-engine", "vpn-release.manifest",
                       "vpn-release.sig"} | PACKAGER.JOINT_FILES):
             (self.payload / name).write_bytes(name.encode())
+        (self.payload / "vpn-previous-release.manifest").write_text(
+            "format=2\nproduct=kz.documentolog.proxypilot\nsequence=9\nversion=1.9.0\n")
+        (self.payload / "vpn-release.manifest").write_text(
+            "format=2\nproduct=kz.documentolog.proxypilot\nsequence=10\nversion=2.0.0\n")
+        (self.payload / "vpn-update-transition").write_text(
+            "format=1\nproduct=kz.documentolog.proxypilot\nfrom-sequence=9\n"
+            "from-sha256=" + "11" * 32 + "\nto-sequence=10\n"
+            "to-sha256=" + "22" * 32 + "\n")
         self.original_verify = PACKAGER.verify
         self.original_run = PACKAGER.run
         self.calls = []
@@ -73,6 +82,38 @@ class VPNCompanionPackagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PACKAGER.build_companion(self.stage, self.root / "wrong.zip")
         self.assertEqual(self.calls, [])
+
+    def test_metadata_binds_verified_edge_and_exact_companion_bytes(self):
+        companion = self.root / "ProxyPilot-2.0.0-vpn-joint.dmg"
+        companion.write_bytes(b"immutable companion")
+        metadata = self.root / "ProxyPilot-2.0.0-vpn-joint.metadata"
+        PACKAGER.prepare_companion_metadata(self.stage, companion, metadata)
+        expected = (
+            "format=1\nproduct=kz.documentolog.proxypilot\nversion=2.0.0\n"
+            "from-sequence=9\nto-sequence=10\nartifact-sha256="
+            + hashlib.sha256(companion.read_bytes()).hexdigest()
+            + f"\nartifact-bytes={companion.stat().st_size}\n")
+        self.assertEqual(metadata.read_text(), expected)
+        self.assertEqual(metadata.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(ValueError):
+            PACKAGER.prepare_companion_metadata(
+                self.stage, companion, self.root / "second.txt")
+
+    def test_metadata_refuses_mismatched_version_or_transition(self):
+        companion = self.root / "ProxyPilot-2.0.1-vpn-joint.dmg"
+        companion.write_bytes(b"companion")
+        with self.assertRaisesRegex(ValueError, "filename"):
+            PACKAGER.prepare_companion_metadata(
+                self.stage, companion, self.root / "bad.metadata")
+        companion.rename(self.root / "ProxyPilot-2.0.0-vpn-joint.dmg")
+        companion = self.root / "ProxyPilot-2.0.0-vpn-joint.dmg"
+        (self.payload / "vpn-update-transition").write_text(
+            "format=1\nproduct=kz.documentolog.proxypilot\nfrom-sequence=8\n"
+            "from-sha256=" + "11" * 32 + "\nto-sequence=10\n"
+            "to-sha256=" + "22" * 32 + "\n")
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            PACKAGER.prepare_companion_metadata(
+                self.stage, companion, self.root / "bad.metadata")
 
 
 if __name__ == "__main__":
