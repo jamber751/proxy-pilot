@@ -18,6 +18,13 @@ remain open.
 
 ## Build and sign
 
+The preferred local assembly is `app/build-joint-release.sh <next-sequence>
+<previous-manifest> <previous-signature> <engine-artifact>
+<new-absolute-output-directory>`. It verifies that the existing Keychain key
+matches the embedded public key, performs all steps below, verifies the final
+DMG against its signed metadata, and preserves the new signed release sidecars
+for the next forward update. It never tags, uploads, installs or elevates.
+
 1. Choose the next canonical positive release sequence, then build a fresh app
    with `PROXYPILOT_ISOLATED_UPDATER=1`, `PROXYPILOT_VPN_INSTALLER=1` and
    `PROXYPILOT_VPN_RELEASE_SEQUENCE=<next-sequence>` using `app/build.sh`.
