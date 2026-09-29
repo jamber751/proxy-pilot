@@ -65,10 +65,21 @@ local Unix connection. The live kernel peer is checked before parsing the frame;
 `submit` requires exactly one `SCM_RIGHTS` directory descriptor and `status`
 requires none. Malformed, appended, truncated, timed-out, or descriptor-bearing
 status requests are refused, and every received descriptor is close-on-exec and
-closed on all refusal and completion paths. The fixed `update-broker.sock`
-endpoint is private (`0600`) inside an already-open trusted directory. This
-transport is still not registered with launchd and cannot invoke the inbox or
-mutation pipeline.
+closed on all refusal and completion paths. Its standalone binding primitive is
+tested in a private `0600` fixture. Production uses launchd socket activation at
+the fixed public endpoint directory (`0755`, socket `0666`) so the ordinary owner
+application can reach it; reachability is never authority, and the exact UID plus
+live application code signature is checked before any request bytes are read.
+
+The production lifecycle foundation runs the exact content-addressed helper of
+selected release A as a separate broker job. It uses the fixed label
+`kz.documentolog.proxypilot.vpn-update-broker`, fixed `serve-update-broker`
+argument, and launchd-owned `update-broker.sock`. A separate root-private
+`Broker` directory (`0700`) holds a checksummed fixed-size numeric status mirror.
+Status publication is atomic, fsynced, revisioned, restart-safe, and not an
+authorization record. The broker currently serves bounded status and explicitly
+refuses submit without copying or mutating anything. Its job is not installed by
+the installer yet.
 
 ## Broker lifecycle
 

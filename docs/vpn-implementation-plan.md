@@ -2478,3 +2478,29 @@ Transport пока не зарегистрирован и не запускае�
 транзакция `receive → inbox → authorize → prepare → executor handoff → status`.
 UI и one-click update остаются выключены до завершения этой цепочки и recovery
 acceptance.
+
+### Продолжение 1.5ab — broker daemon и launchd lifecycle (29 сентября)
+
+- [x] Выбрана совместимая rotation-модель: отдельный broker process запускает
+  exact content-addressed helper текущего release A. Dedicated бессрочный broker
+  key не вводится; после A→B job должен быть переведён на exact helper B до GC A.
+- [x] Production endpoint принадлежит launchd и находится в существующем
+  root-owned public каталоге `0755`; socket `0666` даёт только reachability.
+  До чтения frame обязательны kernel UID и live CDHash/identifier owner app.
+- [x] Private inbox/status отделены в root-only `Broker` (`0700`). Числовой
+  48-byte status mirror имеет checksum, monotonic revision, lock, atomic rename,
+  file/parent fsync и fail-closed corruption; authority из него не выводится.
+- [x] Launchd job использует fixed label, plist, endpoint и argv, повторно
+  проверяет signed selected helper, поддерживает socket activation, restart после
+  SIGKILL и exact idempotent removal. Disposable lifecycle suite 18/18, status
+  store 6/6, universal helper build и strict codesign прошли.
+- [x] Broker daemon принимает ровно `serve-update-broker`, проверяет себя как
+  helper selected A и клиента как exact owner app. `status` bounded; `submit`
+  сейчас явно возвращает failure и закрывает FD без copy/mutation.
+- [ ] Job намеренно ещё не устанавливается `VPNInstaller` и UI не вызывает его.
+  Включать endpoint до подключения полной транзакции нельзя.
+
+Следующий узел: единый сериализованный handler `receive → private inbox → signed
+authorize → prepare under lifecycle lease → executor handoff`, полный durable
+transaction receipt и crash-recovery. Затем — безопасная A→B rotation broker job,
+installer/uninstall integration и только после acceptance включение one-click UI.

@@ -15,6 +15,18 @@ import Foundation
             exit(status)
         }
         #endif
+        if CommandLine.arguments.dropFirst().contains(
+                VPNUpdateBrokerDaemon.entryArgument) {
+            do {
+                try VPNUpdateBrokerDaemon.runSystem(
+                    arguments: CommandLine.arguments)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "ProxyPilot VPN update broker could not start.\n".utf8))
+                exit(77)
+            }
+        }
         do { try VPNHelperDaemon.runSystem(arguments: CommandLine.arguments) }
         catch {
             // No payloads, keys, account names or personal paths in launchd logs.

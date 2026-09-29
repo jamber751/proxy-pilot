@@ -24,6 +24,13 @@ enum VPNDirectoryProvisioner {
         try openSystemComponent(name: "Retired", create: create)
     }
 
+    /// Root-private durable state and content-addressed inbox for the update
+    /// broker. The public Unix endpoint deliberately lives in the separate
+    /// 0755 endpoint directory; no unprivileged process can traverse this tree.
+    static func openSystemBrokerDirectory(create: Bool) throws -> Int32 {
+        try openSystemComponent(name: "Broker", create: create)
+    }
+
     /// Binds an inherited descriptor to the one fixed production transaction
     /// directory. Root-private is necessary but not sufficient: a privileged
     /// caller must not redirect replacement into some other private tree.
@@ -83,7 +90,8 @@ enum VPNDirectoryProvisioner {
 
     private static func openComponentBelowTrustedBase(_ base: Int32, name: String,
                                                        create: Bool) throws -> Int32 {
-        guard name == "VPN" || name == "Update" || name == "Retired" else {
+        guard name == "VPN" || name == "Update" || name == "Retired"
+                || name == "Broker" else {
             throw VPNDirectoryError.unsafeDirectory
         }
         try check(base, privateDirectory: false)
