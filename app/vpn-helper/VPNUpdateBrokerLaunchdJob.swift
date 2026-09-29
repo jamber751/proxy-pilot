@@ -108,11 +108,16 @@ final class VPNUpdateBrokerLaunchdJob {
     /// Bootout precedes the atomic plist replacement, so a changed release can
     /// never leave the old process supervised by a description naming the new.
     func installAndStart(_ deployment: VPNAuthorizedDeployment,
-                         deadline: UInt64) throws {
+                         deadline: UInt64,
+                         beforeBootstrap: () throws -> Void = {}) throws {
         let executable = try checkedHelperPath(deployment)
         try bootout(deadline: deadline)
         try removeEndpoint()
         try writeDescription(executable: executable)
+        // Installer coordination may hold the outer Broker transaction lease
+        // while stopping A and publishing B's exact plist. It must release that
+        // lease immediately before bootstrap so the new daemon can recover.
+        try beforeBootstrap()
         guard try launchctl(["bootstrap", domain, plist.path], deadline: deadline) == 0 else {
             throw VPNUpdateBrokerLaunchdJobError.launchFailed
         }

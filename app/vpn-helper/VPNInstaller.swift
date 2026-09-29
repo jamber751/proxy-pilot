@@ -11,6 +11,11 @@ enum VPNInstallerError: Error {
     case removalFailed
 }
 
+struct VPNBrokerInstallationResult {
+    let ready: VPNHelperReady
+    let deployment: VPNAuthorizedDeployment
+}
+
 /// One authorized installation path, in a fixed order: authenticate the release
 /// and our running app identity, provision the protected directory, take the
 /// lifecycle lease, re-verify the signed release against storage, publish the
@@ -38,6 +43,53 @@ enum VPNInstaller {
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
         return try install(payload: payload, signature: signature, helper: helper, engine: engine, authority: authority,
                            trustedOwnerUserID: trustedOwnerUserID, directory: directory, runtime: runtime)
+    }
+
+    /// Idempotent first-install boundary used only while the caller owns the
+    /// outer Broker transaction lease. A retry may reconcile the exact release
+    /// already committed by an earlier attempt; it never accepts a different
+    /// owner/release or treats root alone as package authority.
+    static func installForBroker(
+        payload: Data, signature: Data, helper: Data, engine: Data? = nil,
+        authority: VPNReleaseAuthority, trustedOwnerUserID: uid_t
+    ) throws -> VPNBrokerInstallationResult {
+        guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
+        try preflight(payload: payload, signature: signature, helper: helper,
+                      engine: engine, authority: authority)
+        let candidate = try authority.verify(
+            payload: payload, signature: signature, previous: nil)
+        let directory = try VPNDirectoryProvisioner.openSystemDirectory(create: true)
+        defer { close(directory) }
+        let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
+        let lease = try lifecycleLease(directory)
+        defer { lease.release() }
+        let store = try VPNReleaseStore(
+            trustedDirectoryDescriptor: directory, authority: authority)
+        do {
+            _ = try store.bootstrapDeployment(
+                payload: payload, signature: signature, helper: helper,
+                engine: engine, trustedOwnerUserID: trustedOwnerUserID)
+        } catch VPNReleaseStoreError.alreadyInitialized {
+            let existing = try store.loadDeployment()
+            guard existing.ownerUserID == trustedOwnerUserID,
+                  existing.release.isSameRelease(as: candidate) else {
+                throw VPNInstallerError.alreadyInstalled
+            }
+        }
+        let budget = try VPNActivationBudget(
+            trustedDirectoryDescriptor: directory)
+        let coordinator = VPNActivationCoordinator(
+            store: store, runtime: runtime, lease: lease, budget: budget)
+        let ready = try coordinator.recoverSelected(intent: .explicit)
+        try lease.check()
+        let selected = try store.loadDeployment()
+        guard selected.ownerUserID == trustedOwnerUserID,
+              selected.release.isSameRelease(as: candidate),
+              ready.release.isSameRelease(as: selected.release) else {
+            throw VPNReleaseStoreError.staleRevision
+        }
+        return VPNBrokerInstallationResult(
+            ready: ready, deployment: selected)
     }
 
     /// Change an existing installation. The store rejects rollbacks and stale
@@ -96,7 +148,10 @@ enum VPNInstaller {
     /// Stop the service, take its launchd description away so no boot brings it
     /// back, then remove exactly the files this component created. Anything else
     /// in the directory aborts the removal instead of being deleted.
-    static func uninstall(authority: VPNReleaseAuthority) throws {
+    static func uninstall(
+        authority: VPNReleaseAuthority,
+        beforeServiceRemoval: (Int32, VPNLifecycleLease) throws -> Void = { _, _ in }
+    ) throws {
         guard geteuid() == 0 else { throw VPNInstallerError.requiresRoot }
         let directory = try openInstalled { try VPNDirectoryProvisioner.openSystemDirectory(create: false) }
         let runtime = try VPNLaunchdRuntime.system(storageDirectory: directory)
@@ -107,6 +162,8 @@ enum VPNInstaller {
             // publish state after the cleanup gate but before removal.
             try VPNJointUpdateCleanup.completeAllSystem(
                 service: directory, lease: lease, authority: authority)
+        } beforeRemoval: { lease in
+            try beforeServiceRemoval(directory, lease)
         }
         try VPNEndpointDirectory.removeSystem()
         try VPNDirectoryProvisioner.removeSystemDirectories()
@@ -328,7 +385,8 @@ enum VPNInstaller {
 
     private static func uninstall(directory: Int32, runtime: VPNLaunchdRuntime,
                                   recovery: VPNRecoveryLaunchdJob,
-                                  cleanup: (VPNLifecycleLease) throws -> Void = { _ in }) throws {
+                                  cleanup: (VPNLifecycleLease) throws -> Void = { _ in },
+                                  beforeRemoval: (VPNLifecycleLease) throws -> Void = { _ in }) throws {
         defer { close(directory) }
         let lease = try lifecycleLease(directory)
         defer { lease.release() }
@@ -339,6 +397,8 @@ enum VPNInstaller {
         // Decide what may be removed before stopping anything: an unexpected
         // file must not leave a stopped service and a half-removed directory.
         let removable = try removableNames(directory)
+        try beforeRemoval(lease)
+        try lease.check()
         try recovery.remove(deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
         try runtime.stopAndDrain(deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
         try runtime.removeServiceDescription()

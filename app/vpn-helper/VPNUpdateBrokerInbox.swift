@@ -217,6 +217,34 @@ final class VPNUpdateBrokerInbox {
         }
     }
 
+    /// Read-only uninstall preflight for complete and crash-left partial inbox
+    /// trees. It accepts no arbitrary top-level directory name and applies the
+    /// same bounds, ownership, link and writable-node checks as ingestion.
+    func validateForUninstall() throws {
+        for name in try Self.topNames(parent) where Self.isInboxTreeName(name) {
+            guard let directory = try Self.openDirectory(parent, name) else {
+                throw VPNUpdateBrokerInboxError.publishedChanged
+            }
+            defer { close(directory) }
+            let complete = name.hasPrefix("inbox-")
+            let value = try Self.snapshot(
+                directory, requireFixedLayout: complete)
+            if !complete, !Set(value.top.keys).isSubset(of: Self.fixedLayout) {
+                throw VPNUpdateBrokerInboxError.invalidLayout
+            }
+        }
+    }
+
+    /// Bounded removal used only after broker launchd ownership has been
+    /// removed during an authorized uninstall. Unknown sibling names are not
+    /// touched; the state remover rejects them during its earlier preflight.
+    func removeAllForUninstall() throws {
+        try validateForUninstall()
+        for name in try Self.topNames(parent).filter(Self.isInboxTreeName) {
+            try removeInboxTree(name)
+        }
+    }
+
     #if VPN_UPDATE_BROKER_INBOX_TESTING
     func corruptPublished(identity: Data) throws {
         let directory = try published(identity)
@@ -248,6 +276,50 @@ final class VPNUpdateBrokerInbox {
             name.hasPrefix("inbox-") && name.count == 70
                 && name.dropFirst(6).allSatisfy { $0.isHexDigit && !$0.isUppercase }
         }.count
+    }
+
+    private static func isInboxTreeName(_ name: String) -> Bool {
+        if name.hasPrefix("inbox-"), name.count == 70 {
+            return name.dropFirst(6).allSatisfy {
+                $0.isHexDigit && !$0.isUppercase
+            }
+        }
+        guard name.hasPrefix(".inbox-"), name.hasSuffix(".preparing") else {
+            return false
+        }
+        let digest = name.dropFirst(7).dropLast(10)
+        return digest.count == 64 && digest.allSatisfy {
+            $0.isHexDigit && !$0.isUppercase
+        }
+    }
+
+    private func removeInboxTree(_ name: String) throws {
+        guard Self.isInboxTreeName(name),
+              let directory = try Self.openDirectory(parent, name) else {
+            throw VPNUpdateBrokerInboxError.publishedChanged
+        }
+        var root = stat()
+        do {
+            guard fstat(directory, &root) == 0 else {
+                throw VPNUpdateBrokerInboxError.publishedChanged
+            }
+            var budget = Self.maximumEntries
+            try Self.removeChildren(directory, depth: 0, budget: &budget)
+            guard fsync(directory) == 0 else {
+                throw VPNUpdateBrokerInboxError.commitUncertain
+            }
+        } catch {
+            close(directory)
+            throw error
+        }
+        close(directory)
+        var rebound = stat()
+        guard fstatat(parent, name, &rebound, AT_SYMLINK_NOFOLLOW) == 0,
+              rebound.st_dev == root.st_dev, rebound.st_ino == root.st_ino,
+              unlinkat(parent, name, AT_REMOVEDIR) == 0,
+              fsync(parent) == 0 else {
+            throw VPNUpdateBrokerInboxError.commitUncertain
+        }
     }
 
     private static func snapshot(_ root: Int32, requireFixedLayout: Bool) throws -> Snapshot {

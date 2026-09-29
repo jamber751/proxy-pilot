@@ -76,7 +76,8 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNProfileVault VPNActivationBudget \
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
     VPNUpdateBrokerProtocol VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
-    VPNUpdateBrokerInbox VPNUpdateBrokerRotation \
+    VPNUpdateBrokerInbox VPNUpdateBrokerRotation VPNUpdateBrokerInstallerCoordinator \
+    VPNUpdateBrokerStateRemoval \
     VPNInstaller VPNInstallationPayload VPNInstallationEntry; do
     SOURCES+=("$HERE/vpn-helper/$COMPONENT.swift")
   done

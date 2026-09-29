@@ -141,6 +141,37 @@ enum VPNDirectoryProvisioner {
         try removeBelowTrustedBase(parent)
     }
 
+    /// Removes only the already-empty fixed Broker component. The shared
+    /// ProxyPilot container is retired only when no sibling component remains.
+    static func removeSystemBrokerDirectory() throws {
+        guard geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
+        var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw VPNDirectoryError.unavailable }
+        defer { close(parent) }
+        try check(parent, privateDirectory: false)
+        for name in ["Library", "Application Support"] {
+            let child = try openChild(parent: parent, name: name, create: false,
+                                      privateDirectory: false)
+            close(parent)
+            parent = child
+        }
+        let app = try openChild(parent: parent, name: "ProxyPilot", create: false,
+                                privateDirectory: true)
+        defer { close(app) }
+        let broker = try openChild(parent: app, name: "Broker", create: false,
+                                   privateDirectory: true)
+        close(broker)
+        guard unlinkat(app, "Broker", AT_REMOVEDIR) == 0, fsync(app) == 0 else {
+            throw VPNDirectoryError.unavailable
+        }
+        if unlinkat(parent, "ProxyPilot", AT_REMOVEDIR) != 0 {
+            guard errno == ENOTEMPTY || errno == EEXIST else {
+                throw VPNDirectoryError.unavailable
+            }
+        }
+        guard fsync(parent) == 0 else { throw VPNDirectoryError.syncUncertain }
+    }
+
     private static func openChild(parent: Int32, name: String, create: Bool, privateDirectory: Bool) throws -> Int32 {
         var child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if child < 0, errno == ENOENT, create {

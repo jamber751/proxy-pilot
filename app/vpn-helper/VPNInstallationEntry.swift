@@ -130,14 +130,16 @@ enum VPNInstallationEntry {
             case .install:
                 stage = .installation
                 let owner = try consoleOwner()
-                _ = try VPNInstaller.install(payload: payload.manifest, signature: payload.signature,
-                                              helper: payload.helper, engine: payload.engine, authority: authority, trustedOwnerUserID: owner)
+                _ = try VPNUpdateBrokerInstallerCoordinator.install(
+                    payload: payload.manifest, signature: payload.signature,
+                    helper: payload.helper, engine: payload.engine,
+                    authority: authority, trustedOwnerUserID: owner)
                 print("VPN support installed.")
             case .update:
                 fatalError("handled by the coordinated update boundary")
             case .remove:
                 stage = .removal
-                try VPNInstaller.uninstall(authority: authority)
+                try VPNUpdateBrokerInstallerCoordinator.uninstall(authority: authority)
                 print("VPN support removed.")
             }
             return 0
