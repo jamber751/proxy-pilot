@@ -2577,3 +2577,31 @@ one-click UI остаются выключены до прохождения э�
 Следующий узел: безопасная доставка companion joint artifact с фиксированным
 layout, staging в private app-owned каталог и handoff/relaunch `A → B → status`.
 Нельзя ослаблять B client policy ради reconnect старого A.
+
+### Продолжение 1.5af — read-only companion transport (29 сентября)
+
+- [x] Release packager умеет создавать отдельный compressed read-only APFS DMG
+  только из полного format-2 joint payload с девятью фиксированными элементами.
+  Перед сборкой выполняется existing signed update verification; output bounded,
+  проверяется `hdiutil verify`, публикуется atomically/no-overwrite и сообщает
+  SHA-256/byte count.
+- [x] Ordinary-user mount boundary принимает только уже открытый regular file FD
+  и deadline. Image монтируется `readonly`, `owners off`, в новый private mount
+  point; результатом остаётся только `CLOEXEC` directory descriptor. Mounted FS
+  обязан быть local+read-only, detach выполняется при любом отказе и при release.
+- [x] Broker inbox теперь принимает стандартные 0755 bundle directories и
+  сохраняет относительные symlink только внутри `ProxyPilot.app`. Link graph
+  входит в content identity и отклоняет absolute/escape/dangling/cycle; top-level
+  helper/engine/manifests ссылками быть не могут.
+- [x] Настоящий подписанный universal ProxyPilot.app со Sparkle.framework прошёл
+  ingest, повторный `codesign --deep --strict` после копии и retirement. Inbox
+  suite 6/6, mount 2/2, packager 3/3; client busy/stale теперь допускает ещё не
+  опубликованный destination без маскировки transaction mismatch.
+- [ ] Companion пока не публикуется release workflow: VPN signing key доступен
+  только локальному Keychain, а hosted CI не может безопасно подписать exact
+  CI-built app/transition. Нужен local/self-hosted signing flow до автоматизации.
+- [ ] Download/discovery UI, relaunch sentinel и B-startup status ещё не связаны.
+
+Следующий узел: discovery-only Sparkle flow для VPN-present и relaunch sentinel,
+который не вызывает Sparkle installer. Затем B подтверждает success только своим
+authenticated status с exact sealed VPN sequence.
