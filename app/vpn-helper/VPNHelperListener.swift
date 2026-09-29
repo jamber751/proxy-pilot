@@ -18,6 +18,9 @@ final class VPNHelperListener {
     private let additionalReadinessPolicies: () throws -> [VPNPeerPolicy]
     private let vault: VPNProfileVault
     private let tunnelState: VPNTunnelStateStore
+    private let startTunnel: () throws -> Bool
+    private let stopTunnel: () throws -> Void
+    private var tunnelStopped = true
 
     #if VPN_HELPER_LISTENER_TESTING
     private var fixtureInstaller = false
@@ -25,23 +28,69 @@ final class VPNHelperListener {
     // Production still authenticates root UID + exact app pin for this role.
     static func testBindInstaller(inTrustedDirectory directory: Int32, release: VerifiedVPNRelease,
                                   ownerUserID: uid_t,
-                                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] }) throws
+                                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
+                                  startTunnel: @escaping () throws -> Bool = { false },
+                                  stopTunnel: @escaping () throws -> Void = {}) throws
         -> VPNHelperListener {
         let listener = try bind(inTrustedDirectory: directory, release: release,
                                 ownerUserID: ownerUserID,
-                                additionalReadinessPolicies: additionalReadinessPolicies)
+                                additionalReadinessPolicies: additionalReadinessPolicies,
+                                startTunnel: startTunnel, stopTunnel: stopTunnel)
         listener.fixtureInstaller = true
         return listener
+    }
+
+    /// Fixture-only runtime seam. It tests ordering at the authenticated
+    /// listener boundary without starting OpenVPN or changing the system.
+    static func bind(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
+                     ownerUserID: uid_t, endpointDirectory: Int32? = nil,
+                     additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
+                     startTunnel: @escaping () throws -> Bool = { false },
+                     stopTunnel: @escaping () throws -> Void = {}) throws -> VPNHelperListener {
+        try bindCommon(inTrustedDirectory: trusted, release: release,
+                       ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
+                       additionalReadinessPolicies: additionalReadinessPolicies,
+                       startTunnel: startTunnel, stopTunnel: stopTunnel)
     }
     #endif
 
     /// Keeps the vault private; root uses the separate fixed IPC directory. It never
     /// unlinks an existing socket: a stale endpoint means the supervisor did not
     /// confirm the previous stop, and quietly stealing it would hide that.
-    static func bind(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
+    #if !VPN_HELPER_LISTENER_TESTING
+    static func bind(inTrustedDirectory trusted: Int32, deployment: VPNAuthorizedDeployment,
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] }) throws
         -> VPNHelperListener {
+        guard deployment.ownerUserID == ownerUserID else {
+            throw VPNHelperListenerError.unsafeStorage
+        }
+        let coordinator: VPNTunnelCoordinator?
+        if deployment.engineFileName == nil { coordinator = nil }
+        else {
+            coordinator = try VPNTunnelCoordinator(
+                trustedDirectoryDescriptor: trusted, deployment: deployment)
+        }
+        return try bindCommon(inTrustedDirectory: trusted, release: deployment.release,
+                              ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
+                              additionalReadinessPolicies: additionalReadinessPolicies,
+                              startTunnel: {
+                                  guard let coordinator = coordinator else { return false }
+                                  // Leave time inside the authenticated request
+                                  // deadline to return a deterministic refusal.
+                                  switch try coordinator.start(timeoutMilliseconds: 4_000) {
+                                  case .processRunning, .managementReady: return true
+                                  default: return false
+                                  }
+                              }, stopTunnel: { _ = coordinator?.stop() })
+    }
+    #endif
+
+    private static func bindCommon(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
+                     ownerUserID: uid_t, endpointDirectory: Int32?,
+                     additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
+                     startTunnel: @escaping () throws -> Bool,
+                     stopTunnel: @escaping () throws -> Void) throws -> VPNHelperListener {
         let policy = try release.clientPolicy(forTrustedUserID: ownerUserID)
         let directory = fcntl(trusted, F_DUPFD_CLOEXEC, 0)
         guard directory >= 0 else { throw VPNHelperListenerError.unsafeStorage }
@@ -103,7 +152,8 @@ final class VPNHelperListener {
             return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy,
                                      installerPolicy: try release.installerPolicy(),
                                      additionalReadinessPolicies: additionalReadinessPolicies,
-                                     vault: vault, tunnelState: tunnelState)
+                                     vault: vault, tunnelState: tunnelState,
+                                     startTunnel: startTunnel, stopTunnel: stopTunnel)
         } catch {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unsafeStorage
@@ -113,7 +163,9 @@ final class VPNHelperListener {
     private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy,
                  installerPolicy: VPNPeerPolicy,
                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
-                 vault: VPNProfileVault, tunnelState: VPNTunnelStateStore) {
+                 vault: VPNProfileVault, tunnelState: VPNTunnelStateStore,
+                 startTunnel: @escaping () throws -> Bool,
+                 stopTunnel: @escaping () throws -> Void) {
         self.listener = listener
         self.release = release
         self.policy = policy
@@ -121,11 +173,14 @@ final class VPNHelperListener {
         self.additionalReadinessPolicies = additionalReadinessPolicies
         self.vault = vault
         self.tunnelState = tunnelState
+        self.startTunnel = startTunnel
+        self.stopTunnel = stopTunnel
     }
 
     deinit { close() }
 
     func close() {
+        if !tunnelStopped { try? stopTunnel(); tunnelStopped = true }
         if listener >= 0 { Darwin.close(listener); listener = -1 }
     }
 
@@ -295,6 +350,10 @@ final class VPNHelperListener {
                 }
                 try answer(.ok, payload: [], to: client, deadline: deadline)
             case .applyConfiguration:
+                guard tunnelStopped else {
+                    try answer(.failed, payload: [], to: client, deadline: deadline)
+                    break
+                }
                 guard let spec = try? VPNApplicationSpec.decodeCanonical(Data(payload)),
                       let profileBytes = try? vault.load(digest: spec.profileSHA256),
                       let profile = try? VPNProfileImporter.inspect(data: profileBytes, name: "profile.ovpn"),
@@ -312,6 +371,10 @@ final class VPNHelperListener {
                     try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
                     break
                 }
+                if !tunnelStopped {
+                    try answer(.notReady, payload: [], to: client, deadline: deadline)
+                    break
+                }
                 let kind: VPNCredentialKind? = application.requiresPrivateKeyPassword
                     ? .privateKeyPassword
                     : (application.requiresVPNCredentials ? .vpnPassword : nil)
@@ -322,13 +385,35 @@ final class VPNHelperListener {
                 if let challenge = begun.challenge, let body = try? challenge.encoded() {
                     try answer(.needsCredential, payload: [UInt8](body), to: client, deadline: deadline)
                 } else {
-                    _ = try? tunnelState.failCurrent()
-                    // Stage A has no engine and can never claim a connection.
+                    let started: Bool
+                    do {
+                        started = try startTunnel()
+                    } catch {
+                        _ = try? tunnelState.failCurrent()
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                    guard started else {
+                        _ = try? tunnelState.failCurrent()
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                    tunnelStopped = false
+                    // Stage B proves only a held local management session.
+                    // It never releases hold or claims a usable connection.
                     try answer(.notReady, payload: [], to: client, deadline: deadline)
                 }
             case .disconnect:
-                guard payload.isEmpty, (try? tunnelState.disconnect()) != nil else {
+                guard payload.isEmpty else {
                     try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                do {
+                    try stopTunnel()
+                    tunnelStopped = true
+                    try tunnelState.disconnect()
+                } catch {
+                    try answer(.failed, payload: [], to: client, deadline: deadline)
                     break
                 }
                 try answer(.ok, payload: [], to: client, deadline: deadline)

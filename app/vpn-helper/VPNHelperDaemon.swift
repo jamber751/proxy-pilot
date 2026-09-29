@@ -131,7 +131,7 @@ enum VPNHelperDaemon {
         #else
         _ = recoveryFixtureInstaller
         listener = try VPNHelperListener.bind(
-            inTrustedDirectory: directory, release: selected.release,
+            inTrustedDirectory: directory, deployment: selected,
             ownerUserID: selected.ownerUserID,
             endpointDirectory: shared ? endpoint : nil,
             additionalReadinessPolicies: readinessPolicies)

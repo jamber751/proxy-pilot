@@ -28,6 +28,9 @@ COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'V
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
            'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNApplicationSpec.swift',
            'VPNTunnelStateStore.swift', 'VPNProfileVault.swift',
+           'OpenVPNManagementEvent.swift', 'OpenVPNManagementParser.swift',
+           'OpenVPNManagementClient.swift', 'VPNManagementSocketReservation.swift',
+           'VPNEngineProcess.swift', 'VPNTunnelCoordinator.swift',
            'VPNHelperListener.swift', 'VPNEndpointDirectory.swift']
 # The helper re-validates profiles with the application's own importer.
 IMPORTER = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']

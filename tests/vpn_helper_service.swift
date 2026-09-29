@@ -87,15 +87,39 @@ enum VPNHelperService {
                     endpoint = open(args[4], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 }
                 defer { if let endpoint = endpoint { close(endpoint) } }
+                let tunnelFixture = args.count == 5
+                    && ["tunnel-test", "tunnel-once"].contains(args[3]) ? args[4] : nil
+                func appendTrace(_ value: String) throws {
+                    guard let path = tunnelFixture else { return }
+                    let file = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o600)
+                    guard file >= 0 else { throw VPNHelperListenerError.unavailable }
+                    defer { close(file) }
+                    let bytes = Array((value + "\n").utf8)
+                    guard write(file, bytes, bytes.count) == bytes.count else {
+                        throw VPNHelperListenerError.unavailable
+                    }
+                }
                 listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: deployment.release,
-                                                      ownerUserID: deployment.ownerUserID, endpointDirectory: endpoint)
+                    ownerUserID: deployment.ownerUserID, endpointDirectory: endpoint,
+                    startTunnel: { try appendTrace("start-held"); return true },
+                    stopTunnel: {
+                        let snapshot = try VPNTunnelStateStore(
+                            trustedDirectoryDescriptor: directory).load()
+                        try appendTrace(snapshot.desiredEnabled ? "stop-before-off" : "stop-after-off")
+                    })
             }
             #else
-            listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: deployment.release,
+            listener = try VPNHelperListener.bind(inTrustedDirectory: directory, deployment: deployment,
                                                   ownerUserID: deployment.ownerUserID)
             #endif
             print("listening"); fflush(stdout)
             let ownerRequestsAllowed = !args.contains("owner-blocked")
+            if args.contains("tunnel-once") {
+                _ = try? listener.serveOnce(
+                    isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed })
+                listener.close()
+                exit(0)
+            }
             while true {
                 _ = try? listener.serveOnce(
                     isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed })

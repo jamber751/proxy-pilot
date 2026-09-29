@@ -31,6 +31,27 @@ QUJDRA==
 -----END CERTIFICATE-----
 </ca>
 '''
+CERTIFICATE_PROFILE = '''client
+dev tun
+proto udp
+remote vpn.company.example 1194
+remote-cert-tls server
+<ca>
+-----BEGIN CERTIFICATE-----
+QUJDRA==
+-----END CERTIFICATE-----
+</ca>
+<cert>
+-----BEGIN CERTIFICATE-----
+QUJDRA==
+-----END CERTIFICATE-----
+</cert>
+<key>
+-----BEGIN PRIVATE KEY-----
+QUJDRA==
+-----END PRIVATE KEY-----
+</key>
+'''
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
@@ -331,6 +352,46 @@ class VPNHelperListenerTests(unittest.TestCase):
         decoded = json.loads(state)
         self.assertFalse(decoded['desiredEnabled'])
         self.assertEqual(decoded['phase'], 'off')
+
+    def test_certificate_connect_starts_held_runtime_but_never_claims_connected(self):
+        self.seed()
+        trace = self.base / 'tunnel-trace'
+        self.serve(extra=['tunnel-test', str(trace)])
+        candidate = self.base / 'certificate.ovpn'
+        candidate.write_text(CERTIFICATE_PROFILE)
+        self.assertEqual(self.session(f'certificate={candidate}'), [
+            'store:0', 'apply:0', 'connect:5 challenge:false',
+            'held:connecting enabled:true', 'disconnect:0',
+            'stopped:off enabled:false'])
+        self.assertEqual(trace.read_text().splitlines(), ['start-held', 'stop-before-off'])
+        state = json.loads((self.storage / 'tunnel-state.json').read_text())
+        self.assertEqual(state['phase'], 'off')
+        self.assertFalse(state['desiredEnabled'])
+        self.assertNotIn('connected', (self.storage / 'tunnel-state.json').read_text().lower())
+
+    def test_credential_submission_never_starts_the_engine(self):
+        self.seed()
+        trace = self.base / 'credential-trace'
+        self.serve(extra=['tunnel-test', str(trace)])
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(PROFILE)
+        self.assertEqual(self.session(f'application={candidate}'), [
+            'store:0', 'apply:0', 'connect:4 kind:1 generation:1',
+            'before:needsCredential', 'submit:5', 'replay:2',
+            'after:failed challenge:false', 'disconnect:0'])
+        self.assertEqual(trace.read_text().splitlines(), ['stop-before-off'])
+
+    def test_listener_teardown_stops_a_held_runtime(self):
+        self.seed()
+        trace = self.base / 'teardown-trace'
+        service = self.serve(extra=['tunnel-once', str(trace)])
+        candidate = self.base / 'certificate.ovpn'
+        candidate.write_text(CERTIFICATE_PROFILE)
+        self.assertEqual(self.session(f'certificate-once={candidate}'), [
+            'store:0', 'apply:0', 'connect:5 challenge:false',
+            'held:connecting enabled:true'])
+        self.assertEqual(service.wait(timeout=10), 0)
+        self.assertEqual(trace.read_text().splitlines(), ['start-held', 'stop-before-off'])
 
     def test_public_endpoint_keeps_profile_in_private_storage(self):
         self.seed()
