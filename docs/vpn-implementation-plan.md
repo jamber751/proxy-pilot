@@ -2926,3 +2926,53 @@ A→B coordinator/Broker/relaunch, fault/reboot matrix и Intel/macOS 11 runtime
 install, import/drop UI, secure per-attempt credentials/OTP, реальный OpenVPN
 process, routes/DNS/status/cleanup. После этого пройти native installed update,
 fault/reboot matrix и реальный Intel/macOS 11 runtime.
+
+### Продолжение 1.5au — аудит незавершённого VPN vertical slice (30 сентября)
+
+Проверка release assembly выявила границу, которую нельзя маскировать количеством
+инфраструктурных тестов. Сейчас production-приложение компилирует безопасные
+`VPNConfiguration`, `VPNProfileImporter` и `VPNStore`, но `main.swift` их не
+создаёт и не показывает. Root helper аутентифицирован, умеет хранить проверенный
+профиль и содержит signed OpenVPN artifact, однако запускает только idle service:
+операций connect/disconnect, credentials, tunnel status, routes и DNS в его
+protocol нет. Public DMG не содержит first-install VPN package.
+
+Обновлённый обязательный порядок до релиза:
+
+1. [x] Secret-free apply transaction: content-addressed profile, validated
+   application spec, active/pending revision и durable tunnel journal. User store
+   не является root-authority и сам по себе никогда не означает Connected.
+2. [ ] Supervised OpenVPN process + bounded management socket: fixed argv/empty
+   environment, exact selected engine, waitpid, deadline stop/kill и redacted
+   typed status. На этом шаге routes/DNS ещё не обещаются.
+3. [ ] Per-attempt credential challenge: static password только в app Keychain по
+   явному согласию; OTP только в памяти и не replay; encrypted-key password —
+   отдельный challenge. Никаких секретов в argv/config/journal/log/error.
+4. [ ] IP routes с pre-tunnel peer bypass и точной проверкой kernel state;
+   durable owned cleanup после crash. Затем domain resolution/TTL и scoped DNS,
+   без изменения чужих routes/DNS.
+5. [ ] Минимальный app controller/UI: VPN отдельным экраном настроек, drag/drop и
+   picker через один importer, bounded internal scroll списка ресурсов, понятные
+   Pending/Needs code/Connected состояния. Большая кнопка остаётся proxy-only.
+6. [x] Beginner first install через внешний `ProxyPilot + VPN Support.pkg` рядом
+   с app в DMG. Package оборачивает уже финально подписанный exact app и ставит
+   root-owned `/Applications/ProxyPilot.app`; внутрь app его вкладывать нельзя из-за
+   круговой подписи. `Install.command` обязан отказаться при любом VPN footprint.
+7. [ ] Native acceptance: clean install, real tunnel cert/password/OTP, split
+   routes/DNS, sleep/wake/reconnect, helper/engine crash, WARP coexistence,
+   joint update/reboot/uninstall и отсутствие остатков. Отдельно Intel/macOS 11.
+8. [ ] Для beginner-safe публичной установки нужны Developer ID Application +
+   Installer signing и notarization. Внутренние Sparkle/VPN ключи защищают
+   continuity, но не могут подтвердить самый первый подменённый download.
+
+Пункт 1 реализован как безопасная inert-транзакция: helper принимает и хранит
+проверенную конфигурацию, но возвращает `notReady` и не может показать ложный
+Connected до появления процесса OpenVPN. Пройдён 41 focused test и universal
+helper build. Для пункта 5 готова только model-часть (10 focused tests): экран и
+app controller ещё не подключены к `main.swift`. Пункт 6 собран и проверен как
+реальный внешний `.pkg`: exact app и VPN payload сверяются до установки, пакет
+вложен в DMG без изменения sealed app, а старый `Install.command` отказывается
+перезаписывать VPN footprint. Пройдено 37 focused release/package tests; 3
+optional engine tests пропущены без полного pinned engine artifact. Installer не
+запускался, root/network операций не было. Release остаётся заблокирован пунктами
+2–5, 7–8; следующий настоящий release sequence — 127.
