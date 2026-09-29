@@ -2729,3 +2729,33 @@ recovery preparation, затем bounded downloader. UI остаётся discove
 
 Следующий узел: bounded fetch пары metadata+signature с фиксированными именами,
 затем coordinator `download FD → readonly mount → Broker ready → sentinel`.
+
+### Продолжение 1.5am — production one-click joint coordinator (29 сентября)
+
+- [x] Worker после signed appcast discovery передаёт только bounded canonical
+  technical semver (`jointReleaseID`) и display version. URL, hash, byte count и
+  VPN sequence в updater wire по-прежнему отсутствуют; unsigned/skipped appcast
+  не создаёт joint offer.
+- [x] Основное приложение A скачивает fixed-name metadata и detached signature
+  отдельной ephemeral HTTPS-сессией, ограничивает каждый body до 512/89 bytes и
+  проверяет VPN release key, exact release ID и `from == sealed sequence A`.
+- [x] Coordinator соединяет цепочку строго `metadata → bounded DMG → verified FD
+  → readonly mount → directory FD submit → exact durable ready`. Mount и download
+  освобождаются только после ready с точными from/to/revision.
+- [x] После ready UI вооружает fixed relaunch sentinel, затем существующий proxy
+  quiescence и только после него завершает A. Sparkle installer/installHandler в
+  joint flow не вызываются.
+- [x] EOF/timeout после SCM_RIGHTS остаётся indeterminate: A не завершается и не
+  повторяет submit, mount удерживается ещё 120 секунд перед cleanup. Busy/stale
+  и все pre-submit ошибки безопасно возвращают retry.
+- [x] Кнопка после discovery теперь запускает реальный coordinator, показывает
+  краткие стадии и предлагает retry после ошибки вместо повторной appcast check.
+- [x] Metadata fetch native 2/2, coordinator binding 5/5, wire/discovery/relaunch
+  25/25, isolated updater 13/13; полная VPN universal app-сборка arm64+x86_64 и
+  strict codesign прошли.
+- [ ] Release workflow пока не публикует companion metadata/signature/DMG: это
+  должен делать local/self-hosted pipeline с VPN signing key. Без sidecars UI
+  корректно завершится retry, но обновление не установит.
+
+Следующий узел: local signed joint-release assembly/publish gate, затем native
+end-to-end A→B fault/reboot acceptance и Intel/macOS 11. Tag пока запрещён.
