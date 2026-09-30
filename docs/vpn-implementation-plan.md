@@ -3046,3 +3046,26 @@ deadline; усечённые, хвостовые, чужие и ошибочны
 и полный universal helper build/codesign. Adapter ещё не вызывается production
 coordinator: пункт 4 ждёт доказательство реального peer и единственного TUN,
 transaction recovery и лишь затем controlled hold release.
+
+### Продолжение 1.5az — verified connection/interface evidence (30 сентября)
+
+Добавлена read-only граница между сообщением OpenVPN и будущими системными
+маршрутами. Официальные 6- и 9-польные `CONNECTED` состояния разбираются строго:
+внутренние IPv4/IPv6 адреса туннеля, фактический IP/порт VPN-сервера и локальный
+transport endpoint валидируются как бинарные адреса. Hostname, пустой tunnel
+address, нулевой порт, неверное семейство и лишние поля отклоняются; текстовые
+описания и адресные строки не покидают parser boundary.
+
+Отдельный read-only snapshot получает интерфейсы через `getifaddrs` и закрепляет
+стабильную пару index/name, флаги и бинарные адреса. Resolver принимает только
+ровно один новый numeric `utun`, который отсутствовал до запуска, одновременно
+UP/RUNNING/POINTOPOINT и содержит все tunnel-адреса из management evidence.
+Повторно использованная identity, отсутствие и неоднозначность fail-closed.
+
+Пройдены 23 focused tests, 51 installer/launchd regressions, отдельный повтор
+старого timing-sensitive daemon recovery и полный universal arm64/x86_64 helper
+build/codesign. Никаких маршрутов, DNS и системных сетевых настроек этот этап не
+меняет; hold не освобождается и пользовательский `Connected` не выставляется.
+Следующий узел пункта 4: получить kernel best-route evidence для VPN peer,
+привязать resource routes к доказанному `utun` и собрать recoverable route
+transaction до первого production hold release.
