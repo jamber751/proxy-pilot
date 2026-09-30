@@ -2,6 +2,14 @@ import Foundation
 
 enum VPNApplicationSpecError: Error { case invalid, tooLarge }
 
+/// Capabilities implemented by the currently shipped, route-only helper.
+/// Domain resources require per-domain DNS selection. macOS exposes that
+/// safely through Network Extension split DNS, which this Developer ID-free
+/// helper does not claim to provide.
+enum VPNRuntimeCapabilityError: Error, Equatable {
+    case splitDNSUnavailable
+}
+
 /// The complete, non-secret configuration the owner asks the helper to apply.
 /// Profile bytes are addressed by their SHA-256 digest and credentials are
 /// deliberately absent. The helper decodes and validates this value again.
@@ -40,6 +48,17 @@ struct VPNApplicationSpec: Codable, Equatable {
         var dns = VPNConfiguration()
         try dns.setDNS(corporateDNS)
         guard dns.corporateDNS == corporateDNS else { throw VPNApplicationSpecError.invalid }
+    }
+
+    /// Fails before OpenVPN is spawned when the saved intent needs a system
+    /// capability that is not present in this build. Saving and editing such a
+    /// configuration remains allowed, so a later Network Extension build can
+    /// use it without migration or data loss.
+    func validateCurrentRuntimeCapability() throws {
+        guard corporateDNS.isEmpty,
+              !resources.contains(where: { $0.kind == .domain }) else {
+            throw VPNRuntimeCapabilityError.splitDNSUnavailable
+        }
     }
 
     func encoded() throws -> Data {

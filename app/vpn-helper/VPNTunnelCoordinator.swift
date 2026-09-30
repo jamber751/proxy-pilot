@@ -5,6 +5,7 @@ enum VPNTunnelCoordinatorBlocker: Equatable {
     case noEnabledConfiguration
     case credentialRequired(OpenVPNCredentialKind)
     case alreadyRunning
+    case splitDNSUnavailable
 }
 
 /// Proof that the engine completed only its controlled bootstrap. This is not
@@ -123,6 +124,10 @@ final class VPNTunnelCoordinator {
                   let binding = snapshot.attempt,
                   binding.application == (snapshot.pending ?? snapshot.active) else {
                 throw VPNTunnelCoordinatorError.invalidState
+            }
+            do { try binding.application.spec.validateCurrentRuntimeCapability() }
+            catch VPNRuntimeCapabilityError.splitDNSUnavailable {
+                return .blocked(.splitDNSUnavailable)
             }
             return .ready(generation: binding.generation,
                           profileDigest: binding.application.spec.profileSHA256,

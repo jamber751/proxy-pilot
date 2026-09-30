@@ -3349,3 +3349,18 @@ runtime seam. DNS и публичный Connected по-прежнему не в�
 installed acceptance документированного session-scoped backend, либо решение о
 Network Extension entitlement/архитектуре. До этого допустим только внутренний
 bootstrap+routes status; release/tag не создаётся.
+
+### Продолжение 1.5bo — explicit route-only capability gate (30 сентября)
+
+Текущая бесплатная helper-архитектура теперь явно принимает для запуска только
+IP-адреса и CIDR-сети без corporate DNS. Конфигурации с доменными ресурсами или
+DNS по-прежнему можно безопасно сохранить и отредактировать, но coordinator
+откажет им до открытия профиля и до запуска OpenVPN с отдельной причиной
+`splitDNSUnavailable`. Это исключает ложное частичное подключение, утечку DNS и
+поздний отказ уже после появления `utun`.
+
+Ограничение временное и не меняет формат сохранённых настроек. Поддержка доменов
+будет разблокирована только документированным Apple split-DNS backend через
+Network Extension (`NEDNSSettings.matchDomains`) с требуемым entitlement,
+provisioning и installed acceptance. Пройдены 66 capability/coordinator/
+listener/state проверок. Публичный Connected и release/tag ещё не включены.
