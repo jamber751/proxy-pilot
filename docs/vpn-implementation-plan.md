@@ -3069,3 +3069,25 @@ build/codesign. Никаких маршрутов, DNS и системных с�
 Следующий узел пункта 4: получить kernel best-route evidence для VPN peer,
 привязать resource routes к доказанному `utun` и собрать recoverable route
 transaction до первого production hold release.
+
+### Продолжение 1.5ba — peer route и exact tunnel binding (30 сентября)
+
+Закрыты две входные границы будущей route transaction. Read-only PF_ROUTE
+resolver выполняет только `RTM_GET` по фактическому бинарному peer IP из OpenVPN,
+использует единый monotonic deadline и принимает ответ лишь при точном совпадении
+pid/sequence/type, usable UP route, непротиворечивых flags/gateway и kernel
+index/name. IPv4/IPv6, direct/network/default routes и BSD zero-length netmask
+поддержаны; invalid, loopback, link-local и multicast peer отклоняются до I/O.
+Маршрут через уже существующий `utun` разрешён, поэтому WARP может оставаться
+нижним транспортом; новый `utun` ProxyPilot по-прежнему доказывается отдельно.
+
+Route plan schema 2 теперь получает `VPNTunnelInterfaceEvidence` только из
+resolver и привязывает каждый resource route к точной паре `index + numeric utun
+name`. Произвольный интерфейс, подмена serialized binding, другой kernel evidence
+и forged recovery journal отклоняются. Peer bypass остаётся первым и связан с
+исходным best route; ресурсы могут идти только через доказанный новый туннель.
+
+Пройден 21 объединённый focused test и universal arm64/x86_64 helper
+build/codesign. Resolver не делает `RTM_ADD/DELETE`, routes/DNS не менялись, hold
+не освобождался. Следующий узел: recoverable route transaction с checkpoint до
+каждой mutation, reverse rollback/cleanup и безопасным retirement журнала.
