@@ -520,6 +520,7 @@ struct VPNPanelView: View {
                         .background(panel.ready ? accent : ink.opacity(0.06))
                         .foregroundColor(panel.ready ? .white : ink).cornerRadius(9).contentShape(Rectangle())
                 }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+                    .accessibilityIdentifier("vpnSettingsDone")
             }.padding(.vertical, 10)
         }
         .alert(isPresented: $panel.confirmVPNRemoval) {
@@ -588,6 +589,7 @@ struct VPNPanelView: View {
                 Text("Сохранить").font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 40)
                     .background(accent).foregroundColor(.white).cornerRadius(9).contentShape(Rectangle())
             }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+                .accessibilityIdentifier("vpnAuthenticationSave")
                 .disabled(panel.configuration.profile?.requiresCredentials == true &&
                           (panel.login.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || panel.authenticationChoice == nil))
             if !panel.message.isEmpty { Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary) }
@@ -663,7 +665,9 @@ struct VPNPanelView: View {
             Button(action: panel.saveResource) {
                 Text("Сохранить").font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 40)
                     .background(accent).foregroundColor(.white).cornerRadius(9).contentShape(Rectangle())
-            }.buttonStyle(PilotButtonStyle(cornerRadius: 9)).disabled(panel.resourceAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+                .accessibilityIdentifier("vpnResourceSave")
+                .disabled(panel.resourceAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             if panel.configuration.resourceDraft?.id != nil {
                 Button(action: panel.requestResourceRemoval) {
                     Text("Удалить ресурс").font(.system(size: 11, weight: .medium))

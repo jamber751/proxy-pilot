@@ -3529,3 +3529,16 @@ prompt переводит пользователя на VPN-экран; секр
 Это реакция на подтверждённое изменение доступного network path, а не обещание
 совместимости с любым VPN. WARP/другие клиенты не выключаются и их настройки не
 меняются; реальное coexistence остаётся пунктом installed acceptance.
+
+### Продолжение 1.5bx — native VPN layout regression (30 сентября)
+
+Добавлен изолированный macOS render-test настоящего `VPNPanelView`, а не
+скриншот-заглушка. Он компилирует UI для минимальной macOS target, создаёт
+off-screen `NSHostingView` размером 344×432 и проверяет состояния: первый импорт,
+настройки с 0, 3 и 18 ресурсами, редактор ресурса и password/2FA editor.
+
+Для каждой сцены проверяются реальные SwiftUI geometry и accessibility targets:
+back, import/drop, `+`, удалить, готово и действия форм не выходят за popover и
+имеют минимальную высоту. Отдельный source gate продолжает гарантировать, что
+длинный список остаётся bounded lazy scroll, а весь settings screen не получает
+общий ScrollView. Совместный прогон UI/layout/model/controller — 13/13.
