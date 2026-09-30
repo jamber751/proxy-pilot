@@ -3566,3 +3566,25 @@ round-trip. Вторая строка с паролем по-прежнему fa
 корпоративными host routes. Полный прогон дал 859 passed, 9 environment skips и
 один timing-sensitive transport failure; отдельный повтор всех 16 сценариев
 tunnel coordinator прошёл. Целевые model/core/UI/layout проверки также прошли.
+
+### Продолжение 1.5bz — реальный порядок запроса 2FA (30 сентября)
+
+Homebrew OpenVPN остановлен пользователем перед installed acceptance. В пробе
+на настоящем bundled OpenVPN 2.7.7 без ввода секретов подтверждено: Auth prompt
+появляется только после initial `hold release`. Исправлен порядок координатора:
+interface baseline снимается до release, hold снимается один раз, а credential
+prompt блокирует bootstrap до ответа пользователя. Последовательные Auth и
+private-key prompts поддерживаются без повторного release. Coordinator: 16/16.
+
+Для реального managed prompt ожидание ввода увеличено до 90 секунд вместо
+обычного frame timeout 5 секунд. Общая conversation остаётся ограниченной,
+каждый payload и ответ сохраняют 5-секундный deadline и peer reauthentication.
+Закрытие/истечение prompt останавливает принадлежащий попытке engine; состояние
+failed публикуется только после подтверждения остановки. Connected tunnel при
+закрытии UI conversation не останавливается. Listener: 43/43, включая задержку
+ввода более 5 секунд и EOF cleanup; live controller: 6/6.
+
+Ошибки отклонённого профиля, отклонённых настроек и старта движка теперь
+различаются в UI без раскрытия секретов. Кандидат 127 собирается для installed
+acceptance. Успешный реальный вход с одноразовым кодом, маршруты и disconnect
+ещё не засчитаны; публичный релиз не объявлен готовым.

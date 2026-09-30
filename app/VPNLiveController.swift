@@ -41,6 +41,7 @@ extension VPNHelperSession: VPNLiveSession {}
 
 enum VPNLiveControllerError: Error, LocalizedError {
     case notConfigured, unsupportedResources, helperRejected, unverifiedState
+    case profileRejected, configurationRejected, engineStartFailed
 
     var errorDescription: String? {
         switch self {
@@ -48,6 +49,9 @@ enum VPNLiveControllerError: Error, LocalizedError {
         case .unsupportedResources:
             return "В этой версии через VPN можно открыть IP-адреса и сети. Доменные имена пока недоступны."
         case .helperRejected: return "Не удалось применить настройки VPN. Попробуйте ещё раз."
+        case .profileRejected: return "Компонент VPN не принял файл конфигурации. Проверьте профиль и повторите попытку."
+        case .configurationRejected: return "Компонент VPN не принял настройки подключения. Проверьте ресурсы и способ входа."
+        case .engineStartFailed: return "Не удалось запустить подключение VPN. Попробуйте ещё раз."
         case .unverifiedState: return "Подключение не подтверждено. Попробуйте ещё раз."
         }
     }
@@ -104,12 +108,17 @@ final class VPNLiveController: ObservableObject {
             let input = try enabledInput()
             let live = try openSession()
             session = live
-            guard try live.storeProfile(input.profile) == .ok,
-                  try live.apply(input.application) == .ok else {
-                throw VPNLiveControllerError.helperRejected
+            guard try live.storeProfile(input.profile) == .ok else {
+                throw VPNLiveControllerError.profileRejected
+            }
+            guard try live.apply(input.application) == .ok else {
+                throw VPNLiveControllerError.configurationRejected
             }
             expectedApplication = input.application
             let result = try live.connect()
+            guard result.0 == .ok || result.0 == .needsCredential else {
+                throw VPNLiveControllerError.engineStartFailed
+            }
             try accept(result, revision: input.application.revision)
         } catch {
             fail(error)
