@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import os.log
 
 enum VPNHelperListenerError: Error { case unsafeStorage, unavailable, invalidTimeout }
 
@@ -107,12 +108,17 @@ final class VPNHelperListener {
                               additionalReadinessPolicies: additionalReadinessPolicies,
                               startTunnel: { false },
                               startManagedTunnel: { _, _ in
-                                  guard let coordinator = coordinator else { return false }
+                                  guard let coordinator = coordinator else {
+                                      os_log("VPN startup refused: no selected engine", log: OSLog(subsystem: "kz.documentolog.proxypilot.vpn", category: "startup"), type: .error)
+                                      return false
+                                  }
                                   // Leave time inside the authenticated request
                                   // deadline to return a deterministic refusal.
                                   switch try coordinator.start(timeoutMilliseconds: 4_000) {
                                   case .bootstrapReady, .blocked(.credentialRequired): return true
-                                  default: return false
+                                  default:
+                                      os_log("VPN startup refused: coordinator not ready", log: OSLog(subsystem: "kz.documentolog.proxypilot.vpn", category: "startup"), type: .error)
+                                      return false
                                   }
                               }, submitManagedCredential: { response, _ in
                                   guard let coordinator = coordinator else {

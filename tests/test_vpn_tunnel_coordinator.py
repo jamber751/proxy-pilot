@@ -56,6 +56,8 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
             self.assertIn(word, result.stdout)
 
     def test_serialized_held_lifecycle(self): self.run_case('lifecycle', 'passed')
+    def test_startup_diagnostics_never_interpolate_unknown_errors(self):
+        self.run_case('redacted-diagnostics', 'diagnostics redacted')
     def test_routes_are_installed_and_removed_around_the_process(self):
         self.run_case('route-lifecycle', 'routes ordered')
     def test_unproven_route_cleanup_blocks_explicit_stop(self):

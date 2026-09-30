@@ -280,6 +280,15 @@ final class Counter { var value = 0 }
         let test = CommandLine.arguments[1], folder = CommandLine.arguments[2]
         let counter = Counter()
         switch test {
+        case "redacted-diagnostics":
+            let secret = "NEVER-LOG-OTP-PASSWORD-PROFILE"
+            guard VPNStartupDiagnostics.category(CoordinatorCheckError.failed(secret)) == "unclassified",
+                  VPNStartupDiagnostics.category(VPNEngineProcessError.spawnFailed(13)) == "engine-spawn-13",
+                  VPNStartupDiagnostics.category(OpenVPNManagementParseError.malformed) == "management-protocol",
+                  VPNStartupDiagnostics.category(VPNTunnelStateStoreError.stale) == "attempt-stale" else {
+                fail("diagnostic allowlist")
+            }
+            print("diagnostics redacted")
         case "lifecycle":
             let tunnel = try coordinator(folder: folder, behavior: "normal", counter: counter)
             guard case .bootstrapReady(let proof) = try tunnel.start(),

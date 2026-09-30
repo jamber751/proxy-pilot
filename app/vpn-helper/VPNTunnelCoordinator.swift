@@ -1,5 +1,60 @@
 import Darwin
 import Foundation
+import os.log
+
+/// Only allowlisted codes enter the system log, never Error descriptions or
+/// management output (which can contain account names, endpoints or secrets).
+enum VPNStartupDiagnostics {
+    enum Stage: String {
+        case intent, profile, endpoint, process, management, initialize
+        case baseline, releaseHold, credentialPrompt, credentialBinding, bootstrap, routes, cleanup
+    }
+    private static let log = OSLog(subsystem: "kz.documentolog.proxypilot.vpn", category: "startup")
+    static func category(_ error: Error) -> String {
+        switch error {
+        case let value as VPNEngineProcessError:
+            switch value {
+            case .invalidSelection: return "engine-selection"
+            case .validationFailed: return "engine-validation"
+            case .invalidProfile: return "engine-profile"
+            case .invalidManagementEndpoint: return "engine-endpoint"
+            case .spawnFailed(let code): return "engine-spawn-\(code)"
+            case .waitFailed(let code): return "engine-wait-\(code)"
+            }
+        case is VPNProfileVaultError: return "profile-vault"
+        case is VPNManagementSocketReservationError: return "management-reservation"
+        case is OpenVPNManagementClientError: return "management-transport"
+        case is OpenVPNManagementParseError: return "management-protocol"
+        case is VPNKernelInterfaceSnapshotError: return "interface-snapshot"
+        case let value as VPNTunnelStateStoreError:
+            switch value {
+            case .unsafeStorage: return "attempt-storage"
+            case .invalidState: return "attempt-state"
+            case .stale: return "attempt-stale"
+            case .writeFailed: return "attempt-write"
+            }
+        case is OpenVPNHeldCredentialExchangeError: return "credential-binding"
+        case let value as VPNTunnelCoordinatorError:
+            switch value {
+            case .invalidState: return "coordinator-state"
+            case .engineExited: return "engine-exited"
+            case .managementUnavailable: return "management-unavailable"
+            case .managementRejected: return "management-rejected"
+            case .unsafeBootstrapState: return "bootstrap-state"
+            case .unsupportedCredentialPrompt: return "unsupported-prompt"
+            }
+        default: return "unclassified"
+        }
+    }
+    static func failed(_ stage: Stage, _ error: Error) {
+        os_log("VPN startup failed: stage=%{public}@ category=%{public}@", log: log,
+               type: .error, stage.rawValue as NSString, category(error) as NSString)
+    }
+    static func reached(_ stage: Stage) {
+        os_log("VPN startup reached: stage=%{public}@", log: log,
+               type: .default, stage.rawValue as NSString)
+    }
+}
 
 enum VPNTunnelCoordinatorBlocker: Equatable {
     case noEnabledConfiguration
@@ -199,7 +254,9 @@ final class VPNTunnelCoordinator {
         guard process == nil, management == nil, reservation == nil else {
             return .blocked(.alreadyRunning)
         }
-        let launch = try intent()
+        let launch: VPNTunnelLaunchIntent
+        do { launch = try intent() }
+        catch { VPNStartupDiagnostics.failed(.intent, error); throw error }
         guard case .ready(let generation, let digest, let activateRoutes) = launch else {
             if case .blocked(let blocker) = launch { current = .blocked(blocker) }
             return current
@@ -210,12 +267,16 @@ final class VPNTunnelCoordinator {
         let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
         let deadline = now + UInt64(timeoutMilliseconds) * 1_000_000
 
+        var stage = VPNStartupDiagnostics.Stage.profile
         do {
+            VPNStartupDiagnostics.reached(stage)
             let profile = try openProfile(digest)
             defer { close(profile) }
+            stage = .endpoint
             let socket = try VPNManagementSocketReservation(
                 trustedDirectoryDescriptor: managementDirectory)
             reservation = socket
+            stage = .process
             let child = try VPNEngineProcess.start(selection: selection,
                 protectedProfileDescriptor: profile, management: socket.configuration)
             // Retain process ownership before any fallible management or route
@@ -223,25 +284,35 @@ final class VPNTunnelCoordinator {
             // must not deinitialize and implicitly stop this child.
             process = child
             current = .processRunning(generation: generation)
+            stage = .management
             let client = try connect(socket: socket, process: child, deadline: deadline)
             management = client
+            stage = .initialize
             _ = try initialize(client: client, deadline: deadline)
             if try credentials?.outstanding(generation) == true {
                 // Real OpenVPN asks for Auth only after its initial hold is
                 // released. Capture interface evidence first and release once;
                 // the credential prompt itself blocks further bootstrap.
+                stage = .baseline
                 attemptBaseline = try captureInterfaces()
+                stage = .releaseHold
                 try releaseInitialHold(client, deadline: deadline)
                 _ = try awaitSuccess(client, deadline: deadline)
+                stage = .credentialPrompt
                 let kind = try awaitNextCredentialPrompt(client, deadline: deadline)
+                stage = .credentialBinding
                 try parkCredentialPrompt(kind, generation: generation, client: client,
                                          activateRoutes: activateRoutes)
                 current = .blocked(.credentialRequired(kind))
+                VPNStartupDiagnostics.reached(stage)
                 return current
             }
+            stage = .baseline
             let baseline = try attemptBaseline ?? captureInterfaces()
+            stage = .bootstrap
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
+            stage = .routes
             verifyAppliedRoutes = try activateRoutes(proof)
             current = .bootstrapReady(proof)
             return current
@@ -257,16 +328,21 @@ final class VPNTunnelCoordinator {
                 current = .blocked(.credentialRequired(blocker.kind))
                 return current
             } catch let promptError {
+                VPNStartupDiagnostics.failed(.credentialBinding, promptError)
                 current = .failed(generation: generation)
                 credentials?.fail()
                 do { try stopLocked() } catch { throw error }
                 throw promptError
             }
         } catch let startError {
+            VPNStartupDiagnostics.failed(stage, startError)
             current = .failed(generation: generation)
             credentials?.fail()
             do { try stopLocked() }
-            catch let cleanupError { throw cleanupError }
+            catch let cleanupError {
+                VPNStartupDiagnostics.failed(.cleanup, cleanupError)
+                throw cleanupError
+            }
             throw startError
         }
     }

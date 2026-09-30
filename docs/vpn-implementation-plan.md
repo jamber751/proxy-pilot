@@ -3588,3 +3588,24 @@ failed публикуется только после подтверждения
 различаются в UI без раскрытия секретов. Кандидат 127 собирается для installed
 acceptance. Успешный реальный вход с одноразовым кодом, маршруты и disconnect
 ещё не засчитаны; публичный релиз не объявлен готовым.
+
+### Продолжение 1.5ca — безопасная диагностика installed startup (1 октября)
+
+Установленный компонент 127 отвечает readiness, но connect возвращает отказ до
+запроса кода. Изолированная проба с настоящим bundled engine прошла до Auth
+prompt как без привилегий, так и под root (root-пробу запустил пользователь).
+Это не подтверждает успешную VPN-сессию и пока не объясняет отказ production
+coordinator с реальным protected store/selected deployment.
+
+Добавлены системные startup logs с subsystem `kz.documentolog.proxypilot.vpn`,
+category `startup`. Они фиксируют этап и только allowlisted error category:
+intent, profile, endpoint, process, management, initialize, baseline, hold
+release, credential prompt/binding, bootstrap, routes и cleanup. Неизвестный
+Error всегда превращается в `unclassified`: его description, profile bytes,
+management output, account names, адреса и секреты не интерполируются.
+Отдельно отмечается отказ из-за отсутствия выбранного движка.
+
+Coordinator 17/17 и listener 43/43 прошли, включая проверку redaction. Для
+установленных логов готовится diagnostic helper 128; live acceptance остаётся
+приостановленным, пока пользователь работает через Homebrew OpenVPN. Brew,
+маршруты и системные настройки во время этой работы не меняются.
