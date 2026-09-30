@@ -322,7 +322,7 @@ final class VPNPanelModel: ObservableObject {
     private func importProfiles(_ urls: [URL]) {
         do {
             try configuration.importProfile(files: urls)
-            login = ""
+            login = configuration.profile?.suggestedLogin ?? ""
             authenticationChoice = nil
             if configuration.profile?.requiresCredentials == false {
                 try configuration.setAuthentication(mode: .certificate)

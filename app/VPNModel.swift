@@ -50,6 +50,7 @@ enum VPNConnectionAvailability: Equatable {
 struct VPNProfileSummary: Equatable {
     let name: String
     let requiresCredentials: Bool
+    let suggestedLogin: String?
     let requiresKeyPassword: Bool
     let suggestedDNS: [String]
     let suggestedResources: [VPNResource]
@@ -58,6 +59,7 @@ struct VPNProfileSummary: Equatable {
     init(_ profile: VPNImportedProfile) {
         name = profile.name
         requiresCredentials = profile.requiresCredentials
+        suggestedLogin = profile.suggestedLogin
         requiresKeyPassword = profile.requiresKeyPassword
         suggestedDNS = profile.suggestedDNS
         suggestedResources = profile.suggestedResources

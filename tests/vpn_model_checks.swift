@@ -37,6 +37,22 @@ QUJDRA==
 </key>
 """
 
+private let inlineLoginProfile = """
+client
+dev tun
+proto udp
+remote vpn.company.example 1194
+remote-cert-tls server
+<auth-user-pass>
+devzotarbayev
+</auth-user-pass>
+<ca>
+-----BEGIN CERTIFICATE-----
+QUJDRA==
+-----END CERTIFICATE-----
+</ca>
+"""
+
 @main struct VPNModelChecks {
     static var checks = 0
 
@@ -69,7 +85,32 @@ QUJDRA==
         try pendingLabels(base.appendingPathComponent("pending"))
         try suggestedRoutes(base.appendingPathComponent("suggestions"))
         try previewIsolation(base.appendingPathComponent("must-not-exist"))
+        try inlineLoginImport()
         print("vpn-model: \(checks) checks passed")
+    }
+
+    static func inlineLoginImport() throws {
+        let imported = try VPNProfileImporter.inspect(data: Data(inlineLoginProfile.utf8),
+                                                      name: "devzotarbayev.ovpn")
+        try check(imported.requiresCredentials && imported.suggestedLogin == "devzotarbayev",
+                  "username-only inline auth file is recognized without a secret")
+        let roundTrip = try VPNProfileImporter.inspect(data: imported.protectedContents,
+                                                       name: imported.name)
+        try check(roundTrip.suggestedLogin == "devzotarbayev",
+                  "suggested login survives protected profile persistence")
+        let commented = inlineLoginProfile.replacingOccurrences(
+            of: "devzotarbayev\n</auth-user-pass>",
+            with: "# generated login\ndevzotarbayev\n\n</auth-user-pass>")
+        let normalized = try VPNProfileImporter.inspect(data: Data(commented.utf8), name: "comments.ovpn")
+        let normalizedText = String(decoding: normalized.protectedContents, as: UTF8.self)
+        try check(!normalizedText.contains("generated login") && normalized.suggestedLogin == "devzotarbayev",
+                  "inline auth comments are not passed to OpenVPN as credentials")
+        let embeddedPassword = inlineLoginProfile.replacingOccurrences(
+            of: "devzotarbayev\n</auth-user-pass>",
+            with: "devzotarbayev\nsecret\n</auth-user-pass>")
+        try rejectsImport {
+            _ = try VPNProfileImporter.inspect(data: Data(embeddedPassword.utf8), name: "secret.ovpn")
+        }
     }
 
     static func loadImportAndDrafts(_ directory: URL) throws {

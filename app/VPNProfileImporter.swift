@@ -25,6 +25,9 @@ enum VPNImportError: Error, LocalizedError, Equatable {
 struct VPNImportedProfile: CustomStringConvertible, CustomDebugStringConvertible {
     let name: String
     let requiresCredentials: Bool
+    /// A non-secret username supplied by an inline auth-user-pass block.
+    /// Password lines are rejected during import and are never persisted.
+    let suggestedLogin: String?
     let requiresKeyPassword: Bool
     let suggestedDNS: [String]
     let suggestedResources: [VPNResource]
@@ -44,7 +47,7 @@ struct VPNImportedProfile: CustomStringConvertible, CustomDebugStringConvertible
 
 enum VPNProfileImporter {
     static let maximumBytes = 1_048_576
-    private static let blocks: Set<String> = ["ca", "cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2"]
+    private static let blocks: Set<String> = ["ca", "cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2", "auth-user-pass"]
     private static let transports: Set<String> = ["udp", "udp4", "udp6", "tcp-client", "tcp4-client", "tcp6-client"]
     // Explicit suites only: never pass OpenSSL expressions such as ALL,
     // @SECLEVEL=0, exclusions or arbitrary provider settings from a profile.
@@ -95,15 +98,23 @@ enum VPNProfileImporter {
         var resources: [VPNResource] = []
         var block: String?, blockLines: [String] = []
         var servers = 0, credentials = false, encrypted = false, ignoredRoutes = false
+        var suggestedLogin: String?
         var client = false, tun = false, verifiedServer = false
         for raw in lines {
             guard raw.utf8.count <= 16384 else { throw VPNImportError.malformed }
             let line = raw.trimmingCharacters(in: .whitespaces)
             if let current = block {
                 if line == "</\(current)>" {
-                    try validateBlock(current, lines: blockLines)
-                    encrypted = encrypted || (current == "key" && blockLines.contains(where: { $0.contains("ENCRYPTED") }))
-                    safe += ["<\(current)>"] + blockLines + ["</\(current)>"]
+                    if current == "auth-user-pass" {
+                        let login = try validateInlineLogin(blockLines)
+                        suggestedLogin = login
+                        credentials = true
+                        safe += ["<\(current)>", login, "</\(current)>"]
+                    } else {
+                        try validateBlock(current, lines: blockLines)
+                        encrypted = encrypted || (current == "key" && blockLines.contains(where: { $0.contains("ENCRYPTED") }))
+                        safe += ["<\(current)>"] + blockLines + ["</\(current)>"]
+                    }
                     block = nil; blockLines = []; continue
                 }
                 guard !line.contains("<"), !line.contains(">") else { throw VPNImportError.malformed }
@@ -113,6 +124,7 @@ enum VPNProfileImporter {
             if line.hasPrefix("<") {
                 guard line.hasSuffix(">"), blocks.contains(String(line.dropFirst().dropLast())) else { throw VPNImportError.unsupported }
                 let tag = String(line.dropFirst().dropLast())
+                guard tag != "auth-user-pass" || !seen.contains(tag) else { throw VPNImportError.malformed }
                 guard inline.insert(tag).inserted else { throw VPNImportError.malformed }
                 block = tag; continue
             }
@@ -122,7 +134,7 @@ enum VPNProfileImporter {
             if option.hasPrefix("--") { option = String(option.dropFirst(2)) }
             guard option.range(of: "^[a-z][a-z0-9-]*$", options: .regularExpression) != nil else { throw VPNImportError.malformed }
             let args = tokens
-            if !["remote", "route", "route-ipv6", "dhcp-option"].contains(option), !seen.insert(option).inserted {
+            if !["remote", "route", "route-ipv6", "dhcp-option", "pull-filter"].contains(option), !seen.insert(option).inserted {
                 throw VPNImportError.malformed
             }
             switch option {
@@ -139,7 +151,10 @@ enum VPNProfileImporter {
                 servers += 1
             case "proto": guard args.count == 1, transports.contains(args[0]) else { throw VPNImportError.unsupported }
             case "port": try arity(args, 1); try number(args[0], range: 1...65535)
-            case "auth-user-pass": guard args.isEmpty else { throw VPNImportError.externalFilesRequired }; credentials = true
+            case "auth-user-pass":
+                guard !inline.contains(option) else { throw VPNImportError.malformed }
+                guard args.isEmpty else { throw VPNImportError.externalFilesRequired }
+                credentials = true
             case "ca", "cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2", "pkcs12", "askpass":
                 throw VPNImportError.externalFilesRequired
             case "remote-cert-tls": guard args == ["server"] else { throw VPNImportError.missingServerVerification }; verifiedServer = true
@@ -152,6 +167,12 @@ enum VPNProfileImporter {
                 try arity(args, 0)
             case "resolv-retry":
                 try arity(args, 1); if args[0] != "infinite" { try number(args[0], range: 0...86400) }
+            case "auth-retry":
+                guard args == ["interact"] else { throw VPNImportError.unsupported }
+            case "pull-filter":
+                guard args == ["ignore", "redirect-gateway"] || args == ["ignore", "dhcp-option DNS"]
+                else { throw VPNImportError.unsupported }
+                continue // The generated route-only profile already rejects pushed routes and global DNS.
             case "verb": try arity(args, 1); try number(args[0], range: 0...4)
             case "explicit-exit-notify":
                 guard args.count <= 1 else { throw VPNImportError.malformed }
@@ -206,7 +227,8 @@ enum VPNProfileImporter {
         // Defense in depth for the eventual config builder. This candidate alone
         // cannot handle pushed options, DNS, route ownership or helper permissions.
         safe += ["route-nopull", "script-security 1", "auth-nocache"]
-        return VPNImportedProfile(name: name, requiresCredentials: credentials, requiresKeyPassword: encrypted,
+        return VPNImportedProfile(name: name, requiresCredentials: credentials, suggestedLogin: suggestedLogin,
+                                  requiresKeyPassword: encrypted,
                                   suggestedDNS: dns, suggestedResources: resources, hasIgnoredRoutes: ignoredRoutes,
                                   validatedData: Data((safe.joined(separator: "\n") + "\n").utf8))
     }
@@ -281,5 +303,17 @@ enum VPNProfileImporter {
         } else {
             guard let bytes = Data(base64Encoded: payload), !bytes.isEmpty else { throw VPNImportError.malformed }
         }
+    }
+
+    private static func validateInlineLogin(_ lines: [String]) throws -> String {
+        // OpenVPN accepts an inline auth file. ProxyPilot supports its useful
+        // username-only form, but deliberately refuses a saved password.
+        let content = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") && !$0.hasPrefix(";") }
+        guard content.count == 1 else { throw VPNImportError.unsupported }
+        let login = content[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !login.isEmpty, login.utf8.count <= 255,
+              !login.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { throw VPNImportError.malformed }
+        return login
     }
 }
