@@ -78,6 +78,23 @@ import Foundation
         var validations = 0
 
         switch test {
+        case "engine-fd-20", "engine-fd-21", "engine-fd-22":
+            let target = Int32(test.dropFirst("engine-fd-".count))!
+            let config = profile(folder, contents: "exit"); defer { close(config) }
+            guard fcntl(target, F_GETFD) == -1, errno == EBADF else { fail("occupied test descriptor") }
+            let relocated = VPNEngineExecutableSelection.test {
+                let source = open(CommandLine.arguments[0], O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+                guard source >= 0, dup2(source, target) == target,
+                      fcntl(target, F_SETFD, FD_CLOEXEC) == 0 else {
+                    fail("relocate engine source")
+                }
+                close(source)
+                return target
+            }
+            let process = try VPNEngineProcess.start(selection: relocated, protectedProfileDescriptor: config)
+            guard try process.wait(timeoutMilliseconds: 2_000) == .exited(23) else { fail("collision exit") }
+            requireNoChildren()
+            print("descriptor collision passed")
         case "exit":
             let config = profile(folder, contents: "exit"); defer { close(config) }
             let process = try VPNEngineProcess.start(selection: selection(counter: &validations),

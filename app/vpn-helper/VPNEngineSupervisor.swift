@@ -285,6 +285,24 @@ final class VPNEngineSupervisorClient {
         }
         let executable = try currentExecutable()
         defer { close(executable.descriptor) }
+        // File actions run in order in the child. Sources may already be 20/21/22
+        // in a busy daemon: copying control to 20 must not overwrite the engine
+        // before the later copy to 22. Relocate every source above all targets.
+        let stagedControl = fcntl(pair[1], F_DUPFD_CLOEXEC, 64)
+        guard stagedControl >= 0 else {
+            close(pair[0]); throw VPNEngineProcessError.spawnFailed(errno)
+        }
+        defer { close(stagedControl) }
+        let stagedProfile = fcntl(profileDescriptor, F_DUPFD_CLOEXEC, 64)
+        guard stagedProfile >= 0 else {
+            close(pair[0]); throw VPNEngineProcessError.spawnFailed(errno)
+        }
+        defer { close(stagedProfile) }
+        let stagedEngine = fcntl(engineDescriptor, F_DUPFD_CLOEXEC, 64)
+        guard stagedEngine >= 0 else {
+            close(pair[0]); throw VPNEngineProcessError.spawnFailed(errno)
+        }
+        defer { close(stagedEngine) }
         var actions: posix_spawn_file_actions_t? = nil
         var attributes: posix_spawnattr_t? = nil
         guard posix_spawn_file_actions_init(&actions) == 0,
@@ -301,9 +319,9 @@ final class VPNEngineSupervisorClient {
         guard posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, null, O_RDONLY, 0) == 0,
               posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, null, O_WRONLY, 0) == 0,
               posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, null, O_WRONLY, 0) == 0,
-              posix_spawn_file_actions_adddup2(&actions, pair[1], 20) == 0,
-              posix_spawn_file_actions_adddup2(&actions, profileDescriptor, 21) == 0,
-              posix_spawn_file_actions_adddup2(&actions, engineDescriptor, 22) == 0 else {
+              posix_spawn_file_actions_adddup2(&actions, stagedControl, 20) == 0,
+              posix_spawn_file_actions_adddup2(&actions, stagedProfile, 21) == 0,
+              posix_spawn_file_actions_adddup2(&actions, stagedEngine, 22) == 0 else {
             close(pair[0]); throw VPNEngineProcessError.spawnFailed(EINVAL)
         }
         let flags = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF

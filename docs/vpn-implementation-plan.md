@@ -3609,3 +3609,22 @@ Coordinator 17/17 и listener 43/43 прошли, включая проверк�
 установленных логов готовится diagnostic helper 128; live acceptance остаётся
 приостановленным, пока пользователь работает через Homebrew OpenVPN. Brew,
 маршруты и системные настройки во время этой работы не меняются.
+
+### Продолжение 1.5cb — collision-safe supervisor descriptors (1 октября)
+
+Installed startup logs 128 локализовали отказ до management socket:
+`stage=process category=engine-wait-32` (EPIPE). В отдельной пробе точного
+подписанного helper без запуска VPN воспроизведён ранний exit 65, если входной
+engine descriptor равен 20. Последовательные posix_spawn file actions сначала
+перезаписывали 20 каналом управления, а затем копировали уже неправильный
+дескриптор в engine target 22. Малые тестовые процессы избегали такого
+расположения, что объясняет ранее успешную изолированную пробу.
+
+Все три источника теперь дублируются CLOEXEC-дескрипторами от 64 до начала
+file actions, вне target namespace 20/21/22. Ownership, inode/signature checks,
+empty environment, child FD hygiene и EOF cleanup не ослаблены. Добавлены
+regression cases для engine source 20, 21 и 22. Engine process 9/9 и coordinator
+17/17 прошли. Кандидат 129 готовится; исправление совпадает с наблюдаемым
+симптомом, но причина installed отказа окончательно подтверждается только
+повторной попыткой после установки. Реальные OTP, routes и disconnect пока
+не засчитаны.

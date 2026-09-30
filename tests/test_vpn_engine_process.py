@@ -42,6 +42,11 @@ class VPNEngineProcessTests(unittest.TestCase):
     def test_fixed_argv_empty_environment_fd_hygiene_and_exit(self):
         self.run_case('exit', 'passed')
 
+    def test_engine_source_may_overlap_each_supervisor_target_descriptor(self):
+        for descriptor in (20, 21, 22):
+            with self.subTest(descriptor=descriptor):
+                self.run_case(f'engine-fd-{descriptor}', 'descriptor collision passed')
+
     def test_graceful_termination_and_reaping(self):
         self.run_case('term', 'passed')
 
