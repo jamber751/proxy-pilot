@@ -68,15 +68,28 @@ enum VPNRouteIdentityFactory {
 final class VPNRouteTransaction {
     private let journal: VPNRouteJournal
     private let kernel: VPNRouteKernelController
+    private let checkAuthority: () throws -> Void
     private let lock = NSLock()
 
+    #if VPN_ROUTE_TRANSACTION_TESTING
     init(journal: VPNRouteJournal, kernel: VPNRouteKernelController) {
         self.journal = journal
         self.kernel = kernel
+        checkAuthority = {}
     }
+    #else
+    init(journal: VPNRouteJournal, kernel: VPNRouteKernelController,
+         runtimeLease: VPNLifecycleLease) {
+        self.journal = journal
+        self.kernel = kernel
+        checkAuthority = { try runtimeLease.check() }
+    }
+    #endif
 
     func install(_ plan: VPNRoutePlan) throws -> VPNRouteAppliedProof {
         lock.lock(); defer { lock.unlock() }
+        do { try checkAuthority() }
+        catch { throw VPNRouteTransactionError.recoveryRequired }
         let identities = try VPNRouteIdentityFactory.make(plan: plan)
         guard identities.count == plan.routes.count else {
             throw VPNRouteTransactionError.invalidPlan
@@ -84,18 +97,21 @@ final class VPNRouteTransaction {
         // A matching pre-existing route is still foreign on a fresh install.
         // Ownership begins only after our durable beginInstall checkpoint.
         for identity in identities {
+            do { try checkAuthority() }
+            catch { throw VPNRouteTransactionError.recoveryRequired }
             guard try kernel.lookupExact(identity.destination) == nil else {
                 throw VPNRouteTransactionError.preexistingRoute
             }
         }
-        do { _ = try journal.create(plan) }
+        do { try checkAuthority(); _ = try journal.create(plan) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
 
         for identity in identities {
-            do { _ = try journal.beginInstall(identity, generation: plan.generation,
+            do { try checkAuthority(); _ = try journal.beginInstall(identity, generation: plan.generation,
                                                revision: plan.revision) }
             catch { throw VPNRouteTransactionError.recoveryRequired }
             do {
+                try checkAuthority()
                 let result = try kernel.add(identity)
                 guard result == .installed else {
                     _ = try journal.resolveInstall(identity, present: false,
@@ -128,6 +144,8 @@ final class VPNRouteTransaction {
 
     func verifyApplied(_ proof: VPNRouteAppliedProof) throws {
         lock.lock(); defer { lock.unlock() }
+        do { try checkAuthority() }
+        catch { throw VPNRouteTransactionError.notApplied }
         try verifyAppliedLocked(proof)
     }
 
@@ -135,10 +153,14 @@ final class VPNRouteTransaction {
     /// never resumes installation forward; it reconciles and rolls back.
     func recoverToIdle() throws {
         lock.lock(); defer { lock.unlock() }
+        do { try checkAuthority() }
+        catch { throw VPNRouteTransactionError.recoveryRequired }
         try rollbackAndRetireLocked()
     }
 
     private func verifyAppliedLocked(_ proof: VPNRouteAppliedProof) throws {
+        do { try checkAuthority() }
+        catch { throw VPNRouteTransactionError.notApplied }
         let snapshot: VPNRouteJournalSnapshot
         do { snapshot = try journal.load() }
         catch { throw VPNRouteTransactionError.notApplied }
@@ -149,6 +171,8 @@ final class VPNRouteTransaction {
             throw VPNRouteTransactionError.notApplied
         }
         for identity in proof.identities {
+            do { try checkAuthority() }
+            catch { throw VPNRouteTransactionError.notApplied }
             guard let observed = try kernel.lookupExact(identity.destination),
                   observed.matches(identity) else {
                 throw VPNRouteTransactionError.notApplied
@@ -159,6 +183,8 @@ final class VPNRouteTransaction {
     private func rollbackAndRetireLocked() throws {
         let limit = 2_010
         for _ in 0..<limit {
+            do { try checkAuthority() }
+            catch { throw VPNRouteTransactionError.recoveryRequired }
             let snapshot: VPNRouteJournalSnapshot
             do { snapshot = try journal.load() }
             catch VPNRouteJournalError.missing { return }
@@ -206,7 +232,7 @@ final class VPNRouteTransaction {
             throw VPNRouteTransactionError.cleanupBlocked
         }
         let observed: VPNDarwinRouteSnapshot?
-        do { observed = try kernel.lookupExact(operation.entry.destination) }
+        do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.destination) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         let owned = observed?.matches(operation.entry) == true
         do { _ = try journal.resolveInstall(operation.entry, present: owned,
@@ -218,12 +244,12 @@ final class VPNRouteTransaction {
     private func remove(_ identity: VPNOwnedRouteIdentity,
                         plan: VPNRoutePlan) throws {
         let observed: VPNDarwinRouteSnapshot?
-        do { observed = try kernel.lookupExact(identity.destination) }
+        do { try checkAuthority(); observed = try kernel.lookupExact(identity.destination) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         if let observed, !observed.matches(identity) {
             throw VPNRouteTransactionError.cleanupBlocked
         }
-        do { _ = try journal.beginRemove(identity, generation: plan.generation,
+        do { try checkAuthority(); _ = try journal.beginRemove(identity, generation: plan.generation,
                                           revision: plan.revision) }
         catch { throw VPNRouteTransactionError.cleanupBlocked }
         guard observed != nil else {
@@ -234,6 +260,7 @@ final class VPNRouteTransaction {
             return
         }
         do {
+            try checkAuthority()
             guard try kernel.delete(identity) == .removed else {
                 throw VPNRouteTransactionError.recoveryRequired
             }
@@ -250,13 +277,14 @@ final class VPNRouteTransaction {
             throw VPNRouteTransactionError.cleanupBlocked
         }
         let observed: VPNDarwinRouteSnapshot?
-        do { observed = try kernel.lookupExact(operation.entry.destination) }
+        do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.destination) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         if let observed, !observed.matches(operation.entry) {
             throw VPNRouteTransactionError.cleanupBlocked
         }
         if observed != nil {
             do {
+                try checkAuthority()
                 guard try kernel.delete(operation.entry) == .removed else {
                     throw VPNRouteTransactionError.recoveryRequired
                 }

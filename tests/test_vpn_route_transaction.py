@@ -29,7 +29,8 @@ class VPNRouteTransactionTests(unittest.TestCase):
                    ROOT / 'app/vpn-helper/VPNDarwinRouteSocket.swift',
                    ROOT / 'app/vpn-helper/VPNRouteTransaction.swift',
                    ROOT / 'tests/vpn_route_transaction_checks.swift']
-        result = subprocess.run(['swiftc', '-target', f'{arch}-apple-macosx11.0',
+        result = subprocess.run(['swiftc', '-D', 'VPN_ROUTE_TRANSACTION_TESTING',
+                                 '-target', f'{arch}-apple-macosx11.0',
                                  *map(str, sources), '-o', str(cls.binary)],
                                 capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
@@ -52,6 +53,8 @@ class VPNRouteTransactionTests(unittest.TestCase):
 
     def test_transaction_has_no_hold_dns_or_connected_authority(self):
         source = (ROOT / 'app/vpn-helper/VPNRouteTransaction.swift').read_text()
+        self.assertIn('runtimeLease: VPNLifecycleLease', source)
+        self.assertIn('try runtimeLease.check()', source)
         for forbidden in ('releaseHold', 'scutil', 'networksetup', 'markConnected',
                           'VPNTunnelStateStore', 'OpenVPNManagementClient'):
             self.assertNotIn(forbidden, source)
