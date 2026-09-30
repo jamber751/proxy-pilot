@@ -3276,3 +3276,28 @@ x86_64, объединён в universal binary и успешно прошёл st
 маршруты после bootstrap и гарантированно очистить их перед каждым stop/error.
 После этого отдельно подключить multi-prompt callbacks. Scoped DNS и публичный
 Connected остаются последующими gates; release/tag до них не создаётся.
+
+### Продолжение 1.5bl — route lifecycle integration (30 сентября)
+
+Route controller подключён к production daemon через тот же runtime lease,
+который владеет endpoint и процессом. Exact attempt binding после bootstrap
+атомарно переводит выбранную pending-конфигурацию в active и только затем
+разрешает route transaction. Coordinator удерживает OpenVPN ownership до конца
+всех fallible management/route шагов: ошибка установки маршрутов сначала
+откатывает journal, затем останавливает процесс.
+
+Любой явный stop, disconnect и post-bootstrap failure теперь обязан успешно
+выполнить `prepareForProcessStop` до management stop/закрытия supervisor. Если
+cleanup нельзя доказать, команда возвращает ошибку, процесс остаётся во владении
+coordinator, а journal сохраняется для безопасного retry/recovery. Deinit после
+аварии остаётся crash-equivalent safety boundary: supervisor останавливает child,
+но недоказанный journal не удаляется и будет откатан при следующем старте.
+
+Пройдены 59 listener/coordinator/state, 29 объединённых focused route/lifecycle
+проверок, production installer fixture, полный source-graph typecheck и universal
+arm64/x86_64 helper build со strict codesign. Актуальный `main` также впервые
+после source-graph исправлений полностью прошёл оба GitHub Actions job.
+
+Следующий узел — связать prompt-driven management events с durable multi-prompt
+state machine и transient credential transport. DNS и публичный Connected всё
+ещё заблокированы отдельными gates; release/tag не создаётся.
