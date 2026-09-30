@@ -3675,3 +3675,30 @@ tunnel address, peer endpoint и optional local endpoint. Ни адреса, н�
 ни token не интерполируются в логи. Кандидат 131 собирается. Эти compatibility
 bugs подтверждены кодом upstream/fixtures, но точный вариант текущего installed
 protocol refusal требует повторной live попытки. Live acceptance ещё pending.
+
+### Продолжение 1.5ce — Darwin default-route replies (1 октября)
+
+Installed 131 прошёл management bootstrap и новое kernel tunnel evidence:
+отказ теперь `stage=routes category=unclassified`. После попытки не осталось
+engine process или маршрутов к трём выбранным ресурсам; полное подключение
+ещё не засчитано. Read-only production PF_ROUTE harness воспроизвёл отказ
+без VPN и без сетевых изменений: lookupExact для каждого ресурса возвращал
+malformedMessage на обычном default best-route reply.
+
+Причины: Darwin PF_ROUTE использует ROUNDUP32 (4 байта, не размер Swift Int),
+а default netmask имеет sa_len=0 и занимает 4 байта. Наш decoder отвергал
+такую маску и /0, хотя RTM_GET возвращает best match, а не только exact match.
+Codec и peer resolver теперь используют 4-byte alignment. Только RTAX_NETMASK
+может иметь нулевую длину. Валидный default RTM_GET возвращает nil exact
+snapshot; /0 никогда не становится owned route, mutation evidence или VPN
+resource. RTM_ADD/DELETE с default evidence по-прежнему отклоняются.
+
+Независимые IPv4/IPv6 wire fixtures проверяют 4-byte zero mask, default fallback
+перед exact install, запрет default delete/mutation и повреждённых sockaddr.
+Read-only harness после исправления прошёл peer lookup и все три resource
+lookup. Это подтверждает исправление локально воспроизведённого блокера,
+но реальная route installation/disconnect acceptance требует кандидата 132.
+Route socket 2/2, peer evidence 2/2, transaction 8/8, tunnel route controller
+7/7, route plan 15/15, coordinator 17/17, listener 43/43: 94/94 прошли.
+Источник ABI: Apple XNU bsd/net/rtsock.c ROUNDUP32:
+https://github.com/apple/darwin-xnu/blob/main/bsd/net/rtsock.c

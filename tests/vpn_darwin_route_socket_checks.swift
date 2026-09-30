@@ -191,6 +191,81 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
         print("matching passed")
     }
 
+    // Independent Darwin wire fixture: sockaddr alignment is four bytes,
+    // including a zero-length default netmask. Do not use the codec encoder.
+    static func defaultReply(family: VPNRouteAddressFamily, type: UInt8 = UInt8(RTM_GET),
+                             sequence: Int32 = 1, pid: Int32 = 515) -> Data {
+        let length = family == .ipv4 ? 16 : 28
+        var destination = Data(repeating: 0, count: length)
+        destination[0] = UInt8(length)
+        destination[1] = UInt8(family == .ipv4 ? AF_INET : AF_INET6)
+        // Kernel may echo the queried host in the destination field.
+        destination[family == .ipv4 ? 4 : 8] = family == .ipv4 ? 198 : 0x20
+        var gateway = destination
+        gateway[family == .ipv4 ? 4 : 8] = family == .ipv4 ? 192 : 0x20
+        var body = destination; body.append(gateway)
+        body.append(Data(repeating: 0, count: 4))
+        var header = rt_msghdr()
+        header.rtm_msglen = UInt16(MemoryLayout<rt_msghdr>.size + body.count)
+        header.rtm_version = UInt8(RTM_VERSION); header.rtm_type = type
+        header.rtm_index = UInt16(interfaceIndex())
+        header.rtm_flags = RTF_UP | RTF_GATEWAY | RTF_STATIC | RTF_DONE
+        header.rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK
+        header.rtm_seq = sequence; header.rtm_pid = pid
+        var reply = withUnsafeBytes(of: &header) { Data($0) }
+        reply.append(body); return reply
+    }
+
+    static func defaultBestRoute() throws {
+        for family in [VPNRouteAddressFamily.ipv4, .ipv6] {
+            let reply = defaultReply(family: family)
+            let decoded = try VPNDarwinRouteCodec.decode(reply)
+            try require(decoded.snapshot == nil, "default must not become owned evidence")
+            let fake = FakeRouteTransport(); fake.replies = [.success(reply)]
+            let host = try VPNRoutePrefix(resource: VPNResource(address:
+                family == .ipv4 ? "198.51.100.44" : "2001:db8::44"))
+            let result = try VPNDarwinRouteSocket(transport: fake, pid: 515).lookupExact(host)
+            try require(result == nil && fake.sent.count == 1, "default is not exact")
+            var oversized = reply
+            oversized.append(Data(repeating: 0, count: 4))
+            var oversizedHeader = try VPNDarwinRouteCodec.identify(reply)
+            oversizedHeader.rtm_msglen = UInt16(oversized.count)
+            withUnsafeBytes(of: &oversizedHeader) {
+                oversized.replaceSubrange(0..<MemoryLayout<rt_msghdr>.size, with: $0)
+            }
+            do { _ = try VPNDarwinRouteCodec.decode(oversized)
+                 throw NSError(domain: "64-bit mask padding accepted", code: 1) }
+            catch VPNDarwinRouteError.malformedMessage {}
+            for type in [UInt8(RTM_ADD), UInt8(RTM_DELETE)] {
+                do {
+                    _ = try VPNDarwinRouteCodec.decode(defaultReply(family: family, type: type))
+                    throw NSError(domain: "default mutation accepted", code: 1)
+                } catch VPNDarwinRouteError.malformedMessage {}
+            }
+            var invalid = reply
+            invalid[MemoryLayout<rt_msghdr>.size] = 0
+            do { _ = try VPNDarwinRouteCodec.decode(invalid)
+                 throw NSError(domain: "zero destination sockaddr accepted", code: 1) }
+            catch VPNDarwinRouteError.malformedMessage {}
+        }
+        let identity = try identities()[1], fake = FakeRouteTransport(), pid: Int32 = 515
+        fake.replies = [
+            .success(defaultReply(family: .ipv4)),
+            .success(try VPNDarwinRouteCodec.encodeReply(type: UInt8(RTM_ADD), sequence: 2,
+                pid: pid, error: 0, identity: nil)),
+            .success(try VPNDarwinRouteCodec.encodeReply(type: UInt8(RTM_GET), sequence: 3,
+                pid: pid, error: 0, identity: identity))
+        ]
+        let added = try VPNDarwinRouteSocket(transport: fake, pid: pid).add(identity)
+        try require(added == .installed, "default fallback allows exact install")
+        let foreign = FakeRouteTransport(); foreign.replies = [.success(defaultReply(family: .ipv4))]
+        do { _ = try VPNDarwinRouteSocket(transport: foreign, pid: pid).delete(identity)
+             throw NSError(domain: "default deleted", code: 1) }
+        catch VPNDarwinRouteError.missingOrForeign {}
+        try require(foreign.sent.count == 1, "default never mutated")
+        print("default best route passed")
+    }
+
     static func addCases() throws {
         let identity = try identities()[1], pid: Int32 = 701
         let missing = try VPNDarwinRouteCodec.encodeReply(type: UInt8(RTM_GET), sequence: 1,
@@ -274,7 +349,8 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
     }
 
     static func main() throws {
-        try codec(); try malformed(); try matchingAndErrno(); try addCases(); try deleteCases()
+        try codec(); try malformed(); try matchingAndErrno(); try defaultBestRoute()
+        try addCases(); try deleteCases()
         guard CommandLine.arguments.count == 2 else { exit(64) }
         try recovery(CommandLine.arguments[1]); print("route socket checks passed")
     }

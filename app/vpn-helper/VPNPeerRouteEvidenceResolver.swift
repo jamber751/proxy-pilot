@@ -97,7 +97,7 @@ final class VPNPeerRouteEvidenceResolver {
 
 private enum VPNBestRouteReplyDecoder {
     private static let headerSize = MemoryLayout<rt_msghdr>.size
-    private static let wordSize = MemoryLayout<Int>.size
+    private static let wordSize = MemoryLayout<UInt32>.size
 
     static func decode(_ data: Data, peer: OpenVPNIPAddress) throws -> VPNRoutePeerEvidence {
         let header: rt_msghdr

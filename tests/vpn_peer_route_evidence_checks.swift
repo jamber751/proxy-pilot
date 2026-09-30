@@ -21,7 +21,7 @@ final class FakePeerRouteTransport: VPNRouteSocketTransport {
 
 @main enum VPNPeerRouteEvidenceChecks {
     static let headerSize = MemoryLayout<rt_msghdr>.size
-    static let wordSize = MemoryLayout<Int>.size
+    static let wordSize = MemoryLayout<UInt32>.size
 
     static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw NSError(domain: message, code: 1) }

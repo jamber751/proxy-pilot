@@ -126,7 +126,8 @@ enum VPNDarwinRouteMutationResult: Equatable { case installed, alreadyPresent, r
 enum VPNDarwinRouteCodec {
     static let maximumMessageBytes = 64 * 1024
     private static let headerSize = MemoryLayout<rt_msghdr>.size
-    private static let wordSize = MemoryLayout<Int>.size
+    // PF_ROUTE uses ROUNDUP32 on both 64-bit Darwin architectures.
+    private static let wordSize = MemoryLayout<UInt32>.size
 
     static func encode(type: UInt8, sequence: Int32, pid: Int32,
                        identity: VPNOwnedRouteIdentity) throws -> Data {
@@ -202,8 +203,18 @@ enum VPNDarwinRouteCodec {
         let index = UInt32(header.rtm_index)
         guard index > 0 else { throw VPNDarwinRouteError.malformedMessage }
         let name = try interfaceName(index)
-        let gateway = try gatewayBytes(sockaddrs[Int(RTAX_GATEWAY)], family: destination.family,
+        let family = try ipBytes(destinationAddress).family
+        let gateway = try gatewayBytes(sockaddrs[Int(RTAX_GATEWAY)], family: family,
                                        interfaceIndex: index, interfaceName: name)
+        // RTM_GET returns the best route, including the default when the
+        // requested exact route does not exist. A default is never an owned
+        // route and must not enter VPNRoutePrefix (which forbids /0).
+        guard let destination else {
+            guard header.rtm_type == UInt8(RTM_GET), header.rtm_errno == 0 else {
+                throw VPNDarwinRouteError.malformedMessage
+            }
+            return (header.rtm_type, header.rtm_seq, header.rtm_pid, header.rtm_errno, nil)
+        }
         let routeFlags = UInt32(bitPattern: header.rtm_flags) & ~UInt32(RTF_DONE)
         let snapshot = VPNDarwinRouteSnapshot(destination: destination, gatewayBytes: gateway,
             interfaceIndex: index, interfaceName: name, flags: routeFlags)
@@ -279,7 +290,13 @@ enum VPNDarwinRouteCodec {
         var result: [Int: Data] = [:], offset = 0
         for index in 0..<Int(RTAX_MAX) where mask & (1 << index) != 0 {
             guard offset + 2 <= body.count else { throw VPNDarwinRouteError.malformedMessage }
-            let length = Int(body[offset])
+            let declared = Int(body[offset])
+            // Darwin represents the default netmask with sa_len == 0,
+            // occupying one aligned word. No other sockaddr may use it.
+            guard declared != 0 || index == Int(RTAX_NETMASK) else {
+                throw VPNDarwinRouteError.malformedMessage
+            }
+            let length = declared == 0 ? wordSize : declared
             guard length >= 2, length <= 255, offset + length <= body.count else {
                 throw VPNDarwinRouteError.malformedMessage
             }
@@ -293,7 +310,7 @@ enum VPNDarwinRouteCodec {
         return result
     }
 
-    private static func prefix(destination: Data, mask: Data?, flags: Int32) throws -> VPNRoutePrefix {
+    private static func prefix(destination: Data, mask: Data?, flags: Int32) throws -> VPNRoutePrefix? {
         let decoded = try ipBytes(destination)
         let maximum = decoded.family == .ipv4 ? 32 : 128
         let bits: Int
@@ -307,7 +324,12 @@ enum VPNDarwinRouteCodec {
                 if set && sawZero { throw VPNDarwinRouteError.malformedMessage }
                 if set { count += 1 } else { sawZero = true }
             }}
-            guard count > 0 else { throw VPNDarwinRouteError.malformedMessage }; bits = count
+            if count == 0 {
+                // Darwin may echo the queried host rather than a canonical
+                // zero destination; the zero mask still identifies /0.
+                return nil
+            }
+            bits = count
         }
         var network = decoded.bytes
         for bit in bits..<maximum { network[bit / 8] &= ~UInt8(0x80 >> (bit % 8)) }
@@ -331,6 +353,7 @@ enum VPNDarwinRouteCodec {
 
     private static func maskBytes(_ data: Data, family: VPNRouteAddressFamily) throws -> [UInt8] {
         guard data.count >= 2 else { throw VPNDarwinRouteError.malformedMessage }
+        if data[0] == 0 { return [UInt8](repeating: 0, count: family == .ipv4 ? 4 : 16) }
         let expectedFamily = family == .ipv4 ? AF_INET : AF_INET6
         guard Int32(data[1]) == AF_UNSPEC || Int32(data[1]) == expectedFamily else {
             throw VPNDarwinRouteError.malformedMessage
