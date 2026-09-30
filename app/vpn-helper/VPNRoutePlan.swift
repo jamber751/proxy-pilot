@@ -25,7 +25,7 @@ struct VPNRoutePrefix: Codable, Equatable, Comparable {
         return left.prefixLength < right.prefixLength
     }
 
-    fileprivate init(resource: VPNResource) throws {
+    init(resource: VPNResource) throws {
         try resource.validate()
         guard resource.kind != .domain else { throw VPNRoutePlanError.unsupportedResource }
         let parts = resource.address.split(separator: "/", omittingEmptySubsequences: false)
@@ -51,7 +51,7 @@ struct VPNRoutePrefix: Codable, Equatable, Comparable {
         try validate()
     }
 
-    fileprivate init(hostBytes: [UInt8], family: VPNRouteAddressFamily) throws {
+    init(hostBytes: [UInt8], family: VPNRouteAddressFamily) throws {
         guard hostBytes.count == (family == .ipv4 ? 4 : 16) else {
             throw VPNRoutePlanError.invalidPeerEvidence
         }
