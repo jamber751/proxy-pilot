@@ -130,6 +130,9 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
             throw VPNRouteJournalError.invalidState
         }
         for entry in applied { try Self.match(entry, plan: plan) }
+        let appliedKeys = applied.map(Self.key)
+        let expectedKeys = plan.routes.prefix(applied.count).map(Self.key)
+        guard appliedKeys == expectedKeys else { throw VPNRouteJournalError.invalidState }
         if let operation = operation { try Self.match(operation.entry, plan: plan) }
         switch phase {
         case .planned:
@@ -138,6 +141,7 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
             guard applied.count < plan.routes.count else { throw VPNRouteJournalError.invalidState }
             if let operation = operation {
                 guard operation.action == .install,
+                      Self.key(operation.entry) == Self.key(plan.routes[applied.count]),
                       !applied.contains(where: { Self.key($0) == Self.key(operation.entry) }) else {
                     throw VPNRouteJournalError.invalidState
                 }
@@ -149,7 +153,7 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
         case .removing:
             guard !applied.isEmpty else { throw VPNRouteJournalError.invalidState }
             if let operation = operation {
-                guard operation.action == .remove, applied.contains(operation.entry) else {
+                guard operation.action == .remove, applied.last == operation.entry else {
                     throw VPNRouteJournalError.invalidState
                 }
             }
@@ -254,6 +258,19 @@ final class VPNRouteJournal {
         let phase: VPNRouteJournalPhase = entries.count == old.plan.routes.count ? .applied : .installing
         let next = VPNRouteJournalSnapshot(schemaVersion: 1, plan: old.plan, phase: phase,
                                            applied: entries, operation: nil)
+        try write(next); return next
+    }
+
+    /// Retires a plan that never acquired ownership of any route. This is the
+    /// only rollback path that does not require a remove operation.
+    @discardableResult
+    func abandonUnapplied(generation: UInt64, revision: UInt64) throws
+        -> VPNRouteJournalSnapshot {
+        let old = try bound(generation: generation, revision: revision)
+        guard [.planned, .installing].contains(old.phase), old.applied.isEmpty,
+              old.operation == nil else { throw VPNRouteJournalError.invalidState }
+        let next = VPNRouteJournalSnapshot(schemaVersion: VPNRouteJournalSnapshot.schema,
+            plan: old.plan, phase: .retired, applied: [], operation: nil)
         try write(next); return next
     }
 

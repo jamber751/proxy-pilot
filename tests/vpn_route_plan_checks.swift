@@ -184,6 +184,12 @@ import Foundation
             try forgedSnapshot.validate()
             throw NSError(domain: "forged journal binding accepted", code: 1)
         } catch VPNRouteJournalError.invalidState {}
+        let gappedSnapshot = VPNRouteJournalSnapshot(schemaVersion: VPNRouteJournalSnapshot.schema,
+            plan: routePlan, phase: .installing, applied: [entries[1]], operation: nil)
+        do {
+            try gappedSnapshot.validate()
+            throw NSError(domain: "gapped journal accepted", code: 1)
+        } catch VPNRouteJournalError.invalidState {}
         do {
             _ = try journal.beginInstall(entries[1], generation: 7, revision: 11)
             throw NSError(domain: "out of order install", code: 1)
