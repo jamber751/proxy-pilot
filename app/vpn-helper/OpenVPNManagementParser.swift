@@ -46,13 +46,15 @@ enum OpenVPNManagementParser {
         guard state == .connected else {
             return OpenVPNStateEvidence(timestamp: timestamp, state: state, connected: nil)
         }
-        guard fields.count == 6 || fields.count == 9 else {
+        // OpenVPN 2.x omits the final tunnel IPv6 column on IPv4-only tunnels.
+        // Modern IPv4 replies therefore have eight fields, not nine.
+        guard fields.count == 6 || fields.count == 8 || fields.count == 9 else {
             throw OpenVPNManagementParseError.malformed
         }
         let local4 = try optionalAddress(fields[3], family: .ipv4)
         let remote = try endpoint(address: fields[4], port: fields[5])
         let local6 = fields.count == 9 ? try optionalAddress(fields[8], family: .ipv6) : nil
-        if fields.count == 9 {
+        if fields.count >= 8 {
             let localTransport = try endpoint(address: fields[6], port: fields[7])
             guard localTransport.0.family == remote.0.family else {
                 throw OpenVPNManagementParseError.malformed

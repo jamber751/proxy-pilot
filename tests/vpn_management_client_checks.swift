@@ -39,6 +39,11 @@ func parserChecks() throws {
     try require(connected.tunnelLocalIPv4?.bytes == [10, 0, 0, 2], "local v4")
     try require(connected.remoteAddress.bytes == [1, 2, 3, 4]
                 && connected.remotePort == 443, "redacted remote")
+    let ipv4Event = try OpenVPNManagementParser.parse(line: Array(
+        ">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,192.0.2.10,54321".utf8))
+    guard case .state(let ipv4State) = ipv4Event,
+          ipv4State.connected?.tunnelLocalIPv4 != nil,
+          ipv4State.connected?.tunnelLocalIPv6 == nil else { throw CheckFailure.failed("OpenVPN 2.7 IPv4 state") }
     let dualEvent = try OpenVPNManagementParser.parse(line: Array(
         ">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,fd00::2".utf8))
     guard case .state(let dualState) = dualEvent, let dual = dualState.connected else {
@@ -64,6 +69,8 @@ func parserChecks() throws {
                    Array(">STATE:nope,CONNECTED".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,server.example,443".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,0".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,0".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,2001:db8::2,54321".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,2001:db8::2,54321,fd00::2".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,not-an-ip".utf8),
                    Array(">STATE:4102444801,AUTH,,,,".utf8),
