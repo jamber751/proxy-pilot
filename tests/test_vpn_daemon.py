@@ -66,7 +66,24 @@ class VPNDaemonTests(installer.VPNInstallerTests):
         self.install_ready(); self.boot_out()
         endpoint = self.storage / 'helper.sock'
         self.assertTrue(endpoint.is_socket())
+        stale = endpoint.stat()
         self.bootstrap()
+        # Do not make readiness probes race the daemon's stale-endpoint check:
+        # this case is specifically proving that boot replaces its own dead
+        # socket. The ordinary installer path already starts with no endpoint.
+        deadline = time.monotonic() + 5
+        replacement = None
+        while time.monotonic() < deadline:
+            try:
+                current = endpoint.stat()
+            except FileNotFoundError:
+                time.sleep(0.01)
+                continue
+            if (current.st_dev, current.st_ino) != (stale.st_dev, stale.st_ino):
+                replacement = current
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(replacement)
         self.assertEqual(self.wait_ready(), 'ready:10')
         self.assertTrue(endpoint.is_socket())
 
