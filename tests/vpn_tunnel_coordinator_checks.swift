@@ -35,7 +35,7 @@ final class Counter { var value = 0 }
               arguments[managementIndex + 2] == "unix",
               arguments.contains("--management-hold"),
               arguments.contains("--management-query-passwords"),
-              arguments.contains("--route-noexec"), arguments.contains("--ifconfig-noexec"),
+              arguments.contains("--route-noexec"), !arguments.contains("--ifconfig-noexec"),
               !arguments.contains("hold release") else { exit(41) }
         var profileBytes = [UInt8](repeating: 0, count: 64)
         let profileCount = read(21, &profileBytes, profileBytes.count)

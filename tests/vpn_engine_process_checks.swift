@@ -8,7 +8,7 @@ import Foundation
     }
 
     static let expectedArguments = [
-        "vpn-engine", "--config", "/dev/fd/21", "--route-noexec", "--ifconfig-noexec",
+        "vpn-engine", "--config", "/dev/fd/21", "--route-noexec",
         "--script-security", "1", "--auth-nocache", "--route-nopull"
     ]
 

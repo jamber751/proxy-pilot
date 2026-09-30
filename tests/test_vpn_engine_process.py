@@ -89,7 +89,10 @@ class VPNEngineProcessTests(unittest.TestCase):
         self.assertNotIn('case connected', source)
         self.assertIn('POSIX_SPAWN_CLOEXEC_DEFAULT', source)
         self.assertIn('--route-noexec', source)
-        self.assertIn('--ifconfig-noexec', source)
+        self.assertNotIn('--ifconfig-noexec', source)
+        for required in ('--route-noexec', '--route-nopull', '--script-security',
+                         '--auth-nocache', '--management-hold'):
+            self.assertIn(required, source)
 
 
 if __name__ == '__main__':

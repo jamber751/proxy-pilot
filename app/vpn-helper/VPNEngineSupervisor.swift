@@ -1,6 +1,23 @@
 import Darwin
 import Foundation
 
+/// OpenVPN may configure only its held tunnel interface. Profile/pushed routes,
+/// DNS and scripts remain disabled; ProxyPilot owns those later transactions.
+enum VPNEngineBootstrapPolicy {
+    static func arguments(profileDescriptor: Int32,
+                          management: VPNEngineManagementConfiguration?) -> [String] {
+        var values = [
+            "vpn-engine", "--config", "/dev/fd/\(profileDescriptor)",
+            "--route-noexec", "--script-security", "1", "--auth-nocache", "--route-nopull"
+        ]
+        if let management {
+            values += ["--management", management.socketPath, "unix",
+                       "--management-hold", "--management-query-passwords"]
+        }
+        return values
+    }
+}
+
 /// Private process role of the signed helper. The ordinary helper owns one end
 /// of a socketpair; this process owns and reaps OpenVPN. EOF is an unforgeable
 /// lifetime capability: if the ordinary helper disappears, OpenVPN is stopped.
@@ -148,15 +165,8 @@ enum VPNEngineSupervisorEntry {
               posix_spawnattr_setsigdefault(&attributes, &defaults) == 0 else {
             throw VPNEngineProcessError.spawnFailed(EINVAL)
         }
-        var argv = [
-            "vpn-engine", "--config", "/dev/fd/\(profileDescriptor)",
-            "--route-noexec", "--ifconfig-noexec", "--script-security", "1",
-            "--auth-nocache", "--route-nopull"
-        ]
-        if let management {
-            argv += ["--management", management.socketPath, "unix",
-                     "--management-hold", "--management-query-passwords"]
-        }
+        let argv = VPNEngineBootstrapPolicy.arguments(profileDescriptor: profileDescriptor,
+                                                       management: management)
         var environment: [UnsafeMutablePointer<CChar>?] = [nil]
         var child: pid_t = 0
         guard let result = withCStrings(argv, { arguments in
