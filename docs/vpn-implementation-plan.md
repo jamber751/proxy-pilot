@@ -3402,3 +3402,11 @@ CDHashes и sequence для существующего mutual readiness handshak
 подменённый или повреждённый receipt не авторизует новую пару app/helper.
 Daemon публикует receipt до socket endpoint; uninstall удаляет только этот
 известный regular root-owned файл и отказывается при неожиданном типе/режиме.
+
+Frontend получил единственный production entry для helper session: встроенный
+release public key проверяет receipt, owner UID должен совпасть с текущим
+desktop-пользователем, затем открывается fixed system endpoint и существующий
+mutual CDHash handshake. Тестовые peer policy и произвольные пути в этот вход не
+попали. Полная VPN-installer сборка приложения одновременно выявила и исправила
+пропущенный `VPNEngineSupervisor` в frontend source graph; universal app теперь
+снова собирается и проходит deep strict codesign.

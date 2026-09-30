@@ -48,6 +48,14 @@ class VPNPublicReleaseReceiptTests(unittest.TestCase):
     def test_wrong_permissions_are_rejected(self):
         self.run_case('wrong-mode', 'receipt rejected')
 
+    def test_frontend_session_has_one_pinned_production_entry(self):
+        source = (ROOT / 'app/vpn-helper/VPNFrontendHelperSession.swift').read_text()
+        self.assertIn('VPNPublicReleaseReceipt.loadSystem(authority: authority)', source)
+        self.assertIn('receipt.ownerUserID == geteuid()', source)
+        self.assertIn('VPNEndpointDirectory.connectSystem(deadline: deadline)', source)
+        self.assertIn('VPNHelperSession.open(takingSocket: socket,', source)
+        self.assertNotIn('testOpen', source)
+
 
 if __name__ == '__main__':
     unittest.main()
