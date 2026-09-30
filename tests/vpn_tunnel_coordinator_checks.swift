@@ -106,7 +106,7 @@ final class Counter { var value = 0 }
                 case "timeout-after": sendLine(client, "SUCCESS: hold released")
                 default:
                     sendLine(client, "SUCCESS: hold released")
-                    sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443")
+                    sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443,192.0.2.10,54321")
                     if behavior == "observe" {
                         sendLine(client, ">STATE:3,RECONNECTING,redacted,,,,")
                     } else if behavior == "observe-wait" {
@@ -129,7 +129,7 @@ final class Counter { var value = 0 }
                     if behavior == "multi-key-auth" {
                         sendLine(client, ">PASSWORD:Need 'Auth' username/password")
                     } else if behavior == "multi-auth-key-after-hold" {
-                        sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443")
+                        sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443,192.0.2.10,54321")
                     }
                 } else { exit(48) }
             }
@@ -285,6 +285,8 @@ final class Counter { var value = 0 }
             guard VPNStartupDiagnostics.category(CoordinatorCheckError.failed(secret)) == "unclassified",
                   VPNStartupDiagnostics.category(VPNEngineProcessError.spawnFailed(13)) == "engine-spawn-13",
                   VPNStartupDiagnostics.category(OpenVPNManagementParseError.malformed) == "management-protocol",
+                  VPNStartupDiagnostics.category(OpenVPNManagementClientError.timeout) == "management-timeout",
+                  VPNStartupDiagnostics.category(OpenVPNHeldCredentialExchangeError.engineRejectedCredential) == "credential-rejected",
                   VPNStartupDiagnostics.category(VPNTunnelStateStoreError.stale) == "attempt-stale" else {
                 fail("diagnostic allowlist")
             }

@@ -8,6 +8,7 @@ enum VPNStartupDiagnostics {
     enum Stage: String {
         case intent, profile, endpoint, process, management, initialize
         case baseline, releaseHold, credentialPrompt, credentialBinding, bootstrap, routes, cleanup
+        case credentialSubmission, credentialCommands, credentialNextPrompt
     }
     private static let log = OSLog(subsystem: "kz.documentolog.proxypilot.vpn", category: "startup")
     static func category(_ error: Error) -> String {
@@ -23,6 +24,8 @@ enum VPNStartupDiagnostics {
             }
         case is VPNProfileVaultError: return "profile-vault"
         case is VPNManagementSocketReservationError: return "management-reservation"
+        case OpenVPNManagementClientError.timeout: return "management-timeout"
+        case OpenVPNManagementClientError.closed: return "management-closed"
         case is OpenVPNManagementClientError: return "management-transport"
         case is OpenVPNManagementParseError: return "management-protocol"
         case is VPNKernelInterfaceSnapshotError: return "interface-snapshot"
@@ -33,6 +36,7 @@ enum VPNStartupDiagnostics {
             case .stale: return "attempt-stale"
             case .writeFailed: return "attempt-write"
             }
+        case OpenVPNHeldCredentialExchangeError.engineRejectedCredential: return "credential-rejected"
         case is OpenVPNHeldCredentialExchangeError: return "credential-binding"
         case let value as VPNTunnelCoordinatorError:
             switch value {
@@ -373,6 +377,7 @@ final class VPNTunnelCoordinator {
             throw VPNTunnelCoordinatorError.invalidState
         }
         let deadline = Self.now() + UInt64(timeoutMilliseconds) * 1_000_000
+        var stage = VPNStartupDiagnostics.Stage.credentialSubmission
         do {
             guard try child.state() == .running else { throw VPNTunnelCoordinatorError.engineExited }
             // This durable transition burns UUID/generation/kind before any
@@ -382,23 +387,30 @@ final class VPNTunnelCoordinator {
                 response: &response, application: binding.application)
             try exchange.submit(transient)
             credentialExchange = nil; credentialChallenge = nil; credentialKind = nil
+            stage = .credentialCommands
             try awaitCredentialCommandSuccesses(client, kind: kind, deadline: deadline)
             let complete = try callbacks.complete(binding)
             if !complete {
+                stage = .credentialNextPrompt
                 let next = try awaitNextCredentialPrompt(client, deadline: deadline)
                 try parkCredentialPrompt(next, generation: generation, client: client,
                                          activateRoutes: activateRoutes)
                 current = .blocked(.credentialRequired(next))
                 return current
             }
+            stage = .baseline
             let baseline = try attemptBaseline ?? captureInterfaces()
+            stage = .bootstrap
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
+            stage = .routes
             verifyAppliedRoutes = try activateRoutes(proof)
             pendingGeneration = nil; pendingRouteActivation = nil
             current = .bootstrapReady(proof)
+            VPNStartupDiagnostics.reached(stage)
             return current
         } catch let submissionError {
+            VPNStartupDiagnostics.failed(stage, submissionError)
             response.secret.resetBytes(in: 0..<response.secret.count)
             response.secret.removeAll(keepingCapacity: false)
             callbacks.fail()

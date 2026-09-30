@@ -3628,3 +3628,25 @@ regression cases для engine source 20, 21 и 22. Engine process 9/9 и coordi
 симптомом, но причина installed отказа окончательно подтверждается только
 повторной попыткой после установки. Реальные OTP, routes и disconnect пока
 не засчитаны.
+
+### Продолжение 1.5cc — IPv4 management reply and post-credential logs (1 октября)
+
+Installed logs 129 подтвердили исправление запуска: реальный engine дважды
+дошёл до credentialBinding. После ответа UI всё ещё показывает отказ, и
+подключение/маршруты не подтверждены. В коде upstream bundled OpenVPN 2.7.7
+(`manage.c`, formatter state logs) найден отдельный compatibility bug: последний
+tunnel IPv6 column добавляется только при наличии IPv6, так что современный
+IPv4-only CONNECTED reply содержит восемь полей. Парсер принимал лишь 6/9.
+
+Regression fixture с валидным восьмипольным reply сначала воспроизвёл malformed,
+после исправления прошёл. При восьми полях local transport endpoint всё ещё
+валидируется (адрес, family и port); неверные адреса/нулевой порт отклоняются.
+Fake coordinator теперь выдаёт современный IPv4 формат, а не только legacy 6.
+Management client 5/5 и coordinator 17/17 прошли.
+
+Добавлены redacted stages после ответа: credentialSubmission, credentialCommands,
+credentialNextPrompt, baseline/bootstrap/routes; rejection и timeout имеют
+разные allowlisted категории. Секреты/сырые строки движка не журналируются.
+Кандидат 130 собирается. Это исправляет доказанный parser bug, но источник
+текущего installed post-credential отказа пока не доказан новым логом. OTP,
+routes и disconnect остаются pending acceptance.
