@@ -3115,8 +3115,45 @@ owned route. Пройдены 28 объединённых route tests и univers
 build/codesign; production coordinator транзакцию ещё не вызывает и реальная
 сеть не менялась.
 
-Перед production bootstrap остаются два P0: межпроцессная lease для route
-authority и durable ownership живого OpenVPN process после crash helper. Затем
-нужна реальная проверка bundled OpenVPN: controlled hold release остаётся только
-bootstrap, а не Connected; `--ifconfig-noexec` нельзя менять до подтверждения,
-что routes/DNS всё ещё полностью noexec и rollback готов.
+Межпроцессная route authority уже связана с единственной daemon runtime lease:
+production transaction повторно проверяет её до journal I/O и каждой kernel
+mutation. Оставшийся на этом рубеже P0 — durable ownership живого OpenVPN после
+crash helper. Затем нужна реальная проверка bundled OpenVPN: controlled hold
+release остаётся только bootstrap, а не Connected; `--ifconfig-noexec` нельзя
+менять до подтверждения, что routes/DNS всё ещё полностью noexec и rollback готов.
+
+### Продолжение 1.5bc — verified scoped DNS plan (30 сентября)
+
+Добавлена inert-модель scoped DNS без изменения системных настроек. Она принимает
+только нормализованные domain resources и до четырёх DNS IP. Каждый DNS server
+обязан иметь ровно один owned resource route с `RTF_PROTO2`, совпадающий с текущими
+generation/revision и доказанной парой `utun index + name`; чужой, устаревший или
+непроверенный маршрут отклоняется. Global/default scope, пустой домен, wildcard,
+дубликаты и пересекающиеся parent/child scopes запрещены.
+
+Root-private DNS journal хранит детерминированный prefix применённых scopes,
+checkpoint до будущей install/remove операции и reverse cleanup. Запись atomic с
+file/directory `fsync`; retirement повторно сверяет exact inode и canonical state.
+Код не вызывает `scutil`, `networksetup`, subprocess, hold release и не заявляет
+Connected. Пройдено 14 focused tests. Production SystemConfiguration adapter ещё
+не подключён; пользователю не потребуется вручную добавлять DNS IP — controller
+должен включать их host routes в route plan автоматически.
+
+### Продолжение 1.5bd — OpenVPN crash supervisor (30 сентября)
+
+Закрыт второй P0 перед controlled bootstrap. OpenVPN теперь является прямым
+child отдельной приватной роли того же подписанного helper. Обычный daemon держит
+единственный конец socketpair; EOF служит lifetime capability. При штатной
+остановке, ошибке канала или crash/kill daemon supervisor всегда выполняет
+bounded `SIGTERM` → `SIGKILL` и `waitpid`, поэтому OpenVPN не остаётся фоновым
+процессом и PID-файл с риском PID reuse не нужен.
+
+Supervisor запускается с fixed argv, пустым environment и тремя exact descriptor
+capabilities для control/profile/engine. Он повторно проверяет engine inode и
+protected profile непосредственно перед spawn; лишние descriptors отклоняются.
+Hold, routes, DNS, UI и пользовательский Connected не изменены. Пройдены 16
+engine/coordinator tests, 8 recovery ServiceMain tests, daemon lifecycle test и
+полный universal arm64/x86_64 build/codesign. Следующий безопасный узел —
+проверить реальный bundled OpenVPN и сделать controlled bootstrap, который лишь
+создаёт доказуемый tunnel interface; readiness наступает только после route и
+scoped-DNS transactions.
