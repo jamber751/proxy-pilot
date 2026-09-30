@@ -28,6 +28,25 @@ enum VPNModelPersistence: Equatable {
     }
 }
 
+enum VPNConnectionAvailability: Equatable {
+    case needsProfile
+    case needsResources
+    case needsAuthentication
+    case splitDNSUnavailable
+    case ready
+
+    var label: String {
+        switch self {
+        case .needsProfile: return "Добавьте файл VPN"
+        case .needsResources: return "Добавьте рабочие ресурсы"
+        case .needsAuthentication: return "Выберите способ входа"
+        case .splitDNSUnavailable:
+            return "В этой версии через VPN можно открыть IP-адреса и сети. Доменные имена пока недоступны."
+        case .ready: return "Готово к подключению"
+        }
+    }
+}
+
 struct VPNProfileSummary: Equatable {
     let name: String
     let requiresCredentials: Bool
@@ -101,6 +120,21 @@ final class VPNModel: ObservableObject {
     }
 
     var persistenceLabel: String { persistence.label }
+
+    /// A user-facing projection of the capabilities in the installed
+    /// route-only helper. It does not infer live state or mutate configuration.
+    var connectionAvailability: VPNConnectionAvailability {
+        guard profile != nil else { return .needsProfile }
+        guard !configuration.resources.isEmpty else { return .needsResources }
+        guard configuration.authentication != nil else { return .needsAuthentication }
+        guard configuration.corporateDNS.isEmpty,
+              !configuration.resources.contains(where: { $0.kind == .domain }) else {
+            return .splitDNSUnavailable
+        }
+        return .ready
+    }
+
+    var connectionAvailabilityLabel: String { connectionAvailability.label }
 
     /// Live status belongs to the future controller, never to VPNStore.
     var connected: Bool { false }

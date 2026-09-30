@@ -77,6 +77,8 @@ QUJDRA==
         try model.load()
         try check(model.configuration == VPNConfiguration() && model.profile == nil,
                   "an absent store loads as an empty model")
+        try check(model.connectionAvailability == .needsProfile,
+                  "empty model asks for a profile")
         try check(model.persistence == .notConfigured && model.persistenceLabel == "Не настроен",
                   "empty persistence label")
 
@@ -87,6 +89,8 @@ QUJDRA==
                   "file import exposes safe profile metadata")
         try check(model.configuration.authentication == nil,
                   "auth-user-pass remains undecided after import")
+        try check(model.connectionAvailability == .needsResources,
+                  "imported profile asks for resources before authentication")
         try check(model.persistence == .saved && !model.connected,
                   "an imported disabled profile is saved, never reported connected")
 
@@ -95,6 +99,8 @@ QUJDRA==
         model.resourceDraft?.address = "GITLAB.company.example."
         try model.saveResourceDraft()
         let resource = try model.configuration.resources.first.unwrap("missing added resource")
+        try check(model.connectionAvailability == .needsAuthentication,
+                  "resource list asks for an authentication choice")
         try check(resource.name == "GitLab" && resource.address == "gitlab.company.example",
                   "resource draft validates, normalizes and saves once")
 
@@ -114,6 +120,9 @@ QUJDRA==
                   "editing preserves identity without a second list save")
 
         try model.setAuthentication(mode: .password, login: " employee ", credentialPersistence: .keychain)
+        try check(model.connectionAvailability == .splitDNSUnavailable
+                  && model.connectionAvailabilityLabel.contains("IP-адреса"),
+                  "domain-only intent explains the current runtime limitation")
         try check(model.configuration.authentication ==
                   (try VPNAuthentication(mode: .password, login: "employee", credentialPersistence: .keychain)),
                   "password selection persists metadata only")
