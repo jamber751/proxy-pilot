@@ -3091,3 +3091,32 @@ name`. Произвольный интерфейс, подмена serialized bi
 build/codesign. Resolver не делает `RTM_ADD/DELETE`, routes/DNS не менялись, hold
 не освобождался. Следующий узел: recoverable route transaction с checkpoint до
 каждой mutation, reverse rollback/cleanup и безопасным retirement журнала.
+
+### Продолжение 1.5bb — recoverable route transaction (30 сентября)
+
+Добавлена отдельная `VPNRouteTransaction`, которая не имеет доступа к OpenVPN
+hold, DNS или пользовательскому Connected. Внутренняя factory строит route
+identity только из проверенного plan и ставит `RTF_PROTO2` как ownership marker.
+Fresh install сначала требует отсутствия всех destinations: даже полностью
+совпадающий существующий route считается чужим и никогда не присваивается.
+
+Каждая mutation предваряется durable journal checkpoint. Peer bypass ставится
+первым, resource routes — в детерминированном порядке; cleanup всегда идёт в
+обратном порядке и удаляет peer bypass последним. После crash in-flight install
+сверяется с exact kernel identity и транзакция только откатывается — установка
+вперёд автоматически не продолжается. Missing owned route безопасно
+reconcile-ится; foreign replacement не удаляется, журнал сохраняется и новый
+connect блокируется. Retired journal повторно читает exact inode, unlink-ится и
+fsync-ится только после пустого ownership ledger.
+
+Journal validation усилена: `applied` обязан быть непрерывным prefix плана,
+install operation — ровно следующим route, remove operation — ровно последним
+owned route. Пройдены 28 объединённых route tests и universal arm64/x86_64 helper
+build/codesign; production coordinator транзакцию ещё не вызывает и реальная
+сеть не менялась.
+
+Перед production bootstrap остаются два P0: межпроцессная lease для route
+authority и durable ownership живого OpenVPN process после crash helper. Затем
+нужна реальная проверка bundled OpenVPN: controlled hold release остаётся только
+bootstrap, а не Connected; `--ifconfig-noexec` нельзя менять до подтверждения,
+что routes/DNS всё ещё полностью noexec и rollback готов.
