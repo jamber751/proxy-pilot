@@ -39,6 +39,12 @@ func parserChecks() throws {
     try require(connected.tunnelLocalIPv4?.bytes == [10, 0, 0, 2], "local v4")
     try require(connected.remoteAddress.bytes == [1, 2, 3, 4]
                 && connected.remotePort == 443, "redacted remote")
+    try require(VPNFlowDiagnostics.managementCode(.state(connectedState)) == "state-CONNECTED",
+                "diagnostics must omit tunnel and peer addresses")
+    try require(VPNFlowDiagnostics.managementCode(.credentialRequired(.usernameAndPassword)) == "auth-required",
+                "diagnostics must omit account and credential contents")
+    try require(VPNFlowDiagnostics.failureCode(CheckFailure.failed("secret-diagnostic-sentinel")) == .unknown,
+                "unknown error description must not become a log code")
     let ipv4Event = try OpenVPNManagementParser.parse(line: Array(
         ">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,192.0.2.10,54321".utf8))
     guard case .state(let ipv4State) = ipv4Event,

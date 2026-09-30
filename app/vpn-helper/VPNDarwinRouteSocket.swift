@@ -1,10 +1,14 @@
 import Darwin
 import Foundation
 
-enum VPNRouteSocketTransportError: Error, Equatable {
+enum VPNRouteSocketTransportError: VPNFlowDiagnosticError, Equatable {
     case posix(Int32)
     case timeout
     case closed
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self { case .posix: return .transport; case .timeout: return .timeout; case .closed: return .closed }
+    }
+    var vpnFlowErrorNumber: Int32 { if case .posix(let code) = self { return code }; return 0 }
 }
 
 protocol VPNRouteSocketTransport: AnyObject {
@@ -75,7 +79,7 @@ final class VPNDarwinRouteSocketTransport: VPNRouteSocketTransport {
     }
 }
 
-enum VPNDarwinRouteError: Error, Equatable {
+enum VPNDarwinRouteError: VPNFlowDiagnosticError, Equatable {
     case invalidIdentity
     case malformedMessage
     case responseLimit
@@ -86,6 +90,23 @@ enum VPNDarwinRouteError: Error, Equatable {
     case preexistingNonIdentical
     case missingOrForeign
     case verificationFailed
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self {
+        case .invalidIdentity: return .invalidIdentity
+        case .malformedMessage: return .malformedMessage
+        case .responseLimit: return .responseLimit
+        case .timeout: return .timeout
+        case .transport: return .transport
+        case .closed: return .closed
+        case .kernel: return .kernel
+        case .preexistingNonIdentical: return .preexistingNonIdentical
+        case .missingOrForeign: return .missingOrForeign
+        case .verificationFailed: return .verificationFailed
+        }
+    }
+    var vpnFlowErrorNumber: Int32 {
+        switch self { case .kernel(let code), .transport(let code): return code; default: return 0 }
+    }
 }
 
 struct VPNDarwinRouteSnapshot: Equatable {
@@ -431,10 +452,15 @@ final class VPNDarwinRouteSocket {
     }
 
     func lookupExact(_ destination: VPNRoutePrefix) throws -> VPNDarwinRouteSnapshot? {
-        try serialized { deadline in try lookup(destination, deadline: deadline) }
+        try VPNFlowDiagnostics.run(.kernelLookup) {
+            try serialized { deadline in try lookup(destination, deadline: deadline) }
+        }
     }
 
     func add(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult {
+        try VPNFlowDiagnostics.run(.kernelAdd) { try addLogged(identity) }
+    }
+    private func addLogged(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult {
         try serialized { deadline in
             try identity.validate()
             if let existing = try lookup(identity.destination, deadline: deadline) {
@@ -457,6 +483,9 @@ final class VPNDarwinRouteSocket {
     }
 
     func delete(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult {
+        try VPNFlowDiagnostics.run(.kernelDelete) { try deleteLogged(identity) }
+    }
+    private func deleteLogged(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult {
         try serialized { deadline in
             try identity.validate()
             guard let existing = try lookup(identity.destination, deadline: deadline),

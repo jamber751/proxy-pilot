@@ -1,8 +1,19 @@
 import Darwin
 import Foundation
 
-enum VPNRouteJournalError: Error, Equatable {
+enum VPNRouteJournalError: VPNFlowDiagnosticError, Equatable {
     case unsafeStorage, missing, alreadyExists, invalidState, stale, writeFailed, removeFailed
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self {
+        case .unsafeStorage: return .unsafeStorage
+        case .missing: return .missing
+        case .alreadyExists: return .alreadyExists
+        case .invalidState: return .invalidState
+        case .stale: return .stale
+        case .writeFailed: return .writeFailed
+        case .removeFailed: return .removeFailed
+        }
+    }
 }
 
 /// Typed output of a future kernel-route inspection. It cannot be constructed

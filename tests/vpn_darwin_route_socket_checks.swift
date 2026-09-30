@@ -120,6 +120,16 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
     }
 
     static func codec() throws {
+        try require(VPNFlowDiagnostics.failureCode(VPNDarwinRouteError.kernel(EPERM)) == .kernel,
+                    "kernel diagnostic category")
+        try require(VPNDarwinRouteError.kernel(EPERM).vpnFlowErrorNumber == EPERM,
+                    "kernel diagnostic number")
+        let unknown = NSError(domain: "secret-diagnostic-sentinel", code: 777)
+        try require(VPNFlowDiagnostics.failureCode(unknown) == .unknown,
+                    "unknown descriptions never logged")
+        do { _ = try VPNFlowDiagnostics.run(.kernelLookup) { throw unknown } as Void
+             throw NSError(domain: "diagnostic swallowed failure", code: 1) }
+        catch let error as NSError { try require(error === unknown, "logging preserves original error") }
         for identity in try identities() {
             for messageType in [UInt8(RTM_GET), UInt8(RTM_ADD), UInt8(RTM_DELETE)] {
                 let data = try VPNDarwinRouteCodec.encodeReply(type: messageType, sequence: 9,

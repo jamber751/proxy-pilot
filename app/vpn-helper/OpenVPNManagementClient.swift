@@ -61,6 +61,7 @@ final class OpenVPNManagementClient {
         do {
             let deadline = try Self.deadline(timeoutMilliseconds)
             try write(command.bytes, deadline: deadline)
+            VPNFlowDiagnostics.command(command)
         } catch {
             close()
             throw error
@@ -81,6 +82,7 @@ final class OpenVPNManagementClient {
         do {
             let deadline = try Self.deadline(timeoutMilliseconds)
             try write(bytes, deadline: deadline)
+            VPNFlowDiagnostics.credentialWritten()
         } catch {
             close()
             throw error
@@ -93,7 +95,10 @@ final class OpenVPNManagementClient {
             let deadline = try Self.deadline(timeoutMilliseconds)
             for _ in 0..<Self.maximumIgnoredMessages {
                 let line = try readLine(deadline: deadline)
-                if let event = try OpenVPNManagementParser.parse(line: line) { return event }
+                if let event = try OpenVPNManagementParser.parse(line: line) {
+                    VPNFlowDiagnostics.management(event)
+                    return event
+                }
             }
             throw OpenVPNManagementClientError.tooManyIgnoredMessages
         } catch {

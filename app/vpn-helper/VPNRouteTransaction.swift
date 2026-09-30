@@ -1,12 +1,21 @@
 import Darwin
 import Foundation
 
-enum VPNRouteTransactionError: Error, Equatable {
+enum VPNRouteTransactionError: VPNFlowDiagnosticError, Equatable {
     case invalidPlan
     case preexistingRoute
     case recoveryRequired
     case cleanupBlocked
     case notApplied
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self {
+        case .invalidPlan: return .invalidPlan
+        case .preexistingRoute: return .preexistingRoute
+        case .recoveryRequired: return .recoveryRequired
+        case .cleanupBlocked: return .cleanupBlocked
+        case .notApplied: return .notApplied
+        }
+    }
 }
 
 protocol VPNRouteKernelController: AnyObject {
@@ -88,6 +97,10 @@ final class VPNRouteTransaction {
 
     func install(_ plan: VPNRoutePlan) throws -> VPNRouteAppliedProof {
         lock.lock(); defer { lock.unlock() }
+        return try VPNFlowDiagnostics.run(.transactionInstall) { try installLocked(plan) }
+    }
+
+    private func installLocked(_ plan: VPNRoutePlan) throws -> VPNRouteAppliedProof {
         do { try checkAuthority() }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         let identities = try VPNRouteIdentityFactory.make(plan: plan)
@@ -96,23 +109,28 @@ final class VPNRouteTransaction {
         }
         // A matching pre-existing route is still foreign on a fresh install.
         // Ownership begins only after our durable beginInstall checkpoint.
-        for identity in identities {
+        for (ordinal, identity) in identities.enumerated() {
+            VPNFlowDiagnostics.route(.transactionPreflight, ordinal: ordinal, peer: identity.role == .peerBypass)
             do { try checkAuthority() }
             catch { throw VPNRouteTransactionError.recoveryRequired }
-            guard try kernel.lookupExact(identity.destination) == nil else {
+            guard try VPNFlowDiagnostics.run(.transactionPreflight, {
+                try kernel.lookupExact(identity.destination)
+            }) == nil else {
                 throw VPNRouteTransactionError.preexistingRoute
             }
         }
-        do { try checkAuthority(); _ = try journal.create(plan) }
+        do { try checkAuthority(); _ = try VPNFlowDiagnostics.run(.transactionJournal) { try journal.create(plan) } }
         catch { throw VPNRouteTransactionError.recoveryRequired }
 
-        for identity in identities {
-            do { try checkAuthority(); _ = try journal.beginInstall(identity, generation: plan.generation,
-                                               revision: plan.revision) }
+        for (ordinal, identity) in identities.enumerated() {
+            VPNFlowDiagnostics.route(.transactionAdd, ordinal: ordinal, peer: identity.role == .peerBypass)
+            do { try checkAuthority(); _ = try VPNFlowDiagnostics.run(.transactionCheckpoint) {
+                try journal.beginInstall(identity, generation: plan.generation, revision: plan.revision)
+            } }
             catch { throw VPNRouteTransactionError.recoveryRequired }
             do {
                 try checkAuthority()
-                let result = try kernel.add(identity)
+                let result = try VPNFlowDiagnostics.run(.transactionAdd) { try kernel.add(identity) }
                 guard result == .installed else {
                     _ = try journal.resolveInstall(identity, present: false,
                         generation: plan.generation, revision: plan.revision)
@@ -146,7 +164,7 @@ final class VPNRouteTransaction {
         lock.lock(); defer { lock.unlock() }
         do { try checkAuthority() }
         catch { throw VPNRouteTransactionError.notApplied }
-        try verifyAppliedLocked(proof)
+        try VPNFlowDiagnostics.run(.transactionVerify) { try verifyAppliedLocked(proof) }
     }
 
     /// Startup and disconnect both converge to the same safe state. Recovery
@@ -155,7 +173,7 @@ final class VPNRouteTransaction {
         lock.lock(); defer { lock.unlock() }
         do { try checkAuthority() }
         catch { throw VPNRouteTransactionError.recoveryRequired }
-        try rollbackAndRetireLocked()
+        try VPNFlowDiagnostics.run(.transactionRecovery) { try rollbackAndRetireLocked() }
     }
 
     private func verifyAppliedLocked(_ proof: VPNRouteAppliedProof) throws {

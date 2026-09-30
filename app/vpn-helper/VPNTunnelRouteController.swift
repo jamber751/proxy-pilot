@@ -1,6 +1,6 @@
 import Foundation
 
-enum VPNTunnelRouteControllerError: Error, Equatable {
+enum VPNTunnelRouteControllerError: VPNFlowDiagnosticError, Equatable {
     case invalidBootstrap
     case staleGeneration
     case inactiveApplication
@@ -8,6 +8,17 @@ enum VPNTunnelRouteControllerError: Error, Equatable {
     case peerRouteUsesTunnel
     case alreadyApplied
     case recoveryRequired
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self {
+        case .invalidBootstrap: return .invalidBootstrap
+        case .staleGeneration: return .staleGeneration
+        case .inactiveApplication: return .inactiveApplication
+        case .applicationMismatch: return .applicationMismatch
+        case .peerRouteUsesTunnel: return .peerRouteUsesTunnel
+        case .alreadyApplied: return .alreadyApplied
+        case .recoveryRequired: return .recoveryRequired
+        }
+    }
 }
 
 /// Ephemeral authority that binds installed routes to one daemon generation and
@@ -55,23 +66,35 @@ final class VPNTunnelRouteController {
                  activeApplication: VPNValidatedApplication) throws
         -> VPNTunnelRouteAppliedProof {
         lock.lock(); defer { lock.unlock() }
+        return try VPNFlowDiagnostics.run(.controllerInstall) {
+            try installLocked(bootstrap: bootstrap, activeApplication: activeApplication)
+        }
+    }
+
+    private func installLocked(bootstrap: VPNTunnelBootstrapProof,
+                               activeApplication: VPNValidatedApplication) throws
+        -> VPNTunnelRouteAppliedProof {
         guard applied == nil else { throw VPNTunnelRouteControllerError.alreadyApplied }
         try authority()
 
         // A daemon restart never resumes a partially installed plan forward.
         // Converge to idle before accepting any fresh bootstrap evidence.
-        do { try transaction.recoverToIdle() }
+        do { try VPNFlowDiagnostics.run(.controllerRecovery) { try transaction.recoverToIdle() } }
         catch { throw VPNTunnelRouteControllerError.recoveryRequired }
         try authority()
 
-        do { try activeApplication.validate() }
+        do { try VPNFlowDiagnostics.run(.controllerApplication) { try activeApplication.validate() } }
         catch { throw VPNTunnelRouteControllerError.applicationMismatch }
-        try validateIntent(bootstrap: bootstrap, application: activeApplication)
-        try validate(bootstrap)
+        try VPNFlowDiagnostics.run(.controllerIntent) {
+            try validateIntent(bootstrap: bootstrap, application: activeApplication)
+        }
+        try VPNFlowDiagnostics.run(.controllerBootstrap) { try validate(bootstrap) }
         try authority()
 
         let peer: VPNRoutePeerEvidence
-        do { peer = try resolvePeer(bootstrap.management.remoteAddress) }
+        do { peer = try VPNFlowDiagnostics.run(.controllerPeer) {
+            try resolvePeer(bootstrap.management.remoteAddress)
+        } }
         catch { throw VPNTunnelRouteControllerError.recoveryRequired }
         guard peer.peer.family.rawValue == bootstrap.management.remoteAddress.family.rawValue,
               peer.peer.bytes == bootstrap.management.remoteAddress.bytes else {
@@ -85,10 +108,10 @@ final class VPNTunnelRouteController {
 
         let plan: VPNRoutePlan
         do {
-            plan = try VPNRoutePlan(generation: bootstrap.generation,
+            plan = try VPNFlowDiagnostics.run(.controllerPlan) { try VPNRoutePlan(generation: bootstrap.generation,
                 revision: activeApplication.spec.revision,
                 resources: activeApplication.spec.resources,
-                peer: peer, tunnel: bootstrap.tunnel)
+                peer: peer, tunnel: bootstrap.tunnel) }
         } catch VPNRoutePlanError.invalidPeerEvidence {
             throw VPNTunnelRouteControllerError.peerRouteUsesTunnel
         }
@@ -100,14 +123,14 @@ final class VPNTunnelRouteController {
 
         let routeProof: VPNRouteAppliedProof
         do {
-            routeProof = try transaction.install(plan)
-            try transaction.verifyApplied(routeProof)
+            routeProof = try VPNFlowDiagnostics.run(.controllerTransaction) { try transaction.install(plan) }
+            try VPNFlowDiagnostics.run(.controllerVerify) { try transaction.verifyApplied(routeProof) }
             try authority()
             try validateIntent(bootstrap: bootstrap, application: activeApplication)
         } catch {
             // Cleanup is mandatory before the owner may stop OpenVPN. If it
             // cannot be proven, retain the journal for startup recovery.
-            do { try transaction.recoverToIdle() }
+            do { try VPNFlowDiagnostics.run(.controllerCleanup) { try transaction.recoverToIdle() } }
             catch { throw VPNTunnelRouteControllerError.recoveryRequired }
             throw error
         }
@@ -148,7 +171,7 @@ final class VPNTunnelRouteController {
     }
 
     private func authority() throws {
-        do { try checkAuthority() }
+        do { try VPNFlowDiagnostics.run(.controllerAuthority) { try checkAuthority() } }
         catch { throw VPNTunnelRouteControllerError.recoveryRequired }
     }
 

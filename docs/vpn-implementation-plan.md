@@ -3702,3 +3702,37 @@ Route socket 2/2, peer evidence 2/2, transaction 8/8, tunnel route controller
 7/7, route plan 15/15, coordinator 17/17, listener 43/43: 94/94 прошли.
 Источник ABI: Apple XNU bsd/net/rtsock.c ROUNDUP32:
 https://github.com/apple/darwin-xnu/blob/main/bsd/net/rtsock.c
+
+### Продолжение 1.5cf — safe info-level flow diagnostics (1 октября)
+
+Installed 132 всё ещё завершает попытку с `stage=routes category=unclassified`.
+Пользователь запросил подробные события для точной диагностики, не новые
+предположительные изменения маршрутизации. Добавлены info begin/complete и
+error failed для controller recovery/application/intent/bootstrap/peer/plan,
+transaction preflight/journal/checkpoint/add/verify/recovery и kernel
+lookup/add/delete. Нижний исходный failure логируется до преобразования в
+recoveryRequired. Route ordinal и роль (peer-bypass/selected-resource)
+позволяют определить первый проблемный шаг без адресов.
+
+Management client журналирует только типизированные события и фиксированные
+названия команд; state содержит только enum state, credential write только
+факт записи. PASSWORD/Auth-Token, login, OTP, private key, profile bytes,
+endpoint и raw engine output не журналируются. Route errors представлены
+закрытыми enum codes и числовым OS errno, неизвестные Error descriptions
+заменяются unknown. Ошибки и return values проходят logging wrapper без
+изменения; ownership, rollback и проверки чужих маршрутов не ослаблены.
+
+Dynamic tests проверяют отсутствие адресов в managementCode, unknown error
+redaction, сохранение исходного error и kernel errno. Management client 5/5,
+route socket 2/2, controller 8/8, transaction 7/7, peer 2/2, coordinator 17/17,
+listener 43/43: 84/84 прошли. Реальные info записи fake controller подтверждены
+через Unified Log (`controllerPeer complete`, `controllerInstall failed:
+peerRouteUsesTunnel`); это тестовые записи, не успешное VPN-подключение.
+Кандидат 133 собирается. Live cause и connect/disconnect acceptance pending.
+
+Read-only сбор текущей диагностики (никаких системных изменений):
+
+```sh
+/usr/bin/log show --last 10m --style compact --info \
+  --predicate 'subsystem == "kz.documentolog.proxypilot.vpn" AND (category == "startup" OR category == "flow") AND process BEGINSWITH "helper-"'
+```

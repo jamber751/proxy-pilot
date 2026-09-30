@@ -1,9 +1,22 @@
 import Darwin
 import Foundation
 
-enum VPNRoutePlanError: Error, Equatable {
+enum VPNRoutePlanError: VPNFlowDiagnosticError, Equatable {
     case invalidGeneration, invalidRevision, unsupportedResource, duplicate, overlap
     case peerWouldBeCaptured, invalidPeerEvidence, invalidKernelEvidence, invalidTunnelEvidence
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self {
+        case .invalidGeneration: return .invalidGeneration
+        case .invalidRevision: return .invalidRevision
+        case .unsupportedResource: return .unsupportedResource
+        case .duplicate: return .duplicate
+        case .overlap: return .overlap
+        case .peerWouldBeCaptured: return .peerWouldBeCaptured
+        case .invalidPeerEvidence: return .invalidPeerEvidence
+        case .invalidKernelEvidence: return .invalidKernelEvidence
+        case .invalidTunnelEvidence: return .invalidTunnelEvidence
+        }
+    }
 }
 
 enum VPNRouteAddressFamily: UInt8, Codable, Comparable {

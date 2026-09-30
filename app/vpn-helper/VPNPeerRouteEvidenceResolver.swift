@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum VPNPeerRouteEvidenceError: Error, Equatable {
+enum VPNPeerRouteEvidenceError: VPNFlowDiagnosticError, Equatable {
     case invalidPeer
     case malformedMessage
     case responseLimit
@@ -10,6 +10,21 @@ enum VPNPeerRouteEvidenceError: Error, Equatable {
     case closed
     case kernel(Int32)
     case unusableRoute
+    var vpnFlowFailureCode: VPNFlowFailureCode {
+        switch self {
+        case .invalidPeer: return .invalidPeer
+        case .malformedMessage: return .malformedMessage
+        case .responseLimit: return .responseLimit
+        case .timeout: return .timeout
+        case .transport: return .transport
+        case .closed: return .closed
+        case .kernel: return .kernel
+        case .unusableRoute: return .unusableRoute
+        }
+    }
+    var vpnFlowErrorNumber: Int32 {
+        switch self { case .kernel(let code), .transport(let code): return code; default: return 0 }
+    }
 }
 
 /// Resolves the kernel's current best route to the OpenVPN transport peer.
@@ -36,6 +51,9 @@ final class VPNPeerRouteEvidenceResolver {
     func resolve(peer: OpenVPNIPAddress) throws -> VPNRoutePeerEvidence {
         lock.lock()
         defer { lock.unlock() }
+        return try VPNFlowDiagnostics.run(.peerLookup) { try resolveLogged(peer: peer) }
+    }
+    private func resolveLogged(peer: OpenVPNIPAddress) throws -> VPNRoutePeerEvidence {
         guard Self.validPeer(peer) else { throw VPNPeerRouteEvidenceError.invalidPeer }
         guard sequence < Int32.max else { throw VPNPeerRouteEvidenceError.responseLimit }
         sequence += 1

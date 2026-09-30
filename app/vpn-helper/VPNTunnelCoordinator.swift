@@ -55,6 +55,7 @@ enum VPNStartupDiagnostics {
             case .unsafeBootstrapState: return "bootstrap-state"
             case .unsupportedCredentialPrompt: return "unsupported-prompt"
             }
+        case let value as VPNFlowDiagnosticError: return "flow-" + value.vpnFlowFailureCode.rawValue
         default: return "unclassified"
         }
     }
@@ -285,10 +286,12 @@ final class VPNTunnelCoordinator {
             let profile = try openProfile(digest)
             defer { close(profile) }
             stage = .endpoint
+            VPNStartupDiagnostics.reached(stage)
             let socket = try VPNManagementSocketReservation(
                 trustedDirectoryDescriptor: managementDirectory)
             reservation = socket
             stage = .process
+            VPNStartupDiagnostics.reached(stage)
             let child = try VPNEngineProcess.start(selection: selection,
                 protectedProfileDescriptor: profile, management: socket.configuration)
             // Retain process ownership before any fallible management or route
@@ -297,20 +300,25 @@ final class VPNTunnelCoordinator {
             process = child
             current = .processRunning(generation: generation)
             stage = .management
+            VPNStartupDiagnostics.reached(stage)
             let client = try connect(socket: socket, process: child, deadline: deadline)
             management = client
             stage = .initialize
+            VPNStartupDiagnostics.reached(stage)
             _ = try initialize(client: client, deadline: deadline)
             if try credentials?.outstanding(generation) == true {
                 // Real OpenVPN asks for Auth only after its initial hold is
                 // released. Capture interface evidence first and release once;
                 // the credential prompt itself blocks further bootstrap.
                 stage = .baseline
+                VPNStartupDiagnostics.reached(stage)
                 attemptBaseline = try captureInterfaces()
                 stage = .releaseHold
+                VPNStartupDiagnostics.reached(stage)
                 try releaseInitialHold(client, deadline: deadline)
                 _ = try awaitSuccess(client, deadline: deadline)
                 stage = .credentialPrompt
+                VPNStartupDiagnostics.reached(stage)
                 let kind = try awaitNextCredentialPrompt(client, deadline: deadline)
                 stage = .credentialBinding
                 try parkCredentialPrompt(kind, generation: generation, client: client,
@@ -322,9 +330,11 @@ final class VPNTunnelCoordinator {
             stage = .baseline
             let baseline = try attemptBaseline ?? captureInterfaces()
             stage = .bootstrap
+            VPNStartupDiagnostics.reached(stage)
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
             stage = .routes
+            VPNStartupDiagnostics.reached(stage)
             verifyAppliedRoutes = try activateRoutes(proof)
             current = .bootstrapReady(proof)
             return current
@@ -387,6 +397,7 @@ final class VPNTunnelCoordinator {
         let deadline = Self.now() + UInt64(timeoutMilliseconds) * 1_000_000
         var stage = VPNStartupDiagnostics.Stage.credentialSubmission
         do {
+            VPNStartupDiagnostics.reached(stage)
             guard try child.state() == .running else { throw VPNTunnelCoordinatorError.engineExited }
             // This durable transition burns UUID/generation/kind before any
             // secret object exists and therefore before a management write.
@@ -396,10 +407,12 @@ final class VPNTunnelCoordinator {
             try exchange.submit(transient)
             credentialExchange = nil; credentialChallenge = nil; credentialKind = nil
             stage = .credentialCommands
+            VPNStartupDiagnostics.reached(stage)
             try awaitCredentialCommandSuccesses(client, kind: kind, deadline: deadline)
             let complete = try callbacks.complete(binding)
             if !complete {
                 stage = .credentialNextPrompt
+                VPNStartupDiagnostics.reached(stage)
                 let next = try awaitNextCredentialPrompt(client, deadline: deadline)
                 try parkCredentialPrompt(next, generation: generation, client: client,
                                          activateRoutes: activateRoutes)
@@ -409,9 +422,11 @@ final class VPNTunnelCoordinator {
             stage = .baseline
             let baseline = try attemptBaseline ?? captureInterfaces()
             stage = .bootstrap
+            VPNStartupDiagnostics.reached(stage)
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
             stage = .routes
+            VPNStartupDiagnostics.reached(stage)
             verifyAppliedRoutes = try activateRoutes(proof)
             pendingGeneration = nil; pendingRouteActivation = nil
             current = .bootstrapReady(proof)
