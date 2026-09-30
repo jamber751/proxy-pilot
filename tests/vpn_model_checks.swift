@@ -162,6 +162,13 @@ QUJDRA==
         try check(reloaded.configuration == model.configuration && reloaded.profile == model.profile,
                   "a fresh model loads the complete saved projection")
 
+        try reloaded.removeProfile()
+        try check(reloaded.profile == nil && reloaded.configuration.profileName == nil &&
+                  reloaded.configuration.resources.isEmpty && reloaded.configuration.authentication == nil,
+                  "removing VPN clears the protected profile projection and settings")
+        try check(try store.load()?.saved.profileContents == nil,
+                  "removing VPN drops protected profile bytes from the atomic store")
+
         try rejects(.invalidConfiguration) {
             try model.setAuthentication(mode: .certificate)
         }

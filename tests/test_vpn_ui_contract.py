@@ -21,7 +21,8 @@ class VPNUIContractTests(unittest.TestCase):
         self.assertIn('PilotView(model: proxy, updates: updates, openVPN:', panel)
         for identifier in ('vpnBack', 'vpnSettings', 'vpnPower', 'vpnImport',
                            'vpnCredential', 'vpnCredentialSubmit',
-                           'vpnCredentialCancel', 'vpnAddResource', 'vpnRemoveResource'):
+                           'vpnCredentialCancel', 'vpnAddResource', 'vpnRemoveResource',
+                           'vpnRemove'):
             self.assertEqual(panel.count(f'.accessibilityIdentifier("{identifier}")'), 1)
         self.assertIn('SecureField("Пароль или код"', panel)
         self.assertIn('.onDrop(of: ["public.file-url"]', panel)

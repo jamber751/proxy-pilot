@@ -3462,6 +3462,19 @@ popover не блокируется, а UI-состояние публикует
 
 Проверены 12 model/controller/UI/layout групп, 21 package test (18 success,
 3 opt-in skip) и настоящая universal VPN-installer сборка с deep strict
-codesign. Это ещё не release gate: отсутствуют управляемое удаление всего VPN,
-Keychain static password, domain/split DNS, update/sleep lifecycle и native
+codesign. Это ещё не release gate: отсутствуют Keychain static password,
+domain/split DNS, update/sleep lifecycle и native
 installed acceptance с реальным корпоративным сервером. Tag/release не создан.
+
+### Продолжение 1.5bt — подтверждённое удаление VPN (30 сентября)
+
+В настройках добавлено отдельное destructive-действие «Удалить VPN» с ясным
+списком последствий. Оно не удаляет исходный пользовательский `.ovpn` и не
+меняет HTTP/SOCKS-прокси. Сначала authenticated helper должен подтвердить
+остановку tunnel и очистку owned routes; только после live `off` модель заново
+читает актуальную revision и атомарно удаляет защищённую копию профиля, вход,
+ресурсы, DNS intent и enabled intent. При недоказанной остановке сохранённые
+данные остаются на месте, а UI показывает ошибку.
+
+Model regression подтверждает полную пустую projection после удаления;
+source-contract проверяет доступность действия в production VPN screen.

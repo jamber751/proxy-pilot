@@ -240,6 +240,12 @@ final class VPNModel: ObservableObject {
         try persist(next)
     }
 
+    func removeProfile() throws {
+        var next = configuration
+        try next.removeProfile()
+        try persist(next)
+    }
+
     /// Persists owner intent only. A future controller is responsible for the
     /// actual connection and for acknowledging the applied revision.
     func setEnabled(_ enabled: Bool) throws {

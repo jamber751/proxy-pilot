@@ -16,6 +16,7 @@ final class VPNPanelModel: ObservableObject {
     @Published var secret = ""
     @Published var message = ""
     @Published var confirmLastResourceRemoval = false
+    @Published var confirmVPNRemoval = false
     @Published var requestsPresentation = false
 
     let configuration: VPNModel
@@ -224,6 +225,30 @@ final class VPNPanelModel: ObservableObject {
 
     func confirmResourceRemoval() { removeDraftResource(confirmingVPNOff: true) }
 
+    func requestVPNRemoval() { confirmVPNRemoval = true }
+
+    func confirmRemoveVPN() {
+        guard !working, let controller else { return }
+        working = true; confirmVPNRemoval = false; message = "Выключаем и удаляем VPN…"
+        queue.async { [weak self] in
+            controller.disconnect()
+            let state = controller.state
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.liveState = state; self.liveChecked = true; self.working = false
+                guard state == .off else {
+                    self.message = "Не удалось безопасно выключить VPN. Настройки не удалены."
+                    return
+                }
+                do {
+                    try self.configuration.load()
+                    try self.configuration.removeProfile()
+                    self.settings = false; self.login = ""; self.secret = ""; self.message = ""
+                } catch { self.message = error.localizedDescription }
+            }
+        }
+    }
+
     private func removeDraftResource(confirmingVPNOff: Bool) {
         guard let id = configuration.resourceDraft?.id else { return }
         do {
@@ -408,6 +433,11 @@ struct VPNPanelView: View {
                     profileCard
                     authenticationCard
                     resourcesCard
+                    Button(action: panel.requestVPNRemoval) {
+                        Text("Удалить VPN").font(.system(size: 11, weight: .medium))
+                            .frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
+                    }.buttonStyle(PilotButtonStyle(cornerRadius: 8)).foregroundColor(.red)
+                        .accessibilityIdentifier("vpnRemove")
                     if !panel.message.isEmpty {
                         Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -421,6 +451,12 @@ struct VPNPanelView: View {
                     .background(panel.ready ? accent : ink.opacity(0.06))
                     .foregroundColor(panel.ready ? .white : ink).cornerRadius(9).contentShape(Rectangle())
             }.buttonStyle(PilotButtonStyle(cornerRadius: 9)).padding(.vertical, 10)
+        }
+        .alert(isPresented: $panel.confirmVPNRemoval) {
+            Alert(title: Text("Удалить VPN?"),
+                  message: Text("ProxyPilot выключит VPN и удалит сохранённую копию файла, вход и список ресурсов. Настройки прокси не изменятся."),
+                  primaryButton: .destructive(Text("Удалить"), action: panel.confirmRemoveVPN),
+                  secondaryButton: .cancel())
         }
     }
 
