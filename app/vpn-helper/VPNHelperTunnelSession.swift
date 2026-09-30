@@ -1,6 +1,10 @@
 import Foundation
 
 extension VPNHelperSession {
+    func storeProfile(_ profile: Data) throws -> VPNHelperStatus {
+        try request(.storeProfile, payload: [UInt8](profile)).0
+    }
+
     func apply(_ specification: VPNApplicationSpec) throws -> VPNHelperStatus {
         let (status, _) = try request(.applyConfiguration, payload: [UInt8](try specification.encoded()))
         return status
@@ -26,6 +30,21 @@ extension VPNHelperSession {
 
     func submitCredential(_ response: VPNCredentialResponse) throws -> VPNHelperStatus {
         try request(.submitCredential, payload: [UInt8](try response.encoded())).0
+    }
+
+    func submitCredentialExchange(_ response: inout VPNCredentialResponse) throws
+        -> (VPNHelperStatus, VPNCredentialChallenge?) {
+        var payload = try response.encoded()
+        defer {
+            payload.resetBytes(in: 0..<payload.count)
+            payload.removeAll(keepingCapacity: false)
+            response.secret.resetBytes(in: 0..<response.secret.count)
+            response.secret.removeAll(keepingCapacity: false)
+        }
+        let (status, body) = try request(.submitCredential, payload: [UInt8](payload))
+        let challenge = status == .needsCredential
+            ? try VPNCredentialChallenge.decodeCanonical(Data(body)) : nil
+        return (status, challenge)
     }
 
     func cancelCredential(_ challenge: VPNCredentialChallenge) throws -> VPNHelperStatus {

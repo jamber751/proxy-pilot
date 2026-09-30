@@ -3,7 +3,7 @@ import Darwin
 
 struct VPNSnapshot: Codable, Equatable, CustomDebugStringConvertible {
     let configuration: VPNConfiguration
-    fileprivate let profileContents: Data?
+    let profileContents: Data?
     let suggestedDNS: [String]
     let suggestedResources: [VPNResource]
     let hasIgnoredProfileRoutes: Bool

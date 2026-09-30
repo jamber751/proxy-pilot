@@ -3410,3 +3410,19 @@ mutual CDHash handshake. Тестовые peer policy и произвольны�
 попали. Полная VPN-installer сборка приложения одновременно выявила и исправила
 пропущенный `VPNEngineSupervisor` в frontend source graph; universal app теперь
 снова собирается и проходит deep strict codesign.
+
+### Продолжение 1.5br — one-button live controller (30 сентября)
+
+Добавлен frontend owner полного connect/disconnect flow. Одно включение само
+атомарно сохраняет enabled intent, повторно импортирует защищённую копию профиля,
+вычисляет exact digest, отправляет profile+application в authenticated helper и
+публикует `connected` только после обратного чтения route-proven snapshot с той
+же спецификацией. Domain/split-DNS intent останавливается до открытия helper.
+
+Сессия удерживается только на время реальных management credential prompts.
+Пароль, code-only OTP и последовательные Auth/private-key prompts получают fresh
+challenge; каждый введённый Data buffer обнуляется на success/error. Cancel
+сначала подтверждается helper, disconnect сначала доказывает cleanup, и только
+после этого пользовательский store сохраняет off и снимает applied snapshot.
+Покрыты certificate, password/OTP, два последовательных prompt, cancel,
+disconnect и unsupported-domain сценарии.
