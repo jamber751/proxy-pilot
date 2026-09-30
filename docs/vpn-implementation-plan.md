@@ -3231,3 +3231,48 @@ controller, получить best route к actual peer с явным сравн�
 utun, установить owned peer/resource routes и при любой ошибке откатить их до
 остановки процесса. DNS и публичный Connected остаются после этого отдельными
 gates.
+
+### Продолжение 1.5bi — verified tunnel route controller (30 сентября)
+
+Добавлен внутренний controller, который связывает bootstrap proof с точными
+generation, revision, digest активной конфигурации и daemon runtime lease. Перед
+свежей установкой он сначала приводит незавершённый route journal к idle,
+получает актуальный best route для фактического peer и отдельно запрещает
+использовать новый ProxyPilot `utun` как peer bypass. Изменение intent до или
+после route mutation обнаруживается повторным чтением состояния; уже внесённые
+маршруты при гонке откатываются.
+
+Успешная остановка процесса теперь имеет явный обязательный барьер
+`prepareForProcessStop`: owned routes должны быть удалены в обратном порядке до
+остановки OpenVPN. Controller пока не подключён к listener/coordinator, не
+меняет DNS и не публикует Connected. Пройдены 8/8 focused tests.
+
+### Продолжение 1.5bj — durable multi-prompt credential attempt (30 сентября)
+
+Tunnel state schema обновлена до v2. Одна попытка подключения теперь durable
+связана с generation и полной validated application, а private-key passphrase и
+VPN password/code-only OTP могут запрашиваться последовательно в любом порядке.
+Каждый тип challenge выдаётся не более одного раза; exact UUID/generation/kind
+сжигается до передачи transient secret в transport. Секрет по-прежнему не
+сериализуется и не хранится в state.
+
+Crash/restart во время `connecting`, `needsCredential` или `authenticating`
+увеличивает generation и переводит попытку в `failed`; canonical schema v1
+мигрируется fail-closed. Старый listener временно использует compatibility shim
+и после credential submission остаётся fail-closed, пока callbacks management
+prompt не подключены к coordinator. Пройдены 34 объединённые проверки state,
+credential transport и route controller.
+
+### Продолжение 1.5bk — production graph verification (30 сентября)
+
+Исправлены только source graphs тестовых helper fixtures: supervisor entry
+теперь включается явным compile flag, а readiness fixture компилирует фактически
+используемые tunnel/importer зависимости. Пройдены 52 listener/readiness и 61
+daemon/launchd проверки. Полный production helper повторно собран для arm64 и
+x86_64, объединён в universal binary и успешно прошёл strict codesign verify.
+
+Следующий узел — встроить route controller в единственного владельца lifecycle:
+активировать точную pending-конфигурацию, передать runtime lease, применить
+маршруты после bootstrap и гарантированно очистить их перед каждым stop/error.
+После этого отдельно подключить multi-prompt callbacks. Scoped DNS и публичный
+Connected остаются последующими gates; release/tag до них не создаётся.
