@@ -3508,3 +3508,24 @@ release checklist.
 Выбор password/2FA хранится как черновик до «Сохранить»; возврат отменяет
 несохранённые login/mode. Добавлен source regression, запрещающий общий
 `ScrollView` в settings container и требующий bounded lazy resource list.
+
+### Продолжение 1.5bw — bounded network-change reconnect (30 сентября)
+
+VPN frontend теперь наблюдает системный `NWPathMonitor`. Первый callback только
+запоминает physical-path signature, чтобы не дублировать launch restore;
+переходы без доступного пути не запускают бессмысленные попытки. Сигнатура
+учитывает только Wi-Fi/Ethernet/cellular и status — собственный `utun` и другие
+VPN-интерфейсы не могут запустить reconnect loop. После последующей реальной
+смены на satisfied physical path выполняется ровно одна операция на общей VPN
+queue.
+
+Если VPN выключен пользователем, операция только обновляет live snapshot. Если
+сохранено enabled intent, старый tunnel сначала проходит authenticated
+disconnect и route cleanup, затем создаётся fresh connect attempt. Password/OTP
+prompt переводит пользователя на VPN-экран; секреты не угадываются и повторный
+цикл не запускается. Событие, пришедшее во время другой VPN-операции, безопасно
+игнорируется существующим busy gate. Monitor отменяется при завершении app.
+
+Это реакция на подтверждённое изменение доступного network path, а не обещание
+совместимости с любым VPN. WARP/другие клиенты не выключаются и их настройки не
+меняются; реальное coexistence остаётся пунктом installed acceptance.

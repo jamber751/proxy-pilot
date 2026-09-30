@@ -29,7 +29,12 @@ class VPNUIContractTests(unittest.TestCase):
         self.assertIn('configuration.importProfile(files: urls)', panel)
         self.assertIn('func disconnectForQuit(completion:', panel)
         self.assertIn('func restoreDesiredConnection()', panel)
+        self.assertIn('func reconnectAfterNetworkChange()', panel)
         self.assertIn('NSWorkspace.didWakeNotification', main)
+        self.assertIn('NWPathMonitor()', main)
+        self.assertIn('path.status == .satisfied', main)
+        self.assertIn('$0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular', main)
+        self.assertIn('guard signature != previous', main)
 
     def test_long_resource_list_is_bounded_and_lazy(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text()

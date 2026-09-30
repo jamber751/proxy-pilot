@@ -110,6 +110,22 @@ final class VPNPanelModel: ObservableObject {
             }
         })
     }
+
+    func reconnectAfterNetworkChange() {
+        let desired = configuration.configuration.desiredEnabled
+        run({ controller in
+            controller.refresh()
+            guard desired, controller.state != .unavailable else { return }
+            controller.disconnect()
+            if controller.state == .off { controller.connect() }
+        }, completion: { [weak self] state in
+            guard let self else { return }
+            if case .needsCredential = state {
+                self.requestsPresentation = true
+                self.onAttention?()
+            }
+        })
+    }
     func toggle() {
         guard ready else { settings = true; return }
         let shouldDisconnect = connected

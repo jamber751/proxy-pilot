@@ -1,6 +1,9 @@
 // A menu-bar popover; gost inherits this app's Local Network permission.
 import AppKit
 import SwiftUI
+#if VPN_INSTALLER_ENTRY
+import Network
+#endif
 
 struct ProxyState: Decodable {
     var configured: Bool
@@ -647,6 +650,10 @@ final class App: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var activity: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    #if VPN_INSTALLER_ENTRY
+    private var networkMonitor: NWPathMonitor?
+    private let networkMonitorQueue = DispatchQueue(label: "proxypilot.vpn.network")
+    #endif
     private var pendingPopoverRequest: UUID?
     private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
     private let updates = UpdateModel()
@@ -686,6 +693,23 @@ final class App: NSObject, NSApplicationDelegate {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.vpnPanel.restoreDesiredConnection() }
+        let monitor = NWPathMonitor()
+        var previousPhysicalPath: String?
+        monitor.pathUpdateHandler = { [weak self] path in
+            let physical = path.availableInterfaces.filter {
+                $0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular
+            }.map { "\(String(describing: $0.type)):\($0.name)" }.sorted().joined(separator: ",")
+            let signature = "\(path.status == .satisfied):\(physical)"
+            guard let previous = previousPhysicalPath else {
+                previousPhysicalPath = signature; return
+            }
+            guard signature != previous else { return }
+            previousPhysicalPath = signature
+            guard path.status == .satisfied else { return }
+            DispatchQueue.main.async { self?.vpnPanel.reconnectAfterNetworkChange() }
+        }
+        monitor.start(queue: networkMonitorQueue)
+        networkMonitor = monitor
         model.prepareQuit = { [weak self] completion in
             self?.vpnPanel.disconnectForQuit(completion: completion)
         }
@@ -758,6 +782,9 @@ final class App: NSObject, NSApplicationDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) {
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        #if VPN_INSTALLER_ENTRY
+        networkMonitor?.cancel()
+        #endif
     }
 }
 
