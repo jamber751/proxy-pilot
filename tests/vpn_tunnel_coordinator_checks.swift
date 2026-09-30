@@ -73,8 +73,11 @@ final class Counter { var value = 0 }
                     sendLine(client, "SUCCESS: state notifications enabled")
                 }
             case "state":
-                let state = behavior == "connected" ? "CONNECTED" : "WAIT"
-                sendLine(client, "1,\(state),redacted,,,,")
+                if behavior == "connected" {
+                    sendLine(client, "1,CONNECTED,redacted,10.8.0.2,203.0.113.9,443")
+                } else {
+                    sendLine(client, "1,WAIT,redacted,,,,")
+                }
                 sendLine(client, "END")
                 if behavior == "observe" {
                     sendLine(client, ">STATE:2,RECONNECTING,redacted,,,,")

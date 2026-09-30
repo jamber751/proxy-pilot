@@ -22,6 +22,7 @@ class VPNTransientCredentialTests(unittest.TestCase):
                    ROOT / 'app/vpn-helper/VPNApplicationSpec.swift',
                    ROOT / 'app/vpn-helper/VPNTunnelStateStore.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNStateEvidence.swift',
                    ROOT / 'app/vpn-helper/OpenVPNTransientCredential.swift',
                    ROOT / 'tests/vpn_transient_credential_checks.swift']
         result = subprocess.run([

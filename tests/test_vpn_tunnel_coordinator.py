@@ -21,6 +21,7 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
         sources = [ROOT / 'app/vpn-helper/VPNProfileVault.swift',
                    ROOT / 'app/vpn-helper/VPNEngineProcess.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNStateEvidence.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementParser.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementClient.swift',
                    ROOT / 'app/vpn-helper/VPNManagementSocketReservation.swift',

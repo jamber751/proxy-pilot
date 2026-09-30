@@ -15,7 +15,8 @@ class VPNDaemonTests(installer.VPNInstallerTests):
     service_components = installer.COMPONENTS + ['VPNHelperListener.swift', 'VPNHelperRuntime.swift',
                                                'VPNHelperDaemon.swift', 'VPNReleaseTrust.swift',
                                                'VPNApplicationSpec.swift', 'VPNTunnelStateStore.swift',
-                                               'OpenVPNManagementEvent.swift', 'OpenVPNManagementParser.swift',
+                                               'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift',
+                                               'OpenVPNManagementParser.swift',
                                                'OpenVPNManagementClient.swift', 'VPNManagementSocketReservation.swift',
                                                'VPNEngineProcess.swift', 'VPNTunnelCoordinator.swift']
     service_main = installer.ROOT / 'tests/vpn_daemon_main.swift'

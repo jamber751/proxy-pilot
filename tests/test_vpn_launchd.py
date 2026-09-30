@@ -28,7 +28,7 @@ COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'V
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
            'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNApplicationSpec.swift',
            'VPNTunnelStateStore.swift', 'VPNProfileVault.swift',
-           'OpenVPNManagementEvent.swift', 'OpenVPNManagementParser.swift',
+           'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift', 'OpenVPNManagementParser.swift',
            'OpenVPNManagementClient.swift', 'VPNManagementSocketReservation.swift',
            'VPNEngineProcess.swift', 'VPNTunnelCoordinator.swift',
            'VPNHelperListener.swift', 'VPNEndpointDirectory.swift']

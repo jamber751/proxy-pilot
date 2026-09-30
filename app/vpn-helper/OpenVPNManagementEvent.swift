@@ -27,7 +27,7 @@ enum OpenVPNCredentialKind: Equatable {
 
 enum OpenVPNManagementEvent: Equatable {
     case ready
-    case state(OpenVPNConnectionState)
+    case state(OpenVPNStateEvidence)
     case hold
     case credentialRequired(OpenVPNCredentialKind)
     case credentialRejected(OpenVPNCredentialKind)

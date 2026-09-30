@@ -173,7 +173,8 @@ final class VPNTunnelCoordinator {
             throw error
         }
         switch event {
-        case .state(let state): current = .managementReady(generation: generation, state: state)
+        case .state(let evidence):
+            current = .managementReady(generation: generation, state: evidence.state)
         case .credentialRequired(let kind), .credentialRejected(let kind):
             stopLocked(); current = .blocked(.credentialRequired(kind))
         case .fatal, .commandFailed:
@@ -228,7 +229,7 @@ final class VPNTunnelCoordinator {
         var state: OpenVPNConnectionState?
         for _ in 0..<16 {
             switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
-            case .state(let value): state = value
+            case .state(let evidence): state = evidence.state
             case .commandCompleted:
                 guard let state = state else { throw VPNTunnelCoordinatorError.managementRejected }
                 return state

@@ -31,7 +31,29 @@ func parserChecks() throws {
     let key = try OpenVPNManagementParser.parse(line: Array(">PASSWORD:Need 'Private Key' password".utf8))
     let ignored = try OpenVPNManagementParser.parse(line: Array(">LOG:1,N,message".utf8))
     try require(info == .ready, "info")
-    try require(state == .state(.connected), "state")
+    guard case .state(let connectedState) = state,
+          let connected = connectedState.connected else {
+        throw CheckFailure.failed("connected evidence")
+    }
+    try require(connectedState.timestamp == 1 && connectedState.state == .connected, "state")
+    try require(connected.tunnelLocalIPv4?.bytes == [10, 0, 0, 2], "local v4")
+    try require(connected.remoteAddress.bytes == [1, 2, 3, 4]
+                && connected.remotePort == 443, "redacted remote")
+    let dualEvent = try OpenVPNManagementParser.parse(line: Array(
+        ">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,fd00::2".utf8))
+    guard case .state(let dualState) = dualEvent, let dual = dualState.connected else {
+        throw CheckFailure.failed("dual-stack evidence")
+    }
+    try require(dual.tunnelLocalIPv4?.bytes == [10, 0, 0, 2]
+                && dual.tunnelLocalIPv6?.bytes.count == 16
+                && dual.remoteAddress.family == .ipv4 && dual.remotePort == 443, "dual-stack")
+    let ipv6Event = try OpenVPNManagementParser.parse(line: Array(
+        ">STATE:3,CONNECTED,SUCCESS,,2001:db8::1,1194,2001:db8:ffff::2,54321,fd00::2".utf8))
+    guard case .state(let ipv6State) = ipv6Event, let ipv6 = ipv6State.connected else {
+        throw CheckFailure.failed("ipv6 evidence")
+    }
+    try require(ipv6.tunnelLocalIPv6?.bytes.count == 16
+                && ipv6.remoteAddress.family == .ipv6 && ipv6.remotePort == 1194, "ipv6")
     try require(auth == .credentialRequired(.usernameAndPassword), "auth")
     try require(otp == .credentialRequired(.staticChallenge), "otp")
     try require(rejected == .credentialRejected(.usernameAndPassword), "rejected")
@@ -39,7 +61,13 @@ func parserChecks() throws {
     try require(ignored == nil, "ignored")
 
     for unsafe in [[UInt8](repeating: 65, count: OpenVPNManagementParser.maximumLineBytes + 1),
-                   Array(">STATE:nope,CONNECTED".utf8), [0xff], Array("arbitrary response".utf8)] {
+                   Array(">STATE:nope,CONNECTED".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,server.example,443".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,0".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,2001:db8::2,54321,fd00::2".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,not-an-ip".utf8),
+                   Array(">STATE:4102444801,AUTH,,,,".utf8),
+                   [0xff], Array("arbitrary response".utf8)] {
         do {
             _ = try OpenVPNManagementParser.parse(line: unsafe)
             throw CheckFailure.failed("unsafe line accepted")
@@ -54,7 +82,8 @@ func streamChecks() throws {
     let client = try OpenVPNManagementClient(takingConnectedSocket: clientFD)
     try sendAll(serverFD, ">LOG:ignored\r\n>STATE:2,AUTH,,,,\r\n")
     let event = try client.readEvent()
-    try require(event == .state(.authenticating), "stream event")
+    guard case .state(let streamState) = event else { throw CheckFailure.failed("stream event") }
+    try require(streamState.state == .authenticating && streamState.timestamp == 2, "stream event")
     try client.send(.releaseHold)
     let responseSize = "hold release\n".utf8.count
     var response = [UInt8](repeating: 0, count: responseSize)
@@ -151,7 +180,8 @@ func unixChecks() throws {
     }
     let client = try OpenVPNManagementClient.connect(to: .unixSocket(path))
     let event = try client.readEvent()
-    try require(event == .state(.waiting), "unix")
+    guard case .state(let unixState) = event else { throw CheckFailure.failed("unix") }
+    try require(unixState.state == .waiting && unixState.timestamp == 3, "unix")
     try require(group.wait(timeout: .now() + 2) == .success, "unix fake server")
     print("unix passed")
 }
