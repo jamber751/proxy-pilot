@@ -94,20 +94,30 @@ enum OpenVPNManagementParser {
     }
 
     private static func parsePassword(_ line: String) throws -> OpenVPNManagementEvent {
-        let rejected = line.hasPrefix(">PASSWORD:Verification Failed:")
-        let required = line.hasPrefix(">PASSWORD:Need '")
-        guard rejected || required else { throw OpenVPNManagementParseError.malformed }
-
-        let kind: OpenVPNCredentialKind
-        if line.contains("Private Key") {
-            kind = .privateKeyPassphrase
-        } else if line.contains("Static Challenge") || line.contains("SC:") {
-            kind = .staticChallenge
-        } else if line.contains("'Auth'") {
-            kind = .usernameAndPassword
-        } else {
+        let requiredPrefix = ">PASSWORD:Need "
+        if line.hasPrefix(requiredPrefix) {
+            let body = line.dropFirst(requiredPrefix.count)
+            if body == "'Auth' username/password" {
+                return .credentialRequired(.usernameAndPassword)
+            }
+            if body == "'Private Key' password" {
+                return .credentialRequired(.privateKeyPassphrase)
+            }
+            let staticPrefix = "'Auth' username/password SC:"
+            if body.hasPrefix(staticPrefix), body.dropFirst(staticPrefix.count).utf8.count > 0,
+               body.dropFirst(staticPrefix.count).utf8.count <= 255 {
+                return .credentialRequired(.staticChallenge)
+            }
             throw OpenVPNManagementParseError.malformed
         }
-        return rejected ? .credentialRejected(kind) : .credentialRequired(kind)
+        let rejectedPrefix = ">PASSWORD:Verification Failed: "
+        guard line.hasPrefix(rejectedPrefix) else {
+            throw OpenVPNManagementParseError.malformed
+        }
+        switch line.dropFirst(rejectedPrefix.count) {
+        case "'Auth'": return .credentialRejected(.usernameAndPassword)
+        case "'Private Key'": return .credentialRejected(.privateKeyPassphrase)
+        default: throw OpenVPNManagementParseError.malformed
+        }
     }
 }

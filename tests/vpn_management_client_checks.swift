@@ -67,6 +67,10 @@ func parserChecks() throws {
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,2001:db8::2,54321,fd00::2".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,not-an-ip".utf8),
                    Array(">STATE:4102444801,AUTH,,,,".utf8),
+                   Array(">PASSWORD:Need 'Auth' username/password Private Key".utf8),
+                   Array(">PASSWORD:Need 'Other' username/password 'Auth'".utf8),
+                   Array(">PASSWORD:Need 'Auth' username/password SC:".utf8),
+                   Array(">PASSWORD:Verification Failed: 'Other' 'Auth'".utf8),
                    [0xff], Array("arbitrary response".utf8)] {
         do {
             _ = try OpenVPNManagementParser.parse(line: unsafe)
