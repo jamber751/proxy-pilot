@@ -1,6 +1,9 @@
 import Foundation
 
-enum OpenVPNManagementParseError: Error { case malformed, unsupportedEncoding }
+enum OpenVPNManagementParseError: Error {
+    case malformed, unsupportedEncoding, invalidStateHeader, invalidConnectedShape(Int)
+    case invalidTunnelAddress, invalidPeerEndpoint, invalidLocalEndpoint
+}
 
 enum OpenVPNManagementParser {
     static let maximumLineBytes = 4096
@@ -23,6 +26,9 @@ enum OpenVPNManagementParser {
         if line.hasPrefix(">HOLD:") { return .hold }
         if line.hasPrefix(">FATAL:") { return .fatal }
         if line.hasPrefix(">STATE:") { return try parseState(String(line.dropFirst(7))) }
+        // OpenVPN owns this transient session token. It is not a credential
+        // challenge or connection proof, and must never become an event/log.
+        if line.hasPrefix(">PASSWORD:Auth-Token:") { return nil }
         if line.hasPrefix(">PASSWORD:") { return try parsePassword(line) }
         // A direct `state` command returns the same CSV state without the
         // asynchronous prefix, followed by an END marker.
@@ -41,7 +47,7 @@ enum OpenVPNManagementParser {
               fields[0].utf8.allSatisfy({ (48...57).contains($0) }),
               let timestamp = UInt64(fields[0]), timestamp <= OpenVPNStateEvidence.maximumTimestamp,
               let state = OpenVPNConnectionState(rawValue: String(fields[1])) else {
-            throw OpenVPNManagementParseError.malformed
+            throw OpenVPNManagementParseError.invalidStateHeader
         }
         guard state == .connected else {
             return OpenVPNStateEvidence(timestamp: timestamp, state: state, connected: nil)
@@ -49,19 +55,26 @@ enum OpenVPNManagementParser {
         // OpenVPN 2.x omits the final tunnel IPv6 column on IPv4-only tunnels.
         // Modern IPv4 replies therefore have eight fields, not nine.
         guard fields.count == 6 || fields.count == 8 || fields.count == 9 else {
-            throw OpenVPNManagementParseError.malformed
+            throw OpenVPNManagementParseError.invalidConnectedShape(fields.count)
         }
         let local4 = try optionalAddress(fields[3], family: .ipv4)
-        let remote = try endpoint(address: fields[4], port: fields[5])
+        let remote: (OpenVPNIPAddress, UInt16)
+        do { remote = try endpoint(address: fields[4], port: fields[5]) }
+        catch { throw OpenVPNManagementParseError.invalidPeerEndpoint }
         let local6 = fields.count == 9 ? try optionalAddress(fields[8], family: .ipv6) : nil
-        if fields.count >= 8 {
-            let localTransport = try endpoint(address: fields[6], port: fields[7])
+        if fields.count >= 8, !(fields[6].isEmpty && fields[7].isEmpty) {
+            // OpenVPN emits two empty columns when its UDP socket remains
+            // bound to an unspecified address. This optional transport address
+            // is not tunnel evidence; the peer and tunnel are still required.
+            let localTransport: (OpenVPNIPAddress, UInt16)
+            do { localTransport = try endpoint(address: fields[6], port: fields[7]) }
+            catch { throw OpenVPNManagementParseError.invalidLocalEndpoint }
             guard localTransport.0.family == remote.0.family else {
-                throw OpenVPNManagementParseError.malformed
+                throw OpenVPNManagementParseError.invalidLocalEndpoint
             }
         }
         guard local4 != nil || local6 != nil else {
-            throw OpenVPNManagementParseError.malformed
+            throw OpenVPNManagementParseError.invalidTunnelAddress
         }
         let connected = OpenVPNConnectedEvidence(tunnelLocalIPv4: local4,
             tunnelLocalIPv6: local6, remoteAddress: remote.0, remotePort: remote.1)
@@ -76,7 +89,7 @@ enum OpenVPNManagementParser {
                                         family: OpenVPNIPAddressFamily) throws -> OpenVPNIPAddress? {
         guard !text.isEmpty else { return nil }
         do { return try OpenVPNIPAddress(parsing: text, family: family) }
-        catch { throw OpenVPNManagementParseError.malformed }
+        catch { throw OpenVPNManagementParseError.invalidTunnelAddress }
     }
 
     private static func endpoint(address: Substring, port: Substring) throws
@@ -116,10 +129,18 @@ enum OpenVPNManagementParser {
         guard line.hasPrefix(rejectedPrefix) else {
             throw OpenVPNManagementParseError.malformed
         }
-        switch line.dropFirst(rejectedPrefix.count) {
-        case "'Auth'": return .credentialRejected(.usernameAndPassword)
-        case "'Private Key'": return .credentialRejected(.privateKeyPassphrase)
-        default: throw OpenVPNManagementParseError.malformed
+        let body = line.dropFirst(rejectedPrefix.count)
+        for (label, kind) in [("'Auth'", OpenVPNCredentialKind.usernameAndPassword),
+                              ("'Private Key'", OpenVPNCredentialKind.privateKeyPassphrase)] {
+            if body == label { return .credentialRejected(kind) }
+            let prefix = label + " ['"
+            if body.hasPrefix(prefix), body.hasSuffix("']"),
+               body.count > prefix.count + 2, body.utf8.count <= 512 {
+                // The server's explanation is deliberately discarded. A
+                // rejected credential remains rejected regardless of wording.
+                return .credentialRejected(kind)
+            }
         }
+        throw OpenVPNManagementParseError.malformed
     }
 }

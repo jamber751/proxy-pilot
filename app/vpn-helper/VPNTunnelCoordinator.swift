@@ -27,7 +27,15 @@ enum VPNStartupDiagnostics {
         case OpenVPNManagementClientError.timeout: return "management-timeout"
         case OpenVPNManagementClientError.closed: return "management-closed"
         case is OpenVPNManagementClientError: return "management-transport"
-        case is OpenVPNManagementParseError: return "management-protocol"
+        case let value as OpenVPNManagementParseError:
+            switch value {
+            case .malformed, .unsupportedEncoding: return "management-protocol"
+            case .invalidStateHeader: return "management-state-header"
+            case .invalidConnectedShape(let count): return "management-connected-fields-\(count)"
+            case .invalidTunnelAddress: return "management-tunnel-address"
+            case .invalidPeerEndpoint: return "management-peer-endpoint"
+            case .invalidLocalEndpoint: return "management-local-endpoint"
+            }
         case is VPNKernelInterfaceSnapshotError: return "interface-snapshot"
         case let value as VPNTunnelStateStoreError:
             switch value {

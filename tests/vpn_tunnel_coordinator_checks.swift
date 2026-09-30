@@ -106,7 +106,8 @@ final class Counter { var value = 0 }
                 case "timeout-after": sendLine(client, "SUCCESS: hold released")
                 default:
                     sendLine(client, "SUCCESS: hold released")
-                    sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443,192.0.2.10,54321")
+                    sendLine(client, ">PASSWORD:Auth-Token:fixture-token-not-persisted")
+                    sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443,,")
                     if behavior == "observe" {
                         sendLine(client, ">STATE:3,RECONNECTING,redacted,,,,")
                     } else if behavior == "observe-wait" {
@@ -129,7 +130,8 @@ final class Counter { var value = 0 }
                     if behavior == "multi-key-auth" {
                         sendLine(client, ">PASSWORD:Need 'Auth' username/password")
                     } else if behavior == "multi-auth-key-after-hold" {
-                        sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443,192.0.2.10,54321")
+                        sendLine(client, ">PASSWORD:Auth-Token:fixture-token-not-persisted")
+                        sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443,,")
                     }
                 } else { exit(48) }
             }

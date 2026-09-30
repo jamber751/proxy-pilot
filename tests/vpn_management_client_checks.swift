@@ -46,6 +46,11 @@ func parserChecks() throws {
           ipv4State.connected?.tunnelLocalIPv6 == nil else { throw CheckFailure.failed("OpenVPN 2.7 IPv4 state") }
     let dualEvent = try OpenVPNManagementParser.parse(line: Array(
         ">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,fd00::2".utf8))
+    for line in [">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,,",
+                 ">STATE:2,CONNECTED,SUCCESS,10.0.0.2,1.2.3.4,443,,,fd00::2"] {
+        guard case .state(let result) = try OpenVPNManagementParser.parse(line: Array(line.utf8)),
+              result.connected?.tunnelLocalIPv4 != nil else { throw CheckFailure.failed("UDP unspecified local bind") }
+    }
     guard case .state(let dualState) = dualEvent, let dual = dualState.connected else {
         throw CheckFailure.failed("dual-stack evidence")
     }
@@ -64,12 +69,20 @@ func parserChecks() throws {
     try require(rejected == .credentialRejected(.usernameAndPassword), "rejected")
     try require(key == .credentialRequired(.privateKeyPassphrase), "key")
     try require(ignored == nil, "ignored")
+    let tokenNotice = try OpenVPNManagementParser.parse(line: Array(
+        ">PASSWORD:Auth-Token:NEVER-PERSIST-THIS-TOKEN".utf8))
+    let rejectionNotice = try OpenVPNManagementParser.parse(line: Array(
+        ">PASSWORD:Verification Failed: 'Auth' ['NEVER-LOG-SERVER-EXPLANATION']".utf8))
+    try require(tokenNotice == nil, "discard token notification")
+    try require(rejectionNotice == .credentialRejected(.usernameAndPassword), "discard rejection explanation")
 
     for unsafe in [[UInt8](repeating: 65, count: OpenVPNManagementParser.maximumLineBytes + 1),
                    Array(">STATE:nope,CONNECTED".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,server.example,443".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,0".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,0".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,".utf8),
+                   Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,,54321".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,2001:db8::2,54321".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,2001:db8::2,54321,fd00::2".utf8),
                    Array(">STATE:1,CONNECTED,secret,10.0.0.2,1.2.3.4,443,192.0.2.10,54321,not-an-ip".utf8),
@@ -78,6 +91,8 @@ func parserChecks() throws {
                    Array(">PASSWORD:Need 'Other' username/password 'Auth'".utf8),
                    Array(">PASSWORD:Need 'Auth' username/password SC:".utf8),
                    Array(">PASSWORD:Verification Failed: 'Other' 'Auth'".utf8),
+                   Array(">PASSWORD:Verification Failed: 'Other' ['Auth']".utf8),
+                   Array(">PASSWORD:Verification Failed: 'Auth' ['unterminated".utf8),
                    [0xff], Array("arbitrary response".utf8)] {
         do {
             _ = try OpenVPNManagementParser.parse(line: unsafe)

@@ -3650,3 +3650,28 @@ credentialNextPrompt, baseline/bootstrap/routes; rejection и timeout имеют
 Кандидат 130 собирается. Это исправляет доказанный parser bug, но источник
 текущего installed post-credential отказа пока не доказан новым логом. OTP,
 routes и disconnect остаются pending acceptance.
+
+### Продолжение 1.5cd — complete redacted OpenVPN 2.7 notifications (1 октября)
+
+Installed 130 failure теперь локализован после ответа на credential prompt:
+`stage=bootstrap category=management-protocol`. Нет подтверждения отказа
+пароля/OTP, connected state и маршрутов. Аудит bundled upstream `manage.c`
+выявил ещё три стандартные формы, отсутствовавшие в fixtures: обе пустые
+local UDP transport columns при unspecified bind; `PASSWORD:Auth-Token`
+notification; `Verification Failed` с bracketed server explanation.
+
+Пустая пара optional local transport columns разрешена, но частично пустая
+пара/неверный IP/нулевой port по-прежнему запрещены. Tunnel address, peer
+endpoint, generation и новое kernel utun evidence остаются обязательными.
+Auth-token notification отбрасывается без выдачи credential event, хранения,
+журналирования или connection authority. Server explanation отбрасывается,
+а точный известный label остаётся credentialRejected; неизвестные labels и
+malformed messages fail closed. Fixtures теперь проверяют токен перед
+CONNECTED с пустой UDP transport парой. Parser 5/5, coordinator 17/17,
+listener 43/43 прошли.
+
+Добавлены allowlisted parser error categories для state header, shape count,
+tunnel address, peer endpoint и optional local endpoint. Ни адреса, ни reason,
+ни token не интерполируются в логи. Кандидат 131 собирается. Эти compatibility
+bugs подтверждены кодом upstream/fixtures, но точный вариант текущего installed
+protocol refusal требует повторной live попытки. Live acceptance ещё pending.
