@@ -132,6 +132,9 @@ final class Counter { var value = 0 }
     }
 
     static func main() throws {
+        if let status = VPNEngineSupervisorEntry.runIfRequested(arguments: CommandLine.arguments) {
+            exit(status)
+        }
         if CommandLine.arguments.first == "vpn-engine" { child() }
         guard CommandLine.arguments.count == 3 else { fail("usage") }
         let test = CommandLine.arguments[1], folder = CommandLine.arguments[2]

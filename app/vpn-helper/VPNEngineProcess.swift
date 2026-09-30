@@ -155,14 +155,12 @@ private final class VPNEngineSelectionDirectory {
 /// of "connected" and cannot install routes or DNS settings. A later tunnel
 /// coordinator must separately authenticate management state before doing so.
 final class VPNEngineProcess {
-    private static let profileDescriptor: Int32 = 21
-    private var processID: pid_t
-    private var terminalState: VPNEngineProcessState?
+    private let supervisor: VPNEngineSupervisorClient
 
-    private init(processID: pid_t) { self.processID = processID }
+    private init(supervisor: VPNEngineSupervisorClient) { self.supervisor = supervisor }
 
     deinit {
-        if terminalState == nil { _ = try? stop(graceMilliseconds: 100) }
+        if (try? state()) == .running { _ = try? stop(graceMilliseconds: 100) }
     }
 
     static func start(selection: VPNEngineExecutableSelection,
@@ -176,36 +174,6 @@ final class VPNEngineProcess {
         }
         defer { close(stagedProfile) }
 
-        // Prepare every fallible non-security input before validation. Once the
-        // exact engine descriptor is returned, the next operation is spawn.
-        var actions: posix_spawn_file_actions_t? = nil
-        var attributes: posix_spawnattr_t? = nil
-        guard posix_spawn_file_actions_init(&actions) == 0,
-              posix_spawnattr_init(&attributes) == 0 else {
-            if actions != nil { posix_spawn_file_actions_destroy(&actions) }
-            throw VPNEngineProcessError.spawnFailed(ENOMEM)
-        }
-        defer {
-            posix_spawn_file_actions_destroy(&actions)
-            posix_spawnattr_destroy(&attributes)
-        }
-
-        let null = "/dev/null"
-        guard posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, null, O_RDONLY, 0) == 0,
-              posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, null, O_WRONLY, 0) == 0,
-              posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, null, O_WRONLY, 0) == 0,
-              posix_spawn_file_actions_adddup2(&actions, stagedProfile, profileDescriptor) == 0 else {
-            throw VPNEngineProcessError.spawnFailed(EINVAL)
-        }
-        let flags = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
-        var emptyMask = sigset_t(), defaults = sigset_t()
-        sigemptyset(&emptyMask); sigfillset(&defaults)
-        guard posix_spawnattr_setflags(&attributes, flags) == 0,
-              posix_spawnattr_setsigmask(&attributes, &emptyMask) == 0,
-              posix_spawnattr_setsigdefault(&attributes, &defaults) == 0 else {
-            throw VPNEngineProcessError.spawnFailed(EINVAL)
-        }
-
         if let management = management {
             var endpoint = stat()
             guard lstat(management.socketPath, &endpoint) == -1, errno == ENOENT else {
@@ -214,95 +182,25 @@ final class VPNEngineProcess {
         }
         let engine = try selection.openValidatedDescriptor()
         defer { close(engine) }
-        var enginePath = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        var selectedIdentity = stat()
-        guard fcntl(engine, F_GETPATH, &enginePath) == 0,
-              fstat(engine, &selectedIdentity) == 0 else {
-            throw VPNEngineProcessError.validationFailed
-        }
-        var pid: pid_t = 0
-        var argv = [
-            "vpn-engine", "--config", "/dev/fd/\(profileDescriptor)",
-            "--route-noexec", "--ifconfig-noexec", "--script-security", "1",
-            "--auth-nocache", "--route-nopull"
-        ]
-        if let management = management {
-            argv += ["--management", management.socketPath, "unix",
-                     "--management-hold", "--management-query-passwords"]
-        }
-        var environment: [UnsafeMutablePointer<CChar>?] = [nil]
-        guard let result = withCStrings(argv, { arguments in
-            environment.withUnsafeMutableBufferPointer { environment in
-                // This is the canonical path obtained from the descriptor that
-                // was revalidated immediately above. Production selections
-                // additionally bind it to the named inode in a protected 0700
-                // directory before this call.
-                posix_spawn(&pid, enginePath, &actions, &attributes,
-                            arguments, environment.baseAddress!)
-            }
-        }) else { throw VPNEngineProcessError.spawnFailed(ENOMEM) }
-        guard result == 0, pid > 0 else { throw VPNEngineProcessError.spawnFailed(result) }
-        var launchedIdentity = stat()
-        guard lstat(String(cString: enginePath), &launchedIdentity) == 0,
-              selectedIdentity.st_dev == launchedIdentity.st_dev,
-              selectedIdentity.st_ino == launchedIdentity.st_ino else {
-            _ = kill(pid, SIGKILL)
-            var status: Int32 = 0
-            while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-            throw VPNEngineProcessError.validationFailed
-        }
-        return VPNEngineProcess(processID: pid)
+        let client = try VPNEngineSupervisorClient.launch(engineDescriptor: engine,
+            profileDescriptor: stagedProfile, management: management)
+        return VPNEngineProcess(supervisor: client)
     }
 
-    func state() throws -> VPNEngineProcessState {
-        if let terminalState = terminalState { return terminalState }
-        var status: Int32 = 0
-        var result: pid_t
-        repeat { result = waitpid(processID, &status, WNOHANG) } while result < 0 && errno == EINTR
-        if result == 0 { return .running }
-        guard result == processID else { throw VPNEngineProcessError.waitFailed(errno) }
-        let decoded = Self.decode(status)
-        terminalState = decoded
-        processID = -1
-        return decoded
-    }
+    func state() throws -> VPNEngineProcessState { try supervisor.state() }
 
     func wait(timeoutMilliseconds: Int) throws -> VPNEngineProcessState {
-        guard timeoutMilliseconds >= 0 else { throw VPNEngineProcessError.waitFailed(EINVAL) }
-        let deadline = Self.deadline(milliseconds: timeoutMilliseconds)
-        while true {
-            let current = try state()
-            if current != .running || Self.now() >= deadline { return current }
-            usleep(1_000)
-        }
+        try supervisor.wait(timeoutMilliseconds: timeoutMilliseconds)
     }
 
     @discardableResult
     func stop(graceMilliseconds: Int = 1_000) throws -> VPNEngineProcessState {
-        guard graceMilliseconds >= 0 else { throw VPNEngineProcessError.waitFailed(EINVAL) }
-        let current = try state()
-        guard current == .running else { return current }
-        if kill(processID, SIGTERM) != 0, errno != ESRCH {
-            throw VPNEngineProcessError.waitFailed(errno)
-        }
-        let graceful = try wait(timeoutMilliseconds: graceMilliseconds)
-        if graceful != .running { return graceful }
-        if kill(processID, SIGKILL) != 0, errno != ESRCH {
-            throw VPNEngineProcessError.waitFailed(errno)
-        }
-        return try reapBlocking()
+        try supervisor.stop(graceMilliseconds: graceMilliseconds)
     }
 
-    private func reapBlocking() throws -> VPNEngineProcessState {
-        if let terminalState = terminalState { return terminalState }
-        var status: Int32 = 0
-        var result: pid_t = -1
-        repeat { result = waitpid(processID, &status, 0) } while result < 0 && errno == EINTR
-        guard result == processID else { throw VPNEngineProcessError.waitFailed(errno) }
-        let decoded = Self.decode(status)
-        terminalState = decoded; processID = -1
-        return decoded
-    }
+    #if VPN_ENGINE_PROCESS_TESTING
+    var testSupervisorPID: pid_t { supervisor.testSupervisorPID }
+    #endif
 
     private static func validateProfile(_ descriptor: Int32) throws {
         var attributes = stat()
@@ -315,31 +213,4 @@ final class VPNEngineProcess {
         }
     }
 
-    private static func decode(_ status: Int32) -> VPNEngineProcessState {
-        let signal = status & 0x7f
-        if signal == 0 { return .exited((status >> 8) & 0xff) }
-        return .signalled(signal)
-    }
-
-    private static func now() -> UInt64 { clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) }
-    private static func deadline(milliseconds: Int) -> UInt64 {
-        let value = UInt64(milliseconds)
-        let increment = value > UInt64.max / 1_000_000 ? UInt64.max : value * 1_000_000
-        let current = now()
-        return current > UInt64.max - increment ? UInt64.max : current + increment
-    }
-
-    private static func withCStrings<T>(_ strings: [String], _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> T) -> T? {
-        var storage: [UnsafeMutablePointer<CChar>] = []
-        for string in strings {
-            guard let pointer = strdup(string) else {
-                storage.forEach { free($0) }
-                return nil
-            }
-            storage.append(pointer)
-        }
-        defer { storage.forEach { free($0) } }
-        var pointers = storage.map(Optional.some) + [nil]
-        return pointers.withUnsafeMutableBufferPointer { body($0.baseAddress!) }
-    }
 }

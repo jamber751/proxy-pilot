@@ -3,6 +3,9 @@ import Foundation
 
 @main enum VPNServiceMain {
     static func main() {
+        if let status = VPNEngineSupervisorEntry.runIfRequested(arguments: CommandLine.arguments) {
+            exit(status)
+        }
         #if VPN_RECOVERY_DAEMON_TESTING
         if let status = VPNRecoveryDaemonEntryTestHarness.runIfRequested(
             arguments: CommandLine.arguments) {

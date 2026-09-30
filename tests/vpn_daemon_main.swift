@@ -6,6 +6,9 @@ import Foundation
 // substituted. Never root, never /Library, no VPN or real release keys.
 @main enum DaemonFixture {
     static func main() {
+        if let status = VPNEngineSupervisorEntry.runIfRequested(arguments: CommandLine.arguments) {
+            exit(status)
+        }
         guard getuid() != 0, getuid() == geteuid() else { exit(77) }
         do {
             let args = CommandLine.arguments

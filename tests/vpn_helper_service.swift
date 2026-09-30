@@ -10,6 +10,9 @@ import Foundation
 @main
 enum VPNHelperService {
     static func main() {
+        if let status = VPNEngineSupervisorEntry.runIfRequested(arguments: CommandLine.arguments) {
+            exit(status)
+        }
         let args = CommandLine.arguments
         if args.count == 3, args[1] == "recover-update",
            args[2] == "/Library/Application Support/ProxyPilot/VPN" {

@@ -20,6 +20,7 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
         cls.binary = Path(cls.temp.name) / 'checks'
         sources = [ROOT / 'app/vpn-helper/VPNProfileVault.swift',
                    ROOT / 'app/vpn-helper/VPNEngineProcess.swift',
+                   ROOT / 'app/vpn-helper/VPNEngineSupervisor.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
                    ROOT / 'app/vpn-helper/OpenVPNStateEvidence.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementParser.swift',
