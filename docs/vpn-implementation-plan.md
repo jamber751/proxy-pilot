@@ -3190,3 +3190,44 @@ scoped DNS остаются транзакциями ProxyPilot. Текущий 
 сам сеть не меняет; пройдено 16 engine/coordinator tests. На первом этапе любой
 reconnect должен останавливать весь supervised process и начинать доказательство
 с нового baseline: `persist-tun` нельзя считать прежним подтверждением.
+
+### Продолжение 1.5bg — inert scoped-DNS adapter seam (30 сентября)
+
+Добавлен только canonical codec и pure ownership policy для будущего
+session-scoped DNS backend. Для каждого domain scope строится отдельная запись с
+servers, SupplementalMatchDomains/order и доказанным `utun`; equal foreign state
+не присваивается, foreign replacement не удаляется. SystemConfiguration не
+импортируется и системный DNS не меняется. Пройдено 19 DNS tests и universal
+helper build/codesign.
+
+Production mutation остаётся заблокирована архитектурным решением. Официальный
+Apple split-DNS contract — `NEDNSSettings.matchDomains` внутри Network Extension,
+а он требует entitlement и отдельное packet-tunnel extension, которых у текущего
+empty-entitlement helper нет. Synthetic `State:/Network/Service/<id>/DNS` через
+SCDynamicStore публично не документирован как VPN API; его нельзя включать без
+installed acceptance на macOS 11 и текущей macOS, включая configd restart,
+helper crash и foreign replacement. `/etc/resolver` не выбран: это persistent
+filesystem state без session lifetime/точного interface ownership.
+
+### Продолжение 1.5bh — verified certificate bootstrap (30 сентября)
+
+Certificate-only coordinator теперь требует наблюдённый initial HOLD, снимает
+interface baseline до единственного `hold release`, принимает strict CONNECTED
+evidence и доказывает ровно один новый addressed `utun`. Небольшая задержка
+видимости интерфейса допускает только bounded retry для `noCandidate`; ambiguous
+или reused identity падают сразу. Наружу возвращается лишь внутренний
+`VPNTunnelBootstrapProof`, а listener отвечает `notReady`.
+
+Credential prompt/rejection, повторный HOLD, reconnect, EXITING, timeout,
+missing/ambiguous interface и любое состояние после bootstrap, отличное от того
+же CONNECTED evidence, останавливают supervised process. UI Connected, resource
+routes и DNS не выставляются. Пройдено 10 coordinator tests, 48 daemon
+regressions и 13 launchd integration tests. Route plan дополнительно запрещает
+peer bypass через новый ProxyPilot `utun`, чтобы поздний best-route lookup не мог
+создать self-capture; 22 route-plan/transaction tests зелёные.
+
+Следующий узел — передать daemon runtime lease в один tunnel transaction
+controller, получить best route к actual peer с явным сравнением против нового
+utun, установить owned peer/resource routes и при любой ошибке откатить их до
+остановки процесса. DNS и публичный Connected остаются после этого отдельными
+gates.
