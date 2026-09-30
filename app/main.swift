@@ -97,6 +97,7 @@ final class ProxyModel: ObservableObject {
     private var preparingUpdate = false
     private var updatePreparationID: UUID?
     var onChange: (() -> Void)?
+    var prepareQuit: (@escaping () -> Void) -> Void = { $0() }
 
     init(preview: Bool = false) {
         self.preview = preview
@@ -261,7 +262,9 @@ final class ProxyModel: ObservableObject {
     }
     func quit() {
         if preview { NSApp.terminate(nil); return }
-        execute(["disable"]) { NSApp.terminate(nil) }
+        prepareQuit { [weak self] in
+            self?.execute(["disable"]) { NSApp.terminate(nil) }
+        }
     }
     func prepareForUpdate(_ completion: @escaping () -> Void) {
         // Finish any in-flight CLI operation, but preserve enabled/route and the
@@ -338,6 +341,8 @@ private struct SettingsHeightKey: PreferenceKey {
 struct PilotView: View {
     @ObservedObject var model: ProxyModel
     @ObservedObject var updates: UpdateModel
+    var openVPN: (() -> Void)? = nil
+    var vpnStatus: String? = nil
     @State private var settingsHeight: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     private var ink: Color { colorScheme == .dark ? Color(red: 0.92, green: 0.94, blue: 0.94) : Color(red: 0.12, green: 0.16, blue: 0.15) }
@@ -362,6 +367,13 @@ struct PilotView: View {
                 Text(model.addingProxy ? "Адрес прокси" : model.choosingRoute ? "Маршрут" : model.setup ? "Настройки" : "ProxyPilot").font(.system(size: 14, weight: .semibold))
                 Spacer()
                 if model.preview { Text("ТЕСТ").font(.system(size: 9, weight: .semibold)).foregroundColor(.orange) }
+                if !model.setup, !model.choosingRoute, let vpnStatus {
+                    HStack(spacing: 4) {
+                        Image(systemName: "shield.lefthalf.fill").font(.system(size: 9))
+                        Text("VPN").font(.system(size: 9, weight: .semibold))
+                    }.foregroundColor(vpnStatus == "VPN включён" ? accent : .secondary)
+                        .accessibilityElement(children: .ignore).accessibilityLabel(vpnStatus)
+                }
                 if model.setup && !model.addingProxy {
                     Button { model.openProxy() } label: {
                         Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36)
@@ -516,6 +528,20 @@ struct PilotView: View {
             Text("Ваши прокси").font(.system(size: 22, weight: .semibold)).padding(.top, 12)
             Text(model.configured ? "Сохранённые адреса для подключения." : "Добавьте адрес через + или найдите автоматически.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
+            if let openVPN {
+                Button(action: openVPN) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "shield.lefthalf.fill").font(.system(size: 16)).foregroundColor(accent).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("VPN").font(.system(size: 12, weight: .semibold))
+                            Text("Файл, вход и рабочие ресурсы").font(.system(size: 9)).foregroundColor(.secondary)
+                        }
+                        Spacer(); Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
+                    }.padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                        .background(ink.opacity(0.035)).cornerRadius(10).contentShape(Rectangle())
+                }.buttonStyle(PilotButtonStyle(cornerRadius: 10)).accessibilityLabel("Открыть настройки VPN")
+                    .accessibilityIdentifier("vpnSettingsRow")
+            }
             ForEach(["socks5", "http"], id: \.self) { scheme in
                 if !(model.state?.endpoint(for: scheme) ?? "").isEmpty {
                     proxyEntry(scheme)
@@ -623,6 +649,9 @@ final class App: NSObject, NSApplicationDelegate {
     private var pendingPopoverRequest: UUID?
     private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
     private let updates = UpdateModel()
+    #if VPN_INSTALLER_ENTRY
+    private lazy var vpnPanel = VPNPanelModel(preview: model.preview)
+    #endif
     func applicationDidFinishLaunching(_ notification: Notification) {
         if model.preview, let appearance = Bundle.main.object(forInfoDictionaryKey: "PreviewAppearance") as? String {
             NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
@@ -634,7 +663,12 @@ final class App: NSObject, NSApplicationDelegate {
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.target = self; item.button?.action = #selector(toggleWindow)
+        #if VPN_INSTALLER_ENTRY
+        let host = NSHostingController(rootView: VPNProductView(proxy: model, updates: updates,
+                                                                 vpn: vpnPanel))
+        #else
         let host = NSHostingController(rootView: PilotView(model: model, updates: updates))
+        #endif
         popover = NSPopover()
         popover.contentViewController = host
         popover.contentSize = NSSize(width: 344, height: 432)
@@ -645,6 +679,12 @@ final class App: NSObject, NSApplicationDelegate {
         let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.model.refresh() }
         RunLoop.main.add(t, forMode: .common); timer = t
         renderStatus(); model.refresh()
+        #if VPN_INSTALLER_ENTRY
+        vpnPanel.refresh()
+        model.prepareQuit = { [weak self] completion in
+            self?.vpnPanel.disconnectForQuit(completion: completion)
+        }
+        #endif
         updates.onPresent = { [weak self] in self?.hideWindow() }
         updates.prepareRelaunch = { [weak self] completion in
             guard let self = self else { completion(); return }

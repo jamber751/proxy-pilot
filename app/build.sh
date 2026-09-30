@@ -26,7 +26,6 @@ VPN_INSTALLER="${PROXYPILOT_VPN_INSTALLER:-0}"
 [[ "$VPN_INSTALLER" == 0 || "$ISOLATED_UPDATER" == 1 ]] || { print -u2 "VPN installer requires the isolated updater"; exit 1; }
 VPN_RELEASE_SEQUENCE="${PROXYPILOT_VPN_RELEASE_SEQUENCE:-0}"
 if [[ "$VPN_INSTALLER" == 1 ]]; then
-  SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNLiveController.swift")
   print -r -- "$VPN_RELEASE_SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
     print -u2 "VPN release sequence must be a canonical positive integer"; exit 1
   }
@@ -47,6 +46,9 @@ cp "${HERE:h}/bin/proxypilot" "$APP/Contents/Resources/bin/proxypilot"
 
 SOURCES=("$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
   "$HERE/VPNConfiguration.swift" "$HERE/VPNProfileImporter.swift" "$HERE/VPNStore.swift")
+if [[ "$VPN_INSTALLER" == 1 ]]; then
+  SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift")
+fi
 LINK_FLAGS=()
 SIGN_FLAGS=()
 if [[ "$ISOLATED_UPDATER" == 1 ]]; then

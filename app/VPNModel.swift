@@ -136,6 +136,24 @@ final class VPNModel: ObservableObject {
 
     var connectionAvailabilityLabel: String { connectionAvailability.label }
 
+    /// Routes mentioned by the imported profile remain suggestions until the
+    /// user explicitly accepts them. Domain routes are shown but cannot be
+    /// enabled by the current route-only helper.
+    var suggestedResources: [VPNResource] {
+        storedState?.saved.suggestedResources ?? []
+    }
+
+    func acceptSupportedSuggestions() throws {
+        var next = configuration
+        let existing = Set(next.resources.map(\.address))
+        let supported = suggestedResources.filter {
+            $0.kind != .domain && !existing.contains($0.address)
+        }
+        guard !supported.isEmpty else { return }
+        for resource in supported { try next.saveResource(resource) }
+        try persist(next)
+    }
+
     /// Live status belongs to the future controller, never to VPNStore.
     var connected: Bool { false }
 
@@ -252,6 +270,7 @@ final class VPNModel: ObservableObject {
     }
 
     private func persist(_ next: VPNConfiguration) throws {
+        guard next != configuration else { error = ""; return }
         do {
             if let store {
                 let saved = try store.save(next, importing: nil,

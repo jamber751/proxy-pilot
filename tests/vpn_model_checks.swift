@@ -67,6 +67,7 @@ QUJDRA==
         try loadImportAndDrafts(base.appendingPathComponent("primary"))
         try staleRevision(base.appendingPathComponent("stale"))
         try pendingLabels(base.appendingPathComponent("pending"))
+        try suggestedRoutes(base.appendingPathComponent("suggestions"))
         try previewIsolation(base.appendingPathComponent("must-not-exist"))
         print("vpn-model: \(checks) checks passed")
     }
@@ -152,6 +153,10 @@ QUJDRA==
         try check(model.configuration.authentication?.login == "employee" &&
                   model.configuration.authentication?.credentialPersistence == VPNCredentialPersistence.none,
                   "OTP metadata has a login and no persistence")
+        let unchangedRevision = model.configuration.revision
+        try model.setAuthentication(mode: .oneTimePassword, login: "employee")
+        try check(model.configuration.revision == unchangedRevision,
+                  "saving unchanged authentication is an idempotent no-op")
         let reloaded = VPNModel(store: store)
         try reloaded.load()
         try check(reloaded.configuration == model.configuration && reloaded.profile == model.profile,
@@ -220,6 +225,21 @@ QUJDRA==
         try model.saveResourceDraft()
         try check(model.persistence == .pendingApplication,
                   "editing an applied snapshot returns to pending")
+    }
+
+    static func suggestedRoutes(_ directory: URL) throws {
+        let model = VPNModel(store: VPNStore(directory: directory))
+        let profile = credentialProfile + "\nroute 10.44.0.0 255.255.0.0\nroute 10.55.4.8\n"
+        try model.importProfile(data: Data(profile.utf8), name: "routes.ovpn")
+        try check(model.configuration.resources.isEmpty && model.suggestedResources.count == 2,
+                  "profile routes remain explicit suggestions")
+        try model.acceptSupportedSuggestions()
+        try check(Set(model.configuration.resources.map(\.address)) == Set(["10.44.0.0/16", "10.55.4.8"]),
+                  "accepted IP suggestions are committed together")
+        let revision = model.configuration.revision
+        try model.acceptSupportedSuggestions()
+        try check(model.configuration.revision == revision,
+                  "accepting the same suggestions is an idempotent no-op")
     }
 
     static func previewIsolation(_ forbidden: URL) throws {
