@@ -4,7 +4,7 @@ import Foundation
 enum VPNTunnelStateStoreError: Error { case unsafeStorage, invalidState, stale, writeFailed }
 
 enum VPNTunnelPhase: String, Codable {
-    case off, pending, connecting, needsCredential, failed
+    case off, pending, connecting, needsCredential, authenticating, failed
 }
 
 struct VPNValidatedApplication: Codable, Equatable {
@@ -19,6 +19,19 @@ struct VPNValidatedApplication: Codable, Equatable {
     }
 }
 
+/// Exact, non-secret authority for one connection attempt. A caller must carry
+/// this whole value across asynchronous engine prompts so a newly staged
+/// application can never be substituted into an older attempt.
+struct VPNConnectAttemptBinding: Codable, Equatable {
+    let generation: UInt64
+    let application: VPNValidatedApplication
+
+    func validate() throws {
+        guard generation > 0 else { throw VPNTunnelStateStoreError.invalidState }
+        try application.validate()
+    }
+}
+
 struct VPNTunnelSnapshot: Codable, Equatable {
     let schemaVersion: Int
     let generation: UInt64
@@ -27,14 +40,44 @@ struct VPNTunnelSnapshot: Codable, Equatable {
     let active: VPNValidatedApplication?
     let pending: VPNValidatedApplication?
     let challenge: VPNCredentialChallenge?
+    let attempt: VPNConnectAttemptBinding?
+    let issuedCredentialKinds: [VPNCredentialKind]
+
+    init(schemaVersion: Int, generation: UInt64, desiredEnabled: Bool,
+         phase: VPNTunnelPhase, active: VPNValidatedApplication?,
+         pending: VPNValidatedApplication?, challenge: VPNCredentialChallenge?,
+         attempt: VPNConnectAttemptBinding? = nil,
+         issuedCredentialKinds: [VPNCredentialKind] = []) {
+        self.schemaVersion = schemaVersion
+        self.generation = generation
+        self.desiredEnabled = desiredEnabled
+        self.phase = phase
+        self.active = active
+        self.pending = pending
+        self.challenge = challenge
+        self.attempt = attempt
+        self.issuedCredentialKinds = issuedCredentialKinds
+    }
 
     func validate() throws {
-        guard schemaVersion == 1 else { throw VPNTunnelStateStoreError.invalidState }
+        guard schemaVersion == 2 else { throw VPNTunnelStateStoreError.invalidState }
         try active?.validate(); try pending?.validate()
+        try attempt?.validate()
+        let attemptPhase = phase == .connecting || phase == .needsCredential || phase == .authenticating
         guard active != nil || pending != nil || (!desiredEnabled && phase == .off),
               challenge == nil || (phase == .needsCredential && challenge?.generation == generation),
               phase != .needsCredential || challenge != nil,
-              phase != .off || !desiredEnabled
+              phase != .authenticating || challenge == nil,
+              attemptPhase == (attempt != nil),
+              attempt?.generation == generation || attempt == nil,
+              attempt.map({ (pending ?? active) == $0.application }) ?? true,
+              issuedCredentialKinds.count <= 2,
+              Set(issuedCredentialKinds.map(\.rawValue)).count == issuedCredentialKinds.count,
+              issuedCredentialKinds.allSatisfy({ $0 == .privateKeyPassword || $0 == .vpnPassword }),
+              attempt != nil || issuedCredentialKinds.isEmpty,
+              challenge.map({ issuedCredentialKinds.contains($0.kind) }) ?? true,
+              phase != .off || (!desiredEnabled && attempt == nil && issuedCredentialKinds.isEmpty),
+              phase != .failed || (challenge == nil && attempt == nil && issuedCredentialKinds.isEmpty)
         else { throw VPNTunnelStateStoreError.invalidState }
     }
 
@@ -42,6 +85,46 @@ struct VPNTunnelSnapshot: Codable, Equatable {
         try validate()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(self)
+    }
+}
+
+private enum VPNLegacyTunnelPhase: String, Codable {
+    case off, pending, connecting, needsCredential, failed
+}
+
+/// Schema 1 is accepted only in its exact canonical representation. Any
+/// interrupted operation is migrated to `failed` with its challenge burned.
+private struct VPNLegacyTunnelSnapshot: Codable {
+    let schemaVersion: Int
+    let generation: UInt64
+    let desiredEnabled: Bool
+    let phase: VPNLegacyTunnelPhase
+    let active: VPNValidatedApplication?
+    let pending: VPNValidatedApplication?
+    let challenge: VPNCredentialChallenge?
+
+    func encoded() throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    func migrate() throws -> VPNTunnelSnapshot {
+        guard schemaVersion == 1 else { throw VPNTunnelStateStoreError.invalidState }
+        try active?.validate(); try pending?.validate()
+        guard active != nil || pending != nil || (!desiredEnabled && phase == .off),
+              challenge == nil || (phase == .needsCredential && challenge?.generation == generation),
+              phase != .needsCredential || challenge != nil,
+              phase != .off || !desiredEnabled
+        else { throw VPNTunnelStateStoreError.invalidState }
+        let interrupted = phase == .connecting || phase == .needsCredential
+        guard !interrupted || generation < UInt64.max else {
+            throw VPNTunnelStateStoreError.invalidState
+        }
+        return VPNTunnelSnapshot(schemaVersion: 2,
+            generation: interrupted ? generation + 1 : generation,
+            desiredEnabled: desiredEnabled,
+            phase: interrupted ? .failed : VPNTunnelPhase(rawValue: phase.rawValue)!,
+            active: active, pending: pending, challenge: nil)
     }
 }
 
@@ -66,7 +149,7 @@ final class VPNTunnelStateStore {
     func load() throws -> VPNTunnelSnapshot {
         try checkDirectory()
         guard let data = try read() else {
-            return VPNTunnelSnapshot(schemaVersion: 1, generation: 0, desiredEnabled: false,
+            return VPNTunnelSnapshot(schemaVersion: 2, generation: 0, desiredEnabled: false,
                                      phase: .off, active: nil, pending: nil, challenge: nil)
         }
         do {
@@ -74,17 +157,27 @@ final class VPNTunnelStateStore {
             try value.validate()
             guard try value.encoded() == data else { throw VPNTunnelStateStoreError.invalidState }
             return value
-        } catch { throw VPNTunnelStateStoreError.invalidState }
+        } catch {
+            do {
+                let legacy = try JSONDecoder().decode(VPNLegacyTunnelSnapshot.self, from: data)
+                guard try legacy.encoded() == data else { throw VPNTunnelStateStoreError.invalidState }
+                let migrated = try legacy.migrate()
+                try write(migrated)
+                return migrated
+            } catch { throw VPNTunnelStateStoreError.invalidState }
+        }
     }
 
     @discardableResult
     func stage(_ application: VPNValidatedApplication) throws -> VPNTunnelSnapshot {
         try application.validate()
         let old = try load()
+        guard old.phase != .connecting, old.phase != .needsCredential,
+              old.phase != .authenticating else { throw VPNTunnelStateStoreError.invalidState }
         if old.pending == application || old.active == application { return old }
         let latest = max(old.active?.spec.revision ?? 0, old.pending?.spec.revision ?? 0)
         guard application.spec.revision > latest else { throw VPNTunnelStateStoreError.stale }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation,
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
             desiredEnabled: false, phase: .pending, active: old.active,
             pending: application, challenge: nil)
         try write(next); return next
@@ -98,35 +191,101 @@ final class VPNTunnelStateStore {
         guard let pending = old.pending, pending.spec.revision == revision else {
             throw VPNTunnelStateStoreError.stale
         }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation,
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
             desiredEnabled: old.desiredEnabled, phase: old.desiredEnabled ? .connecting : .off,
-            active: pending, pending: nil, challenge: nil)
+            active: pending, pending: nil, challenge: nil,
+            attempt: old.desiredEnabled
+                ? VPNConnectAttemptBinding(generation: old.generation, application: pending) : nil,
+            issuedCredentialKinds: old.desiredEnabled ? old.issuedCredentialKinds : [])
         try write(next); return next
     }
 
+    /// Starts one exact attempt. The selected application is copied into the
+    /// durable binding so later staging cannot change what the engine may use.
     @discardableResult
-    func beginConnect(challengeKind: VPNCredentialKind?) throws -> VPNTunnelSnapshot {
+    func beginConnect() throws -> VPNConnectAttemptBinding {
         let old = try load()
-        guard old.pending != nil || old.active != nil, old.generation < UInt64.max else {
+        guard let application = old.pending ?? old.active,
+              old.phase != .connecting, old.phase != .needsCredential,
+              old.phase != .authenticating, old.generation < UInt64.max else {
             throw VPNTunnelStateStoreError.invalidState
         }
         let generation = old.generation + 1
-        let challenge = challengeKind.map { VPNCredentialChallenge(generation: generation, kind: $0) }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: generation,
-            desiredEnabled: true, phase: challenge == nil ? .connecting : .needsCredential,
-            active: old.active, pending: old.pending, challenge: challenge)
+        let binding = VPNConnectAttemptBinding(generation: generation, application: application)
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: generation,
+            desiredEnabled: true, phase: .connecting,
+            active: old.active, pending: old.pending, challenge: nil, attempt: binding)
+        try write(next); return binding
+    }
+
+    /// Issues each credential kind at most once for this exact attempt.
+    @discardableResult
+    func issueChallenge(binding: VPNConnectAttemptBinding,
+                        kind: VPNCredentialKind) throws -> VPNCredentialChallenge {
+        let old = try load()
+        guard old.phase == .connecting, old.attempt == binding,
+              !old.issuedCredentialKinds.contains(kind),
+              (kind == .privateKeyPassword && binding.application.requiresPrivateKeyPassword)
+                || (kind == .vpnPassword && binding.application.requiresVPNCredentials)
+        else { throw VPNTunnelStateStoreError.stale }
+        let challenge = VPNCredentialChallenge(generation: binding.generation, kind: kind)
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
+            desiredEnabled: true, phase: .needsCredential, active: old.active,
+            pending: old.pending, challenge: challenge, attempt: binding,
+            issuedCredentialKinds: old.issuedCredentialKinds + [kind])
+        try write(next); return challenge
+    }
+
+    /// Burns the exact UUID/generation/kind before any transient secret is
+    /// inspected and returns the immutable application binding to the caller.
+    @discardableResult
+    func claimCredential(_ challenge: VPNCredentialChallenge) throws
+        -> VPNConnectAttemptBinding {
+        let old = try load()
+        guard old.phase == .needsCredential, old.challenge == challenge,
+              let binding = old.attempt,
+              challenge.generation == binding.generation,
+              old.issuedCredentialKinds.contains(challenge.kind)
+        else { throw VPNTunnelStateStoreError.stale }
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
+            desiredEnabled: true, phase: .authenticating, active: old.active,
+            pending: old.pending, challenge: nil, attempt: binding,
+            issuedCredentialKinds: old.issuedCredentialKinds)
+        try write(next); return binding
+    }
+
+    /// Called only after the engine accepted or completed the current prompt.
+    /// Another required, not-yet-issued kind may then be requested.
+    @discardableResult
+    func completeCredentialPrompt(binding: VPNConnectAttemptBinding) throws
+        -> VPNTunnelSnapshot {
+        let old = try load()
+        guard old.phase == .authenticating, old.attempt == binding else {
+            throw VPNTunnelStateStoreError.stale
+        }
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
+            desiredEnabled: true, phase: .connecting, active: old.active,
+            pending: old.pending, challenge: nil, attempt: binding,
+            issuedCredentialKinds: old.issuedCredentialKinds)
         try write(next); return next
     }
 
-    /// Invalidates the challenge before a transient secret can be used.
+    /// Compatibility shim for the existing listener until it adopts the
+    /// explicit prompt callbacks. It still uses the durable one-shot machine.
+    @discardableResult
+    func beginConnect(challengeKind: VPNCredentialKind?) throws -> VPNTunnelSnapshot {
+        let binding = try beginConnect()
+        if let kind = challengeKind { _ = try issueChallenge(binding: binding, kind: kind) }
+        return try load()
+    }
+
     @discardableResult
     func consume(_ challenge: VPNCredentialChallenge) throws -> VPNTunnelSnapshot {
-        let old = try load()
-        guard old.challenge == challenge else { throw VPNTunnelStateStoreError.stale }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation,
-            desiredEnabled: true, phase: .failed, active: old.active, pending: old.pending,
-            challenge: nil)
-        try write(next); return next
+        _ = try claimCredential(challenge)
+        // The legacy listener has no engine-prompt completion callback yet.
+        // Preserve its fail-closed behavior instead of leaving a credential in
+        // an apparently usable authenticating state.
+        return try failCurrent()
     }
 
     @discardableResult
@@ -135,7 +294,19 @@ final class VPNTunnelStateStore {
         guard old.challenge == challenge, old.generation < UInt64.max else {
             throw VPNTunnelStateStoreError.stale
         }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation + 1,
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation + 1,
+            desiredEnabled: false, phase: .off, active: old.active, pending: old.pending,
+            challenge: nil)
+        try write(next); return next
+    }
+
+    @discardableResult
+    func cancelAttempt(_ binding: VPNConnectAttemptBinding) throws -> VPNTunnelSnapshot {
+        let old = try load()
+        guard old.attempt == binding, old.generation < UInt64.max else {
+            throw VPNTunnelStateStoreError.stale
+        }
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation + 1,
             desiredEnabled: false, phase: .off, active: old.active, pending: old.pending,
             challenge: nil)
         try write(next); return next
@@ -145,21 +316,27 @@ final class VPNTunnelStateStore {
     /// generation before accepting owner commands, so a captured late response
     /// cannot cross a crash/relaunch boundary.
     @discardableResult
-    func invalidateChallengeAfterRestart() throws -> VPNTunnelSnapshot {
+    func recoverInterruptedAttemptAfterRestart() throws -> VPNTunnelSnapshot {
         let old = try load()
-        guard old.challenge != nil else { return old }
+        guard old.phase == .connecting || old.phase == .needsCredential
+                || old.phase == .authenticating else { return old }
         guard old.generation < UInt64.max else { throw VPNTunnelStateStoreError.invalidState }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation + 1,
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation + 1,
             desiredEnabled: old.desiredEnabled, phase: .failed, active: old.active,
             pending: old.pending, challenge: nil)
         try write(next); return next
     }
 
     @discardableResult
+    func invalidateChallengeAfterRestart() throws -> VPNTunnelSnapshot {
+        try recoverInterruptedAttemptAfterRestart()
+    }
+
+    @discardableResult
     func failCurrent() throws -> VPNTunnelSnapshot {
         let old = try load()
         guard old.desiredEnabled else { throw VPNTunnelStateStoreError.stale }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation,
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
             desiredEnabled: true, phase: .failed, active: old.active, pending: old.pending,
             challenge: nil)
         try write(next); return next
@@ -169,7 +346,7 @@ final class VPNTunnelStateStore {
     func disconnect() throws -> VPNTunnelSnapshot {
         let old = try load()
         guard old.generation < UInt64.max else { throw VPNTunnelStateStoreError.invalidState }
-        let next = VPNTunnelSnapshot(schemaVersion: 1, generation: old.generation + 1,
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation + 1,
             desiredEnabled: false, phase: .off,
             active: old.active, pending: old.pending, challenge: nil)
         try write(next); return next

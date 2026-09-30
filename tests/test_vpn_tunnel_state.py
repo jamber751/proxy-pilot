@@ -36,11 +36,14 @@ class VPNTunnelStateTests(unittest.TestCase):
             result = subprocess.run([str(self.binary), name, folder], capture_output=True,
                                     text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('passed' if name in ('transactions', 'canonical', 'vault') else 'rejected',
+            self.assertIn('passed' if name in ('transactions', 'canonical', 'vault',
+                                               'recovery', 'migration') else 'rejected',
                           result.stdout)
 
     def test_canonical_bounds(self): self.run_case('canonical')
     def test_active_pending_and_one_shot_challenge(self): self.run_case('transactions')
+    def test_sequential_challenges_recover_fail_closed(self): self.run_case('recovery')
+    def test_schema_one_migrates_interrupted_attempt_fail_closed(self): self.run_case('migration')
     def test_content_addressed_profile_vault(self): self.run_case('vault')
     def test_corruption_rejected(self): self.run_case('corrupt')
     def test_wrong_mode_rejected(self): self.run_case('mode')
