@@ -32,7 +32,10 @@ SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNH
            'OpenVPNManagementClient.swift', 'VPNManagementSocketReservation.swift',
            'VPNEngineProcess.swift', 'VPNEngineSupervisor.swift',
            'VPNKernelInterfaceSnapshot.swift', 'VPNTunnelInterfaceResolver.swift',
-           'VPNTunnelCoordinator.swift',
+           'VPNRouteJournal.swift', 'VPNRoutePlan.swift', 'VPNRouteTransaction.swift',
+           'VPNDarwinRouteSocket.swift', 'VPNPeerRouteEvidenceResolver.swift',
+           'VPNTunnelRouteController.swift', 'VPNTunnelCoordinator.swift',
+           'VPNLifecycleOwnership.swift', 'VPNHelperRuntime.swift',
            'VPNHelperListener.swift', 'VPNEndpointDirectory.swift']
 # The helper re-validates profiles with the application's own importer.
 IMPORTER = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
@@ -207,6 +210,9 @@ class VPNLaunchdTests(unittest.TestCase):
         result = self.run_driver('recovery-self-remove')
         self.assertEqual(result.stdout.strip(), 'recovery:self-removed', result.stdout + result.stderr)
         self.assertFalse(plist.exists())
+        deadline = time.monotonic() + 5
+        while self.recovery_loaded() and time.monotonic() < deadline:
+            time.sleep(0.05)
         self.assertFalse(self.recovery_loaded())
 
     def test_recover_restarts_the_selected_release(self):

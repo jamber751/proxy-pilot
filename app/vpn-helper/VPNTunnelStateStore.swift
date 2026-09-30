@@ -218,6 +218,35 @@ final class VPNTunnelStateStore {
         try write(next); return binding
     }
 
+    /// Promotes the exact pending application selected by this attempt before
+    /// route installation. This is configuration activation only: the phase
+    /// remains `connecting` and it is never a public Connected proof.
+    @discardableResult
+    func activateForRouting(_ binding: VPNConnectAttemptBinding) throws
+        -> VPNValidatedApplication {
+        try binding.validate()
+        let old = try load()
+        guard old.desiredEnabled, old.phase == .connecting,
+              old.attempt == binding, old.generation == binding.generation else {
+            throw VPNTunnelStateStoreError.stale
+        }
+        if old.pending == nil {
+            guard old.active == binding.application else {
+                throw VPNTunnelStateStoreError.stale
+            }
+            return binding.application
+        }
+        guard old.pending == binding.application else {
+            throw VPNTunnelStateStoreError.stale
+        }
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
+            desiredEnabled: true, phase: .connecting, active: binding.application,
+            pending: nil, challenge: nil, attempt: binding,
+            issuedCredentialKinds: old.issuedCredentialKinds)
+        try write(next)
+        return binding.application
+    }
+
     /// Issues each credential kind at most once for this exact attempt.
     @discardableResult
     func issueChallenge(binding: VPNConnectAttemptBinding,

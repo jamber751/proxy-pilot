@@ -50,6 +50,12 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
             self.assertIn(word, result.stdout)
 
     def test_serialized_held_lifecycle(self): self.run_case('lifecycle', 'passed')
+    def test_routes_are_installed_and_removed_around_the_process(self):
+        self.run_case('route-lifecycle', 'routes ordered')
+    def test_unproven_route_cleanup_blocks_explicit_stop(self):
+        self.run_case('route-cleanup-blocked', 'cleanup blocked safely')
+    def test_route_install_failure_cleans_before_process_stop(self):
+        self.run_case('route-install-failure', 'install rolled back')
     def test_any_non_connected_state_after_bootstrap_fails_closed(self):
         for behavior in ('observe', 'observe-wait'):
             with self.subTest(behavior=behavior):

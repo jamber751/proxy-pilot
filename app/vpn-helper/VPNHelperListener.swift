@@ -20,6 +20,7 @@ final class VPNHelperListener {
     private let tunnelState: VPNTunnelStateStore
     private let startTunnel: () throws -> Bool
     private let stopTunnel: () throws -> Void
+    private let tunnelIsOwned: () -> Bool
     private var tunnelStopped = true
 
     #if VPN_HELPER_LISTENER_TESTING
@@ -30,12 +31,14 @@ final class VPNHelperListener {
                                   ownerUserID: uid_t,
                                   additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
                                   startTunnel: @escaping () throws -> Bool = { false },
-                                  stopTunnel: @escaping () throws -> Void = {}) throws
+                                  stopTunnel: @escaping () throws -> Void = {},
+                                  tunnelIsOwned: @escaping () -> Bool = { false }) throws
         -> VPNHelperListener {
         let listener = try bind(inTrustedDirectory: directory, release: release,
                                 ownerUserID: ownerUserID,
                                 additionalReadinessPolicies: additionalReadinessPolicies,
-                                startTunnel: startTunnel, stopTunnel: stopTunnel)
+                                startTunnel: startTunnel, stopTunnel: stopTunnel,
+                                tunnelIsOwned: tunnelIsOwned)
         listener.fixtureInstaller = true
         return listener
     }
@@ -46,11 +49,13 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
                      startTunnel: @escaping () throws -> Bool = { false },
-                     stopTunnel: @escaping () throws -> Void = {}) throws -> VPNHelperListener {
+                     stopTunnel: @escaping () throws -> Void = {},
+                     tunnelIsOwned: @escaping () -> Bool = { false }) throws -> VPNHelperListener {
         try bindCommon(inTrustedDirectory: trusted, release: release,
                        ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                        additionalReadinessPolicies: additionalReadinessPolicies,
-                       startTunnel: startTunnel, stopTunnel: stopTunnel)
+                       startTunnel: startTunnel, stopTunnel: stopTunnel,
+                       tunnelIsOwned: tunnelIsOwned)
     }
     #endif
 
@@ -60,6 +65,7 @@ final class VPNHelperListener {
     #if !VPN_HELPER_LISTENER_TESTING
     static func bind(inTrustedDirectory trusted: Int32, deployment: VPNAuthorizedDeployment,
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
+                     runtimeLease: VPNLifecycleLease,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] }) throws
         -> VPNHelperListener {
         guard deployment.ownerUserID == ownerUserID else {
@@ -68,8 +74,17 @@ final class VPNHelperListener {
         let coordinator: VPNTunnelCoordinator?
         if deployment.engineFileName == nil { coordinator = nil }
         else {
+            let state = try VPNTunnelStateStore(trustedDirectoryDescriptor: trusted)
+            let journal = try VPNRouteJournal(trustedDirectoryDescriptor: trusted)
+            let kernel = try VPNDarwinRouteSocket.production()
+            let transaction = VPNRouteTransaction(journal: journal, kernel: kernel,
+                                                  runtimeLease: runtimeLease)
+            let resolver = try VPNPeerRouteEvidenceResolver.production()
+            let routes = VPNTunnelRouteController(state: state, resolver: resolver,
+                transaction: transaction, runtimeLease: runtimeLease)
             coordinator = try VPNTunnelCoordinator(
-                trustedDirectoryDescriptor: trusted, deployment: deployment)
+                trustedDirectoryDescriptor: trusted, deployment: deployment,
+                state: state, routeController: routes)
         }
         return try bindCommon(inTrustedDirectory: trusted, release: deployment.release,
                               ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
@@ -82,7 +97,8 @@ final class VPNHelperListener {
                                   case .bootstrapReady: return true
                                   default: return false
                                   }
-                              }, stopTunnel: { _ = coordinator?.stop() })
+                              }, stopTunnel: { _ = try coordinator?.stop() },
+                              tunnelIsOwned: { coordinator?.ownsProcess() == true })
     }
     #endif
 
@@ -90,7 +106,8 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32?,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
                      startTunnel: @escaping () throws -> Bool,
-                     stopTunnel: @escaping () throws -> Void) throws -> VPNHelperListener {
+                     stopTunnel: @escaping () throws -> Void,
+                     tunnelIsOwned: @escaping () -> Bool) throws -> VPNHelperListener {
         let policy = try release.clientPolicy(forTrustedUserID: ownerUserID)
         let directory = fcntl(trusted, F_DUPFD_CLOEXEC, 0)
         guard directory >= 0 else { throw VPNHelperListenerError.unsafeStorage }
@@ -153,7 +170,8 @@ final class VPNHelperListener {
                                      installerPolicy: try release.installerPolicy(),
                                      additionalReadinessPolicies: additionalReadinessPolicies,
                                      vault: vault, tunnelState: tunnelState,
-                                     startTunnel: startTunnel, stopTunnel: stopTunnel)
+                                     startTunnel: startTunnel, stopTunnel: stopTunnel,
+                                     tunnelIsOwned: tunnelIsOwned)
         } catch {
             Darwin.close(socketDescriptor)
             throw VPNHelperListenerError.unsafeStorage
@@ -165,7 +183,8 @@ final class VPNHelperListener {
                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
                  vault: VPNProfileVault, tunnelState: VPNTunnelStateStore,
                  startTunnel: @escaping () throws -> Bool,
-                 stopTunnel: @escaping () throws -> Void) {
+                 stopTunnel: @escaping () throws -> Void,
+                 tunnelIsOwned: @escaping () -> Bool) {
         self.listener = listener
         self.release = release
         self.policy = policy
@@ -175,12 +194,16 @@ final class VPNHelperListener {
         self.tunnelState = tunnelState
         self.startTunnel = startTunnel
         self.stopTunnel = stopTunnel
+        self.tunnelIsOwned = tunnelIsOwned
     }
 
     deinit { close() }
 
     func close() {
-        if !tunnelStopped { try? stopTunnel(); tunnelStopped = true }
+        if !tunnelStopped {
+            try? stopTunnel()
+            tunnelStopped = !tunnelIsOwned()
+        }
         if listener >= 0 { Darwin.close(listener); listener = -1 }
     }
 
@@ -389,11 +412,13 @@ final class VPNHelperListener {
                     do {
                         started = try startTunnel()
                     } catch {
+                        tunnelStopped = !tunnelIsOwned()
                         _ = try? tunnelState.failCurrent()
                         try answer(.failed, payload: [], to: client, deadline: deadline)
                         break
                     }
                     guard started else {
+                        tunnelStopped = !tunnelIsOwned()
                         _ = try? tunnelState.failCurrent()
                         try answer(.failed, payload: [], to: client, deadline: deadline)
                         break

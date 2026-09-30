@@ -57,6 +57,18 @@ import Foundation
         let binding = try store.beginConnect()
         try require(binding.generation == 1 && binding.application == second,
                     "attempt was not bound to the complete pending application")
+        let activated = try store.activateForRouting(binding)
+        let activeState = try store.load()
+        try require(activated == second && activeState.active == second
+                    && activeState.pending == nil && activeState.attempt == binding
+                    && activeState.phase == .connecting,
+                    "exact pending application was not activated for routing")
+        _ = try store.activateForRouting(binding)
+        let foreignBinding = VPNConnectAttemptBinding(generation: binding.generation,
+                                                      application: first)
+        do { _ = try store.activateForRouting(foreignBinding)
+            throw VPNTunnelStateStoreError.invalidState }
+        catch VPNTunnelStateStoreError.stale { }
         let keyChallenge = try store.issueChallenge(binding: binding, kind: .privateKeyPassword)
         let claimedKey = try store.claimCredential(keyChallenge)
         let claimedState = try store.load()

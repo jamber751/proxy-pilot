@@ -114,8 +114,11 @@ enum VPNHelperService {
                     })
             }
             #else
+            let runtime = try VPNHelperRuntime(storageDirectory: directory)
+            defer { _ = runtime }
             listener = try VPNHelperListener.bind(inTrustedDirectory: directory, deployment: deployment,
-                                                  ownerUserID: deployment.ownerUserID)
+                                                  ownerUserID: deployment.ownerUserID,
+                                                  runtimeLease: runtime.tunnelLifecycleLease)
             #endif
             print("listening"); fflush(stdout)
             let ownerRequestsAllowed = !args.contains("owner-blocked")

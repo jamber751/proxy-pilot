@@ -134,6 +134,7 @@ enum VPNHelperDaemon {
             inTrustedDirectory: directory, deployment: selected,
             ownerUserID: selected.ownerUserID,
             endpointDirectory: shared ? endpoint : nil,
+            runtimeLease: runtime.tunnelLifecycleLease,
             additionalReadinessPolicies: readinessPolicies)
         #endif
         defer { listener.close() }

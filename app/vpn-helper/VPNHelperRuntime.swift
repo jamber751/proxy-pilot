@@ -13,6 +13,11 @@ final class VPNHelperRuntime {
 
     func check() throws { try lease.check() }
 
+    /// The daemon owns one runtime lease for its whole lifetime. Tunnel route
+    /// transactions borrow this exact object so route authority cannot outlive
+    /// or diverge from endpoint/process authority.
+    var tunnelLifecycleLease: VPNLifecycleLease { lease }
+
     func prepareEndpoint(directory: Int32, shared: Bool) throws {
         try check()
         let folder = try VPNEndpointDirectory.checkedPath(directory, owner: geteuid(), shared: shared)

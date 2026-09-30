@@ -138,7 +138,11 @@ final class Counter { var value = 0 }
 
     static func coordinator(folder: String, behavior: String,
                             blocker: VPNTunnelCoordinatorBlocker? = nil,
-                            counter: Counter) throws -> VPNTunnelCoordinator {
+                            counter: Counter,
+                            activateAndInstallRoutes: @escaping
+                                (VPNTunnelBootstrapProof) throws -> Void = { _ in },
+                            prepareRoutesForProcessStop: @escaping () throws -> Void = {}) throws
+        -> VPNTunnelCoordinator {
         let dir = directory(folder); defer { close(dir) }
         let value = profile(folder, behavior: behavior)
         let selection = VPNEngineExecutableSelection.test {
@@ -174,7 +178,8 @@ final class Counter { var value = 0 }
                     return try VPNKernelInterfaceSnapshot(interfaces: [first, second])
                 }
                 return try VPNKernelInterfaceSnapshot(interfaces: [first])
-            }, blocker: blocker)
+            }, blocker: blocker, activateAndInstallRoutes: activateAndInstallRoutes,
+            prepareRoutesForProcessStop: prepareRoutesForProcessStop)
     }
 
     static func assertOneRelease(_ folder: String) {
@@ -212,8 +217,59 @@ final class Counter { var value = 0 }
                 fail("lifecycle readiness")
             }
             assertOneRelease(folder)
-            guard tunnel.stop() == .stopped(generation: 1) else { fail("stop") }
+            guard try tunnel.stop() == .stopped(generation: 1) else { fail("stop") }
             assertClean(folder); print("passed")
+        case "route-lifecycle":
+            let installed = Counter(), prepared = Counter()
+            let tunnel = try coordinator(folder: folder, behavior: "normal", counter: counter,
+                activateAndInstallRoutes: { proof in
+                    guard proof.generation == 1, prepared.value == 0 else {
+                        throw CoordinatorCheckError.failed("route install order")
+                    }
+                    installed.value += 1
+                }, prepareRoutesForProcessStop: {
+                    guard installed.value == 1 else {
+                        throw CoordinatorCheckError.failed("cleanup before install")
+                    }
+                    prepared.value += 1
+                })
+            guard case .bootstrapReady = try tunnel.start(), installed.value == 1,
+                  prepared.value == 0,
+                  try tunnel.stop() == .stopped(generation: 1), prepared.value == 1 else {
+                fail("route lifecycle")
+            }
+            assertClean(folder); print("routes ordered")
+        case "route-cleanup-blocked":
+            let attempts = Counter()
+            let tunnel = try coordinator(folder: folder, behavior: "normal", counter: counter,
+                prepareRoutesForProcessStop: {
+                    attempts.value += 1
+                    if attempts.value == 1 {
+                        throw CoordinatorCheckError.failed("cleanup blocked")
+                    }
+                })
+            guard case .bootstrapReady(let proof) = try tunnel.start() else { fail("bootstrap") }
+            do { _ = try tunnel.stop(); fail("cleanup bypassed") }
+            catch CoordinatorCheckError.failed("cleanup blocked") {}
+            catch { fail("wrong cleanup error") }
+            guard tunnel.readiness() == .bootstrapReady(proof), attempts.value == 1,
+                  try tunnel.stop() == .stopped(generation: 1), attempts.value == 2 else {
+                fail("cleanup fail closed")
+            }
+            assertClean(folder); print("cleanup blocked safely")
+        case "route-install-failure":
+            let prepared = Counter()
+            let tunnel = try coordinator(folder: folder, behavior: "normal", counter: counter,
+                activateAndInstallRoutes: { _ in
+                    throw CoordinatorCheckError.failed("install failed")
+                }, prepareRoutesForProcessStop: { prepared.value += 1 })
+            do { _ = try tunnel.start(); fail("route failure accepted") }
+            catch CoordinatorCheckError.failed("install failed") {}
+            catch { fail("wrong install error") }
+            guard tunnel.readiness() == .failed(generation: 1), prepared.value == 1 else {
+                fail("route failure cleanup")
+            }
+            assertClean(folder); print("install rolled back")
         case "observe-state":
             let behavior = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
             let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter)
