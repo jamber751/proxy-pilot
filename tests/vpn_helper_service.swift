@@ -2,6 +2,8 @@ import CryptoKit
 import Darwin
 import Foundation
 
+final class VPNHelperFixtureOwnership { var owns = false }
+
 // Thin launcher around the production listener, used both by the listener tests
 // and by launchd. It reads the authenticated selection from protected storage,
 // serves the readiness handshake and does nothing else: no privileged operation,
@@ -93,7 +95,8 @@ enum VPNHelperService {
                 }
                 defer { if let endpoint = endpoint { close(endpoint) } }
                 let tunnelFixture = args.count == 5
-                    && ["tunnel-test", "tunnel-once"].contains(args[3]) ? args[4] : nil
+                    && ["tunnel-test", "tunnel-once", "managed-tunnel-test"].contains(args[3])
+                    ? args[4] : nil
                 func appendTrace(_ value: String) throws {
                     guard let path = tunnelFixture else { return }
                     let file = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o600)
@@ -104,14 +107,32 @@ enum VPNHelperService {
                         throw VPNHelperListenerError.unavailable
                     }
                 }
-                listener = try VPNHelperListener.bind(inTrustedDirectory: directory, release: deployment.release,
-                    ownerUserID: deployment.ownerUserID, endpointDirectory: endpoint,
+                let ownership = VPNHelperFixtureOwnership()
+                let managed = args.count == 5 && args[3] == "managed-tunnel-test"
+                listener = try VPNHelperListener.bind(inTrustedDirectory: directory,
+                    release: deployment.release, ownerUserID: deployment.ownerUserID,
+                    endpointDirectory: endpoint,
                     startTunnel: { try appendTrace("start-held"); return true },
+                    startManagedTunnel: managed ? { binding, state in
+                        try appendTrace("management-prompt")
+                        _ = try state.issueChallenge(binding: binding, kind: .vpnPassword)
+                        ownership.owns = true
+                        return true
+                    } : nil,
+                    submitManagedCredential: managed ? { response, state in
+                        let binding = try state.claimCredential(response.challenge)
+                        let transient = try OpenVPNTransientCredential(
+                            response: &response, application: binding.application)
+                        transient.fail()
+                        _ = try state.completeCredentialPrompt(binding: binding)
+                        try appendTrace("credential-claimed")
+                    } : nil,
                     stopTunnel: {
                         let snapshot = try VPNTunnelStateStore(
                             trustedDirectoryDescriptor: directory).load()
                         try appendTrace(snapshot.desiredEnabled ? "stop-before-off" : "stop-after-off")
-                    })
+                        ownership.owns = false
+                    }, tunnelIsOwned: { managed ? ownership.owns : false })
             }
             #else
             let runtime = try VPNHelperRuntime(storageDirectory: directory)

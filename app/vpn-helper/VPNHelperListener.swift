@@ -19,6 +19,8 @@ final class VPNHelperListener {
     private let vault: VPNProfileVault
     private let tunnelState: VPNTunnelStateStore
     private let startTunnel: () throws -> Bool
+    private let startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?
+    private let submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)?
     private let stopTunnel: () throws -> Void
     private let tunnelIsOwned: () -> Bool
     private var tunnelStopped = true
@@ -31,13 +33,18 @@ final class VPNHelperListener {
                                   ownerUserID: uid_t,
                                   additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
                                   startTunnel: @escaping () throws -> Bool = { false },
+                                  startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)? = nil,
+                                  submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)? = nil,
                                   stopTunnel: @escaping () throws -> Void = {},
                                   tunnelIsOwned: @escaping () -> Bool = { false }) throws
         -> VPNHelperListener {
         let listener = try bind(inTrustedDirectory: directory, release: release,
                                 ownerUserID: ownerUserID,
                                 additionalReadinessPolicies: additionalReadinessPolicies,
-                                startTunnel: startTunnel, stopTunnel: stopTunnel,
+                                startTunnel: startTunnel,
+                                startManagedTunnel: startManagedTunnel,
+                                submitManagedCredential: submitManagedCredential,
+                                stopTunnel: stopTunnel,
                                 tunnelIsOwned: tunnelIsOwned)
         listener.fixtureInstaller = true
         return listener
@@ -49,12 +56,17 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
                      startTunnel: @escaping () throws -> Bool = { false },
+                     startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)? = nil,
+                     submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)? = nil,
                      stopTunnel: @escaping () throws -> Void = {},
                      tunnelIsOwned: @escaping () -> Bool = { false }) throws -> VPNHelperListener {
         try bindCommon(inTrustedDirectory: trusted, release: release,
                        ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                        additionalReadinessPolicies: additionalReadinessPolicies,
-                       startTunnel: startTunnel, stopTunnel: stopTunnel,
+                       startTunnel: startTunnel,
+                       startManagedTunnel: startManagedTunnel,
+                       submitManagedCredential: submitManagedCredential,
+                       stopTunnel: stopTunnel,
                        tunnelIsOwned: tunnelIsOwned)
     }
     #endif
@@ -89,14 +101,23 @@ final class VPNHelperListener {
         return try bindCommon(inTrustedDirectory: trusted, release: deployment.release,
                               ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                               additionalReadinessPolicies: additionalReadinessPolicies,
-                              startTunnel: {
+                              startTunnel: { false },
+                              startManagedTunnel: { _, _ in
                                   guard let coordinator = coordinator else { return false }
                                   // Leave time inside the authenticated request
                                   // deadline to return a deterministic refusal.
                                   switch try coordinator.start(timeoutMilliseconds: 4_000) {
-                                  case .bootstrapReady: return true
+                                  case .bootstrapReady, .blocked(.credentialRequired): return true
                                   default: return false
                                   }
+                              }, submitManagedCredential: { response, _ in
+                                  guard let coordinator = coordinator else {
+                                      response.secret.resetBytes(in: 0..<response.secret.count)
+                                      response.secret.removeAll(keepingCapacity: false)
+                                      throw VPNHelperListenerError.unavailable
+                                  }
+                                  _ = try coordinator.submitCredential(&response,
+                                      timeoutMilliseconds: 4_000)
                               }, stopTunnel: { _ = try coordinator?.stop() },
                               tunnelIsOwned: { coordinator?.ownsProcess() == true })
     }
@@ -106,6 +127,8 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32?,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
                      startTunnel: @escaping () throws -> Bool,
+                     startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?,
+                     submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)?,
                      stopTunnel: @escaping () throws -> Void,
                      tunnelIsOwned: @escaping () -> Bool) throws -> VPNHelperListener {
         let policy = try release.clientPolicy(forTrustedUserID: ownerUserID)
@@ -170,7 +193,10 @@ final class VPNHelperListener {
                                      installerPolicy: try release.installerPolicy(),
                                      additionalReadinessPolicies: additionalReadinessPolicies,
                                      vault: vault, tunnelState: tunnelState,
-                                     startTunnel: startTunnel, stopTunnel: stopTunnel,
+                                     startTunnel: startTunnel,
+                                     startManagedTunnel: startManagedTunnel,
+                                     submitManagedCredential: submitManagedCredential,
+                                     stopTunnel: stopTunnel,
                                      tunnelIsOwned: tunnelIsOwned)
         } catch {
             Darwin.close(socketDescriptor)
@@ -183,6 +209,8 @@ final class VPNHelperListener {
                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
                  vault: VPNProfileVault, tunnelState: VPNTunnelStateStore,
                  startTunnel: @escaping () throws -> Bool,
+                 startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?,
+                 submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)?,
                  stopTunnel: @escaping () throws -> Void,
                  tunnelIsOwned: @escaping () -> Bool) {
         self.listener = listener
@@ -193,6 +221,8 @@ final class VPNHelperListener {
         self.vault = vault
         self.tunnelState = tunnelState
         self.startTunnel = startTunnel
+        self.startManagedTunnel = startManagedTunnel
+        self.submitManagedCredential = submitManagedCredential
         self.stopTunnel = stopTunnel
         self.tunnelIsOwned = tunnelIsOwned
     }
@@ -334,8 +364,9 @@ final class VPNHelperListener {
             guard Array(header.prefix(8)) == VPNHelperProtocol.requestMagic else { return }
             let length = Int(VPNHelperProtocol.number(header[18..<22]))
             guard length <= VPNHelperProtocol.maximumPayloadBytes else { return }
-            let payload = length == 0 ? []
+            var payload = length == 0 ? []
                 : try VPNHelperProtocol.read(count: length, socket: client, deadline: deadline)
+            defer { Self.wipe(&payload) }
             try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
             // A client that believes it is talking to another build is answered
             // with a refusal, never with an operation meant for that build.
@@ -398,6 +429,39 @@ final class VPNHelperListener {
                     try answer(.notReady, payload: [], to: client, deadline: deadline)
                     break
                 }
+                if let startManagedTunnel = startManagedTunnel {
+                    guard let binding = try? tunnelState.beginConnect() else {
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                    let started: Bool
+                    do {
+                        started = try startManagedTunnel(binding, tunnelState)
+                    } catch {
+                        if tunnelIsOwned() { try? stopTunnel() }
+                        tunnelStopped = !tunnelIsOwned()
+                        _ = try? tunnelState.failCurrent()
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                    tunnelStopped = !tunnelIsOwned()
+                    guard started, let fresh = try? tunnelState.load() else {
+                        if tunnelIsOwned() { try? stopTunnel() }
+                        tunnelStopped = !tunnelIsOwned()
+                        _ = try? tunnelState.failCurrent()
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                    if fresh.phase == .needsCredential,
+                       let challenge = fresh.challenge,
+                       let body = try? challenge.encoded() {
+                        try answer(.needsCredential, payload: [UInt8](body),
+                                   to: client, deadline: deadline)
+                    } else {
+                        try answer(.notReady, payload: [], to: client, deadline: deadline)
+                    }
+                    break
+                }
                 let kind: VPNCredentialKind? = application.requiresPrivateKeyPassword
                     ? .privateKeyPassword
                     : (application.requiresVPNCredentials ? .vpnPassword : nil)
@@ -434,8 +498,11 @@ final class VPNHelperListener {
                     break
                 }
                 do {
-                    try stopTunnel()
-                    tunnelStopped = true
+                    if submitManagedCredential == nil || tunnelIsOwned() {
+                        try stopTunnel()
+                    }
+                    tunnelStopped = !tunnelIsOwned()
+                    guard tunnelStopped else { throw VPNHelperListenerError.unavailable }
                     try tunnelState.disconnect()
                 } catch {
                     try answer(.failed, payload: [], to: client, deadline: deadline)
@@ -454,6 +521,29 @@ final class VPNHelperListener {
                     try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
                     break
                 }
+                if let submitManagedCredential = submitManagedCredential {
+                    do {
+                        try submitManagedCredential(&response, tunnelState)
+                        tunnelStopped = !tunnelIsOwned()
+                        let fresh = try tunnelState.load()
+                        if fresh.phase == .needsCredential,
+                           let challenge = fresh.challenge,
+                           let body = try? challenge.encoded() {
+                            try answer(.needsCredential, payload: [UInt8](body),
+                                       to: client, deadline: deadline)
+                        } else {
+                            try answer(.notReady, payload: [], to: client, deadline: deadline)
+                        }
+                    } catch {
+                        response.secret.resetBytes(in: 0..<response.secret.count)
+                        response.secret.removeAll(keepingCapacity: false)
+                        if tunnelIsOwned() { try? stopTunnel() }
+                        tunnelStopped = !tunnelIsOwned()
+                        _ = try? tunnelState.failCurrent()
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                    }
+                    break
+                }
                 // Consume first. Even an unusable credential can never be retried
                 // against this challenge, and its bytes never enter durable state.
                 guard (try? tunnelState.consume(response.challenge)) != nil else {
@@ -464,8 +554,28 @@ final class VPNHelperListener {
                 response.secret.resetBytes(in: 0..<response.secret.count)
                 try answer(.notReady, payload: [], to: client, deadline: deadline)
             case .cancelCredential:
-                guard let challenge = try? VPNCredentialChallenge.decodeCanonical(Data(payload)),
-                      (try? tunnelState.cancel(challenge)) != nil else {
+                guard let challenge = try? VPNCredentialChallenge.decodeCanonical(Data(payload)) else {
+                    try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                    break
+                }
+                if submitManagedCredential != nil {
+                    guard let snapshot = try? tunnelState.load(),
+                          snapshot.challenge == challenge,
+                          let binding = snapshot.attempt else {
+                        try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                    do {
+                        if tunnelIsOwned() { try stopTunnel() }
+                        tunnelStopped = !tunnelIsOwned()
+                        guard tunnelStopped else { throw VPNHelperListenerError.unavailable }
+                        _ = try tunnelState.cancelAttempt(binding)
+                    } catch {
+                        tunnelStopped = !tunnelIsOwned()
+                        try answer(.failed, payload: [], to: client, deadline: deadline)
+                        break
+                    }
+                } else if (try? tunnelState.cancel(challenge)) == nil {
                     try answer(.invalidRequest, payload: [], to: client, deadline: deadline)
                     break
                 }
@@ -488,5 +598,14 @@ final class VPNHelperListener {
 
     private static func encoded(_ value: UInt64) -> [UInt8] {
         (0..<8).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
+    }
+
+    private static func wipe(_ bytes: inout [UInt8]) {
+        bytes.withUnsafeMutableBytes { buffer in
+            if let base = buffer.baseAddress, !buffer.isEmpty {
+                _ = memset_s(base, buffer.count, 0, buffer.count)
+            }
+        }
+        bytes.removeAll(keepingCapacity: false)
     }
 }

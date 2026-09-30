@@ -280,7 +280,7 @@ final class VPNTunnelCoordinator {
             // This durable transition burns UUID/generation/kind before any
             // secret object exists and therefore before a management write.
             let binding = try callbacks.claim(challenge)
-            var transient = try OpenVPNTransientCredential(
+            let transient = try OpenVPNTransientCredential(
                 response: &response, application: binding.application)
             try exchange.submit(transient)
             credentialExchange = nil; credentialChallenge = nil; credentialKind = nil

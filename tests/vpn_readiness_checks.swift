@@ -130,8 +130,10 @@ enum VPNReadinessChecks {
                 }
                 return
             }
-            if scenario.hasPrefix("application=") {
-                let path = String(scenario.dropFirst("application=".count))
+            if scenario.hasPrefix("application=") || scenario.hasPrefix("managed-cancel=") {
+                let cancelling = scenario.hasPrefix("managed-cancel=")
+                let prefix = cancelling ? "managed-cancel=" : "application="
+                let path = String(scenario.dropFirst(prefix.count))
                 let data = try Data(contentsOf: URL(fileURLWithPath: path))
                 let imported = try VPNProfileImporter.inspect(data: data, name: "profile.ovpn")
                 let digest = SHA256.hash(data: imported.protectedContents)
@@ -150,6 +152,12 @@ enum VPNReadinessChecks {
                 print("connect:\(connected.0.rawValue) kind:\(challenge.kind.rawValue) generation:\(challenge.generation)")
                 let before = try session.tunnelStatus().1!
                 print("before:\(before.phase.rawValue)")
+                if cancelling {
+                    print("cancel:\(try session.cancelCredential(challenge).rawValue)")
+                    let after = try session.tunnelStatus().1!
+                    print("after:\(after.phase.rawValue) enabled:\(after.desiredEnabled)")
+                    return
+                }
                 let response = VPNCredentialResponse(challenge: challenge,
                     secret: Data("NEVER-PERSIST-THIS-CREDENTIAL".utf8))
                 print("submit:\(try session.submitCredential(response).rawValue)")

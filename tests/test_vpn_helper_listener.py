@@ -67,6 +67,8 @@ class VPNHelperListenerTests(unittest.TestCase):
             ('service', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
                          'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNApplicationSpec.swift',
                          'VPNTunnelStateStore.swift', 'VPNProfileVault.swift',
+                         'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift',
+                         'OpenVPNTransientCredential.swift',
                          'VPNHelperListener.swift', 'VPNEndpointDirectory.swift'], ['-D', 'VPN_HELPER_LISTENER_TESTING']),
             # The probe's normal build demands a root server, which no test may
             # run: only the client side uses the narrow test-policy seam here.
@@ -380,6 +382,34 @@ class VPNHelperListenerTests(unittest.TestCase):
             'before:needsCredential', 'submit:5', 'replay:2',
             'after:failed challenge:false', 'disconnect:0'])
         self.assertEqual(trace.read_text().splitlines(), ['stop-before-off'])
+
+    def test_management_prompt_is_issued_after_start_and_submit_is_claimed_once(self):
+        self.seed()
+        trace = self.base / 'managed-trace'
+        self.serve(extra=['managed-tunnel-test', str(trace)])
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(PROFILE)
+        self.assertEqual(self.session(f'application={candidate}'), [
+            'store:0', 'apply:0', 'connect:4 kind:1 generation:1',
+            'before:needsCredential', 'submit:5', 'replay:3',
+            'after:failed challenge:false', 'disconnect:0'])
+        self.assertEqual(trace.read_text().splitlines(), [
+            'management-prompt', 'credential-claimed', 'stop-before-off'])
+        state = (self.storage / 'tunnel-state.json').read_text()
+        self.assertNotIn('NEVER-PERSIST-THIS-CREDENTIAL', state)
+        self.assertNotIn('secret', state.lower())
+
+    def test_cancelled_management_prompt_stops_owned_runtime_before_off(self):
+        self.seed()
+        trace = self.base / 'managed-cancel-trace'
+        self.serve(extra=['managed-tunnel-test', str(trace)])
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(PROFILE)
+        self.assertEqual(self.session(f'managed-cancel={candidate}'), [
+            'store:0', 'apply:0', 'connect:4 kind:1 generation:1',
+            'before:needsCredential', 'cancel:0', 'after:off enabled:false'])
+        self.assertEqual(trace.read_text().splitlines(), [
+            'management-prompt', 'stop-before-off'])
 
     def test_listener_teardown_stops_a_held_runtime(self):
         self.seed()
