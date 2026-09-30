@@ -3,7 +3,8 @@ import Dispatch
 import Foundation
 
 enum OpenVPNManagementClientError: Error {
-    case closed, invalidEndpoint, timeout, transport, lineTooLong, tooManyIgnoredMessages
+    case closed, invalidEndpoint, invalidCommand, timeout, transport, lineTooLong,
+         tooManyIgnoredMessages
 }
 
 /// Only local transports are representable: an absolute Unix socket or an
@@ -15,6 +16,7 @@ enum OpenVPNManagementEndpoint: Equatable {
 
 final class OpenVPNManagementClient {
     static let maximumIgnoredMessages = 32
+    static let maximumCredentialCommandBytes = 4096
     private var descriptor: Int32
     private var buffered = [UInt8]()
 
@@ -59,6 +61,26 @@ final class OpenVPNManagementClient {
         do {
             let deadline = try Self.deadline(timeoutMilliseconds)
             try write(command.bytes, deadline: deadline)
+        } catch {
+            close()
+            throw error
+        }
+    }
+
+    /// Byte-only credential path. Exactly one printable management command is
+    /// accepted, so a malformed encoder/caller cannot append another command.
+    func sendCredentialCommand(_ bytes: UnsafeRawBufferPointer,
+                               timeoutMilliseconds: Int = 2_000) throws {
+        guard descriptor >= 0 else { throw OpenVPNManagementClientError.closed }
+        guard (2...Self.maximumCredentialCommandBytes).contains(bytes.count),
+              bytes.last == 10,
+              bytes.dropLast().allSatisfy({ $0 >= 32 && $0 != 127 && $0 != 10 && $0 != 13 }) else {
+            close()
+            throw OpenVPNManagementClientError.invalidCommand
+        }
+        do {
+            let deadline = try Self.deadline(timeoutMilliseconds)
+            try write(bytes, deadline: deadline)
         } catch {
             close()
             throw error
@@ -114,13 +136,15 @@ final class OpenVPNManagementClient {
     }
 
     private func write(_ bytes: [UInt8], deadline: UInt64) throws {
+        try bytes.withUnsafeBytes { try write($0, deadline: deadline) }
+    }
+
+    private func write(_ bytes: UnsafeRawBufferPointer, deadline: UInt64) throws {
         var offset = 0
         while offset < bytes.count {
             try wait(events: Int16(POLLOUT), deadline: deadline)
-            let count = bytes.withUnsafeBytes {
-                Darwin.send(descriptor, $0.baseAddress!.advanced(by: offset),
-                            bytes.count - offset, MSG_DONTWAIT | MSG_NOSIGNAL)
-            }
+            let count = Darwin.send(descriptor, bytes.baseAddress!.advanced(by: offset),
+                                    bytes.count - offset, MSG_DONTWAIT | MSG_NOSIGNAL)
             if count < 0, [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { continue }
             guard count > 0 else { throw OpenVPNManagementClientError.transport }
             offset += count

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum HeldExchangeCheckError: Error { case failed(String), transport }
@@ -55,6 +56,25 @@ final class RecordingCredentialTransport: OpenVPNCredentialByteTransport {
         let value = try OpenVPNTransientCredential(response: &response, application: application)
         try require(response.secret.isEmpty, "wire secret retained")
         return value
+    }
+
+    static func sockets() throws -> (Int32, Int32) {
+        var values: [Int32] = [-1, -1]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &values) == 0 else {
+            throw HeldExchangeCheckError.transport
+        }
+        return (values[0], values[1])
+    }
+
+    static func readExact(_ count: Int, from descriptor: Int32) throws -> [UInt8] {
+        var result = [UInt8]()
+        while result.count < count {
+            var buffer = [UInt8](repeating: 0, count: count - result.count)
+            let read = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+            guard read > 0 else { throw HeldExchangeCheckError.transport }
+            result.append(contentsOf: buffer.prefix(read))
+        }
+        return result
     }
 
     static func password() throws {
@@ -211,6 +231,35 @@ final class RecordingCredentialTransport: OpenVPNCredentialByteTransport {
         print("rejection passed")
     }
 
+    static func managementClient() throws {
+        let pair = try sockets()
+        defer { close(pair.1) }
+        let client = try OpenVPNManagementClient(takingConnectedSocket: pair.0)
+        let app = try application()
+        let token = challenge(.vpnPassword)
+        let secret = try transient(Array("secret".utf8), challenge: token, application: app)
+        let exchange = try OpenVPNHeldCredentialExchange(challenge: token, application: app,
+                                                         transport: client)
+        try exchange.observe(.credentialRequired(.usernameAndPassword))
+        try exchange.submit(secret)
+        let expected = Array("username \"Auth\" \"employee\"\npassword \"Auth\" \"secret\"\n".utf8)
+        let received = try readExact(expected.count, from: pair.1)
+        try require(received == expected, "management credential bytes")
+
+        let injectedPair = try sockets()
+        defer { close(injectedPair.1) }
+        let injectedClient = try OpenVPNManagementClient(takingConnectedSocket: injectedPair.0)
+        let injected = Array("password \"Auth\" \"secret\"\nstate\n".utf8)
+        do {
+            try injected.withUnsafeBytes { try injectedClient.sendCredentialCommand($0) }
+            throw HeldExchangeCheckError.failed("multiple commands accepted")
+        } catch OpenVPNManagementClientError.invalidCommand {}
+        var byte: UInt8 = 0
+        try require(recv(injectedPair.1, &byte, 1, 0) == 0,
+                    "invalid command transport open")
+        print("management client passed")
+    }
+
     static func main() throws {
         guard CommandLine.arguments.count == 2 else { exit(64) }
         switch CommandLine.arguments[1] {
@@ -223,6 +272,7 @@ final class RecordingCredentialTransport: OpenVPNCredentialByteTransport {
         case "transport-failure": try transportFailure()
         case "otp-policy": try otpPolicy()
         case "rejection": try rejection()
+        case "management-client": try managementClient()
         default: exit(64)
         }
     }

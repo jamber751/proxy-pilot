@@ -23,8 +23,11 @@ class VPNHeldCredentialExchangeTests(unittest.TestCase):
                    ROOT / 'app/vpn-helper/VPNTunnelStateStore.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
                    ROOT / 'app/vpn-helper/OpenVPNStateEvidence.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNManagementParser.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNManagementClient.swift',
                    ROOT / 'app/vpn-helper/OpenVPNTransientCredential.swift',
                    ROOT / 'app/vpn-helper/OpenVPNHeldCredentialExchange.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNManagementCredentialTransport.swift',
                    ROOT / 'tests/vpn_held_credential_exchange_checks.swift']
         result = subprocess.run([
             'swiftc', '-D', 'VPN_TRANSIENT_CREDENTIAL_TESTING',
@@ -49,6 +52,8 @@ class VPNHeldCredentialExchangeTests(unittest.TestCase):
     def test_transport_failure_is_terminal(self): self.run_case('transport-failure', 'passed')
     def test_combined_static_challenge_is_not_guessed(self): self.run_case('otp-policy', 'passed')
     def test_engine_rejection_aborts_transport(self): self.run_case('rejection', 'passed')
+    def test_management_client_transport_and_injection_boundary(self):
+        self.run_case('management-client', 'passed')
 
     def test_exchange_has_no_hold_release_or_persistence_surface(self):
         source = (ROOT / 'app/vpn-helper/OpenVPNHeldCredentialExchange.swift').read_text()
