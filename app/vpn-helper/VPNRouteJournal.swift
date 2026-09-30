@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 enum VPNRouteJournalError: Error, Equatable {
-    case unsafeStorage, missing, alreadyExists, invalidState, stale, writeFailed
+    case unsafeStorage, missing, alreadyExists, invalidState, stale, writeFailed, removeFailed
 }
 
 /// Typed output of a future kernel-route inspection. It cannot be constructed
@@ -286,6 +286,26 @@ final class VPNRouteJournal {
         try write(next); return next
     }
 
+    /// Removes only a fully retired ledger after re-reading the exact named
+    /// inode. A journal with any owned or in-flight route remains durable.
+    func retireAndRemove(generation: UInt64, revision: UInt64) throws {
+        let expected = try bound(generation: generation, revision: revision)
+        guard expected.phase == .retired, expected.applied.isEmpty,
+              expected.operation == nil else { throw VPNRouteJournalError.invalidState }
+        let file = openat(directory, Self.name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard file >= 0 else { throw VPNRouteJournalError.removeFailed }
+        defer { close(file) }
+        try checkFile(file)
+        var named = stat(), opened = stat()
+        guard fstat(file, &opened) == 0,
+              fstatat(directory, Self.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
+              lseek(file, 0, SEEK_SET) == 0,
+              try decode(readFile(file)) == expected,
+              unlinkat(directory, Self.name, 0) == 0,
+              fsync(directory) == 0 else { throw VPNRouteJournalError.removeFailed }
+    }
+
     private func bound(generation: UInt64, revision: UInt64) throws -> VPNRouteJournalSnapshot {
         let value = try load()
         guard generation > 0, revision > 0,
@@ -322,6 +342,10 @@ final class VPNRouteJournal {
         }
         defer { close(file) }
         try checkFile(file)
+        return try readFile(file)
+    }
+
+    private func readFile(_ file: Int32) throws -> Data {
         var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
         while true {
             let count = Darwin.read(file, &buffer, buffer.count)

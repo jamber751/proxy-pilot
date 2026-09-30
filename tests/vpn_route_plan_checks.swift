@@ -165,6 +165,10 @@ import Foundation
         let routePlan = try plan(), entries = try identities(routePlan)
         var snapshot = try journal.create(routePlan)
         try require(snapshot.phase == .planned && snapshot.applied.isEmpty, "planned")
+        do {
+            try journal.retireAndRemove(generation: 7, revision: 11)
+            throw NSError(domain: "live journal removed", code: 1)
+        } catch VPNRouteJournalError.invalidState {}
         var forgedObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(entries[1]))
             as! [String: Any]
         forgedObject["interfaceIndex"] = interfaceIndex()
@@ -210,6 +214,12 @@ import Foundation
         let file = URL(fileURLWithPath: path).appendingPathComponent(VPNRouteJournal.name)
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         try require((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "mode")
+        try journal.retireAndRemove(generation: 7, revision: 11)
+        try require(!FileManager.default.fileExists(atPath: file.path), "retired journal remains")
+        do {
+            _ = try journal.load()
+            throw NSError(domain: "removed journal loaded", code: 1)
+        } catch VPNRouteJournalError.missing {}
         print("journal passed")
     }
 
