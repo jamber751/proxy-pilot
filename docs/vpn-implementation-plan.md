@@ -3029,3 +3029,20 @@ kernel state. План и журнал сами не запускают `route`,
 могут утверждать, что маршрут применён. Пройдены 13 focused tests и universal
 helper build. Пункт 4 остаётся незакрытым до native routing-socket adapter,
 compare-before-delete recovery, реального TUN evidence и приёмки split routes.
+
+### Продолжение 1.5ay — verified Darwin routing socket (30 сентября)
+
+Добавлен нативный PF_ROUTE adapter без shell, `/sbin/route`, `networksetup` и
+`scutil`. Production socket открывается только явным вызовом; тесты используют
+детерминированный transport и не меняют сеть. Codec строго ограничивает размер и
+aligned sockaddr, связывает ответы с pid/sequence, поддерживает exact RTM_GET и
+IPv4/IPv6 RTM_ADD/RTM_DELETE. Socket неблокирующий, все операции имеют monotonic
+deadline; усечённые, хвостовые, чужие и ошибочные ответы fail-closed.
+
+Перед add выполняется exact lookup: чужой маршрут не перезаписывается, гонка
+`EEXIST` принимается лишь после полного совпадения. Перед delete маршрут ещё раз
+сравнивается со всей journal identity; отсутствующий или чужой маршрут не
+удаляется. После mutation обязателен readback. Пройдены 15 route-plan/socket tests
+и полный universal helper build/codesign. Adapter ещё не вызывается production
+coordinator: пункт 4 ждёт доказательство реального peer и единственного TUN,
+transaction recovery и лишь затем controlled hold release.
