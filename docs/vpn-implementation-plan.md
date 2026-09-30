@@ -3157,3 +3157,36 @@ engine/coordinator tests, 8 recovery ServiceMain tests, daemon lifecycle test и
 проверить реальный bundled OpenVPN и сделать controlled bootstrap, который лишь
 создаёт доказуемый tunnel interface; readiness наступает только после route и
 scoped-DNS transactions.
+
+### Продолжение 1.5be — one-shot credential transport (30 сентября)
+
+Credential primitive доведён до локального management transport, но ещё не
+подключён к listener/coordinator. Exchange связывает exact challenge, validated
+application, один typed prompt и один конкретный management socket. Password,
+code-only OTP и private-key passphrase кодируются только как bytes; секрет не
+становится `String`, не сериализуется и обнуляется после первого результата.
+
+Отправка до prompt, другой/повторный prompt, rejection, partial write, timeout и
+replay необратимо закрывают exchange и socket. Raw parser больше не определяет
+вид prompt через `contains`: принимаются только точные ограниченные grammar forms.
+Management client дополнительно разрешает ровно одну printable command line, так
+что encoder/caller не может дописать вторую команду. Hold release API в exchange
+отсутствует. Пройдено 17 primitive/exchange tests, 23 parser/coordinator
+regressions, 16 client/transport tests и universal arm64/x86_64 build/codesign.
+
+### Продолжение 1.5bf — held tunnel bootstrap policy (30 сентября)
+
+Из engine argv удалён только `--ifconfig-noexec`: с ним OpenVPN мог открыть
+`utun`, но не назначал kernel-адрес, поэтому строгий interface resolver никогда
+не мог доказать туннель. `--route-noexec`, `--route-nopull`, `--script-security 1`,
+`--auth-nocache`, management Unix socket, query-passwords и hold сохранены.
+Importer по-прежнему запрещает profile scripts/plugins/management/proxy и
+удаляет route/redirect/DNS directives; build отключает plugins, DCO и automatic
+DNS scripts.
+
+После будущего hold release OpenVPN будет владеть только `utun`, его адресами и
+неизбежными Darwin connected/on-link routes. Peer bypass, resource routes и
+scoped DNS остаются транзакциями ProxyPilot. Текущий коммит hold не освобождает и
+сам сеть не меняет; пройдено 16 engine/coordinator tests. На первом этапе любой
+reconnect должен останавливать весь supervised process и начинать доказательство
+с нового baseline: `persist-tun` нельзя считать прежним подтверждением.
