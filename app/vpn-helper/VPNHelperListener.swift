@@ -79,7 +79,7 @@ final class VPNHelperListener {
                                   // Leave time inside the authenticated request
                                   // deadline to return a deterministic refusal.
                                   switch try coordinator.start(timeoutMilliseconds: 4_000) {
-                                  case .processRunning, .managementReady: return true
+                                  case .bootstrapReady: return true
                                   default: return false
                                   }
                               }, stopTunnel: { _ = coordinator?.stop() })
@@ -399,8 +399,8 @@ final class VPNHelperListener {
                         break
                     }
                     tunnelStopped = false
-                    // Stage B proves only a held local management session.
-                    // It never releases hold or claims a usable connection.
+                    // Bootstrap proof is internal only. Routes and scoped DNS
+                    // are not yet committed, so the public state stays not ready.
                     try answer(.notReady, payload: [], to: client, deadline: deadline)
                 }
             case .disconnect:

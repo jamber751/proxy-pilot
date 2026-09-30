@@ -26,6 +26,8 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
                    ROOT / 'app/vpn-helper/OpenVPNManagementParser.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementClient.swift',
                    ROOT / 'app/vpn-helper/VPNManagementSocketReservation.swift',
+                   ROOT / 'app/vpn-helper/VPNKernelInterfaceSnapshot.swift',
+                   ROOT / 'app/vpn-helper/VPNTunnelInterfaceResolver.swift',
                    ROOT / 'app/vpn-helper/VPNTunnelCoordinator.swift',
                    ROOT / 'tests/vpn_tunnel_coordinator_checks.swift']
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
@@ -36,28 +38,49 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
         if result.returncode:
             raise AssertionError(result.stderr)
 
-    def run_case(self, name, word):
+    def run_case(self, name, word, behavior=None):
         with tempfile.TemporaryDirectory(prefix='pp-tunnel-coordinator-', dir='/tmp') as folder:
             os.chmod(folder, 0o700)
-            result = subprocess.run([str(self.binary), name, folder], capture_output=True,
+            arguments = [str(self.binary), name, folder]
+            if behavior is not None:
+                arguments.append(behavior)
+            result = subprocess.run(arguments, capture_output=True,
                                     text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn(word, result.stdout)
 
     def test_serialized_held_lifecycle(self): self.run_case('lifecycle', 'passed')
-    def test_connected_is_only_internal_management_evidence(self): self.run_case('internal-connected', 'passed')
-    def test_serialized_management_state_observation(self): self.run_case('observe', 'passed')
+    def test_any_non_connected_state_after_bootstrap_fails_closed(self):
+        for behavior in ('observe', 'observe-wait'):
+            with self.subTest(behavior=behavior):
+                self.run_case('observe-state', 'failed closed', behavior)
     def test_runtime_credential_prompt_is_explicitly_blocked(self): self.run_case('credential', 'blocked')
     def test_saved_credential_requirement_never_spawns(self): self.run_case('plan-blocked', 'blocked')
     def test_management_rejection_fails_closed(self): self.run_case('reject', 'rejected')
     def test_management_socket_deadline_stops_child(self): self.run_case('timeout', 'timed out')
 
-    def test_coordinator_never_releases_hold_or_claims_connected(self):
+    def test_post_release_credential_hold_exit_and_timeout_fail_closed(self):
+        for behavior in ('credential-after', 'hold-after', 'reconnect', 'exiting', 'timeout-after'):
+            with self.subTest(behavior=behavior):
+                self.run_case('post-release-failure', 'failed closed', behavior)
+
+    def test_missing_or_ambiguous_new_utun_fails_closed(self):
+        for behavior in ('missing-interface', 'ambiguous-interface'):
+            with self.subTest(behavior=behavior):
+                self.run_case('interface-failure', 'failed closed', behavior)
+
+    def test_missing_initial_hold_or_pre_release_reconnect_never_releases(self):
+        for behavior in ('no-hold', 'pre-reconnect'):
+            with self.subTest(behavior=behavior):
+                self.run_case('precondition-failure', 'failed closed', behavior)
+
+    def test_coordinator_bootstrap_never_claims_route_dns_or_ui_connected(self):
         source = (ROOT / 'app/vpn-helper/VPNTunnelCoordinator.swift').read_text()
-        self.assertNotIn('.releaseHold', source)
-        self.assertNotIn('case connected', source)
+        self.assertEqual(source.count('client.send(.releaseHold'), 1)
         self.assertNotIn('route(', source)
         self.assertNotIn('scutil', source)
+        self.assertNotIn('VPNRouteTransaction', source)
+        self.assertNotIn('VPNDNS', source)
 
 
 if __name__ == '__main__':

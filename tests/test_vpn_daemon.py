@@ -19,6 +19,8 @@ class VPNDaemonTests(installer.VPNInstallerTests):
                                                'OpenVPNManagementParser.swift',
                                                'OpenVPNManagementClient.swift', 'VPNManagementSocketReservation.swift',
                                                'VPNEngineProcess.swift', 'VPNEngineSupervisor.swift',
+                                               'VPNKernelInterfaceSnapshot.swift',
+                                               'VPNTunnelInterfaceResolver.swift',
                                                'VPNTunnelCoordinator.swift']
     service_main = installer.ROOT / 'tests/vpn_daemon_main.swift'
     service_flags = ['-D', 'VPN_DAEMON_TESTING', '-D', 'VPN_HELPER_READINESS_TESTING']

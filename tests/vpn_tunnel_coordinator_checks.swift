@@ -26,6 +26,16 @@ final class Counter { var value = 0 }
         _ = bytes.withUnsafeBytes { send(socket, $0.baseAddress, bytes.count, MSG_NOSIGNAL) }
     }
 
+    static func markRelease(_ managementPath: String) {
+        let folder = URL(fileURLWithPath: managementPath).deletingLastPathComponent()
+        let path = folder.appendingPathComponent("hold-release.trace").path
+        let fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { exit(49) }
+        var byte: UInt8 = 49
+        guard write(fd, &byte, 1) == 1, fsync(fd) == 0 else { close(fd); exit(50) }
+        close(fd)
+    }
+
     static func child() -> Never {
         let arguments = CommandLine.arguments
         guard let configIndex = arguments.firstIndex(of: "--config"),
@@ -61,7 +71,7 @@ final class Counter { var value = 0 }
         let client = accept(listener, nil, nil)
         guard client >= 0 else { exit(46) }
         sendLine(client, ">INFO:fake")
-        sendLine(client, ">HOLD:Waiting for hold release")
+        if behavior != "no-hold" { sendLine(client, ">HOLD:Waiting for hold release") }
         while let command = readLine(client) {
             switch command {
             case "state on":
@@ -73,19 +83,32 @@ final class Counter { var value = 0 }
                     sendLine(client, "SUCCESS: state notifications enabled")
                 }
             case "state":
-                if behavior == "connected" {
-                    sendLine(client, "1,CONNECTED,redacted,10.8.0.2,203.0.113.9,443")
-                } else {
-                    sendLine(client, "1,WAIT,redacted,,,,")
+                if behavior == "pre-reconnect" {
+                    sendLine(client, ">STATE:1,RECONNECTING,redacted,,,,")
                 }
+                sendLine(client, "1,WAIT,redacted,,,,")
                 sendLine(client, "END")
-                if behavior == "observe" {
-                    sendLine(client, ">STATE:2,RECONNECTING,redacted,,,,")
+            case "hold release":
+                markRelease(path)
+                switch behavior {
+                case "credential-after":
+                    sendLine(client, ">PASSWORD:Need 'Auth' username/password")
+                case "hold-after": sendLine(client, ">HOLD:Waiting again")
+                case "reconnect": sendLine(client, ">STATE:2,RECONNECTING,redacted,,,,")
+                case "exiting": sendLine(client, ">STATE:2,EXITING,redacted,,,,")
+                case "timeout-after": sendLine(client, "SUCCESS: hold released")
+                default:
+                    sendLine(client, "SUCCESS: hold released")
+                    sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443")
+                    if behavior == "observe" {
+                        sendLine(client, ">STATE:3,RECONNECTING,redacted,,,,")
+                    } else if behavior == "observe-wait" {
+                        sendLine(client, ">STATE:3,WAIT,redacted,,,,")
+                    }
                 }
             case "signal SIGTERM":
                 sendLine(client, "SUCCESS: signal")
                 close(client); close(listener); exit(0)
-            case "hold release": exit(47)
             default: exit(48)
             }
         }
@@ -122,8 +145,48 @@ final class Counter { var value = 0 }
             counter.value += 1
             return open(CommandLine.arguments[0], O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         }
+        var captures = 0
+        let releaseTrace = URL(fileURLWithPath: folder).appendingPathComponent("hold-release.trace").path
         return try VPNTunnelCoordinator(testDirectory: dir, selection: selection,
-            profileDigest: value.0, openProfile: { _ in try value.1() }, blocker: blocker)
+            profileDigest: value.0, openProfile: { _ in try value.1() }, captureInterfaces: {
+                captures += 1
+                if captures == 1 {
+                    guard !FileManager.default.fileExists(atPath: releaseTrace) else {
+                        throw CoordinatorCheckError.failed("baseline after release")
+                    }
+                    return try VPNKernelInterfaceSnapshot(interfaces: [])
+                }
+                guard FileManager.default.fileExists(atPath: releaseTrace) else {
+                    throw CoordinatorCheckError.failed("after before release")
+                }
+                if behavior == "missing-interface" {
+                    return try VPNKernelInterfaceSnapshot(interfaces: [])
+                }
+                guard captures == 2 else {
+                    throw CoordinatorCheckError.failed("unexpected interface recapture")
+                }
+                let local = try OpenVPNIPAddress(parsing: "10.8.0.2", family: .ipv4)
+                let first = try VPNKernelInterfaceRecord(index: 31, name: "utun30", isUp: true,
+                    isRunning: true, isPointToPoint: true, addresses: [local])
+                if behavior == "ambiguous-interface" {
+                    let second = try VPNKernelInterfaceRecord(index: 32, name: "utun31", isUp: true,
+                        isRunning: true, isPointToPoint: true, addresses: [local])
+                    return try VPNKernelInterfaceSnapshot(interfaces: [first, second])
+                }
+                return try VPNKernelInterfaceSnapshot(interfaces: [first])
+            }, blocker: blocker)
+    }
+
+    static func assertOneRelease(_ folder: String) {
+        let path = URL(fileURLWithPath: folder).appendingPathComponent("hold-release.trace").path
+        guard let bytes = try? Data(contentsOf: URL(fileURLWithPath: path)), bytes.count == 1 else {
+            fail("hold release count")
+        }
+    }
+
+    static func assertNoRelease(_ folder: String) {
+        let path = URL(fileURLWithPath: folder).appendingPathComponent("hold-release.trace").path
+        guard !FileManager.default.fileExists(atPath: path) else { fail("unexpected hold release") }
     }
 
     static func assertClean(_ folder: String) {
@@ -136,38 +199,59 @@ final class Counter { var value = 0 }
             exit(status)
         }
         if CommandLine.arguments.first == "vpn-engine" { child() }
-        guard CommandLine.arguments.count == 3 else { fail("usage") }
+        guard CommandLine.arguments.count >= 3 else { fail("usage") }
         let test = CommandLine.arguments[1], folder = CommandLine.arguments[2]
         let counter = Counter()
         switch test {
         case "lifecycle":
             let tunnel = try coordinator(folder: folder, behavior: "normal", counter: counter)
-            guard try tunnel.start() == .managementReady(generation: 1, state: .waiting),
-                  tunnel.readiness() == .managementReady(generation: 1, state: .waiting),
+            guard case .bootstrapReady(let proof) = try tunnel.start(),
+                  proof.generation == 1, proof.tunnel.name == "utun30",
+                  tunnel.readiness() == .bootstrapReady(proof),
                   try tunnel.start() == .blocked(.alreadyRunning), counter.value == 1 else {
                 fail("lifecycle readiness")
             }
+            assertOneRelease(folder)
             guard tunnel.stop() == .stopped(generation: 1) else { fail("stop") }
             assertClean(folder); print("passed")
-        case "internal-connected":
-            let tunnel = try coordinator(folder: folder, behavior: "connected", counter: counter)
-            guard try tunnel.start() == .managementReady(generation: 1, state: .connected) else {
-                fail("management observation")
-            }
-            _ = tunnel.stop(); assertClean(folder); print("passed")
-        case "observe":
-            let tunnel = try coordinator(folder: folder, behavior: "observe", counter: counter)
-            guard try tunnel.start() == .managementReady(generation: 1, state: .waiting),
-                  try tunnel.observe() == .managementReady(generation: 1, state: .reconnecting) else {
-                fail("state observation")
-            }
-            _ = tunnel.stop(); assertClean(folder); print("passed")
+        case "observe-state":
+            let behavior = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
+            let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter)
+            guard case .bootstrapReady = try tunnel.start(),
+                  try tunnel.observe() == .failed(generation: 1) else { fail("reconnect accepted") }
+            assertOneRelease(folder); assertClean(folder); print("failed closed")
         case "credential":
             let tunnel = try coordinator(folder: folder, behavior: "credential", counter: counter)
             guard try tunnel.start() == .blocked(.credentialRequired(.staticChallenge)) else {
                 fail("credential blocker")
             }
             assertClean(folder); print("blocked")
+        case "post-release-failure":
+            let behavior = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
+            let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter)
+            do {
+                let result = try tunnel.start(timeoutMilliseconds: 150)
+                if behavior == "credential-after" {
+                    guard result == .blocked(.credentialRequired(.usernameAndPassword)) else {
+                        fail("post release credential accepted")
+                    }
+                } else { fail("unsafe bootstrap accepted") }
+            } catch {
+                guard tunnel.readiness() == .failed(generation: 1) else { fail("failed state") }
+            }
+            assertOneRelease(folder); assertClean(folder); print("failed closed")
+        case "interface-failure":
+            let behavior = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
+            let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter)
+            do { _ = try tunnel.start(timeoutMilliseconds: 150); fail("interface ambiguity accepted") }
+            catch { guard tunnel.readiness() == .failed(generation: 1) else { fail("failed state") } }
+            assertOneRelease(folder); assertClean(folder); print("failed closed")
+        case "precondition-failure":
+            let behavior = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
+            let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter)
+            do { _ = try tunnel.start(); fail("unsafe held state accepted") }
+            catch { guard tunnel.readiness() == .failed(generation: 1) else { fail("failed state") } }
+            assertNoRelease(folder); assertClean(folder); print("failed closed")
         case "plan-blocked":
             let tunnel = try coordinator(folder: folder, behavior: "normal",
                 blocker: .credentialRequired(.usernameAndPassword), counter: counter)

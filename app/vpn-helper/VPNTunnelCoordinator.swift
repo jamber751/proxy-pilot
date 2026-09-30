@@ -7,20 +7,28 @@ enum VPNTunnelCoordinatorBlocker: Equatable {
     case alreadyRunning
 }
 
-/// Internal runtime evidence only. `managementReady` means the local protocol
-/// handshake succeeded while OpenVPN is still held. It is never a claim that
-/// routes, DNS or a usable VPN connection exist.
+/// Proof that the engine completed only its controlled bootstrap. This is not
+/// route, DNS, reachability or UI "Connected" authority.
+struct VPNTunnelBootstrapProof: Equatable {
+    let generation: UInt64
+    let management: OpenVPNConnectedEvidence
+    let tunnel: VPNTunnelInterfaceEvidence
+}
+
+/// Internal runtime evidence only. Neither management nor bootstrap readiness
+/// claims that routes, DNS or a usable VPN connection exist.
 enum VPNTunnelCoordinatorReadiness: Equatable {
     case inactive
     case blocked(VPNTunnelCoordinatorBlocker)
     case processRunning(generation: UInt64)
-    case managementReady(generation: UInt64, state: OpenVPNConnectionState)
+    case bootstrapReady(VPNTunnelBootstrapProof)
     case stopped(generation: UInt64)
     case failed(generation: UInt64?)
 }
 
 enum VPNTunnelCoordinatorError: Error {
-    case invalidState, engineExited, managementUnavailable, managementRejected
+    case invalidState, engineExited, managementUnavailable, managementRejected,
+         unsafeBootstrapState
 }
 
 private enum VPNTunnelLaunchIntent {
@@ -29,14 +37,15 @@ private enum VPNTunnelLaunchIntent {
 }
 
 /// Owns at most one engine, one management connection and one socket inode.
-/// Every public operation is serialized. Stage B deliberately never sends
-/// `hold release`, so OpenVPN cannot advance into route or DNS application.
+/// Every public operation is serialized. A certificate-only start releases the
+/// initial hold once, solely to collect strict tunnel bootstrap evidence.
 final class VPNTunnelCoordinator {
     private let lock = NSLock()
     private let intent: () throws -> VPNTunnelLaunchIntent
     private let openProfile: (String) throws -> Int32
     private let selection: VPNEngineExecutableSelection
     private let managementDirectory: Int32
+    private let captureInterfaces: () throws -> VPNKernelInterfaceSnapshot
     private var process: VPNEngineProcess?
     private var management: OpenVPNManagementClient?
     private var reservation: VPNManagementSocketReservation?
@@ -52,6 +61,7 @@ final class VPNTunnelCoordinator {
         managementDirectory = fcntl(directory, F_DUPFD_CLOEXEC, 64)
         guard managementDirectory >= 0 else { throw VPNTunnelCoordinatorError.invalidState }
         openProfile = { try vault.openValidated(digest: $0) }
+        captureInterfaces = { try VPNKernelInterfaceSnapshot.capture() }
         intent = {
             let snapshot = try state.load()
             guard snapshot.desiredEnabled else {
@@ -82,11 +92,13 @@ final class VPNTunnelCoordinator {
     init(testDirectory directory: Int32, selection: VPNEngineExecutableSelection,
          generation: UInt64 = 1, profileDigest: String,
          openProfile: @escaping (String) throws -> Int32,
+         captureInterfaces: @escaping () throws -> VPNKernelInterfaceSnapshot,
          blocker: VPNTunnelCoordinatorBlocker? = nil) throws {
         self.selection = selection
         managementDirectory = fcntl(directory, F_DUPFD_CLOEXEC, 64)
         guard managementDirectory >= 0 else { throw VPNTunnelCoordinatorError.invalidState }
         self.openProfile = openProfile
+        self.captureInterfaces = captureInterfaces
         intent = {
             if let blocker = blocker { return .blocked(blocker) }
             return .ready(generation: generation, profileDigest: profileDigest)
@@ -137,9 +149,12 @@ final class VPNTunnelCoordinator {
             current = .processRunning(generation: generation)
             let client = try connect(socket: socket, process: child, deadline: deadline)
             localClient = client
-            let state = try initialize(client: client, deadline: deadline)
+            _ = try initialize(client: client, deadline: deadline)
+            let baseline = try captureInterfaces()
+            let proof = try bootstrap(client: client, generation: generation,
+                                      baseline: baseline, deadline: deadline)
             process = child; management = client; reservation = socket
-            current = .managementReady(generation: generation, state: state)
+            current = .bootstrapReady(proof)
             return current
         } catch let blocker as CoordinatorCredentialBlock {
             localClient?.close()
@@ -159,9 +174,10 @@ final class VPNTunnelCoordinator {
     func observe(timeoutMilliseconds: Int = 2_000) throws -> VPNTunnelCoordinatorReadiness {
         lock.lock(); defer { lock.unlock() }
         guard let client = management, let child = process,
-              case .managementReady(let generation, _) = current else {
+              case .bootstrapReady(let proof) = current else {
             throw VPNTunnelCoordinatorError.invalidState
         }
+        let generation = proof.generation
         guard try child.state() == .running else {
             stopLocked(); current = .failed(generation: generation); return current
         }
@@ -173,13 +189,17 @@ final class VPNTunnelCoordinator {
             throw error
         }
         switch event {
-        case .state(let evidence):
-            current = .managementReady(generation: generation, state: evidence.state)
+        case .state(let evidence) where evidence.state == .connected:
+            guard evidence.connected == proof.management else {
+                stopLocked(); current = .failed(generation: generation); return current
+            }
+        case .state:
+            stopLocked(); current = .failed(generation: generation)
         case .credentialRequired(let kind), .credentialRejected(let kind):
             stopLocked(); current = .blocked(.credentialRequired(kind))
-        case .fatal, .commandFailed:
+        case .fatal, .commandFailed, .hold:
             stopLocked(); current = .failed(generation: generation)
-        case .ready, .hold, .commandSucceeded, .commandCompleted: break
+        case .ready, .commandSucceeded, .commandCompleted: break
         }
         return current
     }
@@ -189,8 +209,9 @@ final class VPNTunnelCoordinator {
         lock.lock(); defer { lock.unlock() }
         let generation: UInt64
         switch current {
-        case .processRunning(let value), .managementReady(let value, _), .stopped(let value):
+        case .processRunning(let value), .stopped(let value):
             generation = value
+        case .bootstrapReady(let proof): generation = proof.generation
         default: generation = 0
         }
         stopLocked()
@@ -224,35 +245,108 @@ final class VPNTunnelCoordinator {
     private func initialize(client: OpenVPNManagementClient,
                             deadline: UInt64) throws -> OpenVPNConnectionState {
         try client.send(.enableStateNotifications, timeoutMilliseconds: Self.remaining(deadline))
-        try awaitSuccess(client, deadline: deadline)
+        var sawInitialHold = try awaitSuccess(client, deadline: deadline)
         try client.send(.requestCurrentState, timeoutMilliseconds: Self.remaining(deadline))
         var state: OpenVPNConnectionState?
         for _ in 0..<16 {
             switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
-            case .state(let evidence): state = evidence.state
+            case .state(let evidence):
+                guard evidence.state != .connected, evidence.state != .reconnecting,
+                      evidence.state != .exiting else {
+                    throw VPNTunnelCoordinatorError.unsafeBootstrapState
+                }
+                state = evidence.state
             case .commandCompleted:
-                guard let state = state else { throw VPNTunnelCoordinatorError.managementRejected }
+                guard sawInitialHold, let state = state else {
+                    throw VPNTunnelCoordinatorError.managementRejected
+                }
                 return state
             case .credentialRequired(let kind), .credentialRejected(let kind):
                 throw CoordinatorCredentialBlock(kind: kind)
             case .fatal, .commandFailed: throw VPNTunnelCoordinatorError.managementRejected
-            case .ready, .hold, .commandSucceeded: break
+            case .hold: sawInitialHold = true
+            case .ready, .commandSucceeded: break
             }
         }
         throw VPNTunnelCoordinatorError.managementRejected
     }
 
-    private func awaitSuccess(_ client: OpenVPNManagementClient, deadline: UInt64) throws {
+    private func awaitSuccess(_ client: OpenVPNManagementClient, deadline: UInt64) throws -> Bool {
+        var sawHold = false
         for _ in 0..<16 {
             switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
-            case .commandSucceeded: return
+            case .commandSucceeded: return sawHold
             case .credentialRequired(let kind), .credentialRejected(let kind):
                 throw CoordinatorCredentialBlock(kind: kind)
             case .fatal, .commandFailed: throw VPNTunnelCoordinatorError.managementRejected
-            case .ready, .hold, .state, .commandCompleted: break
+            case .state(let evidence):
+                guard evidence.state != .connected, evidence.state != .reconnecting,
+                      evidence.state != .exiting else {
+                    throw VPNTunnelCoordinatorError.unsafeBootstrapState
+                }
+            case .hold: sawHold = true
+            case .ready, .commandCompleted: break
             }
         }
         throw VPNTunnelCoordinatorError.managementRejected
+    }
+
+    /// Releases the initial management hold exactly once and returns only
+    /// internal evidence. The caller must still install owned routes and DNS
+    /// before any externally visible connected state can be published.
+    private func bootstrap(client: OpenVPNManagementClient, generation: UInt64,
+                           baseline: VPNKernelInterfaceSnapshot, deadline: UInt64) throws
+        -> VPNTunnelBootstrapProof {
+        try client.send(.releaseHold, timeoutMilliseconds: Self.remaining(deadline))
+        var releaseAccepted = false
+        var connected: OpenVPNConnectedEvidence?
+        for _ in 0..<64 {
+            switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
+            case .commandSucceeded:
+                guard !releaseAccepted else { throw VPNTunnelCoordinatorError.managementRejected }
+                releaseAccepted = true
+            case .state(let evidence):
+                switch evidence.state {
+                case .connected:
+                    guard connected == nil, let value = evidence.connected else {
+                        throw VPNTunnelCoordinatorError.unsafeBootstrapState
+                    }
+                    connected = value
+                case .reconnecting, .exiting:
+                    throw VPNTunnelCoordinatorError.unsafeBootstrapState
+                default: break
+                }
+            case .credentialRequired(let kind), .credentialRejected(let kind):
+                throw CoordinatorCredentialBlock(kind: kind)
+            case .hold:
+                throw VPNTunnelCoordinatorError.unsafeBootstrapState
+            case .fatal, .commandFailed, .commandCompleted:
+                throw VPNTunnelCoordinatorError.managementRejected
+            case .ready: break
+            }
+            if releaseAccepted, let management = connected {
+                let tunnel = try resolveTunnel(baseline: baseline, management: management,
+                                               deadline: deadline)
+                return VPNTunnelBootstrapProof(generation: generation,
+                                               management: management, tunnel: tunnel)
+            }
+        }
+        throw VPNTunnelCoordinatorError.managementRejected
+    }
+
+    private func resolveTunnel(baseline: VPNKernelInterfaceSnapshot,
+                               management: OpenVPNConnectedEvidence,
+                               deadline: UInt64) throws -> VPNTunnelInterfaceEvidence {
+        while true {
+            let after = try captureInterfaces()
+            do {
+                return try VPNTunnelInterfaceResolver.resolve(
+                    baseline: baseline, after: after, management: management)
+            } catch VPNTunnelInterfaceResolutionError.noCandidate {
+                guard Self.now() < deadline else { throw VPNTunnelInterfaceResolutionError.noCandidate }
+                usleep(5_000)
+            }
+        }
     }
 
     private static func now() -> UInt64 { clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) }
