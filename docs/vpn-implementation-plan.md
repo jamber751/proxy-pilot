@@ -3496,3 +3496,15 @@ Certificate-only профиль восстанавливается без лиш
 Это закрывает только launch/wake edge. Смена сети, bounded backoff при server
 outage, controlled update handoff и native sleep/wake acceptance остаются в
 release checklist.
+
+### Продолжение 1.5bv — pinned VPN settings layout (30 сентября)
+
+Убран вложенный общий scroll настроек. Файл и вход теперь показаны двумя
+компактными строками; редактирование входа открывается отдельным простым шагом в
+том же popover. Основное действие и удаление закреплены внизу. Прокрутка
+остаётся только у bounded `LazyVStack` ресурсов, поэтому длинный список не уносит
+название файла, способ входа, `+` и кнопки за пределы окна.
+
+Выбор password/2FA хранится как черновик до «Сохранить»; возврат отменяет
+несохранённые login/mode. Добавлен source regression, запрещающий общий
+`ScrollView` в settings container и требующий bounded lazy resource list.

@@ -33,6 +33,8 @@ class VPNUIContractTests(unittest.TestCase):
 
     def test_long_resource_list_is_bounded_and_lazy(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text()
+        settings = panel.split('private var settings: some View', 1)[1].split('private var profileCard:', 1)[0]
+        self.assertNotIn('ScrollView', settings)
         self.assertIn('LazyVStack(spacing: 6)', panel)
         self.assertIn('.frame(maxHeight: 144)', panel)
         self.assertIn('showsIndicators: panel.configuration.configuration.resources.count > 3', panel)

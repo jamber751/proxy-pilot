@@ -10,6 +10,8 @@ final class VPNPanelModel: ObservableObject {
     @Published private(set) var liveChecked = false
     @Published var settings = false
     @Published var editingResource = false
+    @Published var editingAuthentication = false
+    @Published var authenticationChoice: VPNAuthenticationMode?
     @Published var login = ""
     @Published var resourceName = ""
     @Published var resourceAddress = ""
@@ -43,6 +45,7 @@ final class VPNPanelModel: ObservableObject {
             self?.objectWillChange.send()
         }
         login = configuration.configuration.authentication?.login ?? ""
+        authenticationChoice = configuration.configuration.authentication?.mode
     }
 
     var ready: Bool { configuration.connectionAvailability == .ready }
@@ -179,10 +182,31 @@ final class VPNPanelModel: ObservableObject {
     }
 
     func selectAuthentication(_ mode: VPNAuthenticationMode) {
+        authenticationChoice = mode
+        message = ""
+    }
+
+    func beginAuthentication() {
+        login = configuration.configuration.authentication?.login ?? login
+        authenticationChoice = configuration.configuration.authentication?.mode
+        editingAuthentication = true; message = ""
+    }
+
+    func cancelAuthentication() {
+        login = configuration.configuration.authentication?.login ?? ""
+        authenticationChoice = configuration.configuration.authentication?.mode
+        editingAuthentication = false; message = ""
+    }
+
+    func saveAuthentication() {
+        guard let mode = authenticationChoice else {
+            message = "Выберите пароль или код / 2FA."
+            return
+        }
         do {
             try configuration.setAuthentication(mode: mode,
                                                 login: mode == .certificate ? nil : login)
-            message = ""
+            editingAuthentication = false; message = ""
         } catch { message = error.localizedDescription }
     }
 
@@ -227,7 +251,7 @@ final class VPNPanelModel: ObservableObject {
     func finishSettings() {
         do {
             if configuration.profile?.requiresCredentials == true {
-                guard let mode = configuration.configuration.authentication?.mode else {
+                guard let mode = authenticationChoice ?? configuration.configuration.authentication?.mode else {
                     message = "Выберите пароль или код / 2FA."
                     return
                 }
@@ -283,8 +307,10 @@ final class VPNPanelModel: ObservableObject {
         do {
             try configuration.importProfile(files: urls)
             login = ""
+            authenticationChoice = nil
             if configuration.profile?.requiresCredentials == false {
                 try configuration.setAuthentication(mode: .certificate)
+                authenticationChoice = .certificate
             }
             settings = true; message = ""
         } catch { message = error.localizedDescription }
@@ -327,6 +353,7 @@ struct VPNPanelView: View {
         VStack(spacing: 0) {
             header
             if panel.editingResource { resourceEditor }
+            else if panel.editingAuthentication { authenticationEditor }
             else if panel.settings { settings }
             else if panel.configured { home }
             else { importScreen }
@@ -340,13 +367,14 @@ struct VPNPanelView: View {
         HStack(spacing: 7) {
             Button {
                 if panel.editingResource { panel.cancelResource() }
+                else if panel.editingAuthentication { panel.cancelAuthentication() }
                 else if panel.settings { panel.settings = false }
                 else { close() }
             } label: {
                 Image(systemName: "chevron.left").frame(width: 36, height: 36).contentShape(Rectangle())
             }.buttonStyle(PilotButtonStyle()).accessibilityLabel("Назад").accessibilityIdentifier("vpnBack")
                 .disabled(panel.working)
-            Text(panel.editingResource ? "Ресурс" : panel.settings ? "Настройки VPN" : "VPN")
+            Text(panel.editingResource ? "Ресурс" : panel.editingAuthentication ? "Вход" : panel.settings ? "Настройки VPN" : "VPN")
                 .font(.system(size: 14, weight: .semibold))
             Spacer()
             if panel.configured && !panel.settings && !panel.editingResource {
@@ -452,29 +480,31 @@ struct VPNPanelView: View {
 
     private var settings: some View {
         VStack(spacing: 0) {
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 14) {
-                    profileCard
-                    authenticationCard
-                    resourcesCard
-                    Button(action: panel.requestVPNRemoval) {
-                        Text("Удалить VPN").font(.system(size: 11, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
-                    }.buttonStyle(PilotButtonStyle(cornerRadius: 8)).foregroundColor(.red)
-                        .accessibilityIdentifier("vpnRemove")
-                    if !panel.message.isEmpty {
-                        Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }.padding(.top, 14).padding(.bottom, 12)
-            }.disabled(panel.connected || panel.working)
+            VStack(alignment: .leading, spacing: 10) {
+                profileCard
+                authenticationSummary
+                resourcesCard
+                if !panel.message.isEmpty {
+                    Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+            }.padding(.top, 12).padding(.bottom, 8).disabled(panel.connected || panel.working)
             Divider().opacity(0.5)
-            Button(action: panel.finishSettings) {
-                Text(panel.ready ? "Готово" : "Сохранить и продолжить")
-                    .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 38)
-                    .background(panel.ready ? accent : ink.opacity(0.06))
-                    .foregroundColor(panel.ready ? .white : ink).cornerRadius(9).contentShape(Rectangle())
-            }.buttonStyle(PilotButtonStyle(cornerRadius: 9)).padding(.vertical, 10)
+            HStack(spacing: 8) {
+                Button(action: panel.requestVPNRemoval) {
+                    Text("Удалить").font(.system(size: 11, weight: .medium))
+                        .frame(minWidth: 64, minHeight: 38).contentShape(Rectangle())
+                }.buttonStyle(PilotButtonStyle(cornerRadius: 9)).foregroundColor(.red)
+                    .accessibilityIdentifier("vpnRemove")
+                    .disabled(panel.connected || panel.working)
+                Button(action: panel.finishSettings) {
+                    Text(panel.ready ? "Готово" : "Продолжить")
+                        .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 38)
+                        .background(panel.ready ? accent : ink.opacity(0.06))
+                        .foregroundColor(panel.ready ? .white : ink).cornerRadius(9).contentShape(Rectangle())
+                }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+            }.padding(.vertical, 10)
         }
         .alert(isPresented: $panel.confirmVPNRemoval) {
             Alert(title: Text("Удалить VPN?"),
@@ -485,9 +515,7 @@ struct VPNPanelView: View {
     }
 
     private var profileCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("КОНФИГУРАЦИЯ").font(.system(size: 9, weight: .semibold)).tracking(0.8).foregroundColor(.secondary)
-            Button(action: panel.chooseProfile) {
+        Button(action: panel.chooseProfile) {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.badge.gearshape").foregroundColor(accent).frame(width: 24)
                     VStack(alignment: .leading, spacing: 3) {
@@ -495,15 +523,37 @@ struct VPNPanelView: View {
                         Text("Нажмите, чтобы заменить файл").font(.system(size: 9)).foregroundColor(.secondary)
                     }
                     Spacer(); Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
-                }.padding(11).background(ink.opacity(0.035)).cornerRadius(10).contentShape(Rectangle())
-            }.buttonStyle(PilotButtonStyle(cornerRadius: 10))
-        }
+                }.padding(.horizontal, 11).frame(maxWidth: .infinity, minHeight: 48)
+                    .background(ink.opacity(0.035)).cornerRadius(10).contentShape(Rectangle())
+        }.buttonStyle(PilotButtonStyle(cornerRadius: 10))
     }
 
-    private var authenticationCard: some View {
+    private var authenticationSummary: some View {
+        Button(action: panel.beginAuthentication) {
+            HStack(spacing: 10) {
+                Image(systemName: "person.badge.key").foregroundColor(accent).frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Вход").font(.system(size: 12, weight: .semibold))
+                    Text(authenticationSummaryText).font(.system(size: 9)).foregroundColor(.secondary).lineLimit(1)
+                }
+                Spacer(); Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
+            }.padding(.horizontal, 11).frame(maxWidth: .infinity, minHeight: 48)
+                .background(ink.opacity(0.035)).cornerRadius(10).contentShape(Rectangle())
+        }.buttonStyle(PilotButtonStyle(cornerRadius: 10))
+    }
+
+    private var authenticationSummaryText: String {
+        guard panel.configuration.profile?.requiresCredentials == true else { return "Сертификат из файла" }
+        guard let authentication = panel.configuration.configuration.authentication else { return "Выберите способ входа" }
+        let mode = authentication.mode == .oneTimePassword ? "Код / 2FA" : "Пароль"
+        return authentication.login.map { "\(mode) · \($0)" } ?? mode
+    }
+
+    private var authenticationEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("ВХОД").font(.system(size: 9, weight: .semibold)).tracking(0.8).foregroundColor(.secondary)
+            Text("Как вы входите?").font(.system(size: 23, weight: .semibold)).tracking(-0.5).padding(.top, 24)
             if panel.configuration.profile?.requiresCredentials == true {
+                Text("Логин").font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
                 TextField("Логин", text: $panel.login).textFieldStyle(RoundedBorderTextFieldStyle())
                     .font(.system(size: 12))
                 HStack(spacing: 6) {
@@ -518,11 +568,19 @@ struct VPNPanelView: View {
                     Text("Сертификат из файла").font(.system(size: 12, weight: .medium))
                 }.frame(minHeight: 32)
             }
+            Button(action: panel.saveAuthentication) {
+                Text("Сохранить").font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 40)
+                    .background(accent).foregroundColor(.white).cornerRadius(9).contentShape(Rectangle())
+            }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+                .disabled(panel.configuration.profile?.requiresCredentials == true &&
+                          (panel.login.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || panel.authenticationChoice == nil))
+            if !panel.message.isEmpty { Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary) }
+            Spacer()
         }
     }
 
     private func authButton(_ title: String, _ mode: VPNAuthenticationMode) -> some View {
-        let selected = panel.configuration.configuration.authentication?.mode == mode
+        let selected = panel.authenticationChoice == mode
         return Button { panel.selectAuthentication(mode) } label: {
             Text(title).font(.system(size: 11, weight: .medium)).frame(maxWidth: .infinity, minHeight: 34)
                 .background(selected ? accent.opacity(0.15) : ink.opacity(0.04)).cornerRadius(8)
