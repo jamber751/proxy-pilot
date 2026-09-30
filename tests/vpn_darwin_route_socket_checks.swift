@@ -32,16 +32,75 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
         exit(77)
     }
 
+    static func tunnelIdentity() -> (UInt32, String) {
+        guard let first = if_nameindex() else { exit(77) }
+        defer { if_freenameindex(first) }
+        var cursor = first
+        while cursor.pointee.if_index != 0, let raw = cursor.pointee.if_name {
+            let item = cursor.pointee
+            let name = String(cString: raw), suffix = name.dropFirst(4)
+            if name.hasPrefix("utun"), !suffix.isEmpty,
+               suffix.utf8.allSatisfy({ (48...57).contains($0) }) {
+                return (item.if_index, name)
+            }
+            cursor = cursor.advanced(by: 1)
+        }
+        exit(77)
+    }
+
+    static func tunnelEvidence() throws -> VPNTunnelInterfaceEvidence {
+        let identity = tunnelIdentity()
+        let address = try OpenVPNIPAddress(parsing: "10.255.254.1", family: .ipv4)
+        let baseline = try VPNKernelInterfaceSnapshot(interfaces: [])
+        let after = try VPNKernelInterfaceSnapshot(interfaces: [
+            try VPNKernelInterfaceRecord(index: identity.0, name: identity.1, isUp: true,
+                isRunning: true, isPointToPoint: true, addresses: [address])
+        ])
+        let management = OpenVPNConnectedEvidence(tunnelLocalIPv4: address,
+            tunnelLocalIPv6: nil,
+            remoteAddress: try OpenVPNIPAddress(parsing: "198.51.100.44", family: .ipv4),
+            remotePort: 443)
+        return try VPNTunnelInterfaceResolver.resolve(baseline: baseline, after: after,
+                                                       management: management)
+    }
+
+    static func interfaceName(_ index: UInt32) -> String {
+        var name = [CChar](repeating: 0, count: Int(IFNAMSIZ))
+        guard if_indextoname(index, &name) != nil else { exit(77) }
+        return String(cString: name)
+    }
+
+    static func observedIdentity(for route: VPNPlannedRoute, interfaceIndex: UInt32,
+                                 flags: UInt32) throws -> VPNOwnedRouteIdentity {
+        let matching: VPNRouteKernelEvidence
+        if route.destination.family == .ipv4 {
+            matching = try VPNRouteKernelEvidence(gateway: Optional<in_addr>.none,
+                interfaceIndex: route.interfaceIndex!, flags: 0x801)
+        } else {
+            matching = try VPNRouteKernelEvidence(gateway: Optional<in6_addr>.none,
+                interfaceIndex: route.interfaceIndex!, flags: 0x801)
+        }
+        let owned = try VPNOwnedRouteIdentity(planned: route, evidence: matching)
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(owned))
+            as! [String: Any]
+        object["interfaceIndex"] = interfaceIndex
+        object["interfaceName"] = interfaceName(interfaceIndex)
+        object["flags"] = flags
+        return try JSONDecoder().decode(VPNOwnedRouteIdentity.self,
+            from: JSONSerialization.data(withJSONObject: object))
+    }
+
     static func plan() throws -> VPNRoutePlan {
         try VPNRoutePlan(generation: 31, revision: 7, resources: [
             VPNResource(address: "10.44.0.0/16"), VPNResource(address: "2001:db8::99"),
             VPNResource(address: "2001:db8:44::/48")
         ], peer: VPNRoutePeerEvidence(peer: ipv4("198.51.100.44"),
-             gateway: ipv4("192.0.2.1"), interfaceIndex: interfaceIndex()))
+             gateway: ipv4("192.0.2.1"), interfaceIndex: interfaceIndex()),
+           tunnel: try tunnelEvidence())
     }
 
     static func identities() throws -> [VPNOwnedRouteIdentity] {
-        let value = try plan(), index = interfaceIndex()
+        let value = try plan(), index = interfaceIndex(), tunnelIndex = tunnelIdentity().0
         return try value.routes.map { route in
             if route.role == .peerBypass {
                 return try VPNOwnedRouteIdentity(planned: route,
@@ -51,11 +110,11 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
             if route.destination.family == .ipv4 {
                 return try VPNOwnedRouteIdentity(planned: route,
                     evidence: VPNRouteKernelEvidence(gateway: Optional<in_addr>.none,
-                                                     interfaceIndex: index, flags: 0x801))
+                                                     interfaceIndex: tunnelIndex, flags: 0x801))
             }
             return try VPNOwnedRouteIdentity(planned: route,
                 evidence: VPNRouteKernelEvidence(gateway: Optional<in6_addr>.none,
-                                                 interfaceIndex: index,
+                                                 interfaceIndex: tunnelIndex,
                                                  flags: route.destination.prefixLength == 128 ? 0x805 : 0x801))
         }
     }
@@ -152,9 +211,7 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
         try require(same.sent.count == 1, "idempotent no add")
 
         let planRoute = try plan().routes[1]
-        let foreignEvidence = try VPNRouteKernelEvidence(gateway: Optional<in_addr>.none,
-            interfaceIndex: interfaceIndex(), flags: 0x901)
-        let foreign = try VPNOwnedRouteIdentity(planned: planRoute, evidence: foreignEvidence)
+        let foreign = try observedIdentity(for: planRoute, interfaceIndex: interfaceIndex(), flags: 0x901)
         let conflict = FakeRouteTransport()
         conflict.replies = [.success(try VPNDarwinRouteCodec.encodeReply(type: UInt8(RTM_GET),
                              sequence: 1, pid: pid, error: 0, identity: foreign))]
@@ -186,9 +243,7 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
         catch VPNDarwinRouteError.missingOrForeign {}
 
         let planned = try plan().routes.first { $0.destination == identity.destination }!
-        let foreign = try VPNOwnedRouteIdentity(planned: planned,
-            evidence: VPNRouteKernelEvidence(gateway: Optional<in6_addr>.none,
-                                             interfaceIndex: interfaceIndex(), flags: 0x905))
+        let foreign = try observedIdentity(for: planned, interfaceIndex: interfaceIndex(), flags: 0x905)
         let conflict = FakeRouteTransport()
         conflict.replies = [.success(try VPNDarwinRouteCodec.encodeReply(type: UInt8(RTM_GET),
                              sequence: 1, pid: pid, error: 0, identity: foreign))]

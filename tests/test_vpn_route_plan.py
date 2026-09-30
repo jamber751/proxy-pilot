@@ -20,6 +20,10 @@ class VPNRoutePlanTests(unittest.TestCase):
         cls.binary = Path(cls.temp.name) / 'checks'
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
         sources = [ROOT / 'app/VPNConfiguration.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNStateEvidence.swift',
+                   ROOT / 'app/vpn-helper/VPNKernelInterfaceSnapshot.swift',
+                   ROOT / 'app/vpn-helper/VPNTunnelInterfaceResolver.swift',
                    ROOT / 'app/vpn-helper/VPNRoutePlan.swift',
                    ROOT / 'app/vpn-helper/VPNRouteJournal.swift',
                    ROOT / 'tests/vpn_route_plan_checks.swift']
@@ -44,6 +48,7 @@ class VPNRoutePlanTests(unittest.TestCase):
     def test_overlap_is_rejected(self): self.run_case('overlap')
     def test_resource_cannot_capture_vpn_peer(self): self.run_case('peer')
     def test_default_route_is_rejected(self): self.run_case('default')
+    def test_resource_routes_require_exact_proven_tunnel_binding(self): self.run_case('binding')
     def test_durable_checkpoints_and_retirement(self): self.run_case('journal')
     def test_generation_revision_binding_is_fail_closed(self): self.run_case('stale')
     def test_corrupt_record_is_rejected(self): self.run_case('corrupt')

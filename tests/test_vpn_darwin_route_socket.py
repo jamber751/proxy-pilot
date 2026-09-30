@@ -18,6 +18,10 @@ class VPNDarwinRouteSocketTests(unittest.TestCase):
             binary = Path(build) / 'checks'
             arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
             sources = [ROOT / 'app/VPNConfiguration.swift',
+                       ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
+                       ROOT / 'app/vpn-helper/OpenVPNStateEvidence.swift',
+                       ROOT / 'app/vpn-helper/VPNKernelInterfaceSnapshot.swift',
+                       ROOT / 'app/vpn-helper/VPNTunnelInterfaceResolver.swift',
                        ROOT / 'app/vpn-helper/VPNRoutePlan.swift',
                        ROOT / 'app/vpn-helper/VPNRouteJournal.swift',
                        ROOT / 'app/vpn-helper/VPNDarwinRouteSocket.swift',

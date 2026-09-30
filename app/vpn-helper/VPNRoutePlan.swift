@@ -3,7 +3,7 @@ import Foundation
 
 enum VPNRoutePlanError: Error, Equatable {
     case invalidGeneration, invalidRevision, unsupportedResource, duplicate, overlap
-    case peerWouldBeCaptured, invalidPeerEvidence, invalidKernelEvidence
+    case peerWouldBeCaptured, invalidPeerEvidence, invalidKernelEvidence, invalidTunnelEvidence
 }
 
 enum VPNRouteAddressFamily: UInt8, Codable, Comparable {
@@ -193,6 +193,29 @@ struct VPNRoutePeerEvidence: Codable, Equatable {
 
 enum VPNPlannedRouteRole: UInt8, Codable { case peerBypass = 1, resource = 2 }
 
+/// An interface identity may enter a route plan only through the resolver's
+/// typed evidence. The serialized copy is retained so every resource route is
+/// bound to that exact index/name pair during recovery and validation.
+struct VPNTunnelRouteBinding: Codable, Equatable {
+    let interfaceIndex: UInt32
+    let interfaceName: String
+
+    init(evidence: VPNTunnelInterfaceEvidence) throws {
+        interfaceIndex = evidence.index
+        interfaceName = evidence.name
+        try validate()
+    }
+
+    func validate() throws {
+        let suffix = interfaceName.dropFirst(4)
+        guard interfaceIndex > 0, interfaceName.hasPrefix("utun"), !suffix.isEmpty,
+              suffix.utf8.allSatisfy({ (48...57).contains($0) }),
+              interfaceName.utf8.count < Int(IFNAMSIZ) else {
+            throw VPNRoutePlanError.invalidTunnelEvidence
+        }
+    }
+}
+
 struct VPNPlannedRoute: Codable, Equatable, Comparable {
     let role: VPNPlannedRouteRole
     let destination: VPNRoutePrefix
@@ -218,28 +241,36 @@ struct VPNPlannedRoute: Codable, Equatable, Comparable {
                   interfaceName?.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) == false else {
                 throw VPNRoutePlanError.invalidPeerEvidence
             }
-        } else if physicalGatewayBytes != nil || interfaceIndex != nil || interfaceName != nil {
-            throw VPNRoutePlanError.invalidKernelEvidence
+        } else {
+            let suffix = interfaceName?.dropFirst(4) ?? Substring()
+            guard physicalGatewayBytes == nil, (interfaceIndex ?? 0) > 0,
+                  interfaceName?.hasPrefix("utun") == true, !suffix.isEmpty,
+                  suffix.utf8.allSatisfy({ (48...57).contains($0) }),
+                  (interfaceName?.utf8.count ?? Int(IFNAMSIZ)) < Int(IFNAMSIZ) else {
+                throw VPNRoutePlanError.invalidTunnelEvidence
+            }
         }
     }
 }
 
 /// Pure plan only. No route is installed and `routes` is not applied evidence.
 struct VPNRoutePlan: Codable, Equatable {
-    static let schema = 1
+    static let schema = 2
     let schemaVersion: Int
     let generation: UInt64
     let revision: UInt64
+    let tunnelInterface: VPNTunnelRouteBinding
     let routes: [VPNPlannedRoute]
 
     init(generation: UInt64, revision: UInt64, resources: [VPNResource],
-         peer: VPNRoutePeerEvidence) throws {
+         peer: VPNRoutePeerEvidence, tunnel: VPNTunnelInterfaceEvidence) throws {
         guard generation > 0 else { throw VPNRoutePlanError.invalidGeneration }
         guard revision > 0 else { throw VPNRoutePlanError.invalidRevision }
         guard !resources.isEmpty, resources.count <= 1000 else {
             throw VPNRoutePlanError.unsupportedResource
         }
         try peer.validate()
+        let tunnelBinding = try VPNTunnelRouteBinding(evidence: tunnel)
         var prefixes = try resources.map(VPNRoutePrefix.init(resource:))
         prefixes.sort()
         for index in prefixes.indices {
@@ -256,9 +287,11 @@ struct VPNRoutePlan: Codable, Equatable {
             interfaceName: peer.interfaceName)
         routes = [bypass] + prefixes.map {
             VPNPlannedRoute(role: .resource, destination: $0, physicalGatewayBytes: nil,
-                            interfaceIndex: nil, interfaceName: nil)
+                            interfaceIndex: tunnelBinding.interfaceIndex,
+                            interfaceName: tunnelBinding.interfaceName)
         }
         schemaVersion = Self.schema; self.generation = generation; self.revision = revision
+        tunnelInterface = tunnelBinding
         try validate()
     }
 
@@ -269,9 +302,14 @@ struct VPNRoutePlan: Codable, Equatable {
               routes.dropFirst().allSatisfy({ $0.role == .resource }) else {
             throw VPNRoutePlanError.unsupportedResource
         }
+        try tunnelInterface.validate()
         for route in routes { try route.validate() }
         let resources = Array(routes.dropFirst())
         for index in resources.indices {
+            guard resources[index].interfaceIndex == tunnelInterface.interfaceIndex,
+                  resources[index].interfaceName == tunnelInterface.interfaceName else {
+                throw VPNRoutePlanError.invalidTunnelEvidence
+            }
             if index > 0 {
                 guard resources[index].destination != resources[index - 1].destination,
                       !resources[index].destination.overlaps(resources[index - 1].destination) else {

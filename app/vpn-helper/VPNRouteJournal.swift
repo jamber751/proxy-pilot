@@ -70,6 +70,12 @@ struct VPNOwnedRouteIdentity: Codable, Equatable, Comparable {
                   planned.interfaceName == interfaceName else {
                 throw VPNRoutePlanError.invalidKernelEvidence
             }
+        } else {
+            guard gatewayBytes == nil,
+                  planned.interfaceIndex == interfaceIndex,
+                  planned.interfaceName == interfaceName else {
+                throw VPNRoutePlanError.invalidKernelEvidence
+            }
         }
         try validate()
     }
@@ -171,6 +177,12 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
         }) else { throw VPNRouteJournalError.invalidState }
         if entry.role == .peerBypass {
             guard planned.physicalGatewayBytes == entry.gatewayBytes,
+                  planned.interfaceIndex == entry.interfaceIndex,
+                  planned.interfaceName == entry.interfaceName else {
+                throw VPNRouteJournalError.invalidState
+            }
+        } else {
+            guard entry.gatewayBytes == nil,
                   planned.interfaceIndex == entry.interfaceIndex,
                   planned.interfaceName == entry.interfaceName else {
                 throw VPNRouteJournalError.invalidState

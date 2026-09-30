@@ -26,6 +26,38 @@ import Foundation
         exit(77)
     }
 
+    static func tunnelIdentity() -> (UInt32, String) {
+        guard let first = if_nameindex() else { exit(77) }
+        defer { if_freenameindex(first) }
+        var cursor = first
+        while cursor.pointee.if_index != 0, let raw = cursor.pointee.if_name {
+            let item = cursor.pointee
+            let name = String(cString: raw)
+            if name.hasPrefix("utun"), !name.dropFirst(4).isEmpty,
+               name.dropFirst(4).utf8.allSatisfy({ (48...57).contains($0) }) {
+                return (item.if_index, name)
+            }
+            cursor = cursor.advanced(by: 1)
+        }
+        exit(77)
+    }
+
+    static func tunnelEvidence() throws -> VPNTunnelInterfaceEvidence {
+        let identity = tunnelIdentity()
+        let address = try OpenVPNIPAddress(parsing: "10.255.254.1", family: .ipv4)
+        let baseline = try VPNKernelInterfaceSnapshot(interfaces: [])
+        let after = try VPNKernelInterfaceSnapshot(interfaces: [
+            try VPNKernelInterfaceRecord(index: identity.0, name: identity.1, isUp: true,
+                isRunning: true, isPointToPoint: true, addresses: [address])
+        ])
+        let management = OpenVPNConnectedEvidence(tunnelLocalIPv4: address,
+            tunnelLocalIPv6: nil,
+            remoteAddress: try OpenVPNIPAddress(parsing: "198.51.100.9", family: .ipv4),
+            remotePort: 443)
+        return try VPNTunnelInterfaceResolver.resolve(baseline: baseline, after: after,
+                                                       management: management)
+    }
+
     static func evidence() throws -> VPNRoutePeerEvidence {
         try VPNRoutePeerEvidence(peer: ipv4("198.51.100.9"), gateway: ipv4("192.0.2.1"),
                                  interfaceIndex: interfaceIndex())
@@ -36,7 +68,7 @@ import Foundation
             VPNResource(address: "2001:db8:2::/48"),
             VPNResource(address: "172.16.2.9"),
             VPNResource(address: "10.20.0.0/16"),
-        ], peer: evidence())
+        ], peer: evidence(), tunnel: try tunnelEvidence())
     }
 
     static func planning() throws {
@@ -48,11 +80,45 @@ import Foundation
         let gateway = try VPNRoutePrefix.format(value.routes[0].physicalGatewayBytes!, family: .ipv4)
         try require(gateway == "192.0.2.1", "peer gateway")
         try require(value.routes[0].interfaceIndex == interfaceIndex(), "peer interface")
+        let tunnel = tunnelIdentity()
+        try require(value.routes.dropFirst().allSatisfy {
+            $0.interfaceIndex == tunnel.0 && $0.interfaceName == tunnel.1
+        }, "resource tunnel binding")
         try value.validate()
         print("planning passed")
     }
 
     static func rejected(_ mode: String) throws {
+        if mode == "binding" {
+            let valid = try plan()
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid))
+                as! [String: Any]
+            var routes = object["routes"] as! [[String: Any]]
+            routes[1]["interfaceName"] = "utun999"
+            object["routes"] = routes
+            let altered = try JSONDecoder().decode(VPNRoutePlan.self,
+                from: JSONSerialization.data(withJSONObject: object))
+            do {
+                try altered.validate()
+                throw NSError(domain: "mismatched binding accepted", code: 1)
+            } catch VPNRoutePlanError.invalidTunnelEvidence {}
+            var arbitrary = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid))
+                as! [String: Any]
+            var arbitraryRoutes = arbitrary["routes"] as! [[String: Any]]
+            arbitraryRoutes[1]["interfaceName"] = "en0"
+            arbitrary["routes"] = arbitraryRoutes
+            var binding = arbitrary["tunnelInterface"] as! [String: Any]
+            binding["interfaceName"] = "en0"
+            arbitrary["tunnelInterface"] = binding
+            let forged = try JSONDecoder().decode(VPNRoutePlan.self,
+                from: JSONSerialization.data(withJSONObject: arbitrary))
+            do {
+                try forged.validate()
+                throw NSError(domain: "arbitrary interface accepted", code: 1)
+            } catch VPNRoutePlanError.invalidTunnelEvidence {}
+            print("binding rejected")
+            return
+        }
         let resources: [VPNResource]
         switch mode {
         case "domain": resources = [try VPNResource(address: "internal.example")]
@@ -67,7 +133,8 @@ import Foundation
         default: exit(64)
         }
         do {
-            _ = try VPNRoutePlan(generation: 7, revision: 11, resources: resources, peer: evidence())
+            _ = try VPNRoutePlan(generation: 7, revision: 11, resources: resources,
+                                 peer: evidence(), tunnel: try tunnelEvidence())
             throw NSError(domain: "accepted", code: 1)
         } catch is VPNRoutePlanError { print("\(mode) rejected") }
     }
@@ -75,10 +142,11 @@ import Foundation
     static func identities(_ plan: VPNRoutePlan) throws -> [VPNOwnedRouteIdentity] {
         let physical = try VPNRouteKernelEvidence(gateway: ipv4("192.0.2.1"),
             interfaceIndex: interfaceIndex(), flags: 0x807)
+        let tunnelIndex = tunnelIdentity().0
         let tunnel = try VPNRouteKernelEvidence(gateway: Optional<in_addr>.none,
-            interfaceIndex: interfaceIndex(), flags: 0x801)
+            interfaceIndex: tunnelIndex, flags: 0x801)
         let tunnel6 = try VPNRouteKernelEvidence(gateway: Optional<in6_addr>.none,
-            interfaceIndex: interfaceIndex(), flags: 0x801)
+            interfaceIndex: tunnelIndex, flags: 0x801)
         return try plan.routes.map {
             let evidence = $0.role == .peerBypass ? physical
                 : ($0.destination.family == .ipv4 ? tunnel : tunnel6)
@@ -97,6 +165,21 @@ import Foundation
         let routePlan = try plan(), entries = try identities(routePlan)
         var snapshot = try journal.create(routePlan)
         try require(snapshot.phase == .planned && snapshot.applied.isEmpty, "planned")
+        var forgedObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(entries[1]))
+            as! [String: Any]
+        forgedObject["interfaceIndex"] = interfaceIndex()
+        var physicalName = [CChar](repeating: 0, count: Int(IFNAMSIZ))
+        guard if_indextoname(interfaceIndex(), &physicalName) != nil else { exit(77) }
+        forgedObject["interfaceName"] = String(cString: physicalName)
+        let forgedEntry = try JSONDecoder().decode(VPNOwnedRouteIdentity.self,
+            from: JSONSerialization.data(withJSONObject: forgedObject))
+        let forgedSnapshot = VPNRouteJournalSnapshot(schemaVersion: VPNRouteJournalSnapshot.schema,
+            plan: routePlan, phase: .installing, applied: [],
+            operation: VPNRouteJournalOperation(action: .install, entry: forgedEntry))
+        do {
+            try forgedSnapshot.validate()
+            throw NSError(domain: "forged journal binding accepted", code: 1)
+        } catch VPNRouteJournalError.invalidState {}
         do {
             _ = try journal.beginInstall(entries[1], generation: 7, revision: 11)
             throw NSError(domain: "out of order install", code: 1)
@@ -112,11 +195,10 @@ import Foundation
         try require(snapshot.phase == .applied && snapshot.operation == nil, "applied")
         let wrongEvidence = try VPNRouteKernelEvidence(gateway: Optional<in6_addr>.none,
             interfaceIndex: interfaceIndex(), flags: 0x901)
-        let wrongLast = try VPNOwnedRouteIdentity(planned: routePlan.routes.last!, evidence: wrongEvidence)
         do {
-            _ = try journal.beginRemove(wrongLast, generation: 7, revision: 11)
-            throw NSError(domain: "foreign identity removal", code: 1)
-        } catch VPNRouteJournalError.invalidState {}
+            _ = try VPNOwnedRouteIdentity(planned: routePlan.routes.last!, evidence: wrongEvidence)
+            throw NSError(domain: "foreign interface accepted", code: 1)
+        } catch VPNRoutePlanError.invalidKernelEvidence {}
         for entry in entries.reversed() {
             snapshot = try journal.beginRemove(entry, generation: 7, revision: 11)
             try require(snapshot.operation?.action == .remove, "remove checkpoint")
@@ -164,7 +246,7 @@ import Foundation
         guard CommandLine.arguments.count >= 2 else { exit(64) }
         let mode = CommandLine.arguments[1]
         if mode == "planning" { try planning(); return }
-        if ["domain", "duplicate", "overlap", "peer", "default"].contains(mode) {
+        if ["domain", "duplicate", "overlap", "peer", "default", "binding"].contains(mode) {
             try rejected(mode); return
         }
         guard CommandLine.arguments.count == 3 else { exit(64) }

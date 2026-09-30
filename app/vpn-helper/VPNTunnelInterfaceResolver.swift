@@ -8,6 +8,12 @@ struct VPNTunnelInterfaceEvidence: Equatable {
     let index: UInt32
     let name: String
     let addresses: [OpenVPNIPAddress]
+
+    fileprivate init(index: UInt32, name: String, addresses: [OpenVPNIPAddress]) {
+        self.index = index
+        self.name = name
+        self.addresses = addresses
+    }
 }
 
 enum VPNTunnelInterfaceResolver {
