@@ -271,6 +271,10 @@ struct VPNRoutePlan: Codable, Equatable {
         }
         try peer.validate()
         let tunnelBinding = try VPNTunnelRouteBinding(evidence: tunnel)
+        guard peer.interfaceIndex != tunnelBinding.interfaceIndex,
+              peer.interfaceName != tunnelBinding.interfaceName else {
+            throw VPNRoutePlanError.invalidPeerEvidence
+        }
         var prefixes = try resources.map(VPNRoutePrefix.init(resource:))
         prefixes.sort()
         for index in prefixes.indices {
@@ -304,6 +308,11 @@ struct VPNRoutePlan: Codable, Equatable {
         }
         try tunnelInterface.validate()
         for route in routes { try route.validate() }
+        guard let bypass = routes.first,
+              bypass.interfaceIndex != tunnelInterface.interfaceIndex,
+              bypass.interfaceName != tunnelInterface.interfaceName else {
+            throw VPNRoutePlanError.invalidPeerEvidence
+        }
         let resources = Array(routes.dropFirst())
         for index in resources.indices {
             guard resources[index].interfaceIndex == tunnelInterface.interfaceIndex,

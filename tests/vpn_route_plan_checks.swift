@@ -119,6 +119,19 @@ import Foundation
             print("binding rejected")
             return
         }
+        if mode == "peer-tunnel" {
+            let tunnel = try tunnelEvidence()
+            let peer = try VPNRoutePeerEvidence(peer: ipv4("198.51.100.9"), gateway: nil,
+                                                interfaceIndex: tunnel.index)
+            do {
+                _ = try VPNRoutePlan(generation: 7, revision: 11,
+                    resources: [VPNResource(address: "10.20.0.0/16")],
+                    peer: peer, tunnel: tunnel)
+                throw NSError(domain: "peer route through new tunnel accepted", code: 1)
+            } catch VPNRoutePlanError.invalidPeerEvidence {}
+            print("peer-tunnel rejected")
+            return
+        }
         let resources: [VPNResource]
         switch mode {
         case "domain": resources = [try VPNResource(address: "internal.example")]
@@ -262,7 +275,8 @@ import Foundation
         guard CommandLine.arguments.count >= 2 else { exit(64) }
         let mode = CommandLine.arguments[1]
         if mode == "planning" { try planning(); return }
-        if ["domain", "duplicate", "overlap", "peer", "default", "binding"].contains(mode) {
+        if ["domain", "duplicate", "overlap", "peer", "peer-tunnel", "default",
+            "binding"].contains(mode) {
             try rejected(mode); return
         }
         guard CommandLine.arguments.count == 3 else { exit(64) }

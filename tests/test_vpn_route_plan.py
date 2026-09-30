@@ -47,6 +47,7 @@ class VPNRoutePlanTests(unittest.TestCase):
     def test_duplicate_is_rejected(self): self.run_case('duplicate')
     def test_overlap_is_rejected(self): self.run_case('overlap')
     def test_resource_cannot_capture_vpn_peer(self): self.run_case('peer')
+    def test_peer_bypass_cannot_use_new_vpn_tunnel(self): self.run_case('peer-tunnel')
     def test_default_route_is_rejected(self): self.run_case('default')
     def test_resource_routes_require_exact_proven_tunnel_binding(self): self.run_case('binding')
     def test_durable_checkpoints_and_retirement(self): self.run_case('journal')
