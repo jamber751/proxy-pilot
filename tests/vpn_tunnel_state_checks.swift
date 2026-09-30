@@ -111,6 +111,13 @@ import Foundation
         do { _ = try store.issueChallenge(binding: binding, kind: .vpnPassword)
             throw VPNTunnelStateStoreError.invalidState }
         catch VPNTunnelStateStoreError.stale { }
+        let connected = try store.markConnected(binding)
+        try require(connected.phase == .connected && connected.desiredEnabled
+                    && connected.active == binding.application
+                    && connected.pending == nil && connected.attempt == binding,
+                    "verified route attempt was not published as connected")
+        do { _ = try store.beginConnect(); throw VPNTunnelStateStoreError.invalidState }
+        catch VPNTunnelStateStoreError.invalidState { }
         _ = try store.cancelAttempt(binding)
         do { _ = try store.completeCredentialPrompt(binding: binding)
             throw VPNTunnelStateStoreError.invalidState }
@@ -159,6 +166,20 @@ import Foundation
                 throw VPNTunnelStateStoreError.invalidState }
             catch VPNTunnelStateStoreError.stale { }
         }
+
+        let (connectedStore, connectedFD) = try makeStore(path, "connected")
+        defer { close(connectedFD) }
+        let certificate = VPNValidatedApplication(spec: try spec(2, byte: 0x77),
+            requiresVPNCredentials: false, requiresPrivateKeyPassword: false)
+        _ = try connectedStore.stage(certificate)
+        let connectedBinding = try connectedStore.beginConnect()
+        _ = try connectedStore.activateForRouting(connectedBinding)
+        _ = try connectedStore.markConnected(connectedBinding)
+        let recoveredConnected = try connectedStore.recoverInterruptedAttemptAfterRestart()
+        try require(recoveredConnected.phase == .failed
+                    && recoveredConnected.generation == connectedBinding.generation + 1
+                    && recoveredConnected.attempt == nil,
+                    "connected state survived daemon restart without fresh route proof")
         print("recovery checks passed")
     }
 

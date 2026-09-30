@@ -95,7 +95,8 @@ enum VPNHelperService {
                 }
                 defer { if let endpoint = endpoint { close(endpoint) } }
                 let tunnelFixture = args.count == 5
-                    && ["tunnel-test", "tunnel-once", "managed-tunnel-test"].contains(args[3])
+                    && ["tunnel-test", "tunnel-once", "managed-tunnel-test",
+                        "managed-connected-test"].contains(args[3])
                     ? args[4] : nil
                 func appendTrace(_ value: String) throws {
                     guard let path = tunnelFixture else { return }
@@ -108,14 +109,22 @@ enum VPNHelperService {
                     }
                 }
                 let ownership = VPNHelperFixtureOwnership()
-                let managed = args.count == 5 && args[3] == "managed-tunnel-test"
+                let managedMode = args.count == 5 ? args[3] : ""
+                let managed = managedMode == "managed-tunnel-test"
+                    || managedMode == "managed-connected-test"
                 listener = try VPNHelperListener.bind(inTrustedDirectory: directory,
                     release: deployment.release, ownerUserID: deployment.ownerUserID,
                     endpointDirectory: endpoint,
                     startTunnel: { try appendTrace("start-held"); return true },
                     startManagedTunnel: managed ? { binding, state in
-                        try appendTrace("management-prompt")
-                        _ = try state.issueChallenge(binding: binding, kind: .vpnPassword)
+                        if managedMode == "managed-connected-test" {
+                            try appendTrace("routes-verified")
+                            _ = try state.activateForRouting(binding)
+                            _ = try state.markConnected(binding)
+                        } else {
+                            try appendTrace("management-prompt")
+                            _ = try state.issueChallenge(binding: binding, kind: .vpnPassword)
+                        }
                         ownership.owns = true
                         return true
                     } : nil,

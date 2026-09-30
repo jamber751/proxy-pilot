@@ -4,7 +4,7 @@ import Foundation
 enum VPNTunnelStateStoreError: Error { case unsafeStorage, invalidState, stale, writeFailed }
 
 enum VPNTunnelPhase: String, Codable {
-    case off, pending, connecting, needsCredential, authenticating, failed
+    case off, pending, connecting, needsCredential, authenticating, connected, failed
 }
 
 struct VPNValidatedApplication: Codable, Equatable {
@@ -63,7 +63,8 @@ struct VPNTunnelSnapshot: Codable, Equatable {
         guard schemaVersion == 2 else { throw VPNTunnelStateStoreError.invalidState }
         try active?.validate(); try pending?.validate()
         try attempt?.validate()
-        let attemptPhase = phase == .connecting || phase == .needsCredential || phase == .authenticating
+        let attemptPhase = phase == .connecting || phase == .needsCredential
+            || phase == .authenticating || phase == .connected
         guard active != nil || pending != nil || (!desiredEnabled && phase == .off),
               challenge == nil || (phase == .needsCredential && challenge?.generation == generation),
               phase != .needsCredential || challenge != nil,
@@ -76,6 +77,8 @@ struct VPNTunnelSnapshot: Codable, Equatable {
               issuedCredentialKinds.allSatisfy({ $0 == .privateKeyPassword || $0 == .vpnPassword }),
               attempt != nil || issuedCredentialKinds.isEmpty,
               challenge.map({ issuedCredentialKinds.contains($0.kind) }) ?? true,
+              phase != .connected || (desiredEnabled && pending == nil
+                && active == attempt?.application),
               phase != .off || (!desiredEnabled && attempt == nil && issuedCredentialKinds.isEmpty),
               phase != .failed || (challenge == nil && attempt == nil && issuedCredentialKinds.isEmpty)
         else { throw VPNTunnelStateStoreError.invalidState }
@@ -129,8 +132,9 @@ private struct VPNLegacyTunnelSnapshot: Codable {
 }
 
 /// Durable, root-private intent and transaction state. It never stores secrets
-/// and has no `connected` phase until a future engine/route/DNS coordinator can
-/// prove that state. Active and pending configurations are retained separately.
+/// A `connected` phase is published only for the route-only runtime after the
+/// engine and every owned IP/CIDR route have been verified. Domain/split-DNS
+/// intent is rejected before launch by the runtime capability gate.
 final class VPNTunnelStateStore {
     static let name = "tunnel-state.json"
     private static let maximumBytes = 512 * 1024
@@ -173,7 +177,9 @@ final class VPNTunnelStateStore {
         try application.validate()
         let old = try load()
         guard old.phase != .connecting, old.phase != .needsCredential,
-              old.phase != .authenticating else { throw VPNTunnelStateStoreError.invalidState }
+              old.phase != .authenticating, old.phase != .connected else {
+            throw VPNTunnelStateStoreError.invalidState
+        }
         if old.pending == application || old.active == application { return old }
         let latest = max(old.active?.spec.revision ?? 0, old.pending?.spec.revision ?? 0)
         guard application.spec.revision > latest else { throw VPNTunnelStateStoreError.stale }
@@ -207,7 +213,8 @@ final class VPNTunnelStateStore {
         let old = try load()
         guard let application = old.pending ?? old.active,
               old.phase != .connecting, old.phase != .needsCredential,
-              old.phase != .authenticating, old.generation < UInt64.max else {
+              old.phase != .authenticating, old.phase != .connected,
+              old.generation < UInt64.max else {
             throw VPNTunnelStateStoreError.invalidState
         }
         let generation = old.generation + 1
@@ -245,6 +252,24 @@ final class VPNTunnelStateStore {
             issuedCredentialKinds: old.issuedCredentialKinds)
         try write(next)
         return binding.application
+    }
+
+    /// Commits the externally visible state only after the caller has verified
+    /// the exact engine generation and installed route transaction.
+    @discardableResult
+    func markConnected(_ binding: VPNConnectAttemptBinding) throws -> VPNTunnelSnapshot {
+        try binding.validate()
+        let old = try load()
+        guard old.desiredEnabled, old.phase == .connecting,
+              old.generation == binding.generation, old.attempt == binding,
+              old.active == binding.application, old.pending == nil else {
+            throw VPNTunnelStateStoreError.stale
+        }
+        let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation,
+            desiredEnabled: true, phase: .connected, active: old.active,
+            pending: nil, challenge: nil, attempt: binding,
+            issuedCredentialKinds: old.issuedCredentialKinds)
+        try write(next); return next
     }
 
     /// Issues each credential kind at most once for this exact attempt.
@@ -348,7 +373,7 @@ final class VPNTunnelStateStore {
     func recoverInterruptedAttemptAfterRestart() throws -> VPNTunnelSnapshot {
         let old = try load()
         guard old.phase == .connecting || old.phase == .needsCredential
-                || old.phase == .authenticating else { return old }
+                || old.phase == .authenticating || old.phase == .connected else { return old }
         guard old.generation < UInt64.max else { throw VPNTunnelStateStoreError.invalidState }
         let next = VPNTunnelSnapshot(schemaVersion: 2, generation: old.generation + 1,
             desiredEnabled: old.desiredEnabled, phase: .failed, active: old.active,

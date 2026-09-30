@@ -94,6 +94,10 @@ final class VPNHelperListener {
             let resolver = try VPNPeerRouteEvidenceResolver.production()
             let routes = VPNTunnelRouteController(state: state, resolver: resolver,
                 transaction: transaction, runtimeLease: runtimeLease)
+            // A daemon lifetime can never inherit route authority from the
+            // previous process. Retire its journal and owned kernel routes
+            // before the listener publishes recovered tunnel state.
+            try routes.recoverToIdle()
             coordinator = try VPNTunnelCoordinator(
                 trustedDirectoryDescriptor: trusted, deployment: deployment,
                 state: state, routeController: routes)
@@ -457,6 +461,8 @@ final class VPNHelperListener {
                        let body = try? challenge.encoded() {
                         try answer(.needsCredential, payload: [UInt8](body),
                                    to: client, deadline: deadline)
+                    } else if fresh.phase == .connected {
+                        try answer(.ok, payload: [], to: client, deadline: deadline)
                     } else {
                         try answer(.notReady, payload: [], to: client, deadline: deadline)
                     }
@@ -531,6 +537,8 @@ final class VPNHelperListener {
                            let body = try? challenge.encoded() {
                             try answer(.needsCredential, payload: [UInt8](body),
                                        to: client, deadline: deadline)
+                        } else if fresh.phase == .connected {
+                            try answer(.ok, payload: [], to: client, deadline: deadline)
                         } else {
                             try answer(.notReady, payload: [], to: client, deadline: deadline)
                         }

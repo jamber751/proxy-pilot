@@ -16,8 +16,9 @@ struct VPNTunnelBootstrapProof: Equatable {
     let tunnel: VPNTunnelInterfaceEvidence
 }
 
-/// Internal runtime evidence only. Neither management nor bootstrap readiness
-/// claims that routes, DNS or a usable VPN connection exist.
+/// Internal runtime evidence. `bootstrapReady` is emitted only after the
+/// injected route transaction has committed; the proof value itself remains
+/// engine/interface evidence and deliberately carries no DNS authority.
 enum VPNTunnelCoordinatorReadiness: Equatable {
     case inactive
     case blocked(VPNTunnelCoordinatorBlocker)
@@ -46,7 +47,7 @@ struct VPNTunnelCredentialCallbacks {
 
 private enum VPNTunnelLaunchIntent {
     case ready(generation: UInt64, profileDigest: String,
-               activateAndInstallRoutes: (VPNTunnelBootstrapProof) throws -> Void)
+               activateAndInstallRoutes: (VPNTunnelBootstrapProof) throws -> (() throws -> Void))
     case blocked(VPNTunnelCoordinatorBlocker)
 }
 
@@ -69,7 +70,9 @@ final class VPNTunnelCoordinator {
     private var credentialChallenge: VPNCredentialChallenge?
     private var credentialKind: OpenVPNCredentialKind?
     private var pendingGeneration: UInt64?
-    private var pendingRouteActivation: ((VPNTunnelBootstrapProof) throws -> Void)?
+    private var pendingRouteActivation:
+        ((VPNTunnelBootstrapProof) throws -> (() throws -> Void))?
+    private var verifyAppliedRoutes: (() throws -> Void)?
     private var current: VPNTunnelCoordinatorReadiness = .inactive
 
     #if !VPN_TUNNEL_COORDINATOR_TESTING
@@ -133,8 +136,10 @@ final class VPNTunnelCoordinator {
                           profileDigest: binding.application.spec.profileSHA256,
                           activateAndInstallRoutes: { proof in
                               let exact = try state.activateForRouting(binding)
-                              _ = try routeController.install(
+                              let routes = try routeController.install(
                                   bootstrap: proof, activeApplication: exact)
+                              _ = try state.markConnected(binding)
+                              return { try routeController.verifyApplied(routes) }
                           })
         }
         prepareRoutesForProcessStop = { try routeController.prepareForProcessStop() }
@@ -158,7 +163,10 @@ final class VPNTunnelCoordinator {
         intent = {
             if let blocker = blocker { return .blocked(blocker) }
             return .ready(generation: generation, profileDigest: profileDigest,
-                          activateAndInstallRoutes: activateAndInstallRoutes)
+                          activateAndInstallRoutes: { proof in
+                              try activateAndInstallRoutes(proof)
+                              return {}
+                          })
         }
     }
     #endif
@@ -226,7 +234,7 @@ final class VPNTunnelCoordinator {
             let baseline = try captureInterfaces()
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
-            try activateRoutes(proof)
+            verifyAppliedRoutes = try activateRoutes(proof)
             current = .bootstrapReady(proof)
             return current
         } catch let blocker as CoordinatorCredentialBlock {
@@ -248,6 +256,7 @@ final class VPNTunnelCoordinator {
             }
         } catch let startError {
             current = .failed(generation: generation)
+            credentials?.fail()
             do { try stopLocked() }
             catch let cleanupError { throw cleanupError }
             throw startError
@@ -301,7 +310,7 @@ final class VPNTunnelCoordinator {
             let baseline = try captureInterfaces()
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
-            try activateRoutes(proof)
+            verifyAppliedRoutes = try activateRoutes(proof)
             pendingGeneration = nil; pendingRouteActivation = nil
             current = .bootstrapReady(proof)
             return current
@@ -318,16 +327,26 @@ final class VPNTunnelCoordinator {
     func observe(timeoutMilliseconds: Int = 2_000) throws -> VPNTunnelCoordinatorReadiness {
         lock.lock(); defer { lock.unlock() }
         guard let client = management, let child = process,
+              let verifyRoutes = verifyAppliedRoutes,
               case .bootstrapReady(let proof) = current else {
             throw VPNTunnelCoordinatorError.invalidState
         }
         let generation = proof.generation
+        do { try verifyRoutes() }
+        catch {
+            current = .failed(generation: generation)
+            credentials?.fail()
+            do { try stopLocked() } catch { throw error }
+            throw error
+        }
         guard try child.state() == .running else {
+            credentials?.fail()
             try stopLocked(); current = .failed(generation: generation); return current
         }
         let event: OpenVPNManagementEvent
         do { event = try client.readEvent(timeoutMilliseconds: timeoutMilliseconds) }
         catch {
+            credentials?.fail()
             try stopLocked()
             current = .failed(generation: generation)
             throw error
@@ -335,13 +354,17 @@ final class VPNTunnelCoordinator {
         switch event {
         case .state(let evidence) where evidence.state == .connected:
             guard evidence.connected == proof.management else {
+                credentials?.fail()
                 try stopLocked(); current = .failed(generation: generation); return current
             }
         case .state:
+            credentials?.fail()
             try stopLocked(); current = .failed(generation: generation)
         case .credentialRequired(let kind), .credentialRejected(let kind):
+            credentials?.fail()
             try stopLocked(); current = .blocked(.credentialRequired(kind))
         case .fatal, .commandFailed, .hold:
+            credentials?.fail()
             try stopLocked(); current = .failed(generation: generation)
         case .ready, .commandSucceeded, .commandCompleted: break
         }
@@ -373,6 +396,7 @@ final class VPNTunnelCoordinator {
         reservation?.cleanup()
         credentialExchange = nil; credentialChallenge = nil; credentialKind = nil
         pendingGeneration = nil; pendingRouteActivation = nil
+        verifyAppliedRoutes = nil
         management = nil; process = nil; reservation = nil
     }
 
@@ -380,7 +404,8 @@ final class VPNTunnelCoordinator {
                                       generation: UInt64,
                                       client: OpenVPNManagementClient,
                                       activateRoutes: @escaping
-                                        (VPNTunnelBootstrapProof) throws -> Void) throws {
+                                        (VPNTunnelBootstrapProof) throws
+                                            -> (() throws -> Void)) throws {
         guard credentialExchange == nil, credentialChallenge == nil,
               let callbacks = credentials else {
             throw VPNTunnelCoordinatorError.invalidState

@@ -3364,3 +3364,20 @@ DNS по-прежнему можно безопасно сохранить и о
 Network Extension (`NEDNSSettings.matchDomains`) с требуемым entitlement,
 provisioning и installed acceptance. Пройдены 66 capability/coordinator/
 listener/state проверок. Публичный Connected и release/tag ещё не включены.
+
+### Продолжение 1.5bp — route-proven Connected для IP/CIDR (30 сентября)
+
+Для поддерживаемой route-only конфигурации helper теперь публикует `connected`
+только после exact generation binding, OpenVPN CONNECTED/interface evidence,
+активации точной pending-конфигурации и успешной install+verify транзакции всех
+owned peer/resource routes. Listener отвечает `ok` только если durable snapshot
+уже находится в этой фазе; одного процесса или `utun` недостаточно.
+
+Coordinator сохраняет verifier применённых маршрутов и повторяет проверку при
+наблюдении за живым соединением. Ошибка переводит попытку в failed и проходит
+route cleanup barrier до остановки OpenVPN. После daemon restart даже ранее
+записанный `connected` становится failed с новой generation: прежний runtime и
+маршруты нельзя считать доказанными. Перед открытием listener новый daemon под
+тем же runtime lease обязательно выполняет journal-backed route recovery; если
+cleanup нельзя доказать, endpoint не публикуется. Domain/split-DNS конфигурации
+сюда не попадают благодаря предыдущему pre-launch gate.

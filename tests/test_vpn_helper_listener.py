@@ -371,6 +371,19 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.assertFalse(state['desiredEnabled'])
         self.assertNotIn('connected', (self.storage / 'tunnel-state.json').read_text().lower())
 
+    def test_verified_route_runtime_publishes_connected_and_disconnects(self):
+        self.seed()
+        trace = self.base / 'connected-trace'
+        self.serve(extra=['managed-connected-test', str(trace)])
+        candidate = self.base / 'certificate.ovpn'
+        candidate.write_text(CERTIFICATE_PROFILE)
+        self.assertEqual(self.session(f'certificate={candidate}'), [
+            'store:0', 'apply:0', 'connect:0 challenge:false',
+            'held:connected enabled:true', 'disconnect:0',
+            'stopped:off enabled:false'])
+        self.assertEqual(trace.read_text().splitlines(), [
+            'routes-verified', 'stop-before-off'])
+
     def test_credential_submission_never_starts_the_engine(self):
         self.seed()
         trace = self.base / 'credential-trace'
