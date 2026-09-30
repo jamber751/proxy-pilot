@@ -47,7 +47,7 @@ SEAMS = ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING', '-D'
 class VPNInstallerTests(unittest.TestCase):
     service_components = SERVICE
     service_main = ROOT / 'tests/vpn_helper_service.swift'
-    service_flags = []
+    service_flags = ['-D', 'VPN_ENGINE_SUPERVISOR_FIXTURE']
 
     @classmethod
     def setUpClass(cls):

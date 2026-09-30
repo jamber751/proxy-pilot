@@ -56,7 +56,8 @@ class VPNLaunchdTests(unittest.TestCase):
             ('driver', [HELPER / source for source in COMPONENTS] + [ROOT / 'tests/vpn_launchd_checks.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_LAUNCHD_TESTING']),
             ('server', [HELPER / source for source in SERVICE] + IMPORTER
-             + [ROOT / 'tests/vpn_helper_service.swift'], []),
+             + [ROOT / 'tests/vpn_helper_service.swift'],
+             ['-D', 'VPN_ENGINE_SUPERVISOR_FIXTURE']),
             ('idle', [cls.work / 'idle.swift'], []),
         ]:
             slices = []

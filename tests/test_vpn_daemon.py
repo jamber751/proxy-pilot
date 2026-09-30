@@ -23,7 +23,8 @@ class VPNDaemonTests(installer.VPNInstallerTests):
                                                'VPNTunnelInterfaceResolver.swift',
                                                'VPNTunnelCoordinator.swift']
     service_main = installer.ROOT / 'tests/vpn_daemon_main.swift'
-    service_flags = ['-D', 'VPN_DAEMON_TESTING', '-D', 'VPN_HELPER_READINESS_TESTING']
+    service_flags = ['-D', 'VPN_DAEMON_TESTING', '-D', 'VPN_HELPER_READINESS_TESTING',
+                     '-D', 'VPN_ENGINE_SUPERVISOR_FIXTURE']
 
     def install_ready(self):
         self.assertEqual(self.run_installer().stdout.strip(), 'ready:10')
