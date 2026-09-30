@@ -3324,3 +3324,28 @@ Listener IPC пока сохраняет старую fail-closed границу
 должен возвращать challenge только после real management prompt, передавать
 `submitCredential` в parked coordinator и корректно возвращать следующий
 challenge либо внутренний bootstrap status. DNS/UI Connected остаются выключены.
+
+### Продолжение 1.5bn — management-driven credential IPC (30 сентября)
+
+Listener больше не выдаёт challenge по предположению из профиля. `connect`
+создаёт exact attempt без challenge, запускает coordinator и возвращает
+`needsCredential` только после реального management prompt, уже записанного в
+durable state. `submitCredential` передаёт response как `inout` в parked
+coordinator; результатом становится следующий fresh challenge либо внутренний
+`notReady` после bootstrap и route transaction. Wire schema не менялась.
+
+Raw request payload теперь обнуляется через `defer` на всех путях. Cancel
+проверяет exact challenge/binding, сначала останавливает owned runtime через
+route cleanup barrier и только затем переводит attempt в off. Listener во всех
+managed ветках пересчитывает `tunnelStopped` по фактическому process ownership,
+поэтому ошибка cleanup не разрешает новый connect поверх живого процесса.
+
+Пройдены 40/40 listener и 16/16 coordinator tests; production helper повторно
+собран для arm64/x86_64 и прошёл strict codesign verify. Реальный prompt order
+покрыт management fixture coordinator, listener boundary — отдельным parked
+runtime seam. DNS и публичный Connected по-прежнему не включены.
+
+Следующий gate нельзя подменять undocumented global DNS mutation: нужен либо
+installed acceptance документированного session-scoped backend, либо решение о
+Network Extension entitlement/архитектуре. До этого допустим только внутренний
+bootstrap+routes status; release/tag не создаётся.
