@@ -14,6 +14,7 @@ class VPNDaemonTests(installer.VPNInstallerTests):
     # not the old thin listener fixture; only its entry boundary is substituted.
     service_components = installer.COMPONENTS + ['VPNHelperListener.swift', 'VPNHelperRuntime.swift',
                                                'VPNHelperDaemon.swift', 'VPNReleaseTrust.swift',
+                                               'VPNPublicReleaseReceipt.swift',
                                                'VPNApplicationSpec.swift', 'VPNTunnelStateStore.swift',
                                                'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift',
                                                'OpenVPNManagementParser.swift',

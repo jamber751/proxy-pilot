@@ -3387,3 +3387,18 @@ live state: «добавьте файл», «добавьте ресурсы», 
 route-only ready либо понятное объяснение, что доменные имена в этой версии ещё
 не поддержаны и следует использовать IP/сети. Это готовит UX-контракт для
 следующего подключения настоящего helper session к VPN-экрану.
+
+### Продолжение 1.5bq — authenticated frontend helper discovery (30 сентября)
+
+Устранён chicken-and-egg перед live controller: desktop app больше не должен
+искать manifest в DMG или ослаблять peer check до имени процесса. Выбранный root
+helper при каждом старте атомарно публикует в защищённой public endpoint
+директории один read-only `release-receipt.json`: только owner UID и исходные
+signed manifest/signature. Секретов, путей и сетевой конфигурации там нет.
+
+Frontend сначала проверяет canonical файл, root ownership/mode и Ed25519
+подпись встроенным public key, затем получает из verified release точные helper
+CDHashes и sequence для существующего mutual readiness handshake. Старый,
+подменённый или повреждённый receipt не авторизует новую пару app/helper.
+Daemon публикует receipt до socket endpoint; uninstall удаляет только этот
+известный regular root-owned файл и отказывается при неожиданном типе/режиме.

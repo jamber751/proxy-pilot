@@ -226,6 +226,15 @@ final class VPNReleaseStore {
         }
     }
 
+    func loadDeploymentReceipt() throws
+        -> (ownerUserID: uid_t, payload: Data, signature: Data) {
+        try withLock {
+            let (envelope, state) = try readCurrent()
+            guard envelope.schema == 2 else { throw VPNReleaseStoreError.deploymentRequired }
+            return (state.ownerUserID, envelope.payload, envelope.signature)
+        }
+    }
+
     /// Also rejects terminal/corrupt journals: retirement is a separate durable
     /// action. Read-only selection remains available for diagnosis/reconciliation.
     func requireNoPendingUpdate() throws {

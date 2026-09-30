@@ -101,6 +101,10 @@ enum VPNHelperDaemon {
             // acquisition: journal preparation can legitimately win that race.
             try budget.beginAttempt(intent: .automatic)
         }
+        let publicReceipt = try store.loadDeploymentReceipt()
+        try VPNPublicReleaseReceipt.publish(ownerUserID: publicReceipt.ownerUserID,
+            payload: publicReceipt.payload, signature: publicReceipt.signature,
+            inTrustedDirectory: endpoint)
         try runtime.prepareEndpoint(directory: endpoint, shared: shared)
         let readinessPolicies: () throws -> [VPNPeerPolicy] = {
             guard let journal = try recoveryJournal() else { return [] }

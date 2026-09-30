@@ -23,6 +23,19 @@ enum VPNEndpointDirectory {
         let parent = try systemParent()
         defer { close(parent) }
         let directory = try openBelowTrustedBase(parent, owner: 0, create: false)
+        // The only regular file allowed in the public endpoint namespace is
+        // the signed release receipt. Refuse unexpected type/owner/permissions.
+        var receipt = stat()
+        let receiptName = "release-receipt.json"
+        if fstatat(directory, receiptName, &receipt,
+                   AT_SYMLINK_NOFOLLOW) == 0 {
+            guard receipt.st_mode & S_IFMT == S_IFREG, receipt.st_uid == 0,
+                  receipt.st_nlink == 1, receipt.st_mode & 0o7777 == 0o644,
+                  unlinkat(directory, receiptName, 0) == 0,
+                  fsync(directory) == 0 else { close(directory); throw VPNEndpointError.unavailable }
+        } else if errno != ENOENT {
+            close(directory); throw VPNEndpointError.unavailable
+        }
         close(directory)
         // Never recursive; an unexpected file keeps the directory in place.
         guard unlinkat(parent, directoryName, AT_REMOVEDIR) == 0, fsync(parent) == 0 else {
