@@ -358,13 +358,39 @@ final class VPNHelperListener {
     /// to the release this helper is running. Anything unexpected ends it — the
     /// listener answers the next connection instead of parsing further.
     private func serveRequests(_ client: Int32, isReady: () -> Bool) throws {
-        let conversation = DispatchTime.now().uptimeNanoseconds
+        var conversation = DispatchTime.now().uptimeNanoseconds
             + UInt64(VPNHelperProtocol.conversationTimeoutMilliseconds) * 1_000_000
+        let maximumConversation = conversation
+            + 2 * UInt64(VPNHelperProtocol.credentialInputTimeoutMilliseconds) * 1_000_000
+        var waitingChallenge: VPNCredentialChallenge?
+        defer {
+            // A dismissed or expired prompt must not strand an owned engine.
+            // Established tunnels intentionally survive their UI conversation.
+            if startManagedTunnel != nil,
+               (try? tunnelState.load().phase) == .needsCredential,
+               tunnelIsOwned() {
+                try? stopTunnel()
+                tunnelStopped = !tunnelIsOwned()
+                if tunnelStopped { _ = try? tunnelState.failCurrent() }
+            }
+        }
         for _ in 0..<VPNHelperProtocol.maximumRequestsPerConnection {
-            let deadline = min(conversation, DispatchTime.now().uptimeNanoseconds
+            try VPNPeerAuthentication.validate(connectedSocket: client, policy: policy)
+            let fresh = try tunnelState.load()
+            let awaitingInput = startManagedTunnel != nil && tunnelIsOwned()
+                && fresh.phase == .needsCredential && fresh.challenge != nil
+            if awaitingInput, fresh.challenge != waitingChallenge {
+                waitingChallenge = fresh.challenge
+                conversation = min(maximumConversation, DispatchTime.now().uptimeNanoseconds
+                    + UInt64(VPNHelperProtocol.credentialInputTimeoutMilliseconds) * 1_000_000)
+            }
+            let headerDeadline = awaitingInput ? conversation : min(conversation, DispatchTime.now().uptimeNanoseconds
                 + UInt64(VPNHelperProtocol.requestTimeoutMilliseconds) * 1_000_000)
             guard let header = try VPNHelperProtocol.read(count: VPNHelperProtocol.headerBytes, socket: client,
-                                                          deadline: deadline, allowingClose: true) else { return }
+                                                          deadline: headerDeadline, allowingClose: true) else { return }
+            // Human input gets time; payload transfer and processing do not.
+            let deadline = min(conversation, DispatchTime.now().uptimeNanoseconds
+                + UInt64(VPNHelperProtocol.requestTimeoutMilliseconds) * 1_000_000)
             guard Array(header.prefix(8)) == VPNHelperProtocol.requestMagic else { return }
             let length = Int(VPNHelperProtocol.number(header[18..<22]))
             guard length <= VPNHelperProtocol.maximumPayloadBytes else { return }

@@ -130,9 +130,13 @@ enum VPNReadinessChecks {
                 }
                 return
             }
-            if scenario.hasPrefix("application=") || scenario.hasPrefix("managed-cancel=") {
+            if scenario.hasPrefix("application=") || scenario.hasPrefix("managed-cancel=")
+                || scenario.hasPrefix("managed-delay=") || scenario.hasPrefix("managed-close=") {
                 let cancelling = scenario.hasPrefix("managed-cancel=")
-                let prefix = cancelling ? "managed-cancel=" : "application="
+                let delayed = scenario.hasPrefix("managed-delay=")
+                let closing = scenario.hasPrefix("managed-close=")
+                let prefix = cancelling ? "managed-cancel=" : (delayed ? "managed-delay="
+                    : (closing ? "managed-close=" : "application="))
                 let path = String(scenario.dropFirst(prefix.count))
                 let data = try Data(contentsOf: URL(fileURLWithPath: path))
                 let imported = try VPNProfileImporter.inspect(data: data, name: "profile.ovpn")
@@ -152,6 +156,8 @@ enum VPNReadinessChecks {
                 print("connect:\(connected.0.rawValue) kind:\(challenge.kind.rawValue) generation:\(challenge.generation)")
                 let before = try session.tunnelStatus().1!
                 print("before:\(before.phase.rawValue)")
+                if closing { return }
+                if delayed { Thread.sleep(forTimeInterval: 6) }
                 if cancelling {
                     print("cancel:\(try session.cancelCredential(challenge).rawValue)")
                     let after = try session.tunnelStatus().1!

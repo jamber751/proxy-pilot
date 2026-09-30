@@ -47,6 +47,7 @@ enum VPNHelperProtocol {
     /// cannot hold the single-threaded helper for the sum of every deadline.
     static let requestTimeoutMilliseconds = 5000
     static let conversationTimeoutMilliseconds = 30000
+    static let credentialInputTimeoutMilliseconds = 90000
 
     static func encode(_ value: UInt64) -> [UInt8] {
         (0..<8).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }

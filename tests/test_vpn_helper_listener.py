@@ -424,6 +424,39 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.assertEqual(trace.read_text().splitlines(), [
             'management-prompt', 'stop-before-off'])
 
+    def test_management_prompt_allows_human_input_beyond_frame_timeout(self):
+        self.seed()
+        trace = self.base / 'managed-delay-trace'
+        self.serve(extra=['managed-tunnel-test', str(trace)])
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(PROFILE)
+        self.assertEqual(self.session(f'managed-delay={candidate}'), [
+            'store:0', 'apply:0', 'connect:4 kind:1 generation:1',
+            'before:needsCredential', 'submit:5', 'replay:3',
+            'after:failed challenge:false', 'disconnect:0'])
+        self.assertEqual(trace.read_text().splitlines(), [
+            'management-prompt', 'credential-claimed', 'stop-before-off'])
+
+    def test_closed_management_prompt_stops_owned_runtime(self):
+        self.seed()
+        trace = self.base / 'managed-close-trace'
+        self.serve(extra=['managed-tunnel-test', str(trace)])
+        candidate = self.base / 'candidate.ovpn'
+        candidate.write_text(PROFILE)
+        self.assertEqual(self.session(f'managed-close={candidate}'), [
+            'store:0', 'apply:0', 'connect:4 kind:1 generation:1',
+            'before:needsCredential'])
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = json.loads((self.storage / 'tunnel-state.json').read_text())
+            if state['phase'] == 'failed':
+                break
+            time.sleep(0.02)
+        self.assertEqual(state['phase'], 'failed')
+        self.assertIsNone(state.get('challenge'))
+        self.assertEqual(trace.read_text().splitlines(), [
+            'management-prompt', 'stop-before-off'])
+
     def test_listener_teardown_stops_a_held_runtime(self):
         self.seed()
         trace = self.base / 'teardown-trace'
