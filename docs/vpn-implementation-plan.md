@@ -3478,3 +3478,21 @@ installed acceptance с реальным корпоративным сервер
 
 Model regression подтверждает полную пустую projection после удаления;
 source-contract проверяет доступность действия в production VPN screen.
+
+### Продолжение 1.5bu — bounded launch/wake restore (30 сентября)
+
+Сохранённый `desiredEnabled` теперь используется как намерение восстановить VPN
+после запуска приложения и `NSWorkspace.didWakeNotification`. На каждое событие
+выполняется ровно одна сериализованная попытка: сначала читается настоящий helper
+snapshot; уже доказанный connected не перезапускается, unavailable не уходит в
+цикл, off подключается, а оборванный failed/credential attempt сначала проходит
+подтверждённую cleanup-остановку и только затем начинает fresh attempt.
+
+Certificate-only профиль восстанавливается без лишнего окна. Если живой OpenVPN
+реально запросил пароль ключа, пароль VPN или OTP, приложение открывает popover
+с VPN-экраном и fresh challenge. Никаких фоновых догадок о секрете и периодических
+повторов не добавлено. Наблюдатель wake удаляется при завершении приложения.
+
+Это закрывает только launch/wake edge. Смена сети, bounded backoff при server
+outage, controlled update handoff и native sleep/wake acceptance остаются в
+release checklist.

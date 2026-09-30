@@ -28,6 +28,8 @@ class VPNUIContractTests(unittest.TestCase):
         self.assertIn('.onDrop(of: ["public.file-url"]', panel)
         self.assertIn('configuration.importProfile(files: urls)', panel)
         self.assertIn('func disconnectForQuit(completion:', panel)
+        self.assertIn('func restoreDesiredConnection()', panel)
+        self.assertIn('NSWorkspace.didWakeNotification', main)
 
     def test_long_resource_list_is_bounded_and_lazy(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text()

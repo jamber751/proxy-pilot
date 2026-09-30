@@ -20,6 +20,7 @@ final class VPNPanelModel: ObservableObject {
     @Published var requestsPresentation = false
 
     let configuration: VPNModel
+    var onAttention: (() -> Void)?
     private let controller: VPNLiveController?
     private let queue = DispatchQueue(label: "proxypilot.vpn.frontend")
     private var modelChanges: AnyCancellable?
@@ -85,6 +86,27 @@ final class VPNPanelModel: ObservableObject {
     }
 
     func refresh() { run { $0.refresh() } }
+
+    func restoreDesiredConnection() {
+        let desired = configuration.configuration.desiredEnabled
+        run({ controller in
+            controller.refresh()
+            guard desired else { return }
+            switch controller.state {
+            case .connected, .connecting, .unavailable: break
+            case .needsCredential, .failed:
+                controller.disconnect()
+                if controller.state == .off { controller.connect() }
+            case .off: controller.connect()
+            }
+        }, completion: { [weak self] state in
+            guard let self else { return }
+            if case .needsCredential = state {
+                self.requestsPresentation = true
+                self.onAttention?()
+            }
+        })
+    }
     func toggle() {
         guard ready else { settings = true; return }
         let shouldDisconnect = connected
@@ -268,7 +290,8 @@ final class VPNPanelModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
 
-    private func run(_ operation: @escaping (VPNLiveController) -> Void) {
+    private func run(_ operation: @escaping (VPNLiveController) -> Void,
+                     completion: ((VPNLiveState) -> Void)? = nil) {
         guard !working, let controller else {
             if controller == nil { liveState = .unavailable }
             return
@@ -284,6 +307,7 @@ final class VPNPanelModel: ObservableObject {
                 self.working = false
                 do { try self.configuration.load() }
                 catch { self.message = error.localizedDescription }
+                completion?(state)
             }
         }
     }

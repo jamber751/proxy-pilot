@@ -646,6 +646,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var timer: Timer?
     private var activity: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
     private var pendingPopoverRequest: UUID?
     private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
     private let updates = UpdateModel()
@@ -680,7 +681,11 @@ final class App: NSObject, NSApplicationDelegate {
         RunLoop.main.add(t, forMode: .common); timer = t
         renderStatus(); model.refresh()
         #if VPN_INSTALLER_ENTRY
-        vpnPanel.refresh()
+        vpnPanel.onAttention = { [weak self] in self?.showWindow() }
+        vpnPanel.restoreDesiredConnection()
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.vpnPanel.restoreDesiredConnection() }
         model.prepareQuit = { [weak self] completion in
             self?.vpnPanel.disconnectForQuit(completion: completion)
         }
@@ -750,6 +755,9 @@ final class App: NSObject, NSApplicationDelegate {
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow(); return true
+    }
+    func applicationWillTerminate(_ notification: Notification) {
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     }
 }
 
