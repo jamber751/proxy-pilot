@@ -68,7 +68,7 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
                 self.run_case('observe-state', 'failed closed', behavior)
     def test_runtime_credential_prompt_is_explicitly_blocked(self): self.run_case('credential', 'blocked')
     def test_private_key_and_auth_prompts_are_sequential_in_either_order(self):
-        for behavior in ('multi-key-auth', 'multi-auth-key'):
+        for behavior in ('multi-key-auth', 'multi-auth-key', 'multi-auth-key-after-hold'):
             with self.subTest(behavior=behavior):
                 self.run_case('multi-credential', 'multi prompt passed', behavior)
 

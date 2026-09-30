@@ -95,6 +95,9 @@ final class Counter { var value = 0 }
             case "hold release":
                 markRelease(path)
                 switch behavior {
+                case "multi-auth-key-after-hold":
+                    sendLine(client, "SUCCESS: hold released")
+                    sendLine(client, ">PASSWORD:Need 'Auth' username/password")
                 case "credential-after":
                     sendLine(client, ">PASSWORD:Need 'Auth' username/password")
                 case "hold-after": sendLine(client, ">HOLD:Waiting again")
@@ -118,13 +121,15 @@ final class Counter { var value = 0 }
                     sendLine(client, "SUCCESS: username accepted")
                 } else if command.hasPrefix("password \"Auth\"") {
                     sendLine(client, "SUCCESS: password accepted")
-                    if behavior == "multi-auth-key" {
+                    if behavior == "multi-auth-key" || behavior == "multi-auth-key-after-hold" {
                         sendLine(client, ">PASSWORD:Need 'Private Key' password")
                     }
                 } else if command.hasPrefix("password \"Private Key\"") {
                     sendLine(client, "SUCCESS: private key accepted")
                     if behavior == "multi-key-auth" {
                         sendLine(client, ">PASSWORD:Need 'Auth' username/password")
+                    } else if behavior == "multi-auth-key-after-hold" {
+                        sendLine(client, ">STATE:2,CONNECTED,redacted,10.8.0.2,203.0.113.9,443")
                     }
                 } else { exit(48) }
             }

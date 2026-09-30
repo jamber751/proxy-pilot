@@ -73,6 +73,8 @@ final class VPNTunnelCoordinator {
     private var pendingRouteActivation:
         ((VPNTunnelBootstrapProof) throws -> (() throws -> Void))?
     private var verifyAppliedRoutes: (() throws -> Void)?
+    private var initialHoldReleased = false
+    private var attemptBaseline: VPNKernelInterfaceSnapshot?
     private var current: VPNTunnelCoordinatorReadiness = .inactive
 
     #if !VPN_TUNNEL_COORDINATOR_TESTING
@@ -225,13 +227,19 @@ final class VPNTunnelCoordinator {
             management = client
             _ = try initialize(client: client, deadline: deadline)
             if try credentials?.outstanding(generation) == true {
+                // Real OpenVPN asks for Auth only after its initial hold is
+                // released. Capture interface evidence first and release once;
+                // the credential prompt itself blocks further bootstrap.
+                attemptBaseline = try captureInterfaces()
+                try releaseInitialHold(client, deadline: deadline)
+                _ = try awaitSuccess(client, deadline: deadline)
                 let kind = try awaitNextCredentialPrompt(client, deadline: deadline)
                 try parkCredentialPrompt(kind, generation: generation, client: client,
                                          activateRoutes: activateRoutes)
                 current = .blocked(.credentialRequired(kind))
                 return current
             }
-            let baseline = try captureInterfaces()
+            let baseline = try attemptBaseline ?? captureInterfaces()
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
             verifyAppliedRoutes = try activateRoutes(proof)
@@ -307,7 +315,7 @@ final class VPNTunnelCoordinator {
                 current = .blocked(.credentialRequired(next))
                 return current
             }
-            let baseline = try captureInterfaces()
+            let baseline = try attemptBaseline ?? captureInterfaces()
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
             verifyAppliedRoutes = try activateRoutes(proof)
@@ -397,6 +405,7 @@ final class VPNTunnelCoordinator {
         credentialExchange = nil; credentialChallenge = nil; credentialKind = nil
         pendingGeneration = nil; pendingRouteActivation = nil
         verifyAppliedRoutes = nil
+        initialHoldReleased = false; attemptBaseline = nil
         management = nil; process = nil; reservation = nil
     }
 
@@ -544,8 +553,10 @@ final class VPNTunnelCoordinator {
     private func bootstrap(client: OpenVPNManagementClient, generation: UInt64,
                            baseline: VPNKernelInterfaceSnapshot, deadline: UInt64) throws
         -> VPNTunnelBootstrapProof {
-        try client.send(.releaseHold, timeoutMilliseconds: Self.remaining(deadline))
-        var releaseAccepted = false
+        var releaseAccepted = initialHoldReleased
+        if !initialHoldReleased {
+            try releaseInitialHold(client, deadline: deadline)
+        }
         var connected: OpenVPNConnectedEvidence?
         for _ in 0..<64 {
             switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
@@ -579,6 +590,13 @@ final class VPNTunnelCoordinator {
             }
         }
         throw VPNTunnelCoordinatorError.managementRejected
+    }
+
+    private func releaseInitialHold(_ client: OpenVPNManagementClient,
+                                    deadline: UInt64) throws {
+        guard !initialHoldReleased else { throw VPNTunnelCoordinatorError.invalidState }
+        try client.send(.releaseHold, timeoutMilliseconds: Self.remaining(deadline))
+        initialHoldReleased = true
     }
 
     private func resolveTunnel(baseline: VPNKernelInterfaceSnapshot,
