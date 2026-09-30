@@ -75,7 +75,11 @@ final class Counter { var value = 0 }
         while let command = readLine(client) {
             switch command {
             case "state on":
-                if behavior == "credential" {
+                if behavior == "multi-key-auth" {
+                    sendLine(client, ">PASSWORD:Need 'Private Key' password")
+                } else if behavior == "multi-auth-key" {
+                    sendLine(client, ">PASSWORD:Need 'Auth' username/password")
+                } else if behavior == "credential" {
                     sendLine(client, ">PASSWORD:Need 'Auth' username/password SC:OTP")
                 } else if behavior == "reject" {
                     sendLine(client, "ERROR: rejected")
@@ -109,7 +113,20 @@ final class Counter { var value = 0 }
             case "signal SIGTERM":
                 sendLine(client, "SUCCESS: signal")
                 close(client); close(listener); exit(0)
-            default: exit(48)
+            default:
+                if command.hasPrefix("username \"Auth\"") {
+                    sendLine(client, "SUCCESS: username accepted")
+                } else if command.hasPrefix("password \"Auth\"") {
+                    sendLine(client, "SUCCESS: password accepted")
+                    if behavior == "multi-auth-key" {
+                        sendLine(client, ">PASSWORD:Need 'Private Key' password")
+                    }
+                } else if command.hasPrefix("password \"Private Key\"") {
+                    sendLine(client, "SUCCESS: private key accepted")
+                    if behavior == "multi-key-auth" {
+                        sendLine(client, ">PASSWORD:Need 'Auth' username/password")
+                    }
+                } else { exit(48) }
             }
         }
         close(client); close(listener); exit(0)
@@ -141,7 +158,8 @@ final class Counter { var value = 0 }
                             counter: Counter,
                             activateAndInstallRoutes: @escaping
                                 (VPNTunnelBootstrapProof) throws -> Void = { _ in },
-                            prepareRoutesForProcessStop: @escaping () throws -> Void = {}) throws
+                            prepareRoutesForProcessStop: @escaping () throws -> Void = {},
+                            credentials: VPNTunnelCredentialCallbacks? = nil) throws
         -> VPNTunnelCoordinator {
         let dir = directory(folder); defer { close(dir) }
         let value = profile(folder, behavior: behavior)
@@ -179,7 +197,56 @@ final class Counter { var value = 0 }
                 }
                 return try VPNKernelInterfaceSnapshot(interfaces: [first])
             }, blocker: blocker, activateAndInstallRoutes: activateAndInstallRoutes,
-            prepareRoutesForProcessStop: prepareRoutesForProcessStop)
+            prepareRoutesForProcessStop: prepareRoutesForProcessStop,
+            credentials: credentials)
+    }
+
+    static func credentialFixture(_ folder: String) throws
+        -> (VPNTunnelStateStore, VPNTunnelCredentialCallbacks) {
+        let fd = directory(folder); defer { close(fd) }
+        let state = try VPNTunnelStateStore(trustedDirectoryDescriptor: fd)
+        let resource = try VPNResource(address: "10.44.0.0/16")
+        let authentication = try VPNAuthentication(mode: .password, login: "employee")
+        let spec = try VPNApplicationSpec(revision: 1,
+            profileSHA256: String(repeating: "a", count: 64), resources: [resource],
+            corporateDNS: [], authentication: authentication)
+        let application = VPNValidatedApplication(spec: spec,
+            requiresVPNCredentials: true, requiresPrivateKeyPassword: true)
+        _ = try state.stage(application)
+        _ = try state.beginConnect()
+        let callbacks = VPNTunnelCredentialCallbacks(issue: { generation, prompt in
+            let snapshot = try state.load()
+            guard let binding = snapshot.attempt, binding.generation == generation else {
+                throw CoordinatorCheckError.failed("attempt binding")
+            }
+            let kind: VPNCredentialKind
+            switch prompt {
+            case .privateKeyPassphrase: kind = .privateKeyPassword
+            case .usernameAndPassword: kind = .vpnPassword
+            case .staticChallenge: throw VPNTunnelCoordinatorError.unsupportedCredentialPrompt
+            }
+            return (try state.issueChallenge(binding: binding, kind: kind), application)
+        }, claim: { try state.claimCredential($0) }, complete: { binding in
+            let snapshot = try state.completeCredentialPrompt(binding: binding)
+            return snapshot.issuedCredentialKinds.contains(.privateKeyPassword)
+                && snapshot.issuedCredentialKinds.contains(.vpnPassword)
+        }, outstanding: { generation in
+            let snapshot = try state.load()
+            guard snapshot.generation == generation,
+                  let binding = snapshot.attempt else {
+                throw CoordinatorCheckError.failed("outstanding binding")
+            }
+            return (binding.application.requiresPrivateKeyPassword
+                    && !snapshot.issuedCredentialKinds.contains(.privateKeyPassword))
+                || (binding.application.requiresVPNCredentials
+                    && !snapshot.issuedCredentialKinds.contains(.vpnPassword))
+        }, fail: { _ = try? state.failCurrent() })
+        return (state, callbacks)
+    }
+
+    static func response(_ challenge: VPNCredentialChallenge,
+                         _ value: String) throws -> VPNCredentialResponse {
+        try VPNCredentialResponse(challenge: challenge, secret: Data(value.utf8))
     }
 
     static func assertOneRelease(_ folder: String) {
@@ -282,6 +349,78 @@ final class Counter { var value = 0 }
                 fail("credential blocker")
             }
             assertClean(folder); print("blocked")
+        case "multi-credential":
+            let behavior = CommandLine.arguments.count > 3
+                ? CommandLine.arguments[3] : "multi-key-auth"
+            let fixture = try credentialFixture(folder)
+            let prepared = Counter()
+            let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter,
+                prepareRoutesForProcessStop: { prepared.value += 1 },
+                credentials: fixture.1)
+            let firstKind: OpenVPNCredentialKind = behavior == "multi-key-auth"
+                ? .privateKeyPassphrase : .usernameAndPassword
+            guard try tunnel.start() == .blocked(.credentialRequired(firstKind)),
+                  tunnel.ownsProcess(), let first = try fixture.0.load().challenge else {
+                fail("first prompt was not parked")
+            }
+            var firstResponse = try response(first, "first-secret")
+            let secondKind: OpenVPNCredentialKind = behavior == "multi-key-auth"
+                ? .usernameAndPassword : .privateKeyPassphrase
+            guard try tunnel.submitCredential(&firstResponse)
+                    == .blocked(.credentialRequired(secondKind)),
+                  firstResponse.secret.isEmpty,
+                  let second = try fixture.0.load().challenge,
+                  second.identifier != first.identifier,
+                  second.generation == first.generation else {
+                fail("second prompt was not exact and fresh")
+            }
+            var secondResponse = try response(second, "second-secret")
+            guard case .bootstrapReady = try tunnel.submitCredential(&secondResponse),
+                  secondResponse.secret.isEmpty, prepared.value == 0 else {
+                fail("credential bootstrap")
+            }
+            assertOneRelease(folder)
+            _ = try tunnel.stop()
+            guard prepared.value == 1 else { fail("route cleanup ordering") }
+            let persisted = try Data(contentsOf: URL(fileURLWithPath: folder)
+                .appendingPathComponent(VPNTunnelStateStore.name))
+            guard !String(decoding: persisted, as: UTF8.self).contains("secret") else {
+                fail("secret persisted")
+            }
+            assertClean(folder); print("multi prompt passed")
+        case "static-credential":
+            let fixture = try credentialFixture(folder)
+            let prepared = Counter()
+            let tunnel = try coordinator(folder: folder, behavior: "credential", counter: counter,
+                prepareRoutesForProcessStop: { prepared.value += 1 },
+                credentials: fixture.1)
+            do { _ = try tunnel.start(); fail("static challenge accepted") }
+            catch VPNTunnelCoordinatorError.unsupportedCredentialPrompt { }
+            catch { fail("wrong static challenge error") }
+            guard !tunnel.ownsProcess(), prepared.value == 1,
+                  try fixture.0.load().phase == .failed else {
+                fail("static challenge did not fail closed")
+            }
+            assertNoRelease(folder); assertClean(folder); print("static rejected")
+        case "stale-credential":
+            let fixture = try credentialFixture(folder)
+            let prepared = Counter()
+            let tunnel = try coordinator(folder: folder, behavior: "multi-key-auth",
+                counter: counter, prepareRoutesForProcessStop: { prepared.value += 1 },
+                credentials: fixture.1)
+            guard try tunnel.start() == .blocked(.credentialRequired(.privateKeyPassphrase)),
+                  let issued = try fixture.0.load().challenge else { fail("missing challenge") }
+            let stale = VPNCredentialChallenge(generation: issued.generation,
+                kind: issued.kind)
+            var response = try response(stale, "stale-secret")
+            do { _ = try tunnel.submitCredential(&response); fail("stale credential accepted") }
+            catch VPNTunnelCoordinatorError.invalidState { }
+            catch { fail("wrong stale error") }
+            guard response.secret.isEmpty, !tunnel.ownsProcess(), prepared.value == 1,
+                  try fixture.0.load().phase == .failed else {
+                fail("stale credential did not fail closed")
+            }
+            assertNoRelease(folder); assertClean(folder); print("stale rejected")
         case "post-release-failure":
             let behavior = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
             let tunnel = try coordinator(folder: folder, behavior: behavior, counter: counter)

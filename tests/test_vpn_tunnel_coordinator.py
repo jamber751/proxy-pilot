@@ -18,7 +18,13 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix='pp-tunnel-coordinator-build-', dir='/tmp')
         cls.addClassCleanup(cls.temp.cleanup)
         cls.binary = Path(cls.temp.name) / 'checks'
-        sources = [ROOT / 'app/vpn-helper/VPNProfileVault.swift',
+        sources = [ROOT / 'app/VPNConfiguration.swift',
+                   ROOT / 'app/vpn-helper/VPNApplicationSpec.swift',
+                   ROOT / 'app/vpn-helper/VPNTunnelStateStore.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNTransientCredential.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNHeldCredentialExchange.swift',
+                   ROOT / 'app/vpn-helper/OpenVPNManagementCredentialTransport.swift',
+                   ROOT / 'app/vpn-helper/VPNProfileVault.swift',
                    ROOT / 'app/vpn-helper/VPNEngineProcess.swift',
                    ROOT / 'app/vpn-helper/VPNEngineSupervisor.swift',
                    ROOT / 'app/vpn-helper/OpenVPNManagementEvent.swift',
@@ -61,6 +67,15 @@ class VPNTunnelCoordinatorTests(unittest.TestCase):
             with self.subTest(behavior=behavior):
                 self.run_case('observe-state', 'failed closed', behavior)
     def test_runtime_credential_prompt_is_explicitly_blocked(self): self.run_case('credential', 'blocked')
+    def test_private_key_and_auth_prompts_are_sequential_in_either_order(self):
+        for behavior in ('multi-key-auth', 'multi-auth-key'):
+            with self.subTest(behavior=behavior):
+                self.run_case('multi-credential', 'multi prompt passed', behavior)
+
+    def test_static_challenge_fails_before_hold_release_and_cleans_routes_first(self):
+        self.run_case('static-credential', 'static rejected')
+    def test_stale_credential_wipes_and_stops_before_hold_release(self):
+        self.run_case('stale-credential', 'stale rejected')
     def test_saved_credential_requirement_never_spawns(self): self.run_case('plan-blocked', 'blocked')
     def test_management_rejection_fails_closed(self): self.run_case('reject', 'rejected')
     def test_management_socket_deadline_stops_child(self): self.run_case('timeout', 'timed out')

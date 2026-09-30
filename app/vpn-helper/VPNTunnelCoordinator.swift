@@ -28,7 +28,19 @@ enum VPNTunnelCoordinatorReadiness: Equatable {
 
 enum VPNTunnelCoordinatorError: Error {
     case invalidState, engineExited, managementUnavailable, managementRejected,
-         unsafeBootstrapState
+         unsafeBootstrapState, unsupportedCredentialPrompt
+}
+
+/// Durable state-store boundary for management-driven credentials. The
+/// coordinator owns no secret and cannot mint a challenge without the exact
+/// attempt generation selected by the store.
+struct VPNTunnelCredentialCallbacks {
+    let issue: (UInt64, OpenVPNCredentialKind)
+        throws -> (VPNCredentialChallenge, VPNValidatedApplication)
+    let claim: (VPNCredentialChallenge) throws -> VPNConnectAttemptBinding
+    let complete: (VPNConnectAttemptBinding) throws -> Bool
+    let outstanding: (UInt64) throws -> Bool
+    let fail: () -> Void
 }
 
 private enum VPNTunnelLaunchIntent {
@@ -48,9 +60,15 @@ final class VPNTunnelCoordinator {
     private let managementDirectory: Int32
     private let captureInterfaces: () throws -> VPNKernelInterfaceSnapshot
     private let prepareRoutesForProcessStop: () throws -> Void
+    private let credentials: VPNTunnelCredentialCallbacks?
     private var process: VPNEngineProcess?
     private var management: OpenVPNManagementClient?
     private var reservation: VPNManagementSocketReservation?
+    private var credentialExchange: OpenVPNHeldCredentialExchange?
+    private var credentialChallenge: VPNCredentialChallenge?
+    private var credentialKind: OpenVPNCredentialKind?
+    private var pendingGeneration: UInt64?
+    private var pendingRouteActivation: ((VPNTunnelBootstrapProof) throws -> Void)?
     private var current: VPNTunnelCoordinatorReadiness = .inactive
 
     #if !VPN_TUNNEL_COORDINATOR_TESTING
@@ -65,32 +83,49 @@ final class VPNTunnelCoordinator {
         guard managementDirectory >= 0 else { throw VPNTunnelCoordinatorError.invalidState }
         openProfile = { try vault.openValidated(digest: $0) }
         captureInterfaces = { try VPNKernelInterfaceSnapshot.capture() }
+        credentials = VPNTunnelCredentialCallbacks(issue: { generation, prompt in
+            let kind: VPNCredentialKind
+            switch prompt {
+            case .privateKeyPassphrase: kind = .privateKeyPassword
+            case .usernameAndPassword: kind = .vpnPassword
+            case .staticChallenge: throw VPNTunnelCoordinatorError.unsupportedCredentialPrompt
+            }
+            let snapshot = try state.load()
+            guard let binding = snapshot.attempt, binding.generation == generation else {
+                throw VPNTunnelCoordinatorError.invalidState
+            }
+            return (try state.issueChallenge(binding: binding, kind: kind), binding.application)
+        }, claim: { try state.claimCredential($0) }, complete: { binding in
+            let snapshot = try state.completeCredentialPrompt(binding: binding)
+            let issued = Set(snapshot.issuedCredentialKinds.map(\.rawValue))
+            let application = binding.application
+            return (!application.requiresPrivateKeyPassword
+                    || issued.contains(VPNCredentialKind.privateKeyPassword.rawValue))
+                && (!application.requiresVPNCredentials
+                    || issued.contains(VPNCredentialKind.vpnPassword.rawValue))
+        }, outstanding: { generation in
+            let snapshot = try state.load()
+            guard let binding = snapshot.attempt, binding.generation == generation else {
+                throw VPNTunnelCoordinatorError.invalidState
+            }
+            let issued = Set(snapshot.issuedCredentialKinds.map(\.rawValue))
+            return (binding.application.requiresPrivateKeyPassword
+                    && !issued.contains(VPNCredentialKind.privateKeyPassword.rawValue))
+                || (binding.application.requiresVPNCredentials
+                    && !issued.contains(VPNCredentialKind.vpnPassword.rawValue))
+        }, fail: { _ = try? state.failCurrent() })
         intent = {
             let snapshot = try state.load()
             guard snapshot.desiredEnabled else {
                 return .blocked(.noEnabledConfiguration)
-            }
-            if let challenge = snapshot.challenge {
-                let kind: OpenVPNCredentialKind = challenge.kind == .privateKeyPassword
-                    ? .privateKeyPassphrase : .usernameAndPassword
-                return .blocked(.credentialRequired(kind))
             }
             guard snapshot.phase == .connecting,
                   let binding = snapshot.attempt,
                   binding.application == (snapshot.pending ?? snapshot.active) else {
                 throw VPNTunnelCoordinatorError.invalidState
             }
-            let application = binding.application
-            if application.requiresPrivateKeyPassword {
-                return .blocked(.credentialRequired(.privateKeyPassphrase))
-            }
-            if application.requiresVPNCredentials {
-                let kind: OpenVPNCredentialKind = application.spec.authentication.mode == .oneTimePassword
-                    ? .staticChallenge : .usernameAndPassword
-                return .blocked(.credentialRequired(kind))
-            }
             return .ready(generation: binding.generation,
-                          profileDigest: application.spec.profileSHA256,
+                          profileDigest: binding.application.spec.profileSHA256,
                           activateAndInstallRoutes: { proof in
                               let exact = try state.activateForRouting(binding)
                               _ = try routeController.install(
@@ -106,13 +141,15 @@ final class VPNTunnelCoordinator {
          captureInterfaces: @escaping () throws -> VPNKernelInterfaceSnapshot,
          blocker: VPNTunnelCoordinatorBlocker? = nil,
          activateAndInstallRoutes: @escaping (VPNTunnelBootstrapProof) throws -> Void = { _ in },
-         prepareRoutesForProcessStop: @escaping () throws -> Void = {}) throws {
+         prepareRoutesForProcessStop: @escaping () throws -> Void = {},
+         credentials: VPNTunnelCredentialCallbacks? = nil) throws {
         self.selection = selection
         managementDirectory = fcntl(directory, F_DUPFD_CLOEXEC, 64)
         guard managementDirectory >= 0 else { throw VPNTunnelCoordinatorError.invalidState }
         self.openProfile = openProfile
         self.captureInterfaces = captureInterfaces
         self.prepareRoutesForProcessStop = prepareRoutesForProcessStop
+        self.credentials = credentials
         intent = {
             if let blocker = blocker { return .blocked(blocker) }
             return .ready(generation: generation, profileDigest: profileDigest,
@@ -174,6 +211,13 @@ final class VPNTunnelCoordinator {
             let client = try connect(socket: socket, process: child, deadline: deadline)
             management = client
             _ = try initialize(client: client, deadline: deadline)
+            if try credentials?.outstanding(generation) == true {
+                let kind = try awaitNextCredentialPrompt(client, deadline: deadline)
+                try parkCredentialPrompt(kind, generation: generation, client: client,
+                                         activateRoutes: activateRoutes)
+                current = .blocked(.credentialRequired(kind))
+                return current
+            }
             let baseline = try captureInterfaces()
             let proof = try bootstrap(client: client, generation: generation,
                                       baseline: baseline, deadline: deadline)
@@ -181,14 +225,88 @@ final class VPNTunnelCoordinator {
             current = .bootstrapReady(proof)
             return current
         } catch let blocker as CoordinatorCredentialBlock {
-            try stopLocked()
-            current = .blocked(.credentialRequired(blocker.kind))
-            return current
+            guard credentials != nil, let client = management else {
+                try stopLocked()
+                current = .blocked(.credentialRequired(blocker.kind))
+                return current
+            }
+            do {
+                try parkCredentialPrompt(blocker.kind, generation: generation, client: client,
+                                         activateRoutes: activateRoutes)
+                current = .blocked(.credentialRequired(blocker.kind))
+                return current
+            } catch let promptError {
+                current = .failed(generation: generation)
+                credentials?.fail()
+                do { try stopLocked() } catch { throw error }
+                throw promptError
+            }
         } catch let startError {
             current = .failed(generation: generation)
             do { try stopLocked() }
             catch let cleanupError { throw cleanupError }
             throw startError
+        }
+    }
+
+    /// Claims durable one-shot authority before constructing or writing the
+    /// transient command. On success either the next real prompt is parked or
+    /// the initial hold is released exactly once and bootstrap continues.
+    func submitCredential(_ response: inout VPNCredentialResponse,
+                          timeoutMilliseconds: Int = 5_000) throws
+        -> VPNTunnelCoordinatorReadiness {
+        lock.lock(); defer { lock.unlock() }
+        guard let callbacks = credentials, let client = management,
+              let child = process, let exchange = credentialExchange,
+              let challenge = credentialChallenge, let kind = credentialKind,
+              let generation = pendingGeneration,
+              let activateRoutes = pendingRouteActivation else {
+            response.secret.resetBytes(in: 0..<response.secret.count)
+            response.secret.removeAll(keepingCapacity: false)
+            throw VPNTunnelCoordinatorError.invalidState
+        }
+        guard response.challenge == challenge,
+              (1...10_000).contains(timeoutMilliseconds) else {
+            response.secret.resetBytes(in: 0..<response.secret.count)
+            response.secret.removeAll(keepingCapacity: false)
+            callbacks.fail()
+            current = .failed(generation: generation)
+            do { try stopLocked() } catch { throw error }
+            throw VPNTunnelCoordinatorError.invalidState
+        }
+        let deadline = Self.now() + UInt64(timeoutMilliseconds) * 1_000_000
+        do {
+            guard try child.state() == .running else { throw VPNTunnelCoordinatorError.engineExited }
+            // This durable transition burns UUID/generation/kind before any
+            // secret object exists and therefore before a management write.
+            let binding = try callbacks.claim(challenge)
+            var transient = try OpenVPNTransientCredential(
+                response: &response, application: binding.application)
+            try exchange.submit(transient)
+            credentialExchange = nil; credentialChallenge = nil; credentialKind = nil
+            try awaitCredentialCommandSuccesses(client, kind: kind, deadline: deadline)
+            let complete = try callbacks.complete(binding)
+            if !complete {
+                let next = try awaitNextCredentialPrompt(client, deadline: deadline)
+                try parkCredentialPrompt(next, generation: generation, client: client,
+                                         activateRoutes: activateRoutes)
+                current = .blocked(.credentialRequired(next))
+                return current
+            }
+            let baseline = try captureInterfaces()
+            let proof = try bootstrap(client: client, generation: generation,
+                                      baseline: baseline, deadline: deadline)
+            try activateRoutes(proof)
+            pendingGeneration = nil; pendingRouteActivation = nil
+            current = .bootstrapReady(proof)
+            return current
+        } catch let submissionError {
+            response.secret.resetBytes(in: 0..<response.secret.count)
+            response.secret.removeAll(keepingCapacity: false)
+            callbacks.fail()
+            current = .failed(generation: generation)
+            do { try stopLocked() } catch { throw error }
+            throw submissionError
         }
     }
 
@@ -248,7 +366,82 @@ final class VPNTunnelCoordinator {
         management?.close()
         _ = try? process?.stop(graceMilliseconds: 500)
         reservation?.cleanup()
+        credentialExchange = nil; credentialChallenge = nil; credentialKind = nil
+        pendingGeneration = nil; pendingRouteActivation = nil
         management = nil; process = nil; reservation = nil
+    }
+
+    private func parkCredentialPrompt(_ kind: OpenVPNCredentialKind,
+                                      generation: UInt64,
+                                      client: OpenVPNManagementClient,
+                                      activateRoutes: @escaping
+                                        (VPNTunnelBootstrapProof) throws -> Void) throws {
+        guard credentialExchange == nil, credentialChallenge == nil,
+              let callbacks = credentials else {
+            throw VPNTunnelCoordinatorError.invalidState
+        }
+        guard kind != .staticChallenge else {
+            throw VPNTunnelCoordinatorError.unsupportedCredentialPrompt
+        }
+        let issued = try callbacks.issue(generation, kind)
+        let exchange = try OpenVPNHeldCredentialExchange(
+            challenge: issued.0, application: issued.1, transport: client)
+        try exchange.observe(.credentialRequired(kind))
+        credentialExchange = exchange
+        credentialChallenge = issued.0
+        credentialKind = kind
+        pendingGeneration = generation
+        pendingRouteActivation = activateRoutes
+    }
+
+    private func awaitCredentialCommandSuccesses(_ client: OpenVPNManagementClient,
+                                                 kind: OpenVPNCredentialKind,
+                                                 deadline: UInt64) throws {
+        let expected = kind == .usernameAndPassword ? 2 : 1
+        var accepted = 0
+        for _ in 0..<16 {
+            switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
+            case .commandSucceeded:
+                accepted += 1
+                if accepted == expected { return }
+            case .credentialRejected:
+                throw OpenVPNHeldCredentialExchangeError.engineRejectedCredential
+            case .credentialRequired, .fatal, .commandFailed, .commandCompleted:
+                throw VPNTunnelCoordinatorError.managementRejected
+            case .state(let evidence):
+                guard evidence.state != .connected, evidence.state != .reconnecting,
+                      evidence.state != .exiting else {
+                    throw VPNTunnelCoordinatorError.unsafeBootstrapState
+                }
+            case .ready, .hold: break
+            }
+        }
+        throw VPNTunnelCoordinatorError.managementRejected
+    }
+
+    private func awaitNextCredentialPrompt(_ client: OpenVPNManagementClient,
+                                           deadline: UInt64) throws
+        -> OpenVPNCredentialKind {
+        for _ in 0..<32 {
+            switch try client.readEvent(timeoutMilliseconds: Self.remaining(deadline)) {
+            case .credentialRequired(let kind):
+                guard kind != .staticChallenge else {
+                    throw VPNTunnelCoordinatorError.unsupportedCredentialPrompt
+                }
+                return kind
+            case .credentialRejected:
+                throw OpenVPNHeldCredentialExchangeError.engineRejectedCredential
+            case .fatal, .commandFailed:
+                throw VPNTunnelCoordinatorError.managementRejected
+            case .state(let evidence):
+                guard evidence.state != .connected, evidence.state != .reconnecting,
+                      evidence.state != .exiting else {
+                    throw VPNTunnelCoordinatorError.unsafeBootstrapState
+                }
+            case .ready, .hold, .commandSucceeded, .commandCompleted: break
+            }
+        }
+        throw VPNTunnelCoordinatorError.managementRejected
     }
 
     private func connect(socket: VPNManagementSocketReservation, process: VPNEngineProcess,
