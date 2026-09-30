@@ -3301,3 +3301,26 @@ arm64/x86_64 helper build со strict codesign. Актуальный `main` та
 Следующий узел — связать prompt-driven management events с durable multi-prompt
 state machine и transient credential transport. DNS и публичный Connected всё
 ещё заблокированы отдельными gates; release/tag не создаётся.
+
+### Продолжение 1.5bm — held multi-prompt credential coordinator (30 сентября)
+
+Coordinator теперь может удерживать supervised OpenVPN и management socket на
+initial hold, когда сам engine выдаёт credential prompt. Challenge создаётся
+только из реально наблюдённого exact prompt; его UUID/generation/kind durable
+сжигается до создания transient credential и до первой записи в socket. Private
+Key и Auth поддерживаются последовательно в любом порядке с новым UUID для
+каждого prompt. Code-only OTP проходит обычный Auth prompt; combined static
+challenge по-прежнему fail-closed и не угадывается.
+
+Hold release разрешён ровно один раз и только когда обработаны все обязательные
+виды credential из validated application. Stale/replay, rejection, transport
+ошибка, unexpected prompt/state или timeout обнуляют secret, переводят durable
+attempt в failed и проходят route cleanup barrier до остановки процесса.
+Пройдены 42 объединённые coordinator/state/transient/exchange проверки,
+production installer fixture и universal arm64/x86_64 build со strict codesign.
+
+Listener IPC пока сохраняет старую fail-closed границу и ещё не передаёт secret
+в coordinator. Следующий срез убирает pre-issued challenge из `connect`: API
+должен возвращать challenge только после real management prompt, передавать
+`submitCredential` в parked coordinator и корректно возвращать следующий
+challenge либо внутренний bootstrap status. DNS/UI Connected остаются выключены.
