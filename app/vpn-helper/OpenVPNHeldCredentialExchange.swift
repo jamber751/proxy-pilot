@@ -66,18 +66,20 @@ final class OpenVPNHeldCredentialExchange {
     /// exchange. Non-credential management events do not alter the binding.
     func observe(_ event: OpenVPNManagementEvent) throws {
         lock.lock()
-        defer { lock.unlock() }
         switch state {
         case .finished:
+            lock.unlock()
             transport.abortCredentialExchange()
             throw OpenVPNHeldCredentialExchangeError.exchangeFinished
         case .promptObserved:
             switch event {
             case .credentialRequired, .credentialRejected:
                 state = .finished
+                lock.unlock()
                 transport.abortCredentialExchange()
                 throw OpenVPNHeldCredentialExchangeError.unexpectedPrompt
             default:
+                lock.unlock()
                 return
             }
         case .waitingForPrompt:
@@ -85,15 +87,19 @@ final class OpenVPNHeldCredentialExchange {
             case .credentialRequired(let prompt):
                 guard prompt == expectedPrompt else {
                     state = .finished
+                    lock.unlock()
                     transport.abortCredentialExchange()
                     throw OpenVPNHeldCredentialExchangeError.unexpectedPrompt
                 }
                 state = .promptObserved(prompt)
+                lock.unlock()
             case .credentialRejected:
                 state = .finished
+                lock.unlock()
                 transport.abortCredentialExchange()
                 throw OpenVPNHeldCredentialExchangeError.engineRejectedCredential
             default:
+                lock.unlock()
                 return
             }
         }
