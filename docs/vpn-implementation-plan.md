@@ -3762,3 +3762,24 @@ transaction/controller suites: 19/19 прошли, включая коротки
 AF_LINK gateway. Новая реальная VPN-попытка во время сбора ещё не наблюдалась.
 Не собирать следующий candidate только ради гипотезы: сначала capture
 попытки с пользовательским OTP, затем сопоставить offending event/fixtures.
+
+### Продолжение 1.5ch — live notification shape captured (1 октября)
+
+Пользователь повторил попытку в installed 133. Passive observer зафиксировал
+пакетную последовательность: IFINFO 112, NEWADDR 80, ADD 124, NEWMADDR 52,
+ADD 132, затем cleanup DELETE/DELADDR/DELMADDR/IFINFO. NEWADDR содержит
+ifa_msghdr, netmask sa_len=7 (aligned 8), AF_LINK sa_len=20 и два IPv4
+sockaddr по 16 bytes. Frame length/version/layout корректны; это нормальная
+notification, а не повреждённый route reply. Installed helper в тот же этап
+AUTH/ASSIGN_IP/CONNECTED -> peerLookup возвращает malformedMessage.
+
+Наблюдение подтверждает наличие коротких notification в реальной попытке,
+которые старый decoder неизбежно отвергает при drain startup socket queue.
+Fixture NEWADDR заменена на captured 80-byte structural shape, с безопасными
+документационными адресами (raw payload не сохранялся). Candidate 134 будет
+собран с уже committed prelude/notification fix. Real connected, owned
+routes и disconnect остаются pending до проверки установленной 134.
+Suites после captured fixture: peer 2/2, route socket 2/2, transaction 7/7,
+controller 8/8, coordinator 17/17, management client 5/5, listener 43/43:
+84/84 passed. Passive capture завершён вручную после получения нужного
+наблюдения; engine process и маршрутов к выбранным ресурсам не осталось.

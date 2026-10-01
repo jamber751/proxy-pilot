@@ -186,7 +186,20 @@ final class FakePeerRouteTransport: VPNRouteSocketTransport {
         noticeHeader.ifam_version = UInt8(RTM_VERSION)
         noticeHeader.ifam_type = UInt8(RTM_NEWADDR)
         noticeHeader.ifam_index = UInt16(index)
-        let notice = withUnsafeBytes(of: &noticeHeader) { Data($0) }
+        // Shape captured during the real attempt: NEWADDR 80 bytes,
+        // netmask(7->8), link(20), address(16), point-to-point peer(16).
+        // Addresses here are documentation fixtures, never captured payload.
+        var body = Data([7, UInt8(AF_INET), 0, 0, 255, 255, 255, 0])
+        var link = Data(repeating: 0, count: 20)
+        link[0] = 20; link[1] = UInt8(AF_LINK)
+        body.append(link)
+        body.append(sockaddr("192.0.2.9", family: .ipv4))
+        body.append(sockaddr("192.0.2.1", family: .ipv4))
+        noticeHeader.ifam_addrs = RTA_NETMASK | RTA_IFP | RTA_IFA | RTA_BRD
+        noticeHeader.ifam_msglen = UInt16(MemoryLayout<ifa_msghdr>.size + body.count)
+        var notice = withUnsafeBytes(of: &noticeHeader) { Data($0) }
+        notice.append(body)
+        try require(notice.count == 80 && notice.count < headerSize, "captured notification shape")
         let valid = reply(sequence: 1, pid: pid, family: .ipv4, destination: "0.0.0.0",
             prefix: 0, gateway: "192.0.2.1", index: index, name: name,
             flags: UInt32(RTF_UP | RTF_GATEWAY), zeroLengthDefault: true)
