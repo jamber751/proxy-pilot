@@ -85,6 +85,9 @@ enum VPNFlowDiagnostics {
     static func credentialWritten() {
         os_log("VPN credential command written (contents omitted)", log: log, type: .info)
     }
+    static func notificationSkipped(_ type: UInt8) {
+        os_log("VPN route notification skipped: type=%{public}d", log: log, type: .info, Int32(type))
+    }
 }
 
 /// A deliberately small, redacted view of the OpenVPN management protocol.

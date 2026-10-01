@@ -77,6 +77,13 @@ final class VPNPeerRouteEvidenceResolver {
                 data = try transport.receive(maximumBytes: VPNDarwinRouteCodec.maximumMessageBytes,
                                              deadline: deadline)
             } catch { throw translate(error) }
+            let messageType: UInt8
+            do { messageType = try VPNDarwinRouteCodec.messageType(data) }
+            catch { throw VPNPeerRouteEvidenceError.malformedMessage }
+            if VPNDarwinRouteCodec.isInterfaceNotification(messageType) {
+                VPNFlowDiagnostics.notificationSkipped(messageType)
+                continue
+            }
             let header: rt_msghdr
             do { header = try VPNDarwinRouteCodec.identify(data) }
             catch { throw VPNPeerRouteEvidenceError.malformedMessage }

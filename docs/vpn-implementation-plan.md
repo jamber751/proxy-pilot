@@ -3736,3 +3736,29 @@ Read-only сбор текущей диагностики (никаких сис�
 /usr/bin/log show --last 10m --style compact --info \
   --predicate 'subsystem == "kz.documentolog.proxypilot.vpn" AND (category == "startup" OR category == "flow") AND process BEGINSWITH "helper-"'
 ```
+
+### Продолжение 1.5cg — notification framing and passive capture (1 октября)
+
+Installed 133 впервые локализовал текущий отказ до `peerLookup/malformedMessage`
+после AUTH/ASSIGN_IP/CONNECTED, до route transaction. Подтверждён отдельный
+parser defect: стандартный RTM_NEWADDR с ifa_msghdr + IPv4 sockaddr (36 bytes)
+отвергается identify(), который требует rt_msghdr (92 bytes), ещё до проверки
+type/PID/sequence. Это воспроизведено production resolver с fake transport.
+Точный offending packet installed попытки пока не captured: причина live
+ошибки ещё не объявлена доказанной этим отдельным воспроизведением.
+
+Исправлен общий 4-byte prelude check (length/version/type) до чтения route
+header. Только известные interface/address/multicast notification types
+пропускаются без выдачи route evidence. Matched route PID/seq, body decoding,
+errno, frame bounds, 128-message cap и единый deadline не ослаблены. Type
+пропущенного сообщения журналируется как число, без payload. Peer/socket,
+transaction/controller suites: 19/19 прошли, включая короткие уведомления,
+ошибочную длину/version, flood cap и отсутствие продления deadline.
+
+По просьбе пользователя запущен временный пассивный PF_ROUTE observer: не
+отправляет запросы и не меняет VPN/routes/DNS. Сохраняется только структура
+(тип, длина, family/length sockaddr), не байты адресов/credentials. Пока
+наблюдаются обычные RTM_GET replies, в т.ч. zero-length default netmask и
+AF_LINK gateway. Новая реальная VPN-попытка во время сбора ещё не наблюдалась.
+Не собирать следующий candidate только ради гипотезы: сначала capture
+попытки с пользовательским OTP, затем сопоставить offending event/fixtures.

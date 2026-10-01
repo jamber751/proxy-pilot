@@ -201,6 +201,33 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
         print("matching passed")
     }
 
+    static func notifications() throws {
+        let identity = try identities()[1], pid: Int32 = 414
+        var header = ifa_msghdr()
+        header.ifam_msglen = UInt16(MemoryLayout<ifa_msghdr>.size)
+        header.ifam_version = UInt8(RTM_VERSION); header.ifam_type = UInt8(RTM_NEWADDR)
+        let notice = withUnsafeBytes(of: &header) { Data($0) }
+        for type in [RTM_NEWADDR, RTM_DELADDR, RTM_IFINFO, RTM_IFINFO2,
+                     RTM_NEWMADDR, RTM_DELMADDR, RTM_NEWMADDR2] {
+            var packet = notice; packet[3] = UInt8(type)
+            let fake = FakeRouteTransport()
+            fake.replies = [.success(packet), .success(try VPNDarwinRouteCodec.encodeReply(
+                type: UInt8(RTM_GET), sequence: 1, pid: pid, error: 0, identity: identity))]
+            let result = try VPNDarwinRouteSocket(transport: fake, pid: pid).lookupExact(identity.destination)
+            try require(result?.matches(identity) == true, "notification not skipped")
+        }
+        var invalid = notice; invalid[2] = 0
+        let malformed = FakeRouteTransport(); malformed.replies = [.success(invalid)]
+        do { _ = try VPNDarwinRouteSocket(transport: malformed, pid: pid).lookupExact(identity.destination)
+             throw NSError(domain: "invalid notification version ignored", code: 1) }
+        catch VPNDarwinRouteError.malformedMessage {}
+        let flood = FakeRouteTransport(); flood.replies = Array(repeating: .success(notice), count: 128)
+        do { _ = try VPNDarwinRouteSocket(transport: flood, pid: pid).lookupExact(identity.destination)
+             throw NSError(domain: "notification limit ignored", code: 1) }
+        catch VPNDarwinRouteError.responseLimit {}
+        print("notification handling passed")
+    }
+
     // Independent Darwin wire fixture: sockaddr alignment is four bytes,
     // including a zero-length default netmask. Do not use the codec encoder.
     static func defaultReply(family: VPNRouteAddressFamily, type: UInt8 = UInt8(RTM_GET),
@@ -359,7 +386,7 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
     }
 
     static func main() throws {
-        try codec(); try malformed(); try matchingAndErrno(); try defaultBestRoute()
+        try codec(); try malformed(); try matchingAndErrno(); try notifications(); try defaultBestRoute()
         try addCases(); try deleteCases()
         guard CommandLine.arguments.count == 2 else { exit(64) }
         try recovery(CommandLine.arguments[1]); print("route socket checks passed")

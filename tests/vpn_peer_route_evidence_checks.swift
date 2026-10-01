@@ -179,6 +179,40 @@ final class FakePeerRouteTransport: VPNRouteSocketTransport {
         print("matching and bounds passed")
     }
 
+    static func notifications() throws {
+        let (index, name) = physicalInterface(), pid: Int32 = 711
+        var noticeHeader = ifa_msghdr()
+        noticeHeader.ifam_msglen = UInt16(MemoryLayout<ifa_msghdr>.size)
+        noticeHeader.ifam_version = UInt8(RTM_VERSION)
+        noticeHeader.ifam_type = UInt8(RTM_NEWADDR)
+        noticeHeader.ifam_index = UInt16(index)
+        let notice = withUnsafeBytes(of: &noticeHeader) { Data($0) }
+        let valid = reply(sequence: 1, pid: pid, family: .ipv4, destination: "0.0.0.0",
+            prefix: 0, gateway: "192.0.2.1", index: index, name: name,
+            flags: UInt32(RTF_UP | RTF_GATEWAY), zeroLengthDefault: true)
+        let fake = FakePeerRouteTransport()
+        fake.replies = [.success(notice), .success(valid)]
+        let evidence = try VPNPeerRouteEvidenceResolver(transport: fake, pid: pid)
+            .resolve(peer: ip("203.0.113.8", .ipv4))
+        try require(evidence.interfaceIndex == index && fake.replies.isEmpty,
+                    "notification blocked matched peer reply")
+        try require(Set(fake.deadlines).count == 1, "notification extended deadline")
+        var malformed = notice; malformed[0] = 0
+        let bad = FakePeerRouteTransport(); bad.replies = [.success(malformed), .success(valid)]
+        do { _ = try VPNPeerRouteEvidenceResolver(transport: bad, pid: pid)
+            .resolve(peer: ip("203.0.113.8", .ipv4))
+            throw NSError(domain: "malformed framing ignored", code: 1)
+        } catch VPNPeerRouteEvidenceError.malformedMessage {}
+        let flood = FakePeerRouteTransport()
+        flood.replies = Array(repeating: .success(notice), count: 128) + [.success(valid)]
+        do { _ = try VPNPeerRouteEvidenceResolver(transport: flood, pid: pid)
+            .resolve(peer: ip("203.0.113.8", .ipv4))
+            throw NSError(domain: "unbounded notification drain", code: 1)
+        } catch VPNPeerRouteEvidenceError.responseLimit {}
+        try require(flood.replies.count == 1, "bounded notification drain")
+        print("notification handling passed")
+    }
+
     static func existingVPNChaining() throws {
         guard let (index, name) = existingUTUN() else {
             print("existing utun unavailable; chaining fixture skipped")
@@ -259,7 +293,7 @@ final class FakePeerRouteTransport: VPNRouteSocketTransport {
     }
 
     static func main() throws {
-        try ipv4Default(); try ipv6AndDirect(); try matchingAndBounds(); try existingVPNChaining()
+        try ipv4Default(); try ipv6AndDirect(); try matchingAndBounds(); try notifications(); try existingVPNChaining()
         try rejectsUntrustedEvidence(); print("peer route evidence checks passed")
     }
 

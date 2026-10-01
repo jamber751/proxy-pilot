@@ -243,6 +243,7 @@ enum VPNDarwinRouteCodec {
     }
 
     static func identify(_ data: Data) throws -> rt_msghdr {
+        _ = try messageType(data)
         guard data.count >= headerSize, data.count <= maximumMessageBytes else {
             throw VPNDarwinRouteError.malformedMessage
         }
@@ -253,6 +254,24 @@ enum VPNDarwinRouteCodec {
             throw VPNDarwinRouteError.malformedMessage
         }
         return header
+    }
+
+    /// All routing-socket messages share only this four-byte prelude.
+    /// Interface/address notifications use if*_msghdr, not rt_msghdr.
+    static func messageType(_ data: Data) throws -> UInt8 {
+        guard data.count >= 4, data.count <= maximumMessageBytes else {
+            throw VPNDarwinRouteError.malformedMessage
+        }
+        let length = data.withUnsafeBytes { Int($0.loadUnaligned(as: UInt16.self)) }
+        guard length == data.count, data[2] == UInt8(RTM_VERSION) else {
+            throw VPNDarwinRouteError.malformedMessage
+        }
+        return data[3]
+    }
+
+    static func isInterfaceNotification(_ type: UInt8) -> Bool {
+        [RTM_NEWADDR, RTM_DELADDR, RTM_IFINFO, RTM_IFINFO2,
+         RTM_NEWMADDR, RTM_DELMADDR, RTM_NEWMADDR2].contains(Int32(type))
     }
 
     private static func message(type: UInt8, sequence: Int32, pid: Int32, error: Int32,
@@ -525,6 +544,11 @@ final class VPNDarwinRouteSocket {
             do { data = try transport.receive(maximumBytes: VPNDarwinRouteCodec.maximumMessageBytes,
                                               deadline: deadline) }
             catch { throw translate(error) }
+            let messageType = try VPNDarwinRouteCodec.messageType(data)
+            if VPNDarwinRouteCodec.isInterfaceNotification(messageType) {
+                VPNFlowDiagnostics.notificationSkipped(messageType)
+                continue
+            }
             let header: rt_msghdr
             do { header = try VPNDarwinRouteCodec.identify(data) }
             catch { throw VPNDarwinRouteError.malformedMessage }
