@@ -3783,3 +3783,42 @@ Suites после captured fixture: peer 2/2, route socket 2/2, transaction 7/7,
 controller 8/8, coordinator 17/17, management client 5/5, listener 43/43:
 84/84 passed. Passive capture завершён вручную после получения нужного
 наблюдения; engine process и маршрутов к выбранным ресурсам не осталось.
+
+### Продолжение 1.5ci — восстановление acceptance после очистки /tmp (3 октября)
+
+После перезапуска временные app/package/engine материалы 134 отсутствуют.
+Установленный публичный receipt сохранён в постоянном acceptance-каталоге;
+его Ed25519 подпись проверена production verification tool: sequence 134,
+version 1.5.1. Helper 134 работает idle; OpenVPN и маршрутов к выбранным
+ресурсам нет. Пользовательский профиль не изменялся, desiredEnabled=false.
+
+Две попытки восстановления frontend (HEAD и исходники app-кандидата 127)
+с sequence 134 успешно собраны Universal, но обе пары CDHashes отличаются
+от подписанных pins установленного receipt. Это не считается восстановлением
+или успешным readiness; запрещено ослаблять peer authentication или заменять
+receipt неподписанными данными. Подготавливается новая подписанная согласованная
+пара 135 для обычного Installer remove/install пути. Материалы теперь сохраняются
+в постоянных каталогах, не /tmp. Публичный релиз/тег не создаётся.
+
+Повторная регрессия: peer evidence 2, route socket 2, transaction 7, route
+controller 8, tunnel coordinator 17, management client 5, helper listener 43,
+public receipt 4 — 88/88 passed. Real connect + owned routes + disconnect
+по-прежнему pending; эти проверки не заменяются результатами unit tests.
+
+Кандидат 135 завершён: Universal frontend из HEAD с bundled Universal GOST,
+Universal helper, pinned OpenVPN 2.7.7/OpenSSL 3.5.8 engine с crypto self-tests
+и exact source/notices/provenance. Manifest подписан существующим release key
+и проверен: sequence 135, version 1.5.1. Оба scripts-only пакета remove/install
+прошли production package verifier. Package suite: 21 checks, 18 passed,
+3 platform/fixture skips. Пробная сборка engine в пути с пробелами отказала
+до завершения make; итоговый engine собран в постоянном ignored app/build пути.
+
+Пакеты и подписанный Payload находятся в
+`~/Library/Application Support/ProxyPilot/Acceptance/candidate-135-20261003/`.
+Engine artifact находится в
+`app/build/vpn-acceptance-135-20261003-engine/artifact/`.
+Открыт обычный Installer `Remove old VPN support.pkg`; нажат Install.
+Переход к успешному удалению ещё не подтверждён: системную авторизацию должен
+выполнить пользователь. Затем требуется install 135 и проверка matching frontend
+readiness перед live OTP. Профиль пользователя не изменён; этот шаг не отмечен
+как installed acceptance.
