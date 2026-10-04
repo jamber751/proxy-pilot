@@ -3977,3 +3977,27 @@ change acceptance. Живую DNS/domain приёмку не подменять 
 Следующий implementation block — effective VPN bypass; после него lifecycle
 и network change acceptance. Домены/DNS и WARP остаются отдельными открытыми
 пунктами. Системное sleep/смена сети на рабочей машине на этом шаге не выполнялись.
+
+### Продолжение 1.5cn — pure effective VPN bypass (4 октября)
+
+- [x] Добавлен VPNBridgeBypass: pure projection валидного helper snapshot.
+  Для connected берётся active spec с generation/revision; saved user intent
+  намеренно не входит в API, поэтому неприменённая saved revision не подменяет
+  активные ресурсы. Caller обязан получать свежий snapshot через существующий
+  аутентифицированный канал; сам pure value не доказывает свежесть сети.
+- [x] Точные IPv4/IPv6/CIDR matchers детерминированы; публичный IP не расширяется
+  до сети. Merge сохраняет исходный пользовательский список как точный prefix,
+  не дублирует существующие exact entries и идемпотентен.
+- [x] Только подтверждённый off даёт пустой overlay. Failed/transition state
+  не принимается за cleanup; invalid snapshot и unsupported domain/DNS rejected.
+- [x] 7/7 isolated Swift checks прошли без skips: exact IP/CIDR/IPv6, merge,
+  off, failed, zero generation, unsupported intent и active revision replacement.
+- [ ] Интеграция с CLI/production write_gost_config и bridge lifecycle ещё
+  не подключена. Нужны authenticated snapshot handoff, защита от устаревшего
+  overlay и недоказанной очистки, сериализация update/ensure, безопасный restart
+  с сохранением enabled/route, затем оба локальных протокола и installed acceptance.
+
+Этот слой не включён в app build graph и не меняет рабочую 136. Системные
+proxy/DNS, пользовательский config и VPN-подключение не менялись; все 3
+ресурсных маршрута после тестов сохраняются. Полный пункт automatic bypass
+в 1.5cm остаётся открытым до интеграции и живой проверки.
