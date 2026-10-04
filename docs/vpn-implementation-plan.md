@@ -3945,3 +3945,35 @@ VPNScopedDNSAdapterSeam — модели и pure policy, а не рабочий 
 Дальнейшие независимые шаги: проверить IP-only VPN вместе с локальными
 HTTP/SOCKS5 и существующими upstream-маршрутами; затем lifecycle/network
 change acceptance. Живую DNS/domain приёмку не подменять IP-тестами.
+
+### Продолжение 1.5cm — HTTP/SOCKS5 bypass и live IP acceptance (4 октября)
+
+- [x] Расширены реальные GOST integration tests: оба локальных протокола
+  проверяют bypass при остановленном HTTP/SOCKS5 upstream. Non-bypass должен
+  отказать; bypass должен вернуть точное содержимое локального test server.
+  Для отрицательного HTTP запроса добавлен curl --fail: HTTP 503 сам по себе
+  не означает ненулевой exit code и не должен засчитываться как доступность.
+- [x] 5/5 loopback GOST tests прошли; power regression 21/21 прошла.
+- [x] Добавлен opt-in live probe с явным IPv4 target, без чтения VPN-профиля,
+  credentials или изменения системного proxy/DNS. До/после требуется utun route;
+  HEAD не следует redirect и не отправляет данные аутентификации. Тест использует
+  exact production write_gost_config и matching candidate 136 GOST.
+- [x] Два живых прогона: каждый 6/6 без skips. Два уже разрешённых VPN ресурса
+  отвечают HTTP 302 и 301 соответственно. Для каждого подтверждены 6 сочетаний:
+  local HTTP/SOCKS5 × direct/SOCKS-upstream/HTTP-upstream. Upstream в последних
+  двух случаях намеренно недоступен, точный target входит в временный bypass.
+  Третий ресурс отвечает ICMP, но на HEAD HTTP возвращает empty reply;
+  прикладная HTTP доступность для него не заявляется.
+- [x] Временные listeners завершены, пользовательский bridge port/config,
+  system proxies и DNS не менялись. Все 3 owned UHS2 маршрута остались на utun6,
+  основной маршрут en0; рабочий VPN оставлен включённым.
+- [ ] Автоматическое добавление ресурсов active VPN в отдельный effective bypass
+  моста без перезаписи пользовательского NO_PROXY_LIST. В текущем frontend/CLI
+  такой интеграции нет; существующие частные сети уже покрыты сохранённым bypass.
+  Прогоны с явным временным target не доказывают её наличие и не закрывают
+  весь этап совместимости моста. Требуются public-IP/CIDR fixtures, off/cleanup,
+  active-vs-saved revision и безопасное обновление конфигурации моста.
+
+Следующий implementation block — effective VPN bypass; после него lifecycle
+и network change acceptance. Домены/DNS и WARP остаются отдельными открытыми
+пунктами. Системное sleep/смена сети на рабочей машине на этом шаге не выполнялись.
