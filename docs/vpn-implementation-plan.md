@@ -3876,3 +3876,32 @@ production payload verifier. Все 12 runtime transaction scenarios допол�
 Материалы: `~/Library/Application Support/ProxyPilot/Acceptance/candidate-136-20261004/`.
 Последний ordinary-user status установленного компонента по-прежнему release 135.
 Реальный OTP + ресурсные RTM_ADD + disconnect для 136 остаются pending.
+
+### Продолжение 1.5ck — живая приёмка connect/disconnect 136 (4 октября)
+
+Это продолжение заменяет предыдущий pending для первого connect/disconnect,
+но не закрывает полный release gate, DNS, совместимость с мостом и lifecycle.
+
+- [x] Установлена 136: public receipt payload/signature совпадают с подписанным
+  кандидатом; matching frontend сообщает `VPN support is available. Release 136.`
+- [x] Реальный пользовательский OTP принят. AUTH/ASSIGN_IP/CONNECTED завершены,
+  transactionInstall/transactionVerify/controllerInstall прошли без ошибки.
+  Системный peer dependency сохранён, ресурсные kernelAdd выполнены.
+- [x] UI показывает «VPN включён». Все 3 выбранных IPv4 ресурса получили
+  собственные UHS2 маршруты через utun6 и ответили на 2 ICMP запроса каждый,
+  без потерь. Основной маршрут остался на en0. Это подтверждает ICMP/IP
+  доступность, но не прикладные сервисы, корпоративный DNS или домены.
+- [x] Штатная кнопка выключения: UI «VPN выключен», три kernelDelete завершены,
+  все 3 ресурсных маршрута отсутствуют, managed engine остановлен,
+  saved desiredEnabled=false. Основной маршрут остаётся en0; публичный HTTPS
+  контроль вернул HTTP 200 после отключения.
+- [x] Следующее включение запросило новый код, старый OTP не использован
+  автоматически. Отмена без ввода кода вернула UI в выключенное состояние,
+  desiredEnabled=false; ресурсные маршруты и managed engine отсутствуют.
+- [ ] Повторный успешный вход со свежим OTP и повторная проверка ресурсов.
+- [ ] Неверный/просроченный код, таймаут и повтор после отказа на реальном сервере.
+- [ ] Домены/DNS/HTTP-SOCKS мост, сон/смена сети/WARP и полный release gate.
+
+Секреты и raw management payload в отчёт не включались. Проверена именно
+matching staged сборка 136, не старое публичное приложение из Applications.
+Публичный релиз/тег не создавались.
