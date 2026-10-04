@@ -25,7 +25,7 @@ enum VPNFlowDiagnostics {
         case controllerInstall, controllerRecovery, controllerApplication
         case controllerIntent, controllerBootstrap, controllerPeer, controllerPlan
         case controllerTransaction, controllerVerify, controllerCleanup, controllerAuthority
-        case transactionInstall, transactionPreflight, transactionJournal
+        case transactionInstall, transactionPreflight, transactionJournal, transactionPreservePeer
         case transactionCheckpoint, transactionAdd, transactionVerify, transactionRecovery
         case kernelLookup, kernelAdd, kernelDelete, peerLookup
     }

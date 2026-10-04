@@ -142,23 +142,23 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
         }
         for entry in applied { try Self.match(entry, plan: plan) }
         let appliedKeys = applied.map(Self.key)
-        let expectedKeys = plan.routes.prefix(applied.count).map(Self.key)
+        let expectedKeys = plan.ownedRoutes.prefix(applied.count).map(Self.key)
         guard appliedKeys == expectedKeys else { throw VPNRouteJournalError.invalidState }
         if let operation = operation { try Self.match(operation.entry, plan: plan) }
         switch phase {
         case .planned:
             guard applied.isEmpty, operation == nil else { throw VPNRouteJournalError.invalidState }
         case .installing:
-            guard applied.count < plan.routes.count else { throw VPNRouteJournalError.invalidState }
+            guard applied.count < plan.ownedRoutes.count else { throw VPNRouteJournalError.invalidState }
             if let operation = operation {
                 guard operation.action == .install,
-                      Self.key(operation.entry) == Self.key(plan.routes[applied.count]),
+                      Self.key(operation.entry) == Self.key(plan.ownedRoutes[applied.count]),
                       !applied.contains(where: { Self.key($0) == Self.key(operation.entry) }) else {
                     throw VPNRouteJournalError.invalidState
                 }
             }
         case .applied:
-            guard applied.count == plan.routes.count, operation == nil else {
+            guard applied.count == plan.ownedRoutes.count, operation == nil else {
                 throw VPNRouteJournalError.invalidState
             }
         case .removing:
@@ -240,7 +240,7 @@ final class VPNRouteJournal {
                       revision: UInt64) throws -> VPNRouteJournalSnapshot {
         let old = try bound(generation: generation, revision: revision)
         let installedKeys = Set(old.applied.map(VPNRouteJournalSnapshot.key))
-        let expected = old.plan.routes.first {
+        let expected = old.plan.ownedRoutes.first {
             !installedKeys.contains(VPNRouteJournalSnapshot.key($0))
         }
         guard [.planned, .installing].contains(old.phase), old.operation == nil,
@@ -266,7 +266,7 @@ final class VPNRouteJournal {
         }
         var entries = old.applied
         if present { entries.append(entry); entries.sort() }
-        let phase: VPNRouteJournalPhase = entries.count == old.plan.routes.count ? .applied : .installing
+        let phase: VPNRouteJournalPhase = entries.count == old.plan.ownedRoutes.count ? .applied : .installing
         let next = VPNRouteJournalSnapshot(schemaVersion: 1, plan: old.plan, phase: phase,
                                            applied: entries, operation: nil)
         try write(next); return next

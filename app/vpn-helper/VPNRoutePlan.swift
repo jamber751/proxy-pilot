@@ -274,6 +274,25 @@ struct VPNRoutePlan: Codable, Equatable {
     let revision: UInt64
     let tunnelInterface: VPNTunnelRouteBinding
     let routes: [VPNPlannedRoute]
+    // Nil keeps the exact schema-2 encoding of existing journals. True means
+    // the peer is a dependency, never a route acquired by this transaction.
+    let preservesPeerRoute: Bool?
+
+    var ownedRoutes: [VPNPlannedRoute] {
+        preservesPeerRoute == true ? Array(routes.dropFirst()) : routes
+    }
+
+    func preservingPeerRoute() throws -> VPNRoutePlan {
+        let value = VPNRoutePlan(copying: self, preservesPeerRoute: true)
+        try value.validate()
+        return value
+    }
+
+    private init(copying plan: VPNRoutePlan, preservesPeerRoute: Bool) {
+        schemaVersion = plan.schemaVersion; generation = plan.generation
+        revision = plan.revision; tunnelInterface = plan.tunnelInterface
+        routes = plan.routes; self.preservesPeerRoute = preservesPeerRoute
+    }
 
     init(generation: UInt64, revision: UInt64, resources: [VPNResource],
          peer: VPNRoutePeerEvidence, tunnel: VPNTunnelInterfaceEvidence) throws {
@@ -309,11 +328,13 @@ struct VPNRoutePlan: Codable, Equatable {
         }
         schemaVersion = Self.schema; self.generation = generation; self.revision = revision
         tunnelInterface = tunnelBinding
+        preservesPeerRoute = nil
         try validate()
     }
 
     func validate() throws {
         guard schemaVersion == Self.schema, generation > 0, revision > 0,
+              preservesPeerRoute == nil || preservesPeerRoute == true,
               (2...1001).contains(routes.count), routes == routes.sorted(),
               routes.first?.role == .peerBypass,
               routes.dropFirst().allSatisfy({ $0.role == .resource }) else {

@@ -31,6 +31,13 @@ struct VPNRouteAppliedProof: Equatable {
     let generation: UInt64
     let revision: UInt64
     let identities: [VPNOwnedRouteIdentity]
+    let preservedPeerRoute: VPNPlannedRoute?
+
+    init(generation: UInt64, revision: UInt64, identities: [VPNOwnedRouteIdentity],
+         preservedPeerRoute: VPNPlannedRoute? = nil) {
+        self.generation = generation; self.revision = revision
+        self.identities = identities; self.preservedPeerRoute = preservedPeerRoute
+    }
 }
 
 enum VPNRouteIdentityFactory {
@@ -104,25 +111,32 @@ final class VPNRouteTransaction {
         do { try checkAuthority() }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         let identities = try VPNRouteIdentityFactory.make(plan: plan)
-        guard identities.count == plan.routes.count else {
+        guard identities.count == plan.routes.count, plan.preservesPeerRoute == nil else {
             throw VPNRouteTransactionError.invalidPlan
         }
-        // A matching pre-existing route is still foreign on a fresh install.
-        // Ownership begins only after our durable beginInstall checkpoint.
+        // A compatible foreign peer route can be a read-only dependency.
+        // Resources (and our ownership-marked peer routes) are never adopted.
+        var preservedPeer: VPNPlannedRoute?
         for (ordinal, identity) in identities.enumerated() {
             VPNFlowDiagnostics.route(.transactionPreflight, ordinal: ordinal, peer: identity.role == .peerBypass)
             do { try checkAuthority() }
             catch { throw VPNRouteTransactionError.recoveryRequired }
-            guard try VPNFlowDiagnostics.run(.transactionPreflight, {
+            if let existing = try VPNFlowDiagnostics.run(.transactionPreflight, {
                 try kernel.lookupExact(identity.destination)
-            }) == nil else {
-                throw VPNRouteTransactionError.preexistingRoute
+            }) {
+                guard ordinal == 0, Self.canPreserve(existing, peer: plan.routes[0]) else {
+                    throw VPNRouteTransactionError.preexistingRoute
+                }
+                preservedPeer = plan.routes[0]
             }
         }
-        do { try checkAuthority(); _ = try VPNFlowDiagnostics.run(.transactionJournal) { try journal.create(plan) } }
+        let ownershipPlan = preservedPeer == nil ? plan : try plan.preservingPeerRoute()
+        let owned = preservedPeer == nil ? identities : Array(identities.dropFirst())
+        try verifyPreservedPeer(preservedPeer)
+        do { try checkAuthority(); _ = try VPNFlowDiagnostics.run(.transactionJournal) { try journal.create(ownershipPlan) } }
         catch { throw VPNRouteTransactionError.recoveryRequired }
 
-        for (ordinal, identity) in identities.enumerated() {
+        for (ordinal, identity) in owned.enumerated() {
             VPNFlowDiagnostics.route(.transactionAdd, ordinal: ordinal, peer: identity.role == .peerBypass)
             do { try checkAuthority(); _ = try VPNFlowDiagnostics.run(.transactionCheckpoint) {
                 try journal.beginInstall(identity, generation: plan.generation, revision: plan.revision)
@@ -130,6 +144,7 @@ final class VPNRouteTransaction {
             catch { throw VPNRouteTransactionError.recoveryRequired }
             do {
                 try checkAuthority()
+                try verifyPreservedPeer(preservedPeer)
                 let result = try VPNFlowDiagnostics.run(.transactionAdd) { try kernel.add(identity) }
                 guard result == .installed else {
                     _ = try journal.resolveInstall(identity, present: false,
@@ -155,7 +170,7 @@ final class VPNRouteTransaction {
         }
         let proof = VPNRouteAppliedProof(generation: plan.generation,
                                          revision: plan.revision,
-                                         identities: identities)
+                                         identities: owned, preservedPeerRoute: preservedPeer)
         try verifyAppliedLocked(proof)
         return proof
     }
@@ -185,9 +200,12 @@ final class VPNRouteTransaction {
         guard snapshot.phase == .applied, snapshot.operation == nil,
               snapshot.plan.generation == proof.generation,
               snapshot.plan.revision == proof.revision,
+              snapshot.plan.preservesPeerRoute == (proof.preservedPeerRoute == nil ? nil : true),
+              proof.preservedPeerRoute == nil || proof.preservedPeerRoute == snapshot.plan.routes.first,
               snapshot.applied == proof.identities else {
             throw VPNRouteTransactionError.notApplied
         }
+        try verifyPreservedPeer(proof.preservedPeerRoute)
         for identity in proof.identities {
             do { try checkAuthority() }
             catch { throw VPNRouteTransactionError.notApplied }
@@ -195,6 +213,30 @@ final class VPNRouteTransaction {
                   observed.matches(identity) else {
                 throw VPNRouteTransactionError.notApplied
             }
+        }
+        try verifyPreservedPeer(proof.preservedPeerRoute)
+    }
+
+    private static func canPreserve(_ snapshot: VPNDarwinRouteSnapshot,
+                                    peer: VPNPlannedRoute) -> Bool {
+        let required = UInt32(RTF_UP | RTF_HOST)
+        let forbidden = UInt32(RTF_REJECT | RTF_BLACKHOLE | RTF_PROTO2)
+        return peer.role == .peerBypass && snapshot.destination == peer.destination
+            && snapshot.gatewayBytes == peer.physicalGatewayBytes
+            && snapshot.interfaceIndex == peer.interfaceIndex
+            && snapshot.interfaceName == peer.interfaceName
+            && snapshot.flags & required == required && snapshot.flags & forbidden == 0
+            && (snapshot.gatewayBytes != nil) == (snapshot.flags & UInt32(RTF_GATEWAY) != 0)
+    }
+
+    private func verifyPreservedPeer(_ peer: VPNPlannedRoute?) throws {
+        guard let peer else { return }
+        try checkAuthority()
+        guard let observed = try VPNFlowDiagnostics.run(.transactionPreservePeer, {
+            try kernel.lookupExact(peer.destination)
+        }),
+              Self.canPreserve(observed, peer: peer) else {
+            throw VPNRouteTransactionError.notApplied
         }
     }
 

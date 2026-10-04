@@ -152,6 +152,30 @@ final class TunnelRouteFakeKernel: VPNRouteKernelController {
         print("lifecycle passed")
     }
 
+    static func preservedPeerLifecycle(_ folder: String) throws {
+        let active = try application(), kernel = TunnelRouteFakeKernel()
+        let resolved = try peer()
+        let plan = try VPNRoutePlan(generation: 41, revision: 9,
+            resources: active.spec.resources, peer: resolved, tunnel: bootstrap().tunnel)
+        let identity = try VPNRouteIdentityFactory.make(plan: plan)[0]
+        let existing = VPNDarwinRouteSnapshot(destination: identity.destination,
+            gatewayBytes: identity.gatewayBytes, interfaceIndex: identity.interfaceIndex,
+            interfaceName: identity.interfaceName,
+            flags: UInt32(RTF_UP | RTF_HOST | RTF_GATEWAY | RTF_WASCLONED))
+        kernel.routes[identity.destination.canonical] = existing
+        let value = try controller(folder: folder, active: active,
+                                   resolvedPeer: resolved, kernel: kernel)
+        let proof = try value.install(bootstrap: bootstrap(), activeApplication: active)
+        try requireTunnelRoutes(proof.routes.identities.map(\.role) == [.resource],
+                                "controller acquired foreign peer")
+        try value.verifyApplied(proof)
+        try value.prepareForProcessStop()
+        try requireTunnelRoutes(kernel.routes.count == 1
+                                && kernel.routes[identity.destination.canonical] == existing,
+                                "controller changed system peer route")
+        print("preserved peer lifecycle passed")
+    }
+
     static func stale(_ folder: String, mismatchApplication: Bool) throws {
         let active = try application(), kernel = TunnelRouteFakeKernel()
         var resolved = false
@@ -227,6 +251,7 @@ final class TunnelRouteFakeKernel: VPNRouteKernelController {
         let mode = CommandLine.arguments[1], folder = CommandLine.arguments[2]
         switch mode {
         case "lifecycle": try lifecycle(folder)
+        case "preserved-peer": try preservedPeerLifecycle(folder)
         case "stale-generation": try stale(folder, mismatchApplication: false)
         case "stale-application": try stale(folder, mismatchApplication: true)
         case "peer-tunnel": try peerTunnel(folder)

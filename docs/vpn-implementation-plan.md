@@ -3822,3 +3822,46 @@ Engine artifact находится в
 выполнить пользователь. Затем требуется install 135 и проверка matching frontend
 readiness перед live OTP. Профиль пользователя не изменён; этот шаг не отмечен
 как installed acceptance.
+
+### Продолжение 1.5cj — preserve compatible system peer route (4 октября)
+
+Удаление 134 и установка 135 подтверждены. Installer сообщил success,
+ordinary-user `--vpn-support-status` вернул release 135, installed public
+receipt/signature совпали с подписанным Payload. В matching frontend доступны
+VPN и 3 сохранённых ресурса. Это readiness, не успешное VPN-подключение.
+
+Реальная попытка 135 прошла пользовательский OTP, AUTH/ASSIGN_IP/CONNECTED,
+peerLookup и planning. Первый preflight (ordinal 0, peer-bypass) отказал
+`preexistingRoute` до journal/create и RTM_ADD. Старое notification исправление
+работает: короткие IFINFO/NEWADDR/NEWMADDR пропущены корректно. Ошибка теперь
+в ownership policy: системный маршрут к peer считался препятствием независимо
+от совпадения physical next-hop. Managed engine и owned resource routes после
+отказа отсутствуют; raw credentials/management payload не собирались.
+
+Сначала добавлен regression fixture системного UDP host-cache route:
+до изменения production кода он воспроизвёл preexistingRoute. Исправление
+использует совместимый чужой peer route только как read-only dependency.
+Не выдаёт ему ownership, не добавляет/удаляет его. Требуются exact destination,
+physical gateway/index/name, UP/HOST и согласованный GATEWAY flag. REJECT,
+BLACKHOLE и PROTO2 ownership-marker запрещены. Любой существующий resource
+route, несовместимый peer или ранее помеченный owned peer по-прежнему отвергаются.
+
+В плане сохраняется optional `preservesPeerRoute=true`; nil сохраняет точный
+legacy schema-2 JSON. Journal checkpoints и reverse cleanup применяются только
+к `ownedRoutes` (resources при сохранённом peer). Peer dependency повторно
+проверяется перед ресурсными мутациями и до/после проверки applied proof.
+Потеря/замена маршрута не может выдать Connected proof. Recovery после restart
+не зависит от ephemeral proof и никогда не удаляет чужой peer. Добавлен закрытый
+diagnostic stage transactionPreservePeer без адресов и payload.
+
+Native regression: обычный UDP connect к documentation address без send/sendto,
+профиля, OTP, TUN setup, RTM_ADD или RTM_DELETE воспроизвёл exact системный cache
+route. Его реальный PF_ROUTE snapshot прошёл новое install/verify/recovery с
+fake kernel для ресурсных мутаций; peer остался нетронутым. Native resource
+mutation и реальное корпоративное подключение этим тестом не подтверждаются.
+
+Регрессия: transaction 13 (включая native cache, restart, crash, lost dependency,
+mid-install replacement и rejection matrix), controller 9, plan/journal 15,
+coordinator 17, listener 43, management 5, route socket 2, peer evidence 2 —
+106/106 passed, без skips. Сборка кандидата 136 начата в постоянной папке.
+Установленная 135 не менялась; новую установку и live acceptance пока не запускали.

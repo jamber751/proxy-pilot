@@ -85,6 +85,21 @@ import Foundation
             $0.interfaceIndex == tunnel.0 && $0.interfaceName == tunnel.1
         }, "resource tunnel binding")
         try value.validate()
+        let legacy = try JSONEncoder().encode(value)
+        try require(!String(decoding: legacy, as: UTF8.self).contains("preservesPeerRoute"),
+                    "legacy plan encoding changed")
+        let decoded = try JSONDecoder().decode(VPNRoutePlan.self, from: legacy)
+        try require(decoded == value && decoded.ownedRoutes == value.routes, "legacy plan changed")
+        let preserved = try value.preservingPeerRoute()
+        try require(preserved.ownedRoutes == Array(value.routes.dropFirst()), "peer ownership retained")
+        var forged = try JSONSerialization.jsonObject(with: JSONEncoder().encode(preserved)) as! [String: Any]
+        forged["preservesPeerRoute"] = false
+        let malformed = try JSONDecoder().decode(VPNRoutePlan.self,
+            from: JSONSerialization.data(withJSONObject: forged))
+        do {
+            try malformed.validate()
+            throw NSError(domain: "noncanonical peer preservation flag accepted", code: 1)
+        } catch VPNRoutePlanError.unsupportedResource {}
         print("planning passed")
     }
 

@@ -56,6 +56,9 @@ class VPNTunnelRouteControllerTests(unittest.TestCase):
     def test_install_verify_and_cleanup_before_process_stop(self):
         self.run_case('lifecycle')
 
+    def test_system_peer_dependency_survives_controller_cleanup(self):
+        self.run_case('preserved-peer')
+
     def test_generation_is_bound_before_route_lookup(self):
         self.run_case('stale-generation')
 

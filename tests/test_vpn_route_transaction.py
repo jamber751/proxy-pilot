@@ -46,6 +46,21 @@ class VPNRouteTransactionTests(unittest.TestCase):
 
     def test_install_verify_and_reverse_cleanup(self): self.run_case('lifecycle')
     def test_fresh_identical_route_is_never_claimed(self): self.run_case('preexisting')
+    def test_system_peer_route_is_preserved_across_restart(self): self.run_case('preserved-peer')
+    def test_incompatible_peer_and_existing_resource_are_rejected(self): self.run_case('rejected-preserved-peer')
+    def test_preserved_peer_survives_resource_install_crash(self): self.run_case('preserved-peer-crash')
+    def test_preserved_peer_is_required_for_connected_proof(self): self.run_case('preserved-peer-lost')
+    def test_preserved_peer_changed_mid_install_is_not_deleted(self): self.run_case('preserved-peer-race')
+
+    def test_native_udp_cached_peer_without_sending_packets(self):
+        with tempfile.TemporaryDirectory(prefix='pp-native-route-cache-', dir='/tmp') as folder:
+            os.chmod(folder, 0o700)
+            result = subprocess.run([str(self.binary), 'native-cached-peer', folder],
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode == 77:
+                self.skipTest('Kernel did not expose an exact UDP cached peer route')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('native cached peer passed', result.stdout)
     def test_crash_before_mutation_recovers_to_idle(self): self.run_case('crash-before')
     def test_crash_after_mutation_uses_checkpoint_and_rolls_back(self): self.run_case('crash-after')
     def test_missing_owned_route_is_reconciled(self): self.run_case('missing')
