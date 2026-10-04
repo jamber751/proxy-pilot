@@ -3865,3 +3865,14 @@ mid-install replacement и rejection matrix), controller 9, plan/journal 15,
 coordinator 17, listener 43, management 5, route socket 2, peer evidence 2 —
 106/106 passed, без skips. Сборка кандидата 136 начата в постоянной папке.
 Установленная 135 не менялась; новую установку и live acceptance пока не запускали.
+
+Кандидат 136 подготовлен и подписан существующим release key. Universal helper
+собран и прошёл codesign strict verification; frontend source graph не менялся,
+используется точный frontend 135 с новым sealed sequence 136. Pinned engine и
+соответствующие source/provenance/notices повторно проверены packager. Signed
+manifest проверен production verification tool; remove/install пакеты прошли
+production payload verifier. Все 12 runtime transaction scenarios дополнительно
+прошли в отдельной `-O` сборке, включая реальный UDP cached-peer snapshot.
+Материалы: `~/Library/Application Support/ProxyPilot/Acceptance/candidate-136-20261004/`.
+Последний ordinary-user status установленного компонента по-прежнему release 135.
+Реальный OTP + ресурсные RTM_ADD + disconnect для 136 остаются pending.
