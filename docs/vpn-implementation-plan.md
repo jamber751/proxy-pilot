@@ -3910,3 +3910,38 @@ production payload verifier. Все 12 runtime transaction scenarios допол�
 Секреты и raw management payload в отчёт не включались. Проверена именно
 matching staged сборка 136, не старое публичное приложение из Applications.
 Публичный релиз/тег не создавались.
+
+### Продолжение 1.5cl — изолированная регрессия входа и аудит DNS (4 октября)
+
+После успешного повторного подключения 136 рабочий VPN оставлен включённым.
+Неверные/просроченные коды на корпоративный сервер не отправлялись: нет
+тестовой учётной записи или подтверждённой политики блокировок. Живая строка
+приёмки отказов входа в 1.5ck остаётся открытой.
+
+- [x] Coordinator 17/17: management rejection, stale credential, deadlines,
+  post-release failures, cleanup barrier и redacted diagnostics.
+- [x] Transient credential 7/7 и held exchange 11/11: одноразовое использование,
+  очистка секретов, отказ engine, mismatch/replay и ошибки транспорта.
+- [x] Frontend controller 6/6 в in-memory helper: certificate/password/OTP,
+  последовательные prompts, cancel/off, cleanup-before-off и отказ domain intent.
+- [x] Core 9/9, model 1/1 и UI source contracts 4/4: импорт/drag-drop,
+  атомарное хранилище, миграция, сохранение и контракт bounded resource list.
+  Эти source/model проверки не являются новой native UI-приёмкой.
+- [x] DNS plan/journal 14/14, inert adapter seam 5/5, runtime capability 2/2:
+  чужие/устаревшие записи отвергаются; domain/DNS intent блокируется до
+  открытия профиля и запуска движка. Системный DNS тестами не менялся.
+
+Итого 76/76 тестов прошли без skips на текущей машине. Production код,
+установленные бинарники и конфигурация пользователя не изменялись.
+
+Уточнение очередности: этап 4 не готов. VPNDNSPlan/VPNDNSJournal и
+VPNScopedDNSAdapterSeam — модели и pure policy, а не рабочий resolver backend;
+текущая сборка route-only. Ранее принятый gate 1.5bo сохраняется. Нельзя
+включать synthetic SystemConfiguration DNS mutation или обещать поддержку
+доменов только по этим тестам. Реализация Network Extension потребует отдельного
+решения о signing/provisioning/entitlements; прежнее пожелание бесплатной
+поставки не отменено и платные действия не выполнялись.
+
+Дальнейшие независимые шаги: проверить IP-only VPN вместе с локальными
+HTTP/SOCKS5 и существующими upstream-маршрутами; затем lifecycle/network
+change acceptance. Живую DNS/domain приёмку не подменять IP-тестами.
