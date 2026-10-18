@@ -25,8 +25,11 @@
   штатное выключение и очистка (4 октября; не утверждение о текущей сети).
 - [x] Автоматический effective VPN bypass подключён в исходном коде к frontend,
   CLI и GOST; Universal frontend собран, подпись проверена. Подробности 1.5co.
-- [x] Текущий регрессионный прогон: 155 passed, 1 live-target test явно skipped.
-- [ ] Согласованный app/helper пакет и installed acceptance нового handoff.
+- [x] Текущий регрессионный прогон: 181 passed, 1 live-target test явно skipped
+  (155 integration/lifecycle + 26 packaging/transport, см. 1.5co/1.5cp).
+- [x] Согласованный app/helper комплект 137 подписан и проверен без установки.
+- [ ] Installed acceptance нового handoff; текущая пара stable app / helper 136
+  не является допустимой исходной A-парой для обычного joint update.
 - [ ] Политика доставки/миграции сторонних и старых CLI writers: их бинарники
   не получают новый lock/overlay протокол автоматически. До проверки конкуренции
   legacy CLI автоматические исключения не считать готовыми к публичному выпуску.
@@ -4091,3 +4094,50 @@ Read-only проверка известных CLI-путей на этой ма�
 guard/lock протокол вместе с source edit. `/opt/homebrew/bin/proxypilot` и
 `/usr/local/bin/proxypilot` отсутствуют. Ссылки не менялись. Это не проверяет
 произвольные копии старых CLI вне известных путей и не закрывает общий delivery gate.
+
+### Продолжение 1.5cp — согласованный локальный комплект 137 (18 октября)
+
+- [x] Системная проверка только чтением: установленный public VPN receipt —
+  exact 136, но обе архитектурные подписи приложения в Applications не совпадают
+  с app pins этого receipt. Это ожидаемо после возврата на стабильную 1.5.1;
+  обычный 136→137 joint update нельзя применять, игнорируя несовпадение A.
+  Работающий Homebrew OpenVPN и стабильный frontend обнаружены и не останавливались.
+- [x] Git diff подтвердил, что helper/importer/engine source graph после 136
+  не менялся. Повторно проверенный Universal helper 136 и pinned engine artifact
+  использованы без пересборки вместе с новым Universal frontend 137.
+- [x] Prepared stage 137, manifest и подписанный переход 136→137 проверены
+  существующим production release key/verification tool. Ключ не создавался,
+  не менялся и не экспортировался. Подпись не является установкой/активацией.
+- [x] Собраны scripts-only update package, read-only joint DMG, подписанные
+  transport metadata и bounded corresponding engine-source archive. Production
+  artifact verifier подтвердил signature/byte count/SHA-256; archive verifier
+  подтвердил соответствие engine signed manifest. Усечённая копия DMG отвергнута;
+  оригинальные материалы не менялись.
+- [x] Новый реальный DMG смонтирован readonly/noautoopen. Exact executable внутри
+  образа вернул `VPN joint update package verified.` без GUI/установки. После
+  завершения проверки образ штатно отключён; повторный hdiutil info не содержит
+  этот mount. Fixture production descriptor-only mount — 2/2 passed.
+- [x] Отдельный clean first-install stage получил идентичный manifest 137 без
+  update sidecars. Собран `TEST ONLY - Clean Install ProxyPilot 137.pkg`.
+  Это пакет для чистого состояния, не обход existing-app/service checks.
+- [x] Packaging harness дополнен новыми frontend sources. В opt-in engine test
+  обнаружено устаревшее ожидание пяти файлов для update. Теперь update обязан
+  содержать ровно девять фиксированных файлов, install/remove — пять; все
+  sidecar bytes сверяются со stage, update проверяется своим verify-update mode.
+  Production verifier/проверки безопасности не ослаблялись. Повтор: package
+  21/21 с реальным engine artifact и без skips; release builder 3/3.
+- [x] После всех проверок installed receipt/signature остаются exact 136,
+  подпись стабильного приложения валидна; прежние PIDs frontend и Homebrew
+  OpenVPN живы. В системные каталоги не писали, Installer не открывали.
+- [ ] Контролируемое приведение установленной пары к согласованному комплекту
+  и живая приёмка 137. Требуется отдельное согласие владельца на временную замену
+  стабильной версии и остановку Homebrew VPN; пользовательские auth/OTP не
+  выполняются агентом. Нельзя вместо этого снять pins, принудительно заменить A,
+  установить first-install поверх existing footprint или автоматически удалить службу.
+
+Материалы находятся в прежнем постоянном каталоге
+`~/Library/Application Support/ProxyPilot/Acceptance/bridge-integration-137-20261018/`.
+Update package и clean package явно помечены TEST ONLY. Пока это локальная
+тестовая поставка с technical version 1.5.1/sequence 137: не публичный релиз,
+не доказательство Sparkle discovery и не готовая команда установки на текущую
+смешанную пару. Ни теги, ни опубликованные версии/файлы не менялись.

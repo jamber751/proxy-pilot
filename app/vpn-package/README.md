@@ -27,6 +27,20 @@ VPN/Broker directories or launchd plists. Both candidates use technical version
 1.5.1, so this is pre-Broker artifact acceptance only, not Sparkle discovery or
 release evidence.
 
+Latest local package status (18 October 2026): unpublished sequence 137 is
+assembled and signed with the existing release key, including the exact signed
+136 → 137 transition, update package, read-only companion, signed transport
+metadata, corresponding engine sources, and a separate clean first-install
+package. The real companion passed its sealed executable's verification mode
+from a read-only mount; a truncated artifact was rejected. Package tests passed
+21/21 with the real pinned engine, builder checks 3/3, mount checks 2/2.
+Nothing was installed. The current stable application does **not** match the app
+pins of the installed sequence-136 service, so this machine is not an eligible
+ordinary 136 → 137 update baseline. Do not bypass pins or use first-install over
+existing state. Controlled installed acceptance requires a separately approved
+transition from that mixed pair; the working Homebrew VPN is left running.
+See `docs/vpn-implementation-plan.md`, continuation 1.5cp.
+
 ## Build and sign
 
 The preferred local assembly is `app/build-joint-release.sh <next-sequence>

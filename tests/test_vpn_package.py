@@ -75,7 +75,8 @@ final class ProxyModel:''' + model
         app_sources += [HELPER / f'{name}.swift' for name in ('VPNInstallationPayload', 'VPNInstallationEntry')]
         app_sources += [ROOT / 'app' / f'{name}.swift' for name in
                         ('Controls', 'Updates', 'VPNConfiguration', 'VPNProfileImporter', 'VPNStore',
-                         'VPNModel', 'VPNLiveController', 'VPNPanel')]
+                         'VPNModel', 'VPNLiveController', 'VPNPanel',
+                         'VPNBridgeBypass', 'VPNBridgeBypassEntry')]
         app_sources += [HELPER / f'{name}.swift' for name in
                         ('VPNPublicReleaseReceipt', 'VPNFrontendHelperSession',
                          'VPNHelperTunnelSession')]
@@ -405,8 +406,16 @@ final class ProxyModel:''' + model
             self.command(['/usr/sbin/pkgutil', '--expand-full', str(package), str(expanded)])
             copied = expanded / 'Scripts/Payload'
             self.assertEqual((copied / 'vpn-engine').read_bytes(), original)
-            self.assertEqual(set(os.listdir(copied)), {'ProxyPilot.app', 'vpn-helper', 'vpn-engine', 'vpn-release.manifest', 'vpn-release.sig'})
-            self.command([str(copied / 'ProxyPilot.app/Contents/MacOS/ProxyPilot'), '--vpn-support-verify'])
+            expected = {'ProxyPilot.app', 'vpn-helper', 'vpn-engine',
+                        'vpn-release.manifest', 'vpn-release.sig'}
+            if action == 'update':
+                expected |= {'vpn-previous-release.manifest', 'vpn-previous-release.sig',
+                             'vpn-update-transition', 'vpn-update-transition.sig'}
+            self.assertEqual(set(os.listdir(copied)), expected)
+            for name in expected - {'ProxyPilot.app'}:
+                self.assertEqual((copied / name).read_bytes(), (self.payload / name).read_bytes())
+            mode = '--vpn-support-verify-update' if action == 'update' else '--vpn-support-verify'
+            self.command([str(copied / 'ProxyPilot.app/Contents/MacOS/ProxyPilot'), mode])
         sources = self.stage / 'EngineSources'
         self.assertEqual((sources / 'sources/sources.json').read_bytes(), (ROOT / 'app/vpn-engine/sources.json').read_bytes())
         self.assertEqual((sources / 'OpenVPN-COPYING.txt').read_bytes(), (Path(ENGINE_ARTIFACT) / 'OpenVPN-COPYING.txt').read_bytes())
