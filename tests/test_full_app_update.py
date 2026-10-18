@@ -26,7 +26,7 @@ FIXTURES = ROOT / 'tests/isolated-update-install'
 GOST = os.environ.get('PROXYPILOT_TEST_GOST')
 FUNCTIONS = ('load_config', 'need_config', 'need_gost', 'tcp_open', 'saved_mode', 'is_enabled',
              'probe_cached', 'upstream_dead', 'effective_mode', 'running_mode', 'stop_bridge',
-             'write_gost_config', 'cmd_ensure', 'cmd_switch', 'cmd_enable', 'cmd_route',
+             'effective_bridge_bypass', 'write_gost_config', 'cmd_ensure', 'cmd_switch', 'cmd_enable', 'cmd_route',
              'cmd_disable', 'build_bypass', 'system_points_here', 'cmd_system', 'json_string', 'cmd_app_state')
 
 

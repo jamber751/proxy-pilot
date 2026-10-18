@@ -19,6 +19,25 @@
 настоящую системную установку или изменение сети. При необходимости новых прав
 или существенного решения вне согласованного плана остановиться на этой границе.
 
+### Актуальная граница на 18 октября
+
+- [x] Историческая живая приёмка 136: OTP, IP-ресурсы, повторный вход,
+  штатное выключение и очистка (4 октября; не утверждение о текущей сети).
+- [x] Автоматический effective VPN bypass подключён в исходном коде к frontend,
+  CLI и GOST; Universal frontend собран, подпись проверена. Подробности 1.5co.
+- [x] Текущий регрессионный прогон: 155 passed, 1 live-target test явно skipped.
+- [ ] Согласованный app/helper пакет и installed acceptance нового handoff.
+- [ ] Политика доставки/миграции сторонних и старых CLI writers: их бинарники
+  не получают новый lock/overlay протокол автоматически. До проверки конкуренции
+  legacy CLI автоматические исключения не считать готовыми к публичному выпуску.
+- [ ] Живой lifecycle: сон, смена сети, WARP, update/recovery с подключённым VPN.
+- [ ] Domain/split-DNS backend: остаётся архитектурный gate, см. 1.5bo.
+- [ ] Полная финальная приёмка и отдельно разрешённый публичный выпуск.
+
+Стабильное приложение в Applications не заменялось. Вопросы по каждому
+следующему безопасному пункту не требуются; системное согласие, OTP и изменение
+согласованных границ остаются отдельными действиями владельца.
+
 ### Согласованное дополнение: вход в VPN (13 сентября)
 
 Поддержать три простых режима: сертификат без пароля, постоянный пароль и
@@ -4001,3 +4020,68 @@ change acceptance. Живую DNS/domain приёмку не подменять 
 proxy/DNS, пользовательский config и VPN-подключение не менялись; все 3
 ресурсных маршрута после тестов сохраняются. Полный пункт automatic bypass
 в 1.5cm остаётся открытым до интеграции и живой проверки.
+
+### Продолжение 1.5co — production bridge handoff (18 октября)
+
+Продолжение 1.5cn подключено в исходном коде; installed acceptance остаётся
+отдельным gate. Установленная пользователю стабильная 1.5.1 не заменяется.
+
+- [x] VPN-enabled frontend получил ordinary-user entry `--vpn-bridge-bypass`
+  до запуска GUI. Он открывает существующий взаимно аутентифицированный helper
+  session, требует два одинаковых валидных live snapshot и выдаёт только
+  version/generation/revision/IP-CIDR matchers. Ошибки не интерполируются;
+  profile/credentials/saved state не читаются и не передаются.
+- [x] Только VPN-enabled bundle имеет sealed opt-in marker. Его CLI получает
+  wire от exact соседнего frontend; актуальный standalone CLI может обратиться
+  только к фиксированному /Applications/ProxyPilot.app с VPN marker, не к пути
+  из config. При отсутствии такого frontend и наличии managed bridge marker
+  изменение отклоняется; старый список не replay-ится. VPN state.json не читается. Unavailable/changed
+  snapshot не заменяется пустым overlay или дисковым cache.
+- [x] Ordinary-user writers сериализованы kernel flock с bounded wait и
+  освобождением при выходе процесса. Reload config и получение live evidence
+  выполняются после lock. Чужой symlink вместо lock отклоняется.
+- [x] GOST config использует отдельный effective union пользовательского
+  NO_PROXY_LIST и активного VPN overlay; пользовательский config не переписан.
+  Generation/revision/matchers входят в restart identity моста. Повторный
+  ensure той же версии ничего не перезапускает; смена identity сохраняет
+  enabled/route и заменяет overlay, а не накапливает старые ресурсы.
+- [x] UI после connected/off запускает синхронизацию для настроенного прокси
+  на фоновой очереди; CLI сам читает fresh authority, а не получает cached UI
+  resources. Ошибка синхронизации видна пользователю. VPN без настроенного
+  прокси не получает ложной ошибки ensure. Read-only app-state не запускает
+  дополнительный helper lookup; ProxyModel больше не скрывает ошибки ensure.
+- [x] Stop/disable остаются доступными при недоступной службе. Изменение
+  сохранённого выбора при выключенном прокси, set и off/absent ensure не требуют
+  VPN lookup; остановленный мост не воскрешается ради синхронизации.
+- [x] Pure projection/reader 10/10, CLI handoff 15/15, power 21/21,
+  local GOST 7 passed + 1 explicitly skipped live VPN target, frontend
+  controller 6/6, UI source contracts 4/4, native preview layout 1/1,
+  route projection 1/1, updater quiescence 4/4: 69 passed, 1 skipped.
+  GOST overlay fixtures проверяют оба локальных протокола при недоступном
+  HTTP/SOCKS5 upstream; нет доступа к реальному профилю или изменения host proxy.
+- [x] Итоговая Universal frontend build arm64/x86_64 текущего frozen source,
+  strict/deep codesign, sealed opt-in marker и exact текущий CLI. Matching GOST
+  взят из сохранённой 136; после добавления ресурсов bundle переподписан и
+  повторно проверен. Неверные аргументы реального compiled entry завершаются
+  с кодом 64 без GUI. Первый build, прерванный защитой компилятора от изменения
+  input во время сборки, не засчитывался; итоговый повтор прошёл целиком.
+- [x] Дополнительная изолированная lifecycle регрессия: coordinator 17/17,
+  listener 43/43, tunnel state 8/8, route controller 9/9, supervised engine 9/9.
+  Итого за блок 155 passed, 1 explicitly skipped. Эти fixtures не меняют
+  системную службу, сеть или текущий VPN и не заменяют живой sleep/network тест.
+- [ ] Подписанный согласованный комплект app/helper и installed handoff acceptance
+  с реальным helper: connect/off/resource replacement, upstream modes и отсутствие
+  оставшихся временных процессов. Тесты с fake frontend не заменяют эту границу.
+
+Проверка согласованности snapshot — bounded handoff observation, не атомарная
+гарантия неизменности сети после чтения. Прерывание/смена сети во время bridge
+update требует отдельной installed lifecycle приёмки. Домены/DNS и WARP не
+объявляются готовыми. Публичного релиза/тега нет.
+
+Проверенный frontend сохранён вне /tmp:
+`~/Library/Application Support/ProxyPilot/Acceptance/bridge-integration-137-20261018/frontend/ProxyPilot.app`.
+Это frontend-only development artifact с sequence 137, не подписанный
+согласованный app/helper release и не установщик. В Applications не копировался,
+для реального VPN не запускался. Старые CLI без нового guard/lock могут менять
+тот же мост; их миграция/конкуренция остаётся отдельной обязательной проверкой
+перед доставкой, а не скрытым предположением совместимости.

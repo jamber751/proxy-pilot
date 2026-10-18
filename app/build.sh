@@ -47,7 +47,9 @@ cp "${HERE:h}/bin/proxypilot" "$APP/Contents/Resources/bin/proxypilot"
 SOURCES=("$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
   "$HERE/VPNConfiguration.swift" "$HERE/VPNProfileImporter.swift" "$HERE/VPNStore.swift")
 if [[ "$VPN_INSTALLER" == 1 ]]; then
-  SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift")
+  SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift"
+    "$HERE/VPNBridgeBypass.swift" "$HERE/VPNBridgeBypassEntry.swift")
+  touch "$APP/Contents/Resources/vpn-bridge-v1"
 fi
 LINK_FLAGS=()
 SIGN_FLAGS=()

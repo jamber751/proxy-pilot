@@ -342,6 +342,17 @@ final class VPNPanelModel: ObservableObject {
         queue.async { [weak self] in
             operation(controller)
             let state = controller.state
+            var bridgeError = false
+            #if VPN_INSTALLER_ENTRY
+            // CLI takes the cross-process bridge lock, then obtains its own
+            // fresh authenticated snapshot; never pass cached UI resources.
+            if state == .connected || state == .off {
+                if let proxy = CLI.state() {
+                    if proxy.configured { bridgeError = !CLI.run(["ensure"]).succeeded }
+                } else { bridgeError = true }
+            }
+            #endif
+            let bridgeFailed = bridgeError
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.liveState = state
@@ -349,6 +360,9 @@ final class VPNPanelModel: ObservableObject {
                 self.working = false
                 do { try self.configuration.load() }
                 catch { self.message = error.localizedDescription }
+                if bridgeFailed {
+                    self.message = "Не удалось обновить исключения VPN в локальном прокси. Откройте приложение и повторите проверку."
+                }
                 completion?(state)
             }
         }

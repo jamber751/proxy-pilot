@@ -365,6 +365,58 @@ build_bypass() {
   print -- "${(j:,:)out}"
 }
 
+# Only sealed bundle markers opt into live handoff. A standalone CLI can use
+# the fixed installed app, never an executable path from user configuration.
+load_bridge_vpn() {
+  typeset -g PP_VPN_BYPASS="" PP_VPN_STATE=""
+  local resources="${PP_SELF:h:h}" wire frontend
+  if [[ ! -f "$resources/vpn-bridge-v1" ]]; then
+    resources="/Applications/ProxyPilot.app/Contents/Resources"
+    if [[ ! -f "$resources/vpn-bridge-v1" ]]; then
+      # A previous managed writer is not permission to replay its IP list.
+      # Refuse to erase it when the matching frontend is unavailable.
+      [[ ! -s "$CFG_DIR/bridge-vpn" || -z "$(< "$CFG_DIR/bridge-vpn")" ]] || return 1
+      return 0
+    fi
+  fi
+  frontend="${resources:h}/MacOS/ProxyPilot"
+  [[ -x "$frontend" ]] || return 1
+  wire=$("$frontend" --vpn-bridge-bypass) || return 1
+  (( ${#wire} <= 131072 )) || return 1
+  [[ "$wire" =~ '^v1\|[0-9]+\|[0-9]+\|[0-9a-fA-F:./,]*$' ]] || return 1
+  typeset -g PP_VPN_STATE="$wire" PP_VPN_BYPASS="${wire##*|}"
+}
+
+# Keep projection separate from NO_PROXY_LIST, which remains user-owned.
+effective_bridge_bypass() {
+  local result="$NO_PROXY_LIST" e
+  for e in ${(s:,:)${PP_VPN_BYPASS:-}}; do
+    [[ -z "$e" || ",$result," == *",$e,"* ]] && continue
+    result+="${result:+,}$e"
+  done
+  print -r -- "$result"
+}
+
+prepare_bridge_writer() {
+  typeset -g PP_VPN_BYPASS="" PP_VPN_STATE=""
+  (( EUID != 0 )) || return 0
+  mkdir -p "$CFG_DIR" || return 1
+  [[ ! -L "$CFG_DIR/bridge.lock" ]] || return 1
+  if [[ ! -e "$CFG_DIR/bridge.lock" ]]; then
+    (umask 077; setopt noclobber; : > "$CFG_DIR/bridge.lock") 2>/dev/null
+  fi
+  [[ -f "$CFG_DIR/bridge.lock" && ! -L "$CFG_DIR/bridge.lock" ]] || return 1
+  zmodload zsh/system || return 1
+  zsystem flock -t 10 -f _pp_bridge_lock "$CFG_DIR/bridge.lock" || return 1
+  load_config || return 1
+  [[ "$1" == (stop|disable|set) ]] && return 0
+  # Pure preference changes and an off, absent bridge do not need live VPN
+  # evidence. In particular, keep route selection usable during an OTP prompt.
+  if [[ "$1" == route && "${3:-}" != enable ]] && ! is_enabled; then return 0; fi
+  if [[ "$1" == (ensure|shellenv) ]] && ! is_enabled && [[ "$(running_mode)" == none ]]; then return 0; fi
+  load_bridge_vpn || { warn "Не удалось подтвердить ресурсы VPN; мост не изменён."; return 1; }
+}
+
 # Системный DNS на macOS периодически отвечает "no such host" про живые
 # домены (за два часа поймано 762 промаха на api.github.com, api.anthropic.com,
 # fonts.gstatic.com и других), и каждый такой промах браузер показывает как
@@ -382,6 +434,7 @@ gost_nameservers() {
 
 write_gost_config() {  # mode -> путь к конфигу
   local mode="$1" cfg="$CFG_DIR/gost-$mode.yaml"
+  local NO_PROXY_LIST=$(effective_bridge_bypass)
   local upstream="" connector="" ns e
   case "$mode" in
     (socks) upstream="$SOCKS_UPSTREAM"; connector=socks5 ;;
@@ -458,6 +511,7 @@ start_bridge() {  # mode
       gost_nameservers > "$CFG_DIR/bridge-dns"
       print -- "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"
       print -- "$PP_VERSION" > "$CFG_DIR/bridge-version"
+      print -r -- "${PP_VPN_STATE:-}" > "$CFG_DIR/bridge-vpn"
       return 0
     fi
     sleep 0.1
@@ -487,9 +541,11 @@ cmd_ensure() {
   [[ -r "$CFG_DIR/bridge-format" ]] && format=$(< "$CFG_DIR/bridge-format")
   local bridge_version=""
   [[ -r "$CFG_DIR/bridge-version" ]] && bridge_version=$(< "$CFG_DIR/bridge-version")
+  local vpn_boot=""
+  [[ -r "$CFG_DIR/bridge-vpn" ]] && vpn_boot=$(< "$CFG_DIR/bridge-vpn")
   # Keep the old engine alive during app replacement; restart it once on the
   # first launch of the new release without changing enabled/selected settings.
-  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" && "$format" == "auto-v1:$BRIDGE_PORT" && "$bridge_version" == "$PP_VERSION" ]] && return 0
+  [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" && "$format" == "auto-v1:$BRIDGE_PORT" && "$bridge_version" == "$PP_VERSION" && "$vpn_boot" == "${PP_VPN_STATE:-}" ]] && return 0
 
   # Останавливаем по наличию процесса, а не по running_mode: у старого
   # формата запуска режим читается как none, и мост-предшественник остался
@@ -1667,6 +1723,16 @@ proxypilot $PP_VERSION — один локальный прокси, перек�
 их перезапускать не нужно.
 EOF
 }
+
+# Serialize ordinary-user bridge writers before reloading configuration and
+# obtaining live VPN evidence. No overlay from an earlier queued command wins.
+# Stop/disable remain available even when the VPN helper cannot be queried.
+typeset -g PP_VPN_BYPASS="" PP_VPN_STATE=""
+case "${1:-status}" in
+  (socks|http|direct|auto|enable|disable|setup|route|detect|ensure|set|stop|shellenv)
+    prepare_bridge_writer "$@" || exit 1
+    ;;
+esac
 
 case "${1:-status}" in
   (socks|http|direct|auto) cmd_switch "$1" ;;

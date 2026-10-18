@@ -98,6 +98,7 @@ final class ProxyModel: ObservableObject {
     private let queue = DispatchQueue(label: "proxypilot.commands")
     private var refreshing = false
     private var preparingUpdate = false
+    private static let maintenanceError = "Не удалось обновить локальный прокси. Повторите проверку."
     private var updatePreparationID: UUID?
     var onChange: (() -> Void)?
     var prepareQuit: (@escaping () -> Void) -> Void = { $0() }
@@ -158,18 +159,21 @@ final class ProxyModel: ObservableObject {
         refreshing = true
         queue.async {
             var result = CLI.state()
+            var ensureFailed = false
             if result?.configured == true {
-                _ = CLI.run(["ensure"])
+                ensureFailed = !CLI.run(["ensure"]).succeeded
                 result = CLI.state()
             }
             let fresh = result
+            let maintenanceFailed = ensureFailed
             DispatchQueue.main.async {
                 self.refreshing = false
                 guard !self.busy else { return }
                 self.loading = false; self.state = fresh
-                if self.error == "Не удалось прочитать состояние. Попробуйте открыть приложение заново." || self.error == "Подключение прервалось. Выключите прокси и попробуйте снова." {
+                if self.error == "Не удалось прочитать состояние. Попробуйте открыть приложение заново." || self.error == "Подключение прервалось. Выключите прокси и попробуйте снова." || self.error == Self.maintenanceError {
                     self.error = ""
                 }
+                if maintenanceFailed { self.error = Self.maintenanceError }
                 if fresh == nil { self.error = "Не удалось прочитать состояние. Попробуйте открыть приложение заново." }
                 else if fresh!.enabled && !fresh!.connected {
                     self.error = "Подключение прервалось. Выключите прокси и попробуйте снова."
@@ -789,6 +793,7 @@ final class App: NSObject, NSApplicationDelegate {
 }
 
 #if VPN_INSTALLER_ENTRY
+if let status = VPNBridgeBypassEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNInstallationEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 #else
 if CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--vpn-") }) { exit(64) }

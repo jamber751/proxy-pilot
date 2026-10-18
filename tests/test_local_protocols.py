@@ -56,7 +56,7 @@ class LocalProtocolTests(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=3)
 
-    def check_mode(self, mode, bypass=False):
+    def check_mode(self, mode, bypass=False, overlay=False):
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -75,8 +75,10 @@ CFG_DIR='{directory}'
 BRIDGE_PORT={bridge_port}
 SOCKS_UPSTREAM=127.0.0.1:{upstream_port}
 HTTP_UPSTREAM=127.0.0.1:{upstream_port}
-NO_PROXY_LIST={'127.0.0.1' if bypass else "''"}
+NO_PROXY_LIST={'127.0.0.1' if bypass and not overlay else "''"}
+PP_VPN_BYPASS={'127.0.0.1' if overlay else "''"}
 gost_nameservers() {{ print 1.1.1.1; }}
+{function('effective_bridge_bypass')}
 {function('write_gost_config')}
 write_gost_config {mode}
 '''
@@ -125,6 +127,12 @@ write_gost_config {mode}
     def test_http_upstream_bypass_survives_upstream_stop(self):
         self.check_mode('http', bypass=True)
 
+    def test_vpn_overlay_bypasses_http_without_changing_user_list(self):
+        self.check_mode('http', bypass=True, overlay=True)
+
+    def test_vpn_overlay_bypasses_socks_without_changing_user_list(self):
+        self.check_mode('socks', bypass=True, overlay=True)
+
     @unittest.skipUnless(VPN_TARGET, 'Explicit VPN acceptance target required')
     def test_opt_in_vpn_resource_with_unavailable_upstreams(self):
         # Explicit opt-in only: never discovers private resources or reads a
@@ -162,6 +170,7 @@ SOCKS_UPSTREAM=127.0.0.1:{upstream_port}
 HTTP_UPSTREAM=127.0.0.1:{upstream_port}
 NO_PROXY_LIST={target}
 gost_nameservers() {{ print 1.1.1.1; }}
+{function('effective_bridge_bypass')}
 {function('write_gost_config')}
 write_gost_config {mode}
 '''
