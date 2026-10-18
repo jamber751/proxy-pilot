@@ -40,3 +40,6 @@ class VPNBridgeBypassTests(unittest.TestCase):
     def test_zero_generation_rejected(self): self.run_case('invalid')
     def test_domains_and_dns_not_implicitly_supported(self): self.run_case('unsupported')
     def test_new_active_revision_replaces_old_overlay(self): self.run_case('replacement')
+    def test_closed_wire_and_two_live_reads(self): self.run_case('wire')
+    def test_changed_snapshot_not_published(self): self.run_case('racing')
+    def test_failed_second_read_never_uses_cached_overlay(self): self.run_case('reader-failure')

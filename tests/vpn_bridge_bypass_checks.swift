@@ -59,6 +59,32 @@ import Foundation
                                                             generation: 8))
             precondition(old != next)
             precondition(next.merging(with: "custom.example") == "custom.example,203.0.113.8")
+        case "wire":
+            let source = try snapshot(["198.51.100.7"])
+            var reads = 0
+            let overlay = try VPNBridgeBypassReader.read { reads += 1; return source }
+            precondition(reads == 2 && overlay.bridgeWire == "v1|7|3|198.51.100.7")
+            let off = try VPNBridgeBypass(snapshot: snapshot(["198.51.100.7"], phase: .off))
+            precondition(off.bridgeWire == "v1|7|0|")
+        case "racing":
+            let before = try snapshot(["198.51.100.7"])
+            let after = try snapshot(["203.0.113.8"], revision: 4, generation: 8)
+            var reads = 0
+            do {
+                _ = try VPNBridgeBypassReader.read { reads += 1; return reads == 1 ? before : after }
+                fatalError("changed snapshot accepted")
+            } catch VPNBridgeBypassError.changedSnapshot {}
+        case "reader-failure":
+            let source = try snapshot(["198.51.100.7"])
+            var reads = 0
+            do {
+                _ = try VPNBridgeBypassReader.read {
+                    reads += 1
+                    if reads == 2 { throw VPNBridgeBypassError.unavailable }
+                    return source
+                }
+                fatalError("cached overlay accepted after read failure")
+            } catch VPNBridgeBypassError.unavailable {}
         default: fatalError("unknown case")
         }
         print("bridge bypass passed")

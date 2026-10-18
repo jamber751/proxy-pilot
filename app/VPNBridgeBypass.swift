@@ -1,7 +1,7 @@
 import Foundation
 
 enum VPNBridgeBypassError: Error {
-    case invalidSnapshot, unavailable, unsupportedResources
+    case invalidSnapshot, unavailable, unsupportedResources, changedSnapshot
 }
 
 /// Pure projection of a freshly authenticated, route-proven helper snapshot.
@@ -43,5 +43,23 @@ struct VPNBridgeBypass: Equatable {
         guard !added.isEmpty else { return userList }
         return userList + (userList.isEmpty || userList.hasSuffix(",") ? "" : ",")
             + added.joined(separator: ",")
+    }
+
+    /// Closed, non-secret wire value for the ordinary-user bridge CLI. No
+    /// saved profile, authentication fields, domains or shell syntax cross it.
+    var bridgeWire: String {
+        "v1|\(generation)|\(revision ?? 0)|\(matchers.joined(separator: ","))"
+    }
+}
+
+enum VPNBridgeBypassReader {
+    /// The caller supplies authenticated live reads, not a cached disk record.
+    /// Never publish an overlay when the attempt changes during the handoff.
+    static func read(fetch: () throws -> VPNTunnelSnapshot) throws -> VPNBridgeBypass {
+        let before = try fetch()
+        let overlay = try VPNBridgeBypass(snapshot: before)
+        let after = try fetch()
+        guard before == after else { throw VPNBridgeBypassError.changedSnapshot }
+        return overlay
     }
 }
