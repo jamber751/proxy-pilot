@@ -6695,3 +6695,37 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Предыдущие System40135758259 ARM120996807377/Intel120996807601
   in_progress; предыдущие genuine roundtrip120996807566/120996807649 тоже
   in_progress. Их не отменяли и не перезапускали по таймауту наблюдения.
+
+
+### Продолжение 1.5ga — восстановление certificate-only импорта без тупика
+
+- [x] bf01d1f исправляет реальный восстанавливаемый durable state: импорт уже
+  сохранён, но отдельная запись certificate authentication прервана. Раньше
+  повторно открытый экран не предлагал доступного выбора и Save/Continue не
+  позволяли закончить настройку. Теперь фактически загруженный профиль без
+  auth-user-pass восстанавливает certificate draft и сохраняет его явно через
+  Save или Continue. Наличие профиля и ресурсов по-прежнему обязательно.
+- [x] Old actual Panel дал2 RED на Save/Continue. Новый Store/Model/adapter
+  regression:7 methods PASS7.446s, parent7 PASS6.918s. Existing credential
+  adapter/Model19 PASS11.762s. No GUI/helper/Keychain/network APIs.
+  Проверены сохранность profile bytes/resources/ledger, отсутствие auto-connect,
+  ошибки Store с открытым editor/settings и восстановление после reopening,
+  явный выбор password/OTP, consent и grant, missing/stale profile.
+- [x] Новый набор добавлен в isolated UI workflow ARM/Intel. Это recovery model
+  acceptance, не installed VoiceOver/фокус или криптографическая проверка профиля.
+- [x] Ordinary DNS исследование pinned GOST3.2.6/x0.8.1 уточняет прежнее «может»:
+  без resolver внутренний Resolve возвращает исходный hostname; CIDR bypass
+  вычисляется до net.DialContext, поэтому hostname→CIDR перестаёт работать.
+  Существующий r0 не удаляли. Штатного system/os/libc resolver mode нет;
+  эти имена превращаются в raw UDP nameserver. HTTP plugin потенциально позволяет
+  вызвать системный resolver до выбора chain, но штатный транспорт только TCP,
+  без Unix socket; metadata/token не передаются resolver HTTP parser. URL
+  userinfo может дать Basic auth, поэтому утверждение «вообще без auth» неверно.
+  Сам по себе этот plugin не доказывает authenticated managed relay, TTL/custody
+  или exact-host OS policy; production DNS capability по-прежнему закрыта.
+- [ ] Exact-host semantics сохранены: ответ владельца на вопрос о поддоменах
+  пока не получен. Supplemental resolver macOS сопоставляет suffix; нельзя
+  молча расширять выбранное имя на все поддомены либо ломать обычный DNS/WARP.
+- [x] Устаревший transport40135758289 отменён только после проверки, что оба
+  jobs120996807570/120996807726 ещё queued и replacement40138409899 существует.
+  Выполняющиеся System/genuine jobs не отменялись.
