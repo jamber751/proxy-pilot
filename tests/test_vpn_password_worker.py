@@ -119,6 +119,9 @@ class VPNPasswordWorkerTests(unittest.TestCase):
             if not preserve_child:
                 self.finish_own_group(process.pid)
 
+    def test_child_add_receipt_is_settled_before_response_can_reach_parent(self): self.run_case('child-add-before-send')
+    def test_child_positive_delete_receipt_is_settled_before_response_can_reach_parent(self): self.run_case('child-delete-before-send')
+
     def test_cleanup_child_remains_paused_while_otp_submit_and_settings_save_finish(self): self.run_case('cleanup-user-otp')
     def test_cleanup_child_remains_paused_while_manual_submit_and_settings_save_finish(self): self.run_case('cleanup-user-password')
     def test_concurrent_prepared_reuse_cannot_issue_go_or_steal_first_response(self): self.run_case('concurrent-reuse-wait')

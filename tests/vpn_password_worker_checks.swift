@@ -13,7 +13,7 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let count = read(fd, &bytes, bytes.count)
         return count > 0 ? String(decoding: bytes.prefix(count), as: UTF8.self) : "normal"
     }
-    fileprivate func beforeResponse(_ operation: VPNPasswordWorkerOperation) {
+    fileprivate func afterBackend(_ operation: VPNPasswordWorkerOperation) {
         guard (operation == .read && behavior() == "read-after-api")
             || (operation == .delete && behavior() == "delete-after-api") else { return }
         let fd = openat(directory, "response-ready", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
@@ -23,12 +23,59 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         while fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) != 0,
               DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
     }
+    fileprivate func beforeResponse(_ operation: VPNPasswordWorkerOperation) {
+        if operation == .delete, behavior() == "synthetic-lost-child-receipt" {
+            do {
+                var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+                guard fcntl(directory, F_GETPATH, &path) == 0 else { _exit(88) }
+                let folder = URL(fileURLWithPath: String(cString: path), isDirectory: true)
+                let before = try Data(contentsOf: folder.appendingPathComponent("synthetic-exact-queued-receipt"))
+                let captured = try JSONDecoder().decode(VPNStoredState.self, from: before)
+                let completed = try JSONDecoder().decode(VPNStoredState.self,
+                    from: Data(contentsOf: folder.appendingPathComponent("state.json")))
+                guard captured.passwordLedger.pendingDeletion.count == 1,
+                      captured.passwordLedger.pendingDeletion[0].writeState == .settled,
+                      captured.passwordLedger.pendingDeletion[0].locator != nil,
+                      completed.passwordLedger.pendingDeletion.isEmpty,
+                      captured.saved == completed.saved, captured.applied == completed.applied,
+                      captured.passwordLedger.active == completed.passwordLedger.active else { _exit(88) }
+                // TEST ONLY: restore the SAME exact queued metadata after the
+                // child's positive Delete ACK and BEFORE the parent sees SEND.
+                // This injects a lost metadata receipt, NOT an OS/power-loss
+                // simulation. No extra backend call or new grant is performed.
+                try before.write(to: folder.appendingPathComponent("state.json"), options: .atomic)
+                guard chmod(folder.appendingPathComponent("state.json").path, 0o600) == 0 else { _exit(88) }
+            } catch { _exit(88) }
+            return
+        }
+        guard behavior() == "observe-before-send" else { return }
+        do {
+            var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(directory, F_GETPATH, &path) == 0 else { _exit(87) }
+            // Atomic metadata bytes may be inspected without acquiring Store's
+            // lock. GO's durable pending write already happened before API work;
+            // the parent cannot acknowledge before this pre-SEND checkpoint.
+            let url = URL(fileURLWithPath: String(cString: path), isDirectory: true)
+            let state = try JSONDecoder().decode(VPNStoredState.self,
+                from: Data(contentsOf: url.appendingPathComponent("state.json")))
+            guard state.schemaVersion == 5 else { _exit(87) }
+            let observation = operation == .add ? state.passwordLedger.active!.writeState.rawValue
+                : (state.passwordLedger.pendingDeletion.isEmpty ? "removed" : "queued")
+            let fd = openat(directory, "before-send-observation", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { _exit(87) }; defer { close(fd) }
+            let data = Data(observation.utf8)
+            guard data.withUnsafeBytes({ Darwin.write(fd, $0.baseAddress, $0.count) }) == data.count else { _exit(87) }
+        } catch { _exit(87) }
+    }
     fileprivate func beforeSettlement(_ operation: VPNPasswordWorkerOperation) {
-        guard operation == .delete, behavior() == "parent-ack-first" else { return }
-        let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
-        var info = stat()
-        while fstatat(directory, "settlement-release", &info, AT_SYMLINK_NOFOLLOW) != 0,
-              DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
+        guard operation == .delete, behavior() == "synthetic-lost-child-receipt" else { return }
+        do {
+            var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(directory, F_GETPATH, &path) == 0 else { _exit(88) }
+            let folder = URL(fileURLWithPath: String(cString: path), isDirectory: true)
+            let bytes = try Data(contentsOf: folder.appendingPathComponent("state.json"))
+            try bytes.write(to: folder.appendingPathComponent("synthetic-exact-queued-receipt"))
+        } catch { _exit(88) }
     }
     fileprivate func locator(_ reference: VPNPasswordReference, descriptor: Int32) throws -> VPNPasswordItemLocator {
         var info = stat()
@@ -186,7 +233,12 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
                 backend: {
                     let backend = FakePasswordBackend(directory: $0)
                     VPNPasswordWorker.testBeforeSettlement = { backend.beforeSettlement($0) }
+                    #if WORKER_OLD_ORDER_BASELINE
+                    VPNPasswordWorker.testBeforeResponse = { backend.afterBackend($0); backend.beforeResponse($0) }
+                    #else
+                    VPNPasswordWorker.testAfterBackend = { backend.afterBackend($0) }
                     VPNPasswordWorker.testBeforeResponse = { backend.beforeResponse($0) }
+                    #endif
                     return backend
                 }) { exit(status) }
         guard getuid() == geteuid(), getuid() >= 500 else { exit(77) }
@@ -200,6 +252,26 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let folder = URL(fileURLWithPath: args[2], isDirectory: true)
         let (store, reference, revision) = try seed(folder)
         switch args[1] {
+        case "child-add-before-send", "child-delete-before-send":
+            #if !WORKER_OLD_ORDER_BASELINE
+            // These causal controls also exercise the actual native 50ms ACK
+            // budget; the old-order baseline freezes only its unrelated race.
+            VPNPasswordWorker.Prepared.testAcknowledgmentNow = nil
+            #endif
+            var secret = Data("synthetic-password".utf8)
+            if args[1] == "child-delete-before-send" {
+                _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+                try joinOwnChildren(); try revoke(store)
+            }
+            try Data("observe-before-send".utf8).write(to: folder.appendingPathComponent("behavior"))
+            if args[1] == "child-add-before-send" {
+                let result = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+                guard case .added = result else { throw Failure.check }
+            } else { try check(VPNPasswordWorker.prepare(store: store).deletePendingOutcome(store: store, reference: reference) == .deleted) }
+            try joinOwnChildren()
+            let observed = try String(contentsOf: folder.appendingPathComponent("before-send-observation"), encoding: .utf8)
+            try check(observed == (args[1] == "child-add-before-send" ? "settled" : "removed"))
+            try check(events(folder) == (args[1] == "child-add-before-send" ? ["add"] : ["add", "delete"]))
         case "cleanup-user-otp", "cleanup-user-password":
             var secret = Data("synthetic-password".utf8)
             _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
@@ -397,7 +469,7 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             var secret = Data("synthetic-password".utf8)
             _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
             try joinOwnChildren(); try revoke(store)
-            try Data("parent-ack-first".utf8).write(to: folder.appendingPathComponent("behavior"))
+            try Data("synthetic-lost-child-receipt".utf8).write(to: folder.appendingPathComponent("behavior"))
             let worker = try VPNPasswordWorker.prepare(store: store)
             var held: Int32 = -1, busyReads = 0, clockReads = 0
             var logicalNow: UInt64 = 1_000_000_000
@@ -426,7 +498,6 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             if args[1] != "ack-busy-release" {
                 try check(clockReads == (args[1] == "ack-expire" ? 2 : 3) && store.load()!.passwordLedger.pendingDeletion.count == 1)
             }
-            try Data().write(to: folder.appendingPathComponent("settlement-release"))
             try joinOwnChildren()
         case "wire-invalid":
             let locator = VPNPasswordItemLocator(persistentReference: Data([1]), origin: .init(kind: .legacyKeychain,
@@ -623,8 +694,8 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             let outcome = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
             guard case .added(let captured) = outcome else { throw Failure.check }
             try captured.validate()
-            // A successful response is sent before the child's final Store
-            // observation. Join it before starting the next independent op.
+            // Receipt settlement precedes SEND; join the exited child before
+            // starting the next independent one-operation process.
             try joinOwnChildren()
             try check(secret.isEmpty && store.load()!.passwordLedger.active?.writeState == .settled &&
                 store.load()!.passwordLedger.active?.locator == captured)
@@ -656,10 +727,11 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             try Data("delay".utf8).write(to: folder.appendingPathComponent("behavior"))
             let worker = try VPNPasswordWorker.prepare(store: store)
             var secret = Data("synthetic-password".utf8)
-            let result = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in
-                let response = try worker.testReplayGO(reference: reference, revision: revision, secret: &secret)
-                return response.addOutcome
-            }
+            // Raw protocol test: create the durable pending authorization,
+            // release Store.lock, then replay the frame. Production's own gate
+            // still performs one GO under Store and waits only after unlock.
+            _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in .indeterminate }
+            let result = try worker.testReplayGO(reference: reference, revision: revision, secret: &secret).addOutcome
             guard case .added = result else { throw Failure.check }
             try check(secret.isEmpty && events(folder) == ["add"])
         case "unavailable":
@@ -715,7 +787,7 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             case "typed-delete-not-found": try FileManager.default.removeItem(at: item)
             case "typed-delete-unavailable": try Data("delete-unavailable".utf8).write(to: folder.appendingPathComponent("behavior"))
             case "typed-delete-unknown": try Data("crash".utf8).write(to: folder.appendingPathComponent("behavior"))
-            case "typed-delete-write-error": try Data("parent-ack-first".utf8).write(to: folder.appendingPathComponent("behavior"))
+            case "typed-delete-write-error": try Data("synthetic-lost-child-receipt".utf8).write(to: folder.appendingPathComponent("behavior"))
             case "typed-delete-late": try Data("delete-wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
             default: break
             }
@@ -724,9 +796,9 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             if args[1] == "typed-delete-write-error" {
                 store.testRejectNextWriteAfterRename = true
                 try rejects { _ = try worker.deletePendingOutcome(store: store, reference: reference) }
-                try Data().write(to: folder.appendingPathComponent("settlement-release"))
                 try joinOwnChildren()
-                // Positive API result is not returned as .deleted when Store
+                // Despite the injected lost child metadata receipt, a positive
+                // API result is not returned as .deleted when the parent's Store
                 // reports uncertainty. Atomic rename may still have committed.
                 try check(!FileManager.default.fileExists(atPath: item.path))
                 try check(store.load()!.passwordLedger.pendingDeletion.isEmpty)

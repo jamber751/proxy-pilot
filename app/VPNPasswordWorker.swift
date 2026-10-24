@@ -337,14 +337,15 @@ enum VPNPasswordWorker {
             // reparented parent; finish exactly this one captured operation.
             var response = try backend.execute(&request)
             #if VPN_PASSWORD_WORKER_TESTING
-            testBeforeResponse?(captured.operation)
+            testAfterBackend?(captured.operation)
             #endif
             defer { VPNPasswordWorkerWire.clear(&response.secret) }
             var result = try VPNPasswordWorkerWire.response(response, nonce: nonce, operation: captured.operation)
             defer { VPNPasswordWorkerWire.clear(&result) }
-            // Send BEFORE taking Store lock. Parent awaits unlocked; both
-            // actors may then acknowledge only this exact definite receipt.
-            try? VPNPasswordWorkerWire.send(result, socket: childSocket, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000)
+            // Parent waits outside Store.lock. Finish this child's exact
+            // receipt BEFORE sending: after SEND the parent's independent ACK
+            // must not race our own full Store write/fsync. Failure to settle
+            // never invents success; the parent still verifies/ACKs the receipt.
             #if VPN_PASSWORD_WORKER_TESTING
             testBeforeSettlement?(captured.operation)
             #endif
@@ -354,6 +355,12 @@ enum VPNPasswordWorker {
                       let locator = captured.locator {
                 settleDeletion(captured.reference, captured: locator, directory: directory)
             }
+            #if VPN_PASSWORD_WORKER_TESTING
+            testBeforeResponse?(captured.operation)
+            #endif
+            // No child Store work follows SEND. A timed-out or departed parent
+            // does not cancel the one captured API operation or its settlement.
+            try? VPNPasswordWorkerWire.send(result, socket: childSocket, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000)
             return 0
         } catch { return 77 }
     }
@@ -424,6 +431,7 @@ enum VPNPasswordWorker {
     }
 
     #if VPN_PASSWORD_WORKER_TESTING
+    static var testAfterBackend: ((VPNPasswordWorkerOperation) -> Void)?
     static var testBeforeResponse: ((VPNPasswordWorkerOperation) -> Void)?
     static var testBeforeSettlement: ((VPNPasswordWorkerOperation) -> Void)?
     static func testRunIfRequested(arguments: [String], backend: (Int32) throws -> VPNPasswordWorkerBackend) -> Int32? {
