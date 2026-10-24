@@ -34,6 +34,29 @@ enum VPNUpdateBrokerRotation {
             return nil
         }
         defer { close(brokerDirectory) }
+        return try performRotation(brokerDirectory: brokerDirectory, store: store, lease: lease,
+            journal: journal, authority: authority, installAndStart: { candidate in
+                let job = try VPNUpdateBrokerLaunchdJob.system(storageDirectory: serviceDirectory)
+                try job.installAndStart(
+                    candidate, deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
+            })
+    }
+
+    #if VPN_RESCUE_BROKER_TESTING
+    static func testRotateIfRequired(brokerDirectory: Int32, store: VPNReleaseStore,
+                                     lease: VPNLifecycleLease, journal: VPNUpdateJournalSnapshot,
+                                     authority: VPNReleaseAuthority,
+                                     installAndStart: (VPNAuthorizedDeployment) throws -> Void) throws -> Completion? {
+        guard getuid() != 0, getuid() == geteuid() else { throw VPNUpdateBrokerRotationError.invalidTransaction }
+        return try performRotation(brokerDirectory: brokerDirectory, store: store, lease: lease,
+            journal: journal, authority: authority, installAndStart: installAndStart)
+    }
+    #endif
+
+    private static func performRotation(brokerDirectory: Int32, store: VPNReleaseStore,
+                                        lease: VPNLifecycleLease, journal: VPNUpdateJournalSnapshot,
+                                        authority: VPNReleaseAuthority,
+                                        installAndStart: (VPNAuthorizedDeployment) throws -> Void) throws -> Completion? {
         let transactions = try VPNUpdateBrokerTransactionStore(
             trustedDirectoryDescriptor: brokerDirectory)
         guard var transaction = try transactions.load() else { return nil }
@@ -82,17 +105,22 @@ enum VPNUpdateBrokerRotation {
         }
 
         let reference = brokerJournal(journal)
-        transaction = try transactions.advance(
-            identity: transaction.identity,
-            expectedRevision: transaction.revision,
-            phase: .handoffComplete, journal: reference,
-            recovery: .executorCommitted, rotation: .pending)
+        if transaction.phase == .rotatingBroker {
+            // A crash after rotation publication must never attempt phase6→5.
+            guard transaction.rotation == .complete,
+                  transaction.recovery == .executorCommitted,
+                  transaction.journal == reference else {
+                throw VPNUpdateBrokerRotationError.invalidTransaction
+            }
+        } else {
+            transaction = try transactions.advance(
+                identity: transaction.identity,
+                expectedRevision: transaction.revision,
+                phase: .handoffComplete, journal: reference,
+                recovery: .executorCommitted, rotation: .pending)
+        }
         try lease.check()
-        let job = try VPNUpdateBrokerLaunchdJob.system(
-            storageDirectory: serviceDirectory)
-        try job.installAndStart(
-            journal.candidate,
-            deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
+        try installAndStart(journal.candidate)
         try lease.check()
         _ = try transactions.advance(
             identity: transaction.identity,

@@ -104,6 +104,13 @@ final class VPNUpdateBrokerLaunchdJob {
 
     deinit { if directory >= 0 { close(directory) } }
 
+    /// Read-only readiness proof for an already installed exact broker. This
+    /// never rewrites its plist, restarts it, or activates the VPN helper role.
+    func requireRunning(_ deployment: VPNAuthorizedDeployment, deadline: UInt64) throws {
+        let executable = try checkedHelperPath(deployment)
+        try proveRunning(deployment, executable: executable, deadline: deadline)
+    }
+
     /// Replaces exactly this label with a job bound to the selected helper.
     /// Bootout precedes the atomic plist replacement, so a changed release can
     /// never leave the old process supervised by a description naming the new.

@@ -7,6 +7,7 @@ enum VPNUpdateBrokerStateRemovalError: Error {
 
 /// Fail-closed, bounded cleanup of the fixed root-private Broker namespace.
 final class VPNUpdateBrokerStateRemoval {
+    private static let rescueBackupName = "update-broker-rescue-rotation.bin"
     private var directory: Int32
     private let owner: uid_t
 
@@ -27,6 +28,14 @@ final class VPNUpdateBrokerStateRemoval {
         let inbox = try VPNUpdateBrokerInbox(trustedParent: directory)
         try inbox.validateForUninstall()
         for name in try names() where !Self.isInbox(name) {
+            #if VPN_RESCUE_SYSTEM_ENTRY || VPN_RESCUE_BROKER_TESTING
+            if name == Self.rescueBackupName {
+                try checkFile(name)
+                try VPNUpdateBrokerTransactionStore(trustedDirectoryDescriptor: directory)
+                    .validateRescueRotationBackup()
+                continue
+            }
+            #endif
             guard Self.isOwnedFile(name) else {
                 throw VPNUpdateBrokerStateRemovalError.unexpectedContent
             }
@@ -37,6 +46,9 @@ final class VPNUpdateBrokerStateRemoval {
     /// Called only after the broker job and VPN service have been retired.
     /// The lifecycle lock is removed last while its lease is still held.
     func removeAll(lease: VPNLifecycleLease) throws {
+        guard try !names().contains(Self.rescueBackupName) else {
+            throw VPNUpdateBrokerStateRemovalError.unexpectedContent
+        }
         try preflight()
         try lease.check()
         let inbox = try VPNUpdateBrokerInbox(trustedParent: directory)
@@ -155,7 +167,9 @@ final class VPNUpdateBrokerStateRemoval {
 
     private static func validSize(_ size: off_t, for name: String) -> Bool {
         if name == "update-broker-status.bin" { return size == 48 }
-        if name == "update-broker-transaction.bin" { return size == 128 }
+        if name == "update-broker-transaction.bin" || name == Self.rescueBackupName {
+            return size == 128
+        }
         if name.hasPrefix(".update-broker-status-") { return size <= 48 }
         if name == ".update-broker-transaction.tmp" { return size <= 128 }
         return size <= 4096

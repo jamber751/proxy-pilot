@@ -76,6 +76,7 @@ struct VPNUpdateBrokerTransactionSnapshot: Equatable {
 /// `journal`. A receipt without that authenticated evidence must fail closed.
 final class VPNUpdateBrokerTransactionStore {
     static let fileName = "update-broker-transaction.bin"
+    static let rescueRotationBackupName = "update-broker-rescue-rotation.bin"
     private static let lockName = "update-broker-transaction.lock"
     private static let temporaryName = ".update-broker-transaction.tmp"
     private static let byteCount = 128
@@ -105,6 +106,67 @@ final class VPNUpdateBrokerTransactionStore {
     func load() throws -> VPNUpdateBrokerTransactionSnapshot? {
         try withLock { try readUnlocked() }
     }
+
+    #if VPN_RESCUE_SYSTEM_ENTRY || VPN_RESCUE_BROKER_TESTING
+    /// Fixed-format maintenance marker, never permission to retire a service
+    /// journal. The coordinator separately proves exact signed journal/receipt.
+    func loadRescueRotationBackup() throws -> VPNUpdateBrokerTransactionSnapshot? {
+        try withLock {
+            guard let value = try readUnlocked(name: Self.rescueRotationBackupName) else { return nil }
+            try requireRescueRotation(value)
+            return value
+        }
+    }
+
+    /// Read-only format gate used by namespace preflight (does not seed a lock).
+    func validateRescueRotationBackup() throws {
+        try checkDirectory()
+        guard let value = try readUnlocked(name: Self.rescueRotationBackupName) else {
+            throw VPNUpdateBrokerTransactionStoreError.invalidState
+        }
+        try requireRescueRotation(value)
+    }
+
+    func detachRescueRotation(_ expected: VPNUpdateBrokerTransactionSnapshot) throws {
+        try requireRescueRotation(expected)
+        try withLock {
+            let current = try readUnlocked(), backup = try readUnlocked(name: Self.rescueRotationBackupName)
+            if let backup {
+                guard current == nil, backup == expected else { throw VPNUpdateBrokerTransactionStoreError.invalidState }
+                return
+            }
+            guard current == expected,
+                  renameatx_np(directory, Self.fileName, directory, Self.rescueRotationBackupName,
+                               UInt32(RENAME_EXCL)) == 0,
+                  fsync(directory) == 0 else { throw VPNUpdateBrokerTransactionStoreError.commitUncertain }
+            guard try readUnlocked() == nil,
+                  try readUnlocked(name: Self.rescueRotationBackupName) == expected else {
+                throw VPNUpdateBrokerTransactionStoreError.commitUncertain
+            }
+        }
+    }
+
+    func restoreRescueRotation(_ expected: VPNUpdateBrokerTransactionSnapshot) throws {
+        try requireRescueRotation(expected)
+        try withLock {
+            guard try readUnlocked() == nil,
+                  try readUnlocked(name: Self.rescueRotationBackupName) == expected,
+                  renameatx_np(directory, Self.rescueRotationBackupName, directory, Self.fileName,
+                               UInt32(RENAME_EXCL)) == 0,
+                  fsync(directory) == 0 else { throw VPNUpdateBrokerTransactionStoreError.commitUncertain }
+            guard try readUnlocked() == expected,
+                  try readUnlocked(name: Self.rescueRotationBackupName) == nil else {
+                throw VPNUpdateBrokerTransactionStoreError.commitUncertain
+            }
+        }
+    }
+
+    private func requireRescueRotation(_ value: VPNUpdateBrokerTransactionSnapshot) throws {
+        guard value.phase == .rotatingBroker, value.recovery == .executorCommitted,
+              value.rotation == .complete, value.journal?.phase == .completed,
+              value.journal?.revision == 3 else { throw VPNUpdateBrokerTransactionStoreError.invalidState }
+    }
+    #endif
 
     /// Starts the sole transaction. An exact retry gets the original snapshot;
     /// another candidate never replaces it and is reported as busy.
@@ -242,9 +304,9 @@ final class VPNUpdateBrokerTransactionStore {
         return try body()
     }
 
-    private func readUnlocked() throws -> VPNUpdateBrokerTransactionSnapshot? {
+    private func readUnlocked(name: String = VPNUpdateBrokerTransactionStore.fileName) throws -> VPNUpdateBrokerTransactionSnapshot? {
         try checkDirectory()
-        let file = openat(directory, Self.fileName,
+        let file = openat(directory, name,
             O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard file >= 0 else {
             if errno == ENOENT { return nil }
