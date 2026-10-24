@@ -33,7 +33,11 @@ enum VPNApplicationDestinationStage {
     static func testPrepare(inTrustedDirectory base: Int32, destination: Int32,
                             release: VerifiedVPNRelease,
                             checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
+        #if VPN_APPLICATION_DESTINATION_ROOT_TESTING
+        guard getuid() == 0, geteuid() == 0 else { throw VPNPeerAuthenticationError.denied }
+        #else
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
+        #endif
         return try perform(base: base, destination: destination, release: release,
                            productionDestination: false, checkpoint: checkpoint)
     }

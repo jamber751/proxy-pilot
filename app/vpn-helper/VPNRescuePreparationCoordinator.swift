@@ -1,9 +1,9 @@
 import Darwin
 import Foundation
 
-#if VPN_RESCUE_PREPARATION && VPN_RESCUE_PREPARATION_COORDINATOR_TESTING
-/// Disposable root-fixture entry only. Uses the existing preparation/journal
-/// protocol and never supersedes foreign state, drains a service or swaps apps.
+#if VPN_RESCUE_PREPARATION && (VPN_RESCUE_SYSTEM_ENTRY || VPN_RESCUE_PREPARATION_COORDINATOR_TESTING)
+/// Exact-edge preparation uses the existing durable protocol. It never
+/// supersedes foreign state, drains a service or swaps installed applications.
 enum VPNRescuePreparationCoordinator {
     enum Failure: Error { case requiresRoot }
     enum Outcome { case prepared, resumed, alreadyPrepared }
@@ -12,16 +12,67 @@ enum VPNRescuePreparationCoordinator {
         let outcome: Outcome
     }
 
+    private enum Mode {
+        #if VPN_RESCUE_SYSTEM_ENTRY
+        case system
+        #endif
+        #if VPN_RESCUE_PREPARATION_COORDINATOR_TESTING
+        case fixture
+        #endif
+        var productionSource: Bool {
+            switch self {
+            #if VPN_RESCUE_SYSTEM_ENTRY
+            case .system: return true
+            #endif
+            #if VPN_RESCUE_PREPARATION_COORDINATOR_TESTING
+            case .fixture: return false
+            #endif
+            }
+        }
+    }
+
+    #if VPN_RESCUE_PREPARATION_COORDINATOR_TESTING
     static func testPrepare(service: Int32, update: Int32,
                             previousSource: Int32, candidateSource: Int32,
                             payload: VPNJointUpdatePayload, authority: VPNReleaseAuthority,
                             executor: VPNRescuePreparationExecutor,
                             checkpoint: (String) throws -> Void = { _ in }) throws -> Result {
-        guard getuid() == 0, geteuid() == 0 else {
-            throw Failure.requiresRoot
-        }
+        guard getuid() == 0, geteuid() == 0 else { throw Failure.requiresRoot }
         let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
         defer { lease.release() }
+        return try perform(service: service, previousSource: previousSource,
+            candidateSource: candidateSource, payload: payload, authority: authority,
+            lease: lease, executor: executor, mode: .fixture, openUpdate: {
+                let copy = fcntl(update, F_DUPFD_CLOEXEC, 0)
+                guard copy >= 0 else { throw VPNRescuePreparationContextError.mismatchedStorage }
+                return copy
+            }, checkpoint: checkpoint)
+    }
+    #endif
+
+    #if VPN_RESCUE_SYSTEM_ENTRY
+    static func prepareSystem(service: Int32, lease: VPNLifecycleLease,
+                              candidateDirectory: Int32, payload: VPNJointUpdatePayload,
+                              authority: VPNReleaseAuthority,
+                              executor: VPNRescuePreparationExecutor) throws -> Result {
+        guard getuid() == 0, geteuid() == 0 else { throw Failure.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemDirectory(service)
+        let applications = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard applications >= 0 else { throw VPNRescuePreparationContextError.mismatchedStorage }
+        defer { close(applications) }
+        return try perform(service: service, previousSource: applications,
+            candidateSource: candidateDirectory, payload: payload, authority: authority,
+            lease: lease, executor: executor, mode: .system,
+            openUpdate: { try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true) },
+            checkpoint: { _ in })
+    }
+    #endif
+
+    private static func perform(service: Int32, previousSource: Int32, candidateSource: Int32,
+                                payload: VPNJointUpdatePayload, authority: VPNReleaseAuthority,
+                                lease: VPNLifecycleLease, executor: VPNRescuePreparationExecutor,
+                                mode: Mode, openUpdate: () throws -> Int32,
+                                checkpoint: (String) throws -> Void) throws -> Result {
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
         func capture() throws -> VPNRescuePreparationContext {
             try executor.validateEdge(previous: payload.previous,
@@ -29,6 +80,9 @@ enum VPNRescuePreparationCoordinator {
             return try VPNRescuePreparationContext.capture(authorization: executor.authorization,
                 candidate: payload.candidate.release, transition: payload.transition,
                 store: store, lease: lease)
+        }
+        guard try lease.checkedStorageIdentity() == store.storageIdentity() else {
+            throw VPNRescuePreparationContextError.mismatchedStorage
         }
         var context = try capture()
         let initialState = context.state
@@ -49,7 +103,7 @@ enum VPNRescuePreparationCoordinator {
 
         // Reject incompatible/invalid input trees before creating authority.
         _ = try VPNStagedApplication.inspectInstalled(inApplicationsDirectory: previousSource,
-            ownerUserID: 0, productionParent: false, release: payload.previous)
+            ownerUserID: 0, productionParent: mode.productionSource, release: payload.previous)
         let candidate = try VPNStagedApplication.inspect(inTrustedDirectory: candidateSource,
             release: payload.candidate.release)
         try VPNStagedApplication.requireUpdateExecutorCompatibility(candidate,
@@ -74,10 +128,26 @@ enum VPNRescuePreparationCoordinator {
         }
 
         try validate()
-        let staging = try VPNApplicationTransactionStager.testRescuePrepare(base: update,
-            previousSource: previousSource, candidateSource: candidateSource,
-            previous: payload.previous, candidate: payload.candidate.release,
-            transition: payload.transition, executor: executor)
+        // Do not create/open the mutable staging namespace before durable
+        // preparation authority exists (or an exact prepared retry is bound).
+        let update = try openUpdate()
+        defer { close(update) }
+        let staging: VPNApplicationTransactionStager.Outcome
+        switch mode {
+        #if VPN_RESCUE_SYSTEM_ENTRY
+        case .system:
+            staging = try VPNApplicationTransactionStager.prepareRescue(candidateDirectory: candidateSource,
+                inTrustedDirectory: update, previous: payload.previous, candidate: payload.candidate.release,
+                transition: payload.transition, executor: executor)
+        #endif
+        #if VPN_RESCUE_PREPARATION_COORDINATOR_TESTING
+        case .fixture:
+            staging = try VPNApplicationTransactionStager.testRescuePrepare(base: update,
+                previousSource: previousSource, candidateSource: candidateSource,
+                previous: payload.previous, candidate: payload.candidate.release,
+                transition: payload.transition, executor: executor)
+        #endif
+        }
         try checkpoint("afterApplicationStaging")
         try validate()
         if case .staging(let transactionID) = context.state {

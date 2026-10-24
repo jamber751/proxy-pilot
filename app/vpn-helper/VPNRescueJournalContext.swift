@@ -62,6 +62,15 @@ final class VPNRescueJournalContext {
         }
     }
 
+    /// The system coordinator must bind this context to its exact held lease,
+    /// not merely another store containing equivalent signed journal bytes.
+    func checkedStorageIdentity(holding lease: VPNLifecycleLease) throws
+        -> (device: UInt64, inode: UInt64) {
+        guard self.lease === lease else { throw VPNRescueJournalContextError.mismatchedStorage }
+        try validate()
+        return storage
+    }
+
     private static func boundStorage(store: VPNReleaseStore, lease: VPNLifecycleLease) throws
         -> (device: UInt64, inode: UInt64) {
         let locked = try lease.checkedStorageIdentity()
