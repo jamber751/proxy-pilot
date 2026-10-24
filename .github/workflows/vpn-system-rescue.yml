@@ -8,6 +8,8 @@ on:
       - 'tests/test_vpn_rescue_system_vm.py'
       - 'tests/test_vpn_rescue_system_materials.py'
       - 'tests/test_vpn_rescue_system_diagnostics.py'
+      - 'tests/test_vpn_recovery_service_lock_order.py'
+      - 'tests/vpn_recovery_service_lock_order_checks.swift'
       - 'tests/test_vpn_engine_build.py'
       - 'tests/vpn_rescue_system_*.swift'
       - 'tests/vpn_rescue_package_signer.swift'
@@ -39,7 +41,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Fast signed fixture, engine continuity and source extraction checks
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_rescue_system_diagnostics test_vpn_engine_build -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_rescue_system_diagnostics test_vpn_engine_build test_vpn_recovery_service_lock_order -v
       - name: Build production artifacts with synthetic trust as ordinary user
         env:
           PROXYPILOT_VM_SYSTEM_RESCUE_BUILD: '1'

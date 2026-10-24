@@ -55,6 +55,9 @@ jobs:
         run: |
           test "$GITHUB_ACTIONS" = true
           PYTHONPATH=tests python3 -m unittest test_vpn_launchd.VPNLaunchdTests.test_unloaded_recovery_job_stale_plist_cleanup_is_idempotent test_vpn_launchd.VPNLaunchdTests.test_unloaded_recovery_cleanup_refuses_unsafe_plist_file test_vpn_launchd.VPNLaunchdTests.test_unloaded_recovery_cleanup_refuses_symlink_plist -v
+      - name: Recovery takes lifecycle ownership before store metadata
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_recovery_service_lock_order -v
       - name: Rescue authorization and pending journal boundaries
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_release_authorization test_vpn_rescue_authorization test_vpn_rescue_preparation_authorization test_vpn_rescue_journal_context test_vpn_rescue_preparation_context test_vpn_rescue_cleanup_context -v
