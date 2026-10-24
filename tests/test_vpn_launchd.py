@@ -204,6 +204,53 @@ class VPNLaunchdTests(unittest.TestCase):
         self.assertEqual(self.run_driver('recovery-remove').stdout.strip(), 'recovery:removed')
         self.assertFalse(plist.exists())
 
+    def leave_unloaded_recovery_plist(self):
+        self.assertEqual(self.run_driver('recovery-arm').stdout.strip(), 'recovery:armed')
+        plist = self.plists / f'{self.label}.recovery.plist'
+        self.assertTrue(plist.exists())
+        self.assertTrue(self.recovery_loaded())
+        self.command(['/bin/launchctl', 'bootout', f'{self.domain}/{self.label}.recovery'])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}.recovery'],
+                                    capture_output=True, timeout=10).returncode
+            if status == 113: break
+            self.assertEqual(status, 0, 'Unknown recovery job query status')
+            time.sleep(0.05)
+        self.assertEqual(status, 113, 'Recovery job did not unload')
+        self.assertTrue(plist.exists(), 'External bootout unexpectedly removed persistent description')
+        return plist
+
+    def test_unloaded_recovery_job_stale_plist_cleanup_is_idempotent(self):
+        plist = self.leave_unloaded_recovery_plist()
+        for _ in range(2):
+            removed = self.run_driver('recovery-remove')
+            self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+            self.assertEqual(removed.stdout.strip(), 'recovery:removed')
+            self.assertFalse(plist.exists())
+            status = subprocess.run(['/bin/launchctl', 'print', f'{self.domain}/{self.label}.recovery'],
+                                    capture_output=True, timeout=10).returncode
+            self.assertEqual(status, 113)
+
+    def test_unloaded_recovery_cleanup_refuses_unsafe_plist_file(self):
+        plist = self.leave_unloaded_recovery_plist()
+        marker = b'foreign unsafe-mode description'
+        plist.write_bytes(marker); plist.chmod(0o600)
+        removed = self.run_driver('recovery-remove')
+        self.assertNotEqual(removed.returncode, 0)
+        self.assertEqual(plist.read_bytes(), marker)
+        self.assertEqual(plist.stat().st_mode & 0o7777, 0o600)
+
+    def test_unloaded_recovery_cleanup_refuses_symlink_plist(self):
+        plist = self.leave_unloaded_recovery_plist()
+        target = self.base / 'foreign-description'
+        target.write_bytes(b'foreign target preserved'); target.chmod(0o644)
+        plist.unlink(); plist.symlink_to(target)
+        removed = self.run_driver('recovery-remove')
+        self.assertNotEqual(removed.returncode, 0)
+        self.assertTrue(plist.is_symlink())
+        self.assertEqual(target.read_bytes(), b'foreign target preserved')
+
     def test_recovery_job_can_durably_disarm_itself(self):
         self.assertEqual(self.run_driver('recovery-arm').stdout.strip(), 'recovery:armed')
         plist = self.plists / f'{self.label}.recovery.plist'

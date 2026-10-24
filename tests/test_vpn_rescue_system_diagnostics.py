@@ -9,6 +9,13 @@ import test_vpn_rescue_system_vm as vm
 
 
 class RescueSystemDiagnosticTests(unittest.TestCase):
+    def test_final_recovery_retirement_token_suppresses_unrelated_log_content(self):
+        self.assertEqual(vm.repair_tokens(
+            'unrelated /private/secret\nProxyPilot VPN repair phase: retireRecovery\n'
+            'ProxyPilot VPN repair phase: arbitraryPrivateValue\n'
+            'ProxyPilot VPN repair failure category: launchd\n'),
+            ['retireRecovery', 'failure:launchd'])
+
     def test_numeric_exit_spawn_and_fixed_state(self):
         raw = ('state = spawn scheduled\nruns = 5\nlast exit code = 0x4b\n'
                'spawn error = 0x2 (private details suppressed)\nlast terminating signal = SIGKILL\n'

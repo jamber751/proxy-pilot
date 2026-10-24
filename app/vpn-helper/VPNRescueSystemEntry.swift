@@ -13,7 +13,7 @@ enum VPNRescueSystemEntry {
     private enum Leg { case first, second }
     private enum Phase: String {
         case verifyInputs, firstReplace, cleanup, secondPrepare, secondReplace
-        case waitRecovery, reconcileBroker, verifyFinal, success
+        case waitRecovery, reconcileBroker, verifyFinal, retireRecovery, success
     }
     private static let totalBudget: UInt64 = 300_000_000_000
 
@@ -331,6 +331,17 @@ enum VPNRescueSystemEntry {
                   final.release.isSameRelease(as: selected.release),
                   try store.loadUpdatePreparation() == nil, try store.loadUpdateJournal() == nil,
                   try store.loadUpdateCleanupReceipt() == nil else { throw Failure.invalidState }
+            // Recovery may have exited or been booted out while its persistent
+            // description remains. Retire both only after exact C readiness and
+            // all journals are gone, holding broker + service ownership so the
+            // next updater cannot arm a different transaction concurrently.
+            report(.retireRecovery)
+            try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
+                store: store, lease: lease, selected: final) {
+                    try VPNRecoveryLaunchdJob.system(storageDirectory: service)
+                        .remove(deadline: actionDeadline(deadline))
+                }
+            try check(); try lease.check()
             return .finished
         }
 

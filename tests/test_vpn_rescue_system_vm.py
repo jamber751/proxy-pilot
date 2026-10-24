@@ -325,7 +325,7 @@ def build_fixtures(output, *, compile_only=False):
 
 
 REPAIR_PHASES = {'verifyInputs', 'firstReplace', 'cleanup', 'secondPrepare', 'secondReplace',
-                 'waitRecovery', 'reconcileBroker', 'verifyFinal', 'success'}
+                 'waitRecovery', 'reconcileBroker', 'verifyFinal', 'retireRecovery', 'success'}
 REPAIR_ERROR_CATEGORIES = {'liveIdentity', 'preparationIdentity', 'directory', 'store', 'broker',
                            'destinationStage', 'destinationExchange', 'protectedSwap', 'cleanup',
                            'installedResult', 'launchd', 'authorization', 'ownership', 'package',

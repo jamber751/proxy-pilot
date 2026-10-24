@@ -5208,3 +5208,26 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   route loss, sleep/network switch, WARP, foreign overwrite и uninstall,
   на macOS11 и текущих Intel/ARM. До неё domain/DNS capability gate сохранён.
   Платные регистрации/entitlements не выполнялись; поддержка доменов не заявлена.
+
+### Продолжение 1.5ei — завершение recovery после успешного C
+
+- [x] Run40095760561 ARM прошёл полный Universal engine build с новой mtime
+  recipe и настоящий repair до native success. Native trace:
+  verifyInputs/waitRecovery/cleanup/secondPrepare/secondReplace/waitRecovery/
+  cleanup/reconcileBroker/verifyFinal/success. Все selectedC/journal cleanup,
+  readiness40/desiredOn/failures0 assertions прошли. Acceptance затем отказал:
+  recovery job уже отсутствует (113), но plist остался. Не timeout в этом run.
+- [x] Native final теперь после проверенного C результата, C broker и отсутствия
+  preparation/journal/cleanup под Broker→Service lease вызывает существующий
+  guarded cleanRetiredRecoveryJob и синхронный remove() отдельного recovery
+  job/plist. Это не self removeCurrent(), не останавливает helper и не меняет
+  desired budget. Новая fixed phase retireRecovery не раскрывает private state.
+- [x] Exact107-source Universal production rescue build/strict signature прошли:
+  `/tmp/pp-rescue-final-recovery-retire-20261024-v1`. Snapshot hashes проверены;
+  nonroot repair77, malformed role64, missing static package77. Existing guarded
+  retired-cleanup test passed; diagnostics6 passed. Реальные stale-plist,
+  idempotent remove и unsafe file/symlink refusal cases добавлены в isolated CI.
+- [ ] Повторить полный Installer5 cases на обеих архитектурах и ownership suite.
+  Старое intermittent C-installed/B-selected timeout ещё не объявлено решённым;
+  run40096802463 с расширенной launchd диагностикой остаётся выполняющимся.
+  Новый production artifact не подписан publisher key/не установлен на host.
