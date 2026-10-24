@@ -263,6 +263,19 @@ enum VPNDarwinRouteCodec {
         return (header.rtm_type, header.rtm_seq, header.rtm_pid, header.rtm_errno, snapshot)
     }
 
+    /// /0 deliberately has no owned snapshot; retain its actual family when
+    /// ordinary lookup must distinguish a valid fallback from a contradiction.
+    static func defaultLookupFamily(_ data: Data) throws -> VPNRouteAddressFamily? {
+        let header = try identify(data)
+        let addresses = try parseAddresses(data.subdata(in: headerSize..<Int(header.rtm_msglen)), mask: header.rtm_addrs)
+        guard header.rtm_type == UInt8(RTM_GET), header.rtm_errno == 0,
+              let destination = addresses[Int(RTAX_DST)],
+              let mask = addresses[Int(RTAX_NETMASK)],
+              header.rtm_flags & RTF_HOST == 0,
+              try prefix(destination: destination, mask: mask, flags: header.rtm_flags) == nil else { return nil }
+        return try ipBytes(destination).family
+    }
+
     static func identify(_ data: Data) throws -> rt_msghdr {
         _ = try messageType(data)
         guard data.count >= headerSize, data.count <= maximumMessageBytes else {
@@ -552,13 +565,22 @@ final class VPNDarwinRouteSocket {
                                                            sequence: sequence, pid: pid)
         do {
             let response = try transact(request, sequence: sequence, type: UInt8(RTM_GET),
-                                        deadline: deadline)
-            // Preserve legacy unscoped best-match behavior. Scoped dependency
-            // custody additionally requires the exact table scope: RTM_GET can
-            // return an unscoped same-interface fallback when that key is absent.
+                                        deadline: deadline,
+                                        ordinaryLookupFamily: key.interfaceScope == nil ? key.destination.family : nil)
+            // Ordinary host queries may return broader fallbacks; CIDR queries
+            // carry a netmask. Contradictory replies never prove exact absence.
+            // Scoped custody additionally requires the exact table scope: GET
+            // can return an unscoped same-interface fallback when absent.
             // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/route.c
             guard let scope = key.interfaceScope else {
-                return response?.destination == key.destination ? response : nil
+                guard let response else { return nil } // Validated same-family default fallback.
+                if response.destination == key.destination { return response }
+                guard response.destination.family == key.destination.family,
+                      response.destination.prefixLength < key.destination.prefixLength,
+                      response.destination.overlaps(key.destination) else {
+                    throw VPNDarwinRouteError.verificationFailed
+                }
+                return nil
             }
             // Success without a snapshot includes /0, whose family/interface
             // metadata this legacy decoder does not retain. That cannot prove
@@ -590,7 +612,8 @@ final class VPNDarwinRouteSocket {
     }
 
     private func transact(_ request: Data, sequence: Int32, type: UInt8,
-                          deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
+                          deadline: DispatchTime,
+                          ordinaryLookupFamily: VPNRouteAddressFamily? = nil) throws -> VPNDarwinRouteSnapshot? {
         do { try transport.send(request, deadline: deadline) }
         catch { throw translate(error) }
         for _ in 0..<128 {
@@ -613,6 +636,10 @@ final class VPNDarwinRouteSocket {
             catch { throw VPNDarwinRouteError.malformedMessage }
             guard response.type == type else { throw VPNDarwinRouteError.malformedMessage }
             guard response.error == 0 else { throw VPNDarwinRouteError.kernel(response.error) }
+            if let expected = ordinaryLookupFamily {
+                let actual = try response.snapshot?.destination.family ?? VPNDarwinRouteCodec.defaultLookupFamily(data)
+                guard actual == expected else { throw VPNDarwinRouteError.verificationFailed }
+            }
             return response.snapshot
         }
         throw VPNDarwinRouteError.responseLimit
