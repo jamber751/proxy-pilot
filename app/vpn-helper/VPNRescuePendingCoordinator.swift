@@ -41,6 +41,75 @@ enum VPNRescuePendingCoordinator {
     }
     #endif
 
+    /// A wake-up hint only. Neither metadata equality nor a notification grants
+    /// release, journal, readiness or mutation authority to a caller.
+    struct RecoveryProgress: Equatable {
+        fileprivate let serviceDevice: dev_t
+        fileprivate let serviceInode: ino_t
+        fileprivate let journal: RecoveryFileFacts
+    }
+    fileprivate struct RecoveryFileFacts: Equatable {
+        let device: dev_t, inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int, modifiedNanoseconds: Int
+        let changedSeconds: Int, changedNanoseconds: Int
+    }
+
+    /// The entry has just proved its signed state under this exact lease. Only
+    /// ENOENT means no checkpoint; this method never reads or parses the record.
+    static func captureRecoveryProgress(service: Int32, lease: VPNLifecycleLease) throws -> RecoveryProgress? {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNRescueExecutorError.requiresRoot }
+        #if VPN_RESCUE_SYSTEM_ENTRY
+        try VPNDirectoryProvisioner.requireSystemDirectory(service)
+        #endif
+        let directory = try progressDirectory(service)
+        guard try lease.checkedStorageIdentity()
+                == (device: UInt64(directory.st_dev), inode: UInt64(directory.st_ino)) else {
+            throw VPNRescueJournalContextError.mismatchedStorage
+        }
+        let journal = try progressFile(service)
+        try lease.check()
+        guard let journal else { return nil }
+        return RecoveryProgress(serviceDevice: directory.st_dev, serviceInode: directory.st_ino, journal: journal)
+    }
+
+    /// Called outside the Service lease: fstat/fstatat only, no Store, JSON,
+    /// code-signing or lock operations. A change merely requests fresh dispatch.
+    static func hasRecoveryProgress(service: Int32, checkpoint: RecoveryProgress) throws -> Bool {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNRescueExecutorError.requiresRoot }
+        let directory = try progressDirectory(service)
+        guard directory.st_dev == checkpoint.serviceDevice, directory.st_ino == checkpoint.serviceInode else {
+            throw VPNRescueJournalContextError.mismatchedStorage
+        }
+        guard let journal = try progressFile(service) else { return true }
+        return journal != checkpoint.journal
+    }
+
+    private static func progressDirectory(_ service: Int32) throws -> stat {
+        var value = stat()
+        guard fstat(service, &value) == 0, value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == 0, value.st_mode & 0o7777 == 0o700,
+              value.st_nlink > 0, value.st_flags == 0 else {
+            throw VPNRescueJournalContextError.mismatchedStorage
+        }
+        return value
+    }
+
+    private static func progressFile(_ service: Int32) throws -> RecoveryFileFacts? {
+        var value = stat()
+        guard fstatat(service, "update.json", &value, AT_SYMLINK_NOFOLLOW) == 0 else {
+            guard errno == ENOENT else { throw VPNRescueJournalContextError.invalidPendingState }
+            return nil
+        }
+        guard value.st_mode & S_IFMT == S_IFREG, value.st_uid == 0,
+              value.st_mode & 0o7777 == 0o600, value.st_nlink == 1, value.st_flags == 0 else {
+            throw VPNRescueJournalContextError.invalidPendingState
+        }
+        return RecoveryFileFacts(device: value.st_dev, inode: value.st_ino, size: value.st_size,
+            modifiedSeconds: value.st_mtimespec.tv_sec, modifiedNanoseconds: value.st_mtimespec.tv_nsec,
+            changedSeconds: value.st_ctimespec.tv_sec, changedNanoseconds: value.st_ctimespec.tv_nsec)
+    }
+
     #if VPN_APPLICATION_DESTINATION_ROOT_TESTING
     static func testObserve(service: Int32, lease: VPNLifecycleLease,
                             context: VPNRescueJournalContext, executor: VPNRescueExecutor,

@@ -376,11 +376,16 @@ enum VPNRescueSystemEntry {
             do { lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service) }
             catch VPNLifecycleOwnershipError.busy { try pause(deadline); continue }
             let step: Step
+            let recoveryProgress: VPNRescuePendingCoordinator.RecoveryProgress?
             do {
                 do {
                     try broker.validateForRepair(serviceLease: lease)
                     step = try dispatch(lease: lease)
                     try broker.validateForRepair(serviceLease: lease)
+                    if case .waitForRecovery = step {
+                        recoveryProgress = try VPNRescuePendingCoordinator.captureRecoveryProgress(
+                            service: service, lease: lease)
+                    } else { recoveryProgress = nil }
                 } catch {
                     let original = error
                     // If replacement marked exact pending1 before failing, its
@@ -400,7 +405,18 @@ enum VPNRescueSystemEntry {
             switch step {
             case .finished: report(.success); return
             case .advance: continue
-            case .waitForRecovery: report(.waitRecovery); try pause(deadline)
+            case .waitForRecovery:
+                report(.waitRecovery)
+                // Atomic journal publication is a wake-up hint only. Do not
+                // keep reacquiring Service/State leases while recovery needs
+                // them to finish. Every action after waking runs through the
+                // full fresh dispatcher proofs again; stat grants no authority.
+                if let recoveryProgress {
+                    while try !VPNRescuePendingCoordinator.hasRecoveryProgress(
+                        service: service, checkpoint: recoveryProgress) {
+                        try pause(deadline)
+                    }
+                }
             case .reconcileBroker:
                 report(.reconcileBroker)
                 do {

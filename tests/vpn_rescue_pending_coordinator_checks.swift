@@ -1,6 +1,7 @@
 // Disposable root VM fixture only; all keys and services below are synthetic.
 import CryptoKit
 import Darwin
+import Dispatch
 import Foundation
 
 @main enum VPNRescuePendingCoordinatorChecks {
@@ -13,6 +14,25 @@ import Foundation
             output.append(UInt8(value[cursor..<next], radix: 16)!); cursor = next
         }
         return output
+    }
+    static func readHandshake(_ descriptor: Int32, count: Int) throws -> [UInt8] {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        var bytes = [UInt8](repeating: 0, count: count), offset = 0
+        while offset < count {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { throw Injected.interrupted }
+            var event = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let status = poll(&event, 1, Int32(max(1, (deadline - now) / 1_000_000)))
+            if status < 0, errno == EINTR { continue }
+            guard status > 0, event.revents & Int16(POLLIN) != 0 else { throw Injected.interrupted }
+            let received = bytes.withUnsafeMutableBytes {
+                Darwin.read(descriptor, $0.baseAddress!.advanced(by: offset), count - offset)
+            }
+            if received < 0, errno == EINTR { continue }
+            guard received > 0 else { throw Injected.interrupted }
+            offset += received
+        }
+        return bytes
     }
     static func main() throws {
         let args = CommandLine.arguments
@@ -78,6 +98,12 @@ import Foundation
             _ = try store.markUpdateReplacementPending(transactionID: prepared.transactionID, expectedRevision: prepared.revision)
             print("setup"); return
         }
+        if operation == "progress-worker" {
+            // The lease above is actually held before READY is published.
+            print("READY"); fflush(stdout)
+            guard try readHandshake(STDIN_FILENO, count: 3) == Array("GO\n".utf8) else { exit(78) }
+            print("worker:locked"); return
+        }
         var trace: [String] = []
         func stale() throws {
             let url = URL(fileURLWithPath: args[12]).appendingPathComponent("update.json")
@@ -87,6 +113,62 @@ import Foundation
             precondition(chmod(url.path, 0o600) == 0)
         }
         do {
+            if operation.hasPrefix("progress-") {
+                let checkpoint = try VPNRescuePendingCoordinator.captureRecoveryProgress(service: service, lease: lease)
+                lease.release()
+                guard let checkpoint else { print("progress:absent"); return }
+                let journalURL = URL(fileURLWithPath: args[12]).appendingPathComponent("update.json")
+                if operation == "progress-unchanged-worker" {
+                    let child = Process(), output = Pipe(), input = Pipe()
+                    child.executableURL = URL(fileURLWithPath: args[0])
+                    var childArgs = Array(args.dropFirst()); childArgs[0] = "progress-worker"
+                    child.arguments = childArgs; child.standardInput = input
+                    child.standardOutput = output; child.standardError = FileHandle.nullDevice
+                    try child.run()
+                    var reaped = false
+                    defer {
+                        try? input.fileHandleForWriting.close()
+                        if !reaped {
+                            if child.isRunning { kill(child.processIdentifier, SIGKILL) }
+                            child.waitUntilExit()
+                        }
+                    }
+                    guard try Self.readHandshake(output.fileHandleForReading.fileDescriptor, count: 6)
+                            == Array("READY\n".utf8) else { throw Injected.denied }
+                    // Child cannot release its actual Service lease until GO.
+                    // All three reads therefore run while another process holds it.
+                    for _ in 0..<3 {
+                        guard try !VPNRescuePendingCoordinator.hasRecoveryProgress(service: service, checkpoint: checkpoint) else {
+                            throw Injected.denied
+                        }
+                    }
+                    try input.fileHandleForWriting.write(contentsOf: Data("GO\n".utf8))
+                    try input.fileHandleForWriting.close()
+                    child.waitUntilExit(); reaped = true
+                    guard child.terminationReason == .exit, child.terminationStatus == 0,
+                          String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "worker:locked\n" else {
+                        throw Injected.denied
+                    }
+                }
+                if operation == "progress-rename" {
+                    let temporary = journalURL.deletingLastPathComponent().appendingPathComponent("progress-publication")
+                    try Data(contentsOf: journalURL).write(to: temporary)
+                    guard chmod(temporary.path, 0o600) == 0, rename(temporary.path, journalURL.path) == 0 else { exit(65) }
+                }
+                if operation == "progress-unlink" { guard unlink(journalURL.path) == 0 else { exit(65) } }
+                if operation == "progress-malformed" {
+                    try Data("not a journal".utf8).write(to: journalURL)
+                    guard chmod(journalURL.path, 0o600) == 0 else { exit(65) }
+                }
+                if operation == "progress-symlink" {
+                    let target = journalURL.deletingLastPathComponent().appendingPathComponent("progress-target")
+                    guard rename(journalURL.path, target.path) == 0, symlink(target.path, journalURL.path) == 0 else { exit(65) }
+                }
+                if operation == "progress-unsafe-mode" { guard chmod(journalURL.path, 0o644) == 0 else { exit(65) } }
+                let observedService = operation == "progress-other-service" ? base : service
+                let changed = try VPNRescuePendingCoordinator.hasRecoveryProgress(service: observedService, checkpoint: checkpoint)
+                print("progress:\(changed ? "changed" : "unchanged")"); return
+            }
             let proof = try VPNRescueExecutor.testInspect(inTrustedDirectory: rescue, authorization: token)
             let context = try VPNRescueJournalContext.capture(authorization: token, store: store, lease: lease)
             if operation == "stale-before" { try stale() }

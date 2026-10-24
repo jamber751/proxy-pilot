@@ -146,6 +146,66 @@ class VPNRescuePendingCoordinatorRootTests(unittest.TestCase):
         self.assertEqual(self.identities(), self.before[::-1])
         if not changed: self.assertEqual(self.state(), self.state_before)
 
+    def test_recovery_metadata_wait_is_readonly_and_another_process_gets_lease(self):
+        (self.service / 'release.lock').unlink()
+        before = self.state()
+        result = self.invoke('progress-unchanged-worker')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'progress:unchanged')
+        self.assertEqual(self.state(), before)
+        self.assertFalse((self.service / 'release.lock').exists())
+        self.assertEqual(self.identities(), self.before)
+
+    def test_recovery_metadata_atomic_rename_is_only_a_wake_hint(self):
+        before = (self.service / 'update.json').read_bytes()
+        inode = (self.service / 'update.json').stat().st_ino
+        result = self.invoke('progress-rename')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'progress:changed')
+        self.assertEqual((self.service / 'update.json').read_bytes(), before)
+        self.assertNotEqual((self.service / 'update.json').stat().st_ino, inode)
+        self.assertEqual(self.identities(), self.before)
+
+    def test_recovery_metadata_unlink_is_progress(self):
+        result = self.invoke('progress-unlink')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'progress:changed')
+        self.assertFalse((self.service / 'update.json').exists())
+
+    def test_recovery_metadata_does_not_parse_or_authorize_malformed_journal(self):
+        result = self.invoke('progress-malformed')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'progress:changed')
+        self.assertEqual((self.service / 'update.json').read_bytes(), b'not a journal')
+        self.assertEqual(self.identities(), self.before)
+
+    def test_recovery_metadata_refuses_symlink_without_following_target(self):
+        journal = (self.service / 'update.json').read_bytes()
+        result = self.invoke('progress-symlink')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue((self.service / 'update.json').is_symlink())
+        self.assertEqual((self.service / 'progress-target').read_bytes(), journal)
+        self.assertEqual(self.identities(), self.before)
+
+    def test_recovery_metadata_refuses_unsafe_file_mode(self):
+        result = self.invoke('progress-unsafe-mode')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual(self.identities(), self.before)
+
+    def test_recovery_metadata_binds_the_original_service_inode(self):
+        result = self.invoke('progress-other-service')
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertIn('mismatchedStorage', result.stdout)
+        self.assertEqual(self.state(), self.state_before)
+
+    def test_recovery_metadata_capture_absence_creates_no_journal(self):
+        (self.service / 'update.json').unlink()
+        before = self.state()
+        result = self.invoke('progress-capture-absent')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'progress:absent')
+        self.assertEqual(self.state(), before)
+
     def test_missing_destination_stage_is_prepared_then_exchanged(self):
         shutil.rmtree(self.stage)
         installed = (self.destination / 'ProxyPilot.app').stat().st_ino

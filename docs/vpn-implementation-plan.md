@@ -5318,3 +5318,35 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Total budget300s и
   action deadlines не увеличены. Добавлены только fixed безопасные категории
   destinationLayout/Storage/Uncertain, без private associated values.
+
+### Продолжение 1.5en — восстановлению предоставляется свободный Service lease
+
+- [x] Run40096802463 Intel: phase6 timed out до C, selected139/completed3,
+  retained broker backup, Recovery B attempted29 runs/spawn scheduled при
+  корректном root0700 single-link/pinned helper. Это не missing executable.
+  Конкретный exit status отсутствует; его значение не выдумывается.
+- [x] Одного observation branch для source-selected состояния недостаточно:
+  candidate-selected ветка тоже циклически держала Service lease во время
+  дорогих проверок. После waitForRecovery теперь под lease фиксируются только
+  metadata update.json, lease освобождается до атомарного изменения записи.
+  Wait использует fstat/fstatat fixed-name, без Store/State locks/JSON/codesign.
+  Пробуждение только возвращает к полному fresh dispatcher, не даёт authority.
+- [x] Checkpoint связан с тем же Service inode и live lease при capture;
+  root-private directory/regular0600/single-link/no flags проверяются. Atomic
+  rename/unlink/mtime/ctime changes будят, unsafe/symlink/other namespace
+  отказывают. Malformed regular file может только разбудить и затем обязан
+  отказать в signed dispatcher. Total300s/action20s не увеличивались.
+- [x] Подготовлены8 root regressions поверх предыдущих22. READY/GO handshake
+  гарантирует три metadata checks, пока отдельный процесс держит настоящий
+  Service lease; нет marker/state writes и не создаётся release.lock.
+  Child ограничен5s, owned child kill/reap есть на ошибке. Fixture и SYSTEM
+  modules прошли обе архитектуры, host root cases не запускались.
+- [x] Полный optimized Universal native build/strict signature прошёл:
+  `/tmp/pp-rescue-yield-until-progress-20261024-v1` (107-source snapshot).
+- [ ] Нужна реальная root приёмка30 pending-coordinator cases и полного7-stage
+  Installer/ordinary owner gate на обеих архитектурах. Устаревшие system runs
+  40097695769/40099297749 отменены после подтверждённой новой причины и замены
+  реализации ожидания, не из-за истечения времени наблюдения.
+- [ ] Новый engine rebuild выполняется ordinary/offline/jobs2 из проверенных
+  публичных архивов с current recipe; старый135 artifact не переименовывается
+  и provenance не переписывается. Финальный комплект ещё не готов к установке.
