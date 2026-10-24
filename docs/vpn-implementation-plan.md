@@ -5055,3 +5055,19 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Повтор с точной фазой, error category и layout. Unittest fail-fast ускоряет
   получение первого unexpected failure; успешный итоговый gate всё равно обязан
   выполнить все5 cases. Intel текущего run продолжает actual Installer suite.
+
+### Продолжение 1.5dz — private Keychain fixture guard
+
+- [x] Run40094588892: обе VM остановились до Keychain item operations; fixed
+  refusal показал только canonicalMatch=false, остальные directory checks true.
+  Это ошибка сравнения написания пути в test fixture, не доказательство ACL поведения.
+- [x] Pure Foundation/Darwin experiment воспроизвёл: Foundation меняет написание
+  `/private/tmp`, но dev/inode совпадают. Симлинк child отвергнут. Security API
+  в этом host эксперименте не импортировались/не вызывались.
+- [x] Guard теперь держит trusted sticky/root-owned parent FD и no-follow child FD,
+  сверяет fstat/lstat/fstatat и canonical FD identity; exact lexical parent,
+  prefix, UID и mode700 сохранены. Открытие canonical spelling допускается
+  только после успешного открытия своего no-follow prefixed child.
+  Compile-only V1/V2 повторно passed; host Keychain API не выполнялись.
+- [ ] VM retry должен дойти до реального private ACL/locked-read поведения.
+  Production password persistence и silent GUI гарантия пока не реализованы.

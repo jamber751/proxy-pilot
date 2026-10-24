@@ -78,7 +78,8 @@ class VPNLegacyKeychainVMTests(unittest.TestCase):
             try:
                 refused = json.loads(result.stdout)
                 allowed = {'ciMatch', 'vmFlagMatch', 'uidMatch', 'ordinaryUID', 'argumentCountMatch',
-                           'canonicalMatch', 'prefixMatch', 'parentMatch', 'present', 'directoryMatch',
+                           'canonicalIdentity', 'heldIdentity', 'parentTrusted',
+                           'prefixMatch', 'parentMatch', 'present', 'directoryMatch',
                            'ownerMatch', 'modeMatch', 'status'}
                 if (isinstance(refused, dict)
                         and set(refused) == {'guardStage', 'checks'}

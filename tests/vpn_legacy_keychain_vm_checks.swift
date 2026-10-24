@@ -25,19 +25,43 @@ import CryptoKit
         exit(77)
     }
 
-    static func safeDirectory(_ path: String) -> String {
+    static func safeDirectory(_ path: String) -> (String, Int32, Int32) {
         let url = URL(fileURLWithPath: path)
         let canonical = url.resolvingSymlinksInPath().path
-        var info = stat()
+        // Trust the lexical fixed parent plus no-follow descriptor identity,
+        // not Foundation's spelling of /private/tmp versus /tmp aliases.
+        let prefix = "/private/tmp/"
+        let name = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : ""
+        let lexical = path == prefix + name && !name.isEmpty && !name.contains("/")
+        let parent = open("/private/tmp", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var parentInfo = stat()
+        let parentTrusted = parent >= 0 && fstat(parent, &parentInfo) == 0
+            && parentInfo.st_mode & S_IFMT == S_IFDIR && parentInfo.st_uid == 0
+            && parentInfo.st_mode & S_ISVTX != 0
+        let directory = lexical && name.hasPrefix("pp-legacy-keychain-vm-") && parentTrusted
+            ? openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) : -1
+        let canonicalDirectory = directory >= 0
+            ? open(canonical, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) : -1
+        defer { if canonicalDirectory >= 0 { close(canonicalDirectory) } }
+        var info = stat(), held = stat(), named = stat(), resolved = stat()
         let present = lstat(path, &info) == 0
-        let checks = ["canonicalMatch": canonical == path,
-                      "prefixMatch": url.lastPathComponent.hasPrefix("pp-legacy-keychain-vm-"),
-                      "parentMatch": url.deletingLastPathComponent().path == "/private/tmp",
+        let heldValid = directory >= 0 && fstat(directory, &held) == 0
+        let namedValid = parent >= 0 && lexical
+            && fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0
+        let canonicalValid = canonicalDirectory >= 0 && fstat(canonicalDirectory, &resolved) == 0
+        let checks = ["canonicalIdentity": heldValid && canonicalValid
+                        && held.st_dev == resolved.st_dev && held.st_ino == resolved.st_ino,
+                      "heldIdentity": heldValid && present && namedValid
+                        && held.st_dev == info.st_dev && held.st_ino == info.st_ino
+                        && held.st_dev == named.st_dev && held.st_ino == named.st_ino,
+                      "prefixMatch": name.hasPrefix("pp-legacy-keychain-vm-"),
+                      "parentMatch": lexical, "parentTrusted": parentTrusted,
                       "present": present, "directoryMatch": present && info.st_mode & S_IFMT == S_IFDIR,
                       "ownerMatch": present && info.st_uid == getuid(),
                       "modeMatch": present && info.st_mode & 0o7777 == 0o700]
         guard checks.values.allSatisfy({ $0 }) else { refuse("privateDirectory", checks: checks) }
-        return path + "/experiment.keychain"
+        // Keep descriptors alive until the complete experiment operation exits.
+        return (path + "/experiment.keychain", parent, directory)
     }
 
     static func windows() -> [String: Any] {
@@ -84,7 +108,8 @@ import CryptoKit
         guard checks.values.allSatisfy({ $0 }) else { refuse("execution", checks: checks) }
         let action = CommandLine.arguments[1]
         guard ["create", "read", "locked-read", "delete", "observe", "metadata"].contains(action) else { exit(64) }
-        let path = safeDirectory(CommandLine.arguments[2])
+        let (path, parent, directory) = safeDirectory(CommandLine.arguments[2])
+        defer { close(directory); close(parent) }
         if action == "observe" {
             let data = try! JSONSerialization.data(withJSONObject: windows(), options: .sortedKeys)
             print(String(decoding: data, as: UTF8.self)); return
