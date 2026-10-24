@@ -112,7 +112,17 @@ final class VPNLegacyPasswordBackend: VPNPasswordWorkerBackend {
               info.st_nlink == 1, info.st_mode & 0o777 == 0o600 else { throw VPNLegacyPasswordError.unavailable }
         var selected: UInt8 = 0
         guard read(selection, &selected, 1) == 1, info.st_size == 1, selected == 65 || selected == 66 else { throw VPNLegacyPasswordError.unavailable }
-        let name = selected == 65 ? "first.keychain-db" : "second.keychain-db"
+        let record = selected == 65 ? "private-keychain-name-A" : "private-keychain-name-B"
+        let format = openat(directory, record, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard format >= 0 else { throw VPNLegacyPasswordError.unavailable }; defer { close(format) }
+        guard fstat(format, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(),
+              info.st_nlink == 1, info.st_mode & 0o777 == 0o600, info.st_size > 0, info.st_size < 64 else { throw VPNLegacyPasswordError.unavailable }
+        var nameBytes = [UInt8](repeating: 0, count: 64)
+        let nameCount = read(format, &nameBytes, nameBytes.count)
+        guard Int64(nameCount) == info.st_size else { throw VPNLegacyPasswordError.unavailable }
+        let name = String(decoding: nameBytes.prefix(nameCount), as: UTF8.self)
+        let allowed = selected == 65 ? ["first.keychain", "first.keychain-db"] : ["second.keychain", "second.keychain-db"]
+        guard allowed.contains(name) else { throw VPNLegacyPasswordError.unavailable }
         return try VPNLegacyPasswordBackend(api: VPNLegacyPasswordSecurityAPI(privateAddPath: String(cString: path) + "/" + name))
     }
     #endif

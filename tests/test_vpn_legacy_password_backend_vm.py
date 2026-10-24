@@ -46,6 +46,11 @@ class VMFixtureDiagnosticsTests(unittest.TestCase):
         for forbidden in ('.path', '.description', '.localizedDescription', 'String(describing:',
                           'persistentReference', 'envelope', 'secret', 'dictionary', 'account', 'login'):
             self.assertNotIn(forbidden, body)
+        backend = (ROOT / 'app/VPNLegacyPasswordBackend.swift').read_text()
+        selector = backend.split('static func testPrivateWorker(', 1)[1].split('    #endif', 1)[0]
+        self.assertIn('"private-keychain-name-A" : "private-keychain-name-B"', selector)
+        self.assertIn('["first.keychain", "first.keychain-db"] : ["second.keychain", "second.keychain-db"]', selector)
+        self.assertIn('guard allowed.contains(name)', selector)
         for expected in ('.searchList, status:', '.defaultKeychain, status:', '.getPath, status:',
                          '.initialInteraction, status:', '.createKeychain, status:',
                          '.createdPathIsDB, value:', '.createdPathIsBase, value:'):
@@ -70,8 +75,12 @@ class VMFixturePathProofTests(unittest.TestCase):
         let directory = open(CommandLine.arguments[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         defer { if directory >= 0 { close(directory) } }
         let proof = VPNPrivateKeychainPathProof.inspect(actual: CommandLine.arguments[1],
-            directory: directory, intendedName: "first.keychain-db")
+            directory: directory, target: .first)
         guard proof.accepted == (CommandLine.arguments[3] == "true") else { throw Failure.check }
+        if CommandLine.arguments[3] == "neither" {
+            guard proof.actualExists && proof.actualRegularOwned && proof.sameParent && !proof.intendedExists &&
+                  !proof.baseExists && !proof.dbExists else { throw Failure.check }
+        }
         print("owned file proof passed")
     }
 }
@@ -111,6 +120,30 @@ class VMFixturePathProofTests(unittest.TestCase):
             hardlink.unlink()
             intended.chmod(0o620)
             result = subprocess.run([str(self.binary), str(intended), str(private), 'false'],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            intended.chmod(0o600)
+            intended.unlink()
+            base = private / 'first.keychain'
+            base.write_bytes(b'ordinary requested-base variant; NOT a keychain'); base.chmod(0o600)
+            for actual in (base, alias / base.name):
+                result = subprocess.run([str(self.binary), str(actual), str(private), 'true'],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # Both known names present is ambiguous even if raw actual matches.
+            intended.write_bytes(b'ambiguous alternate'); intended.chmod(0o600)
+            for actual in (base, intended):
+                result = subprocess.run([str(self.binary), str(actual), str(private), 'false'],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            intended.unlink()
+            intended.symlink_to(base)
+            result = subprocess.run([str(self.binary), str(base), str(private), 'false'],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            intended.unlink(); base.unlink()
+            # Neither candidate: actual parent/regular facts must still compute.
+            result = subprocess.run([str(self.binary), str(other), str(private), 'neither'],
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
