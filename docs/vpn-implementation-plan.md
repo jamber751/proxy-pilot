@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; исходные5 Installer cases проходили; новый ARM ordinary update установил D и завершил cleanup | System40117891547 FAILED: ARM final result77, Intel phase6 On recovery с failures3; нужны diagnosis/fix и полный System8; macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; System40124194483 ARM прошёл первые7 Installer cases, включая ordinary Off/On | Восьмой ARM case потерял исходный broker PID до наблюдения handoff; причина ещё не установлена. Intel build; полный System8 и macOS11 runtime остаются OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -6162,3 +6162,42 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   у агента. Следующий VM run должен установить точное место отказа.
 - [ ] System40124194483: ARM прошёл первые5 сценариев и выполняет ordinary
   owner C→D Off; Intel по-прежнему production build. Системная приёмка ещё OPEN.
+
+### Продолжение 1.5fm — negative DNS и незавершённая последняя Installer проверка
+
+- [x] `81f2f45`: bounded SOA-backed NXDOMAIN/NODATA и структурно проверенные
+  upstream errors1/2/4/5 сохраняют исходные client question/ID/RD и проходят
+  ТОТ ЖЕ mandatory deny/route/current/leased-output путь. Empty addresses не
+  разрешают удалить старые IP fences. Transport error не становится NXDOMAIN.
+  Negative относится к terminal CNAME имени; NODATA key также включает QTYPE.
+  SOA owner проверяется по label boundary относительно terminal, MNAME/RNAME
+  сохраняются как binary labels/root, RDATA имеет точные5 UInt32. Negative TTL
+  равен min(SOA TTL,MINIMUM,chain TTL,86400), монотонно уменьшается; directive
+  несёт sealed request/resource/gen/rev и checked original absolute expiry.
+- [x] Независимо88 pure tests PASS8.881s; агент подтвердил ARM/Intel no-TESTING
+  module compile. В том числе negative/error output under lease, old-fence
+  retention, wrong SOA zone, compressed/binary names, high-bit TTL/unsigned
+  MINIMUM, overflow и mixed TTL0/nonzero expiry. No-SOA negatives, SOA+NS,
+  referrals/requery, EDNS/CD/DNSSEC, actual cache/relay/OS barrier остаются OPEN.
+- [ ] System40124194483 ARM120961992740 terminal FAILED в восьмом case после
+  семи положительных. После закрытия reply socket Python потерял original broker
+  incarnation до наблюдения handoffStarted. Source допускает legitimate C→D
+  rotation race: D штатно bootout старого C, а phase4 может быстро смениться.
+  Но текущий журнал не доказывает ни race, ни SIGPIPE; production fix не выбран.
+  Следующий VM proof должен сохранить self-emitted post-durable-handoff witness
+  исходного actor и всё равно требовать final D/ordinary status. Intel этого
+  же run остаётся production build; не перезапускался по observation timeout.
+- [x] Queued superseded e21 System40126632445/scoped40126632473/ownership40126632457
+  и b27 ownership40126154445 terminal CANCELLED после подтверждения replacement
+  f7 System40127137205/scoped40127137173/ownership40127137271. Причина — новые
+  defensive route contracts/source graph; live jobs оставлены, отмена не скрывает
+  failures и не заменяет доказательство полного gate.
+- [ ] Genuine default-Keychain40126154510: Intel roundtrip/cross-image и ARM
+  cross-image выполняются; ARM roundtrip queued. Это ещё не API success.
+  Latest utun diagnostic40127137175 queued, оригинал40125607865 failed обе
+  архитектуры с теми же22/child/ownerFailure и без PASS. Cause attribution OPEN.
+- [ ] Pre-enable UX audit выявил reachable ledger saturation: legacy64 pending
+  +issued active блокирует revoke/changed login/import/removal. Исправление должно
+  сохранить все65 obligations, резервировать retirement headroom ДО нового Add
+  и не блокировать manual flow/config changes. Нельзя просто увеличить очередь
+  на один и получить следующий dead end. Runtime до этой приёмки остаётся OFF.
