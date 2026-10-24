@@ -13,6 +13,9 @@ on:
       - 'app/build.sh'
       - 'tests/test_vpn_default_keychain_frontend_vm.py'
       - 'tests/test_vpn_default_keychain_anchor.py'
+      - 'tests/VPNDefaultKeychainCanaryProof.swift'
+      - 'tests/test_vpn_default_keychain_canary.py'
+      - 'tests/vpn_default_keychain_canary_checks.swift'
       - 'tests/vpn_default_keychain_frontend_vm.swift'
       - 'tests/test_vpn_password_frontend.py'
       - 'tests/vpn_legacy_password_backend_vm_checks.swift'
@@ -36,7 +39,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Source, custody and negative native guards without any Keychain API
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_default_keychain_anchor test_vpn_default_keychain_frontend_vm.GenuineDefaultSourceGuardTests test_vpn_default_keychain_frontend_vm.GenuineDefaultNativeGuardTests -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_default_keychain_anchor test_vpn_default_keychain_canary test_vpn_default_keychain_frontend_vm.GenuineDefaultSourceGuardTests test_vpn_default_keychain_frontend_vm.GenuineDefaultNativeGuardTests -v
       - name: Actual genuine factory roundtrip; restore exact prior VM default
         if: matrix.case == 'roundtrip'
         env:

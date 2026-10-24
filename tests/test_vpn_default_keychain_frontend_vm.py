@@ -1,6 +1,7 @@
 """Real current-default Keychain APIs ONLY in a fresh explicitly opted-in GHA VM.
 Local tests compile/check guards and synthetic files; they never call those APIs.
-The only source delta is a test parent after the genuine worker's main dispatch.
+Declared private source delta: fixture parent + ownership-canary helper after
+unchanged genuine worker dispatch. No production factory/backend/wire hooks.
 """
 from pathlib import Path
 import hashlib
@@ -29,6 +30,7 @@ PRESERVED = b'EXPECTED-UNKNOWN-PRESERVED'
 TRACE_STAGES = {
     **{step: {'targetAnchor', 'expectedDefault', 'begin', 'setAPI', 'resultDefault', 'definite'}
        for step in ('setA', 'setB', 'restore')},
+    **{step: {'verifyCanary'} for step in ('deleteA', 'deleteB')},
     **{step: {'requireDefault', 'prepare', 'begin', 'dispatch', 'locatorProof', 'children', 'ledger', 'definite', 'refreshAnchor'}
        for step in ('addA', 'addB')},
 }
@@ -46,7 +48,8 @@ def fixture_source():
     proof = source.split('// BEGIN NO-KEYCHAIN FILE IDENTITY', 1)[1].split('// END NO-KEYCHAIN FILE IDENTITY', 1)[0]
     if any(value in proof for value in ('SecKeychain', 'SecItem', 'VPNPasswordWorker')):
         raise AssertionError('Reusable filesystem proof acquired a Security dependency')
-    return (ROOT / 'tests/vpn_default_keychain_frontend_vm.swift').read_text() + '\n' + proof
+    return ((ROOT / 'tests/vpn_default_keychain_frontend_vm.swift').read_text() + '\n' + proof + '\n'
+            + (ROOT / 'tests/VPNDefaultKeychainCanaryProof.swift').read_text())
 
 
 def prepare_snapshot(snapshot):
@@ -81,7 +84,9 @@ def prepare_snapshot(snapshot):
             raise AssertionError('Genuine worker or factory changed')
     receipt = {'schema': 1, 'original': original, 'declaredDelta': sorted(delta),
                'productionFactoryUnchanged': True,
-               'pathProofSHA256': hashlib.sha256(fixture_source().encode()).hexdigest()}
+               'pathProofSHA256': hashlib.sha256(fixture_source().encode()).hexdigest(),
+               'canaryProofSHA256': hashlib.sha256((ROOT/'tests/VPNDefaultKeychainCanaryProof.swift').read_bytes()).hexdigest(),
+               'fixtureOwnershipCanaryOnly': True}
     (snapshot.parent / 'source-receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2))
     return receipt
 
@@ -270,6 +275,36 @@ class GenuineDefaultSourceGuardTests(unittest.TestCase):
             self.assertNotIn(forbidden, trace)
         self.assertIn('throw error', trace)
 
+    def test_ownership_canary_is_private_explicit_and_never_acknowledges_unknown_delete(self):
+        fixture=fixture_source()
+        helper=(ROOT/'tests/VPNDefaultKeychainCanaryProof.swift').read_text()
+        for forbidden in ('import Security', 'SecItem', 'SecKeychain', 'Process('):
+            self.assertNotIn(forbidden,helper)
+        create=fixture.split('static func createCanary(',1)[1].split('static func canaryOwner(',1)[0]
+        self.assertIn('kSecUseKeychain as String:keychain',create)
+        self.assertEqual(create.count('SecItemAdd('),1)
+        self.assertNotIn('SecKeychainCopyDefault',create)
+        verify=fixture.split('static func verifyCanary(',1)[1].split('static func create(_ root:',1)[0]
+        self.assertLess(verify.index('VPNDefaultCanaryProof.verify('),verify.index('SecKeychainOpen('))
+        self.assertLess(verify.index('identity.validateProcess(getppid())'),verify.index('SecKeychainOpen('))
+        self.assertIn('identity.requireSameProcess(parentPID',verify)
+        self.assertLess(verify.index('canaryOwner(found)'),verify.index('SecKeychainItemCopyAttributesAndData('))
+        for required in ('kSecMatchSearchList as String:[reference]', 'kSecMatchItemList as String:[request.persistentReference]',
+                         'kSecReturnData as String:false', 'requiredLeaf:leaf'):
+            self.assertIn(required,verify)
+        deletion=fixture.split('static func delete(_ root:',1)[1].split('static func remove(_ root:',1)[0]
+        for first,second in [('== .deleted','try joinChildren()'), ('try joinChildren()', 'store.load()'),
+                             ('store.load()', 'refreshAfterConfirmedDelete'), ('refreshAfterConfirmedDelete','root.definite(step)')]:
+            self.assertLess(deletion.index(first),deletion.index(second))
+        refresh=fixture.split('static func refreshAfterConfirmedDelete(',1)[1].split('static func verifyCanary(',1)[0]
+        self.assertLess(refresh.index('DefaultAnchor('),refresh.index('child.run()'))
+        self.assertLess(refresh.index('validateProcess('),refresh.index('channel('))
+        self.assertLess(refresh.index('terminationStatus == 0'),refresh.index('adoptVerifiedCanaryAnchor'))
+        self.assertNotIn('root.remove(',refresh)
+        self.assertIn('EXPECTED-UNKNOWN-PRESERVED',fixture)
+        self.assertNotIn('SecKeychainCopySignature',fixture)
+        self.assertNotIn('SecKeychainGetDLDBHandle',fixture)
+
     def test_two_sentinels_and_positive_completion_are_required_for_file_cleanup(self):
         with tempfile.TemporaryDirectory(prefix='pp-default-custody-') as folder:
             root = Path(folder); root.chmod(0o700)
@@ -309,9 +344,11 @@ class GenuineDefaultNativeGuardTests(unittest.TestCase):
                                      *[str(ROOT / 'app' / name) for name in names], str(fixture), str(main), '-o', str(binary)],
                                     capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result = subprocess.run([str(binary), ROLE, 'roundtrip', '/does/not/exist', 'unused'],
-                                    env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}, capture_output=True, timeout=8)
-            self.assertEqual((result.returncode, result.stdout, result.stderr), (77, b'', b''))
+            for partial in ({}, {'GITHUB_ACTIONS':'true'}, {'PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS':'1'}):
+                for action in ('roundtrip', 'canary-first', 'canary-second'):
+                    result = subprocess.run([str(binary), ROLE, action, '/does/not/exist', 'unused'],
+                                            env=dict(partial, PATH='/usr/bin:/bin:/usr/sbin:/sbin'), capture_output=True, timeout=8)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (77, b'', b''))
 
 
 @unittest.skipUnless(os.environ.get('PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS') == '1',

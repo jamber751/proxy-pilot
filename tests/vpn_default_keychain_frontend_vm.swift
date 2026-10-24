@@ -13,11 +13,11 @@ enum VPNDefaultKeychainVMEntry {
         case baseline, path, createA, createB, setA, setB, addA, addB, readA, readB
         case otherRead, otherDelete, deleteA, deleteB, restore, removeA, removeB
     }
-    // Closed VM-only diagnostics around existing calls. No extra Security API
-    // preflight and no changes to the genuine worker/backend source or factory.
+    // Closed VM-only diagnostics. Ownership canary APIs are fixture-only;
+    // genuine worker/backend source, factory and tested calls stay unchanged.
     enum TraceStage: String {
         case targetAnchor, expectedDefault, setAPI, resultDefault, requireDefault
-        case prepare, begin, dispatch, locatorProof, children, ledger, definite, refreshAnchor
+        case prepare, begin, dispatch, locatorProof, children, ledger, definite, refreshAnchor, verifyCanary
     }
     enum ErrorCategory: String {
         case invalid, denied, unavailable, transport, timeout
@@ -86,13 +86,17 @@ enum VPNDefaultKeychainVMEntry {
     static func runIfRequested(arguments: [String]) -> Int32? {
         guard arguments.dropFirst().contains(argument) else { return nil }
         guard arguments.count == 5, arguments[1] == argument,
-              ["roundtrip", "crossrelease", "other-read", "other-delete"].contains(arguments[2]) else { return 64 }
+              ["roundtrip", "crossrelease", "other-read", "other-delete", "canary-first", "canary-second"].contains(arguments[2]) else { return 64 }
         // BEFORE every preference, interaction flag or Keychain API.
         guard ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true",
               ProcessInfo.processInfo.environment["PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS"] == "1",
               getuid() == geteuid(), getuid() >= 500 else { return 77 }
         do {
-            let root = try Root.open(arguments[3], fresh: arguments[2] == "roundtrip" || arguments[2] == "crossrelease")
+            let root = try Root.open(arguments[3], fresh: arguments[2] == "roundtrip" || arguments[2] == "crossrelease", canaryOpening: arguments[2].hasPrefix("canary-"))
+            if arguments[2] == "canary-first" || arguments[2] == "canary-second" {
+                try verifyCanary(root, target: arguments[2] == "canary-first" ? .first : .second, nonce: arguments[4]); return 0
+            }
+            guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { throw Failure.apiFailed }
             if arguments[2] == "other-read" { try otherRead(root); return 0 }
             if arguments[2] == "other-delete" { return try otherDelete(root) }
             return try runFresh(root, action: arguments[2], otherImage: arguments[4])
@@ -181,7 +185,7 @@ enum VPNDefaultKeychainVMEntry {
             self.url = url; self.descriptor = descriptor; self.a = a; self.b = b
         }
         deinit { close(a); close(b); close(descriptor) }
-        static func open(_ text: String, fresh: Bool) throws -> Root {
+        static func open(_ text: String, fresh: Bool, canaryOpening: Bool = false) throws -> Root {
             guard text.hasPrefix("/private/tmp/pp-default-keychain-vm-"),
                   !text.contains("/../"), !text.contains("/./") else { throw Failure.guardFailed }
             let url = URL(fileURLWithPath: text, isDirectory: true)
@@ -203,7 +207,7 @@ enum VPNDefaultKeychainVMEntry {
                 try check(FileManager.default.contentsOfDirectory(atPath: url.appendingPathComponent("A").path).isEmpty)
                 try check(FileManager.default.contentsOfDirectory(atPath: url.appendingPathComponent("B").path).isEmpty)
             } else {
-                try check(root.read("parent-ready") == "OWNED-CREATED-PRIVATE-TARGETS")
+                if !canaryOpening { try check(root.read("parent-ready") == "OWNED-CREATED-PRIVATE-TARGETS") }
                 try check(root.read("default-not-restored") == "OWNED-DEFAULT-LEASE")
             }
             return root
@@ -254,15 +258,20 @@ enum VPNDefaultKeychainVMEntry {
         let directory: Int32
         let target: VPNPrivateKeychainPathProof.Target
         let leaf: VPNPrivateKeychainPathProof.Leaf
+        let canary: Canary
         init(anchor: DefaultAnchor, folder: URL, directory: Int32,
-             target: VPNPrivateKeychainPathProof.Target, leaf: VPNPrivateKeychainPathProof.Leaf) {
+             target: VPNPrivateKeychainPathProof.Target, leaf: VPNPrivateKeychainPathProof.Leaf, canary: Canary) {
             self.anchor = anchor; self.folder = folder; self.directory = directory
-            self.target = target; self.leaf = leaf
+            self.target = target; self.leaf = leaf; self.canary = canary
         }
         /// A successful Add may atomically replace its own database file. Only
         /// the authenticated post-Add locator and durable exact Store receipt
         /// authorize adopting that new inode; pathname continuity alone cannot.
         /// The old anchor remains held until every new-anchor check succeeds.
+        func adoptVerifiedCanaryAnchor(_ replacement: DefaultAnchor) throws {
+            try replacement.validate()
+            anchor = replacement
+        }
         func refreshAfterConfirmedAdd(_ locator: VPNPasswordItemLocator) throws {
             try prove(locator, self)
             let replacement = try DefaultAnchor(anchor.keychain)
@@ -277,6 +286,178 @@ enum VPNDefaultKeychainVMEntry {
             try replacement.validate()
             anchor = replacement
         }
+    }
+
+    final class Canary {
+        let item: SecKeychainItem
+        let service: String, account: String, persistentReference: Data
+        private(set) var value: Data
+        init(item:SecKeychainItem,service:String,account:String,persistentReference:Data,value:Data) {
+            self.item=item;self.service=service;self.account=account;self.persistentReference=persistentReference;self.value=value
+        }
+        deinit { value.resetBytes(in:0..<value.count) }
+    }
+    static func createCanary(_ keychain:SecKeychain) throws -> Canary {
+        let service="kz.documentolog.proxypilot.vm-canary."+UUID().uuidString.lowercased()
+        let account="canary."+UUID().uuidString.lowercased()
+        var value=Data(count:32);defer { value.resetBytes(in:0..<value.count) }
+        let random=value.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault,$0.count,$0.baseAddress!) }
+        guard random == errSecSuccess else { throw Failure.apiFailed }
+        var result:CFTypeRef?
+        let query:[String:Any]=[kSecClass as String:kSecClassGenericPassword,
+            kSecAttrService as String:service,kSecAttrAccount as String:account,
+            kSecUseKeychain as String:keychain, // non-null explicit A/B, NEVER default
+            kSecValueData as String:value,kSecReturnRef as String:true,kSecReturnPersistentRef as String:true]
+        guard SecItemAdd(query as CFDictionary,&result) == errSecSuccess,
+              let fields=result as? [String:Any],let raw=fields[kSecValueRef as String],
+              CFGetTypeID(raw as CFTypeRef) == SecKeychainItemGetTypeID(),
+              let persistent=fields[kSecValuePersistentRef as String] as? Data,
+              !persistent.isEmpty,persistent.count <= 4096 else { throw Failure.ambiguous }
+        let item=unsafeBitCast(raw as CFTypeRef,to:SecKeychainItem.self)
+        return Canary(item:item,service:service,account:account,persistentReference:persistent,value:value)
+    }
+    static func canaryOwner(_ item:SecKeychainItem)throws->SecKeychain {
+        var owner:SecKeychain?
+        guard SecKeychainItemCopyKeychain(item,&owner) == errSecSuccess,let owner else { throw Failure.guardFailed }
+        return owner
+    }
+    static func fingerprint(_ info:stat)->VPNDefaultCanaryFingerprint {
+        VPNDefaultCanaryFingerprint(device:UInt64(UInt32(bitPattern:info.st_dev)),inode:UInt64(info.st_ino),uid:info.st_uid,
+            birthSeconds:Int64(info.st_birthtimespec.tv_sec),birthNanoseconds:UInt32(info.st_birthtimespec.tv_nsec))
+    }
+    static func fingerprint(_ fd:Int32)throws->VPNDefaultCanaryFingerprint {
+        var info=stat();guard fstat(fd,&info) == 0 else { throw Failure.guardFailed };return fingerprint(info)
+    }
+    static func imageFingerprint(_ identity:VPNPasswordWorkerIdentity)throws->VPNDefaultCanaryFingerprint {
+        let fd=open(identity.path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)
+        guard fd >= 0 else { throw Failure.guardFailed };defer { close(fd) }
+        return try fingerprint(fd)
+    }
+    /// Private framed pipe, never a public endpoint or command-line secret.
+    /// One absolute 5s I/O budget; no SDK latency/cancellation guarantee claimed.
+    static func channel(_ fd:Int32, write bytes:Data? = nil)throws->Data {
+        let end=DispatchTime.now().uptimeNanoseconds+5_000_000_000
+        let flags=fcntl(fd,F_GETFL)
+        guard flags >= 0,fcntl(fd,F_SETFL,flags|O_NONBLOCK) == 0 else { throw Failure.guardFailed }
+        // XNU fcntl F_SETNOSIGPIPE sets FG_NOSIGPIPE on non-socket fileglobs:
+        // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_descrip.c
+        if bytes != nil { guard fcntl(fd,F_SETNOSIGPIPE,1) == 0 else { throw Failure.guardFailed } }
+        var output=Data(),offset=0,expected=4
+        while true {
+            let now=DispatchTime.now().uptimeNanoseconds
+            guard now < end else { throw VPNPasswordWorkerError.timeout }
+            var poller=pollfd(fd:fd,events:Int16(bytes == nil ? POLLIN : POLLOUT),revents:0)
+            let ready=poll(&poller,1,Int32(min(100,(end-now+999_999)/1_000_000)))
+            if ready < 0 { if errno == EINTR { continue };throw Failure.guardFailed }
+            if ready == 0 { continue }
+            if let bytes {
+                let count=bytes.withUnsafeBytes { Darwin.write(fd,$0.baseAddress!.advanced(by:offset),bytes.count-offset) }
+                if count < 0 { if errno == EINTR || errno == EAGAIN { continue };throw Failure.guardFailed }
+                guard count > 0 else { throw Failure.guardFailed };offset+=count
+                if offset == bytes.count { return Data() }
+            } else {
+                var buffer=[UInt8](repeating:0,count:min(1024,expected-output.count+1))
+                let count=Darwin.read(fd,&buffer,buffer.count)
+                if count < 0 { if errno == EINTR || errno == EAGAIN { continue };throw Failure.guardFailed }
+                if count == 0 { guard output.count == expected else { throw Failure.guardFailed };return output }
+                output.append(contentsOf:buffer.prefix(count))
+                if output.count >= 4,expected == 4 { expected=4+(try VPNDefaultCanaryProof.length(Data(output.prefix(4)))) }
+                guard output.count <= expected else { throw Failure.guardFailed }
+            }
+        }
+    }
+    static func refreshAfterConfirmedDelete(_ root:Root,_ target:Created)throws {
+        // This anchor is PROVISIONAL until a fresh same-image process proves
+        // the surviving random canary in this exact held/named candidate file.
+        let candidate=try DefaultAnchor(target.anchor.keychain)
+        let identity=try VPNPasswordWorkerIdentity()
+        let request=VPNDefaultCanaryRequest(schema:1,target:target.target.rawValue,leaf:target.leaf.rawValue,
+            service:target.canary.service,account:target.canary.account,persistentReference:target.canary.persistentReference,
+            value:target.canary.value,candidate:fingerprint(candidate.attributes),root:try fingerprint(root.descriptor),
+            parent:try fingerprint(target.directory),image:try imageFingerprint(identity),nonce:UUID().uuidString.lowercased())
+        var frame=try VPNDefaultCanaryProof.encode(request);defer { frame.resetBytes(in:0..<frame.count) }
+        let input=Pipe(),child=Process();child.executableURL=URL(fileURLWithPath:identity.path)
+        child.arguments=[argument,target.target == .first ? "canary-first" : "canary-second",root.url.path,request.nonce]
+        child.environment=["PATH":"/usr/bin:/bin:/usr/sbin:/sbin","GITHUB_ACTIONS":"true","PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS":"1"]
+        child.standardInput=input;child.standardOutput=FileHandle.nullDevice;child.standardError=FileHandle.nullDevice
+        try candidate.validate()
+        try child.run();input.fileHandleForReading.closeFile()
+        var finished=false,stamp:VPNPasswordWorkerIdentity.ProcessStamp?
+        defer {
+            input.fileHandleForWriting.closeFile()
+            if !finished,child.isRunning,let stamp,
+               let _ = try? identity.requireSameProcess(child.processIdentifier,expected:stamp,parent:getpid()) {
+                _ = Darwin.kill(child.processIdentifier,SIGKILL);child.waitUntilExit()
+            }
+        }
+        // Existing hardened identity checks bind the live child to this exact
+        // executable and parent before any opaque request bytes are sent.
+        stamp = try identity.validateProcess(child.processIdentifier,parent:getpid())
+        _ = try channel(input.fileHandleForWriting.fileDescriptor,write:frame)
+        input.fileHandleForWriting.closeFile()
+        let end=DispatchTime.now().uptimeNanoseconds+5_000_000_000
+        while child.isRunning,DispatchTime.now().uptimeNanoseconds < end { usleep(10_000) }
+        guard !child.isRunning else { throw VPNPasswordWorkerError.timeout }
+        child.waitUntilExit();finished=true
+        guard child.terminationReason == .exit,child.terminationStatus == 0 else { throw Failure.guardFailed }
+        try candidate.validate()
+        let proof=VPNPrivateKeychainPathProof.inspect(actual:candidate.canonical,directory:target.directory,
+            target:target.target,requiredLeaf:target.leaf)
+        guard proof.accepted,let info=proof.attributes,fingerprint(info) == request.candidate,
+              try fingerprint(root.descriptor) == request.root,try fingerprint(target.directory) == request.parent else { throw Failure.guardFailed }
+        try target.adoptVerifiedCanaryAnchor(candidate)
+    }
+    static func verifyCanary(_ root:Root,target:VPNPrivateKeychainPathProof.Target,nonce:String)throws {
+        var frame=try channel(STDIN_FILENO);defer { frame.resetBytes(in:0..<frame.count) }
+        let request=try VPNDefaultCanaryProof.decode(frame)
+        let identity=try VPNPasswordWorkerIdentity()
+        let parentPID=getppid(),parentStamp=try identity.validateProcess(getppid())
+        guard getppid() == parentPID else { throw Failure.guardFailed }
+        let directory=target == .first ? root.a : root.b
+        guard let leaf=VPNPrivateKeychainPathProof.Leaf(rawValue:request.leaf) else { throw Failure.guardFailed }
+        let url=root.url.appendingPathComponent(target == .first ? "A" : "B").appendingPathComponent(leaf.rawValue)
+        var reference:SecKeychain?
+        // Bind the candidate BEFORE opening/querying Security, never discover a
+        // backend from a default/search-list query or a path supplied in wire.
+        func binding()throws {
+            guard getppid() == parentPID else { throw Failure.guardFailed }
+            try identity.requireSameProcess(parentPID,expected:parentStamp,parent:parentStamp.parent)
+            try Root.privateDirectory(root.descriptor);try Root.privateDirectory(directory)
+            let proof=VPNPrivateKeychainPathProof.inspect(actual:url.path,directory:directory,target:target,requiredLeaf:leaf)
+            guard proof.accepted,let info=proof.attributes,fingerprint(info) == request.candidate,
+                  try fingerprint(root.descriptor) == request.root,try fingerprint(directory) == request.parent else { throw Failure.guardFailed }
+        }
+        var item:SecKeychainItem?
+        try VPNDefaultCanaryProof.verify(request,target:target.rawValue,image:try imageFingerprint(identity),nonce:nonce,binding:binding,locate:{
+            // All untrusted frame/nonce/image and candidate-directory checks
+            // above precede the first Keychain API in this fresh verifier.
+            guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess,
+                  SecKeychainOpen(url.path,&reference) == errSecSuccess,let reference else { throw Failure.guardFailed }
+            var result:CFTypeRef?
+            let query:[String:Any]=[kSecClass as String:kSecClassGenericPassword,
+                kSecAttrService as String:request.service,kSecAttrAccount as String:request.account,
+                kSecMatchItemList as String:[request.persistentReference],kSecMatchSearchList as String:[reference],
+                kSecMatchLimit as String:kSecMatchLimitOne,kSecReturnRef as String:true,kSecReturnAttributes as String:true,
+                kSecReturnPersistentRef as String:true,kSecReturnData as String:false]
+            guard SecItemCopyMatching(query as CFDictionary,&result) == errSecSuccess,
+                  let fields=result as? [String:Any],let raw=fields[kSecValueRef as String],
+                  CFGetTypeID(raw as CFTypeRef) == SecKeychainItemGetTypeID(),
+                  let service=fields[kSecAttrService as String] as? String,let account=fields[kSecAttrAccount as String] as? String,
+                  let persistent=fields[kSecValuePersistentRef as String] as? Data else { throw Failure.guardFailed }
+            let found=unsafeBitCast(raw as CFTypeRef,to:SecKeychainItem.self)
+            let owner=try canaryOwner(found)
+            let proof=VPNPrivateKeychainPathProof.inspect(actual:try path(owner),directory:directory,target:target,requiredLeaf:leaf)
+            guard proof.accepted,let info=proof.attributes else { throw Failure.guardFailed }
+            item=found
+            return VPNDefaultCanaryProof.Located(service:service,account:account,persistentReference:persistent,owner:fingerprint(info))
+        },readValue:{
+            guard let item else { throw Failure.guardFailed }
+            var length:UInt32=0,data:UnsafeMutableRawPointer?
+            let code=SecKeychainItemCopyAttributesAndData(item,nil,nil,nil,&length,&data)
+            defer { if let data { _ = SecKeychainItemFreeAttributesAndData(nil,data) } }
+            guard code == errSecSuccess,length == 32,let data else { throw Failure.guardFailed }
+            return Data(bytes:data,count:Int(length))
+        })
     }
     static func create(_ root: Root, first: Bool) throws -> Created {
         let target: VPNPrivateKeychainPathProof.Target = first ? .first : .second
@@ -299,9 +480,16 @@ enum VPNDefaultKeychainVMEntry {
         let fd = openat(directory, leaf.rawValue, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { throw Failure.guardFailed }; defer { close(fd) }
         guard fstat(fd, &info) == 0, same(info, expected), fchmod(fd, 0o600) == 0 else { throw Failure.guardFailed }
-        let anchor = try DefaultAnchor(reference)
+        // The explicit non-null created keychain is the ONLY canary Add target.
+        // Capture the initial anchor AFTER this mutation, from returned owner proof.
+        let canary = try createCanary(reference)
+        let owner = try canaryOwner(canary.item)
+        let owned = VPNPrivateKeychainPathProof.inspect(actual: try path(owner), directory: directory, target: target)
+        guard owned.accepted, let actual = owned.attributes, let ownedLeaf = owned.leaf else { throw Failure.guardFailed }
+        let anchor = try DefaultAnchor(owner)
+        try check(same(anchor.attributes, actual)); try anchor.validate()
         try root.definite(step)
-        return Created(anchor: anchor, folder: folder, directory: directory, target: target, leaf: leaf)
+        return Created(anchor: anchor, folder: folder, directory: directory, target: target, leaf: ownedLeaf, canary: canary)
     }
     static func prove(_ locator: VPNPasswordItemLocator, _ created: Created) throws {
         try locator.validate()
@@ -385,12 +573,13 @@ enum VPNDefaultKeychainVMEntry {
         try trace(step, .refreshAnchor) { try target.refreshAfterConfirmedAdd(locator) }
         return locator
     }
-    static func delete(_ root: Root, _ store: VPNStore, reference: VPNPasswordReference, step: Step) throws {
+    static func delete(_ root: Root, _ store: VPNStore, reference: VPNPasswordReference, target: Created, step: Step) throws {
         let session = try VPNPasswordWorkerSession.prepare(store: store)
         try root.begin(step)
         guard try session.deletePendingOutcome(store: store, reference: reference) == .deleted else { throw Failure.ambiguous }
         try joinChildren()
         try check(store.load()?.passwordLedger.pendingDeletion.contains(where: { $0.reference == reference }) == false)
+        try trace(step, .verifyCanary) { try refreshAfterConfirmedDelete(root, target) }
         try root.definite(step)
     }
     static func remove(_ root: Root, _ target: Created, step: Step) throws {
@@ -499,15 +688,21 @@ enum VPNDefaultKeychainVMEntry {
             }
             if deletion == OtherDelete.unavailable.rawValue {
                 try check(storeA.load()?.passwordLedger.pendingDeletion.count == 1)
-                try delete(root, storeA, reference: reference, step: .deleteA)
+                try delete(root, storeA, reference: reference, target: first, step: .deleteA)
                 print("default-keychain-vm:cross-delete=unavailable-retained")
-            } else { try check(deletion == OtherDelete.deleted.rawValue); print("default-keychain-vm:cross-delete=positive") }
+            } else {
+                try check(deletion == OtherDelete.deleted.rawValue)
+                try check(storeA.load()?.passwordLedger.pendingDeletion.contains(where: { $0.reference == reference }) == false)
+                try joinChildren()
+                try trace(.deleteA, .verifyCanary) { try refreshAfterConfirmedDelete(root, first) }
+                print("default-keychain-vm:cross-delete=positive")
+            }
         } else {
             try revoke(storeA)
-            try delete(root, storeA, reference: reference, step: .deleteA)
+            try delete(root, storeA, reference: reference, target: first, step: .deleteA)
         }
         try read(storeB, reference: reference, revision: revision, expected: secretB)
-        try revoke(storeB); try delete(root, storeB, reference: reference, step: .deleteB)
+        try revoke(storeB); try delete(root, storeB, reference: reference, target: second, step: .deleteB)
         try joinChildren()
         try setDefault(root, target: original, expected: second.anchor, step: .restore)
         try root.remove("default-not-restored")

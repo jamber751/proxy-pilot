@@ -9,6 +9,20 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def created_class(source):
+    # Extract this exact class, not every declaration before create(). The
+    # fixture's following Canary/SDK routines must never enter this harness.
+    start = source.index('    final class Created {')
+    opening = source.index('{', start)
+    depth = 0
+    for position in range(opening, len(source)):
+        if source[position] == '{': depth += 1
+        elif source[position] == '}':
+            depth -= 1
+            if depth == 0: return source[start:position + 1] + '\n'
+    raise AssertionError('Unbalanced fixture Created class')
+
+
 @unittest.skipUnless(platform.system() == 'Darwin' and shutil.which('swiftc'), 'Darwin file identities required')
 class DefaultKeychainPostAddAnchorTests(unittest.TestCase):
     @classmethod
@@ -19,7 +33,7 @@ class DefaultKeychainPostAddAnchorTests(unittest.TestCase):
         legacy = (ROOT / 'tests/vpn_legacy_password_backend_vm_checks.swift').read_text()
         proof = legacy.split('// BEGIN NO-KEYCHAIN FILE IDENTITY', 1)[1].split('// END NO-KEYCHAIN FILE IDENTITY', 1)[0]
         anchor = fixture.split('    final class DefaultAnchor {', 1)[1].split('    static func copyDefault()', 1)[0]
-        created = fixture.split('    final class Created {', 1)[1].split('    static func create(', 1)[0]
+        created = created_class(fixture)
         prove = fixture.split('    static func prove(', 1)[1].split('    static func setDefault(', 1)[0]
         code = r'''
 import Darwin
@@ -50,7 +64,10 @@ struct VPNPasswordItemLocator {
         a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid &&
         a.st_birthtimespec.tv_sec == b.st_birthtimespec.tv_sec && a.st_birthtimespec.tv_nsec == b.st_birthtimespec.tv_nsec
     }
-''' + '    final class DefaultAnchor {' + anchor + '    final class Created {' + created + '    static func prove(' + prove + r'''
+    // Inert storage only: the post-Add path exercised below never uses a
+    // canary. Its real SDK implementation is deliberately not extracted.
+    final class Canary {}
+''' + '    final class DefaultAnchor {' + anchor + created + '    static func prove(' + prove + r'''
     static func locator(_ path: String) throws -> VPNPasswordItemLocator {
         var st = stat(); try check(lstat(path, &st) == 0)
         return .init(origin: .init(path: path, device: UInt64(UInt32(bitPattern: st.st_dev)), inode: UInt64(st.st_ino),
@@ -63,7 +80,7 @@ struct VPNPasswordItemLocator {
         let directory = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         try check(directory >= 0); defer { close(directory) }
         let old = try DefaultAnchor(path)
-        let created = Created(anchor: old, folder: folder, directory: directory, target: .first, leaf: .firstBase)
+        let created = Created(anchor: old, folder: folder, directory: directory, target: .first, leaf: .firstBase, canary: Canary())
         let oldReceipt = try locator(path)
         let staged = folder.appendingPathComponent("replacement").path
         try Data("synthetic-after".utf8).write(to: URL(fileURLWithPath: staged)); try check(chmod(staged, 0o600) == 0)
