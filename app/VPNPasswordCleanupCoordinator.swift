@@ -31,7 +31,10 @@ struct VPNPasswordCleanupReport: Equatable {
 final class VPNPasswordCleanupCoordinator {
     typealias Prepare = (VPNStore) throws -> VPNPasswordCleanupSession?
     typealias Schedule = (@escaping () -> Void) -> Void
-    static let maximumVisitedReferences = 64
+    // New admissions have at most64 obligations; legacy retirement can retain
+    //65. Visit that entire validated ledger so the last row cannot starve.
+    static let maximumVisitedReferences = VPNPasswordLedger.maximumTotalSlots
+    private static let maximumQuarantinedReferences = 64
     private static let queue = DispatchQueue(label: "ProxyPilot.password-cleanup")
     let available: Bool
     private let store: VPNStore
@@ -155,7 +158,7 @@ final class VPNPasswordCleanupCoordinator {
 
     private static var hasQuarantineCapacity: Bool {
         quarantineLock.lock(); defer { quarantineLock.unlock() }
-        return quarantine.count < maximumVisitedReferences
+        return quarantine.count < maximumQuarantinedReferences
     }
     private static func isQuarantined(_ reference: VPNPasswordReference) -> Bool {
         quarantineLock.lock(); defer { quarantineLock.unlock() }
@@ -164,7 +167,7 @@ final class VPNPasswordCleanupCoordinator {
     private static func reserve(_ reference: VPNPasswordReference) -> Reservation {
         quarantineLock.lock(); defer { quarantineLock.unlock() }
         if quarantine.contains(reference) { return .existing }
-        guard quarantine.count < maximumVisitedReferences else { return .full }
+        guard quarantine.count < maximumQuarantinedReferences else { return .full }
         quarantine.append(reference)
         return .reserved
     }

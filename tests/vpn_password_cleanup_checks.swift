@@ -270,6 +270,41 @@ private final class Driver {
             try check(scheduled.count == 1 && driver.calls.isEmpty)
             scheduled.removeFirst()()
             try check(scheduled.isEmpty && reports.count == 1 && driver.calls.count == 1)
+        case "legacy-all65", "legacy-pending65", "legacy-mixed65", "legacy-denied-last":
+            let slots = try (0..<65).map { index in
+                try fixture.slot(mode == "legacy-pending65" || (mode == "legacy-mixed65" && index < 64) ? .pending : .settled)
+            }
+            if mode == "legacy-denied-last" {
+                for slot in slots.prefix(64) { driver.policies[slot.reference.itemID] = .outcome(.unavailable) }
+            }
+            try fixture.queue(slots); run()
+            try check(reports.count == 1 && reports[0].visited == 65 && scheduled.isEmpty)
+            if mode == "legacy-all65" {
+                try check(driver.calls == slots.map(\.reference) && driver.prepared == 65 && reports[0].deleted == 65
+                    && fixture.store.load()!.passwordLedger.pendingDeletion.isEmpty)
+                run(); try check(driver.calls.count == 65 && reports.last!.visited == 0)
+            } else if mode == "legacy-pending65" {
+                try check(driver.calls.isEmpty && driver.prepared == 0 && reports[0].pendingSkipped == 65
+                    && fixture.store.load()!.passwordLedger.pendingDeletion == slots)
+                run(); try check(driver.calls.isEmpty && driver.prepared == 0)
+            } else if mode == "legacy-mixed65" {
+                try check(driver.calls == [slots[64].reference] && driver.prepared == 1 && reports[0].pendingSkipped == 64
+                    && reports[0].deleted == 1 && fixture.store.load()!.passwordLedger.pendingDeletion == Array(slots.prefix(64)))
+            } else {
+                try check(driver.calls == slots.map(\.reference) && driver.prepared == 65 && reports[0].retained == 64
+                    && reports[0].deleted == 1 && !reports[0].stoppedOnUnknown
+                    && fixture.store.load()!.passwordLedger.pendingDeletion == Array(slots.prefix(64)))
+            }
+        case "legacy-quarantine65":
+            let old = try (0..<64).map { _ in try fixture.slot() }
+            for slot in old { driver.policies[slot.reference.itemID] = .outcome(.indeterminate) }
+            try fixture.queue(old)
+            for _ in 0..<64 { run() }
+            let next = try fixture.slot()
+            try fixture.queue(old + [next]); run()
+            try check(driver.calls.count == 64 && driver.prepared == 64 && reports.last!.visited == 65
+                && reports.last!.quarantinedSkipped == 64 && reports.last!.capacitySkipped == 1
+                && fixture.store.load()!.passwordLedger.pendingDeletion == old + [next])
         case "bounds":
             let slots = try (0..<64).map { _ in try fixture.slot() }
             for slot in slots { driver.policies[slot.reference.itemID] = .outcome(.indeterminate) }
@@ -286,7 +321,7 @@ private final class Driver {
             try fixture.queue([fixture.slot()]); run()
             try check(driver.calls.count == 64 && reports.last!.capacitySkipped == 1)
         case "malformed-bounds":
-            let slots = try (0..<65).map { _ in try fixture.slot() }
+            let slots = try (0..<66).map { _ in try fixture.slot() }
             try fixture.queue(slots); run()
             try check(reports[0].storageUnavailable && reports[0].visited == 0 && driver.calls.isEmpty)
         case "unavailable":
