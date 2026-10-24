@@ -120,6 +120,7 @@ import CryptoKit
             refuse("initialInteractionFlag", checks: ["status": initialFlagStatus])
         }
         var result: [String: Any] = ["build": build, "priorInteraction": prior.boolValue]
+        var operationStage = "disableInteraction"
         // No early exits inside this scope: always restore before reporting.
         do {
             defer {
@@ -130,36 +131,52 @@ import CryptoKit
                     && checked == errSecSuccess && restored.boolValue == prior.boolValue
             }
             guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { throw CheckError.operation }
+            operationStage = "verifyDisabledInteraction"
             var disabled: DarwinBoolean = true
             guard SecKeychainGetUserInteractionAllowed(&disabled) == errSecSuccess,
                   !disabled.boolValue else { throw CheckError.operation }
             if action == "metadata" {
+                operationStage = "preferenceMetadata"
                 result["preferences"] = try preferenceMetadata()
             } else {
             var keychain: SecKeychain?
             let opened: OSStatus
             if action == "create" {
+                operationStage = "createAbsenceGuard"
                 var info = stat()
                 guard lstat(path, &info) != 0 && errno == ENOENT,
                       lstat(path + "-db", &info) != 0 && errno == ENOENT else { throw CheckError.unsafe }
+                operationStage = "createPrivateKeychain"
                 opened = password.withUnsafeBytes {
                     SecKeychainCreate(path, UInt32($0.count), $0.baseAddress, false, nil, &keychain)
                 }
             } else {
                 // Open only a regular, private, user-owned file in our directory.
+                operationStage = "privateFileGuard"
                 var info = stat()
-                let actual = FileManager.default.fileExists(atPath: path + "-db") ? path + "-db" : path
-                guard lstat(actual, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-                      info.st_uid == getuid(), info.st_mode & 0o077 == 0,
-                      info.st_nlink == 1 else { throw CheckError.unsafe }
+                let usesDBSuffix = lstat(path + "-db", &info) == 0
+                let actual = usesDBSuffix ? path + "-db" : path
+                let present = lstat(actual, &info) == 0
+                let checks = ["present": present, "regular": present && info.st_mode & S_IFMT == S_IFREG,
+                              "owner": present && info.st_uid == getuid(),
+                              "privateMode": present && info.st_mode & 0o077 == 0,
+                              "singleLink": present && info.st_nlink == 1]
+                result["privateFileChecks"] = checks
+                result["privateFileMode"] = Int(info.st_mode & 0o7777)
+                result["privateFileUsesDBSuffix"] = usesDBSuffix
+                guard checks.values.allSatisfy({ $0 }) else { throw CheckError.unsafe }
+                operationStage = "openPrivateKeychain"
                 opened = SecKeychainOpen(path, &keychain)
             }
             result["openStatus"] = opened
+            operationStage = "validateOpenStatus"
             guard opened == errSecSuccess, let keychain else { throw CheckError.operation }
             if action == "delete" {
+                operationStage = "deletePrivateKeychain"
                 result["status"] = SecKeychainDelete(keychain)
             } else {
                 if action == "create" {
+                    operationStage = "addSyntheticItem"
                     // Default creator ACL only. No custom ACL, trusted app list,
                     // partition-list rewrite or allow-all policy.
                     let attrs: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -170,6 +187,7 @@ import CryptoKit
                     guard added == errSecSuccess else { throw CheckError.operation }
                 }
                 if action == "locked-read" {
+                    operationStage = "lockPrivateKeychain"
                     let locked = SecKeychainLock(keychain)
                     result["lockStatus"] = locked
                     guard locked == errSecSuccess else { throw CheckError.operation }
@@ -182,12 +200,16 @@ import CryptoKit
                     kSecAttrService as String: service, kSecAttrAccount as String: account,
                     kSecMatchSearchList as String: [keychain], kSecMatchLimit as String: kSecMatchLimitOne,
                     kSecReturnData as String: true]
+                operationStage = "readSyntheticItem"
                 let status = SecItemCopyMatching(query as CFDictionary, &value)
                 result["status"] = status
                 result["secretMatches"] = status == errSecSuccess && (value as? Data) == secret
             }
             }
-        } catch { result["setupFailed"] = true }
+        } catch {
+            result["setupFailed"] = true
+            result["setupFailureStage"] = operationStage
+        }
         let data = try! JSONSerialization.data(withJSONObject: result, options: .sortedKeys)
         print(String(decoding: data, as: UTF8.self))
     }
