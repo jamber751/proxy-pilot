@@ -1,0 +1,30 @@
+name: VPN complete system rescue acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  system-rescue:
+    name: Real Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Build production artifacts with synthetic trust as ordinary user
+        env:
+          PROXYPILOT_VM_SYSTEM_RESCUE_BUILD: '1'
+        run: python3 tests/test_vpn_rescue_system_vm.py --build "$RUNNER_TEMP/system-rescue"
+      - name: Exercise real Installer and system services in disposable VM
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          sudo -n env GITHUB_ACTIONS=true PROXYPILOT_VM_SYSTEM_RESCUE_TESTS=1 PROXYPILOT_SYSTEM_RESCUE_FIXTURE="$RUNNER_TEMP/system-rescue" PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_system_vm -v

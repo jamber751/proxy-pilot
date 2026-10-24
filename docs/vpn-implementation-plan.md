@@ -4692,3 +4692,24 @@ swap второй переход завершается через сущест�
 Frozen139 workflow вынесен отдельно с фильтром его fixture dependencies: обычные
 изменения rescue больше не пересобирают неизменённый исторический helper.
 Проверка остаётся доступна вручную и при изменении соответствующих inputs.
+
+### Продолжение 1.5dk — полный установщик и системная проверка восстановления
+
+- [x] Native dispatcher собран Universal из107 зафиксированных source inputs:
+  `/tmp/pp-rescue-native-build-20261024-broker-final-v1`. Три проверки отказа
+  обычному пользователю/неизвестной команды прошли без повышения прав.
+- [x] Сборщик настоящего repair.pkg:8 локальных tests passed, включая распаковку
+  пакета и запрет перезаписи отличающегося retained rescue. Ключи synthetic.
+- [x] Broker reconciliation и frozen139 phase6 recovery:23 новых проверок;
+  ещё8 rotation и7 transaction/removal regression tests прошли локально.
+  Readonly host check подтвердил наличие старого broker; host не изменялся.
+- [x] Run40085813195: Apple Silicon349 passed без skips. Intel отменён по15min
+  timeout, поэтому общий прогон НЕ считается успешным. CI разбит на3 группы
+  на каждой архитектуре с25min лимитом; добавлены broker23 и package8.
+- [x] Подготовлен полный system VM harness: пять сценариев настоящего Installer,
+  ON/OFF, повторная установка, retained capsule equality/refusal и frozen phase6.
+  Production source graph frozen139 закреплён SHA; используется synthetic trust.
+- [ ] Выполнить новый grouped CI и полный system VM workflow на обеих архитектурах.
+- [ ] После прохождения системных проверок подготовить реальный подписанный C и
+  один итоговый установщик. На Mac владельца установки/сетевые изменения не выполнялись.
+- [ ] Installed acceptance и остальные этапы исходного VPN-плана остаются открытыми.

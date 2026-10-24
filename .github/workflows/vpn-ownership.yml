@@ -10,75 +10,96 @@ permissions:
 
 jobs:
   ownership:
-    name: Root ownership (${{ matrix.os }})
+    name: ${{ matrix.suite }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [macos-14, macos-15-intel]
+        suite: [contracts, primitives, transactions]
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0 # frozen executor regression reads a pinned historical blob
       - name: Ordinary destination regressions
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: python3 -m unittest discover -s tests -p test_vpn_application_destination_exchange.py -v
       - name: Ordinary staging and cleanup regressions
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_transaction_staging test_vpn_application_swap test_vpn_joint_update_cleanup -v
       - name: Rescue authorization and pending journal boundaries
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_release_authorization test_vpn_rescue_authorization test_vpn_rescue_preparation_authorization test_vpn_rescue_journal_context test_vpn_rescue_preparation_context test_vpn_rescue_cleanup_context -v
       - name: Live rescue refuses ordinary users
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_executor.VPNRescueExecutorUnprivilegedTests -v
       - name: Rescue signing and CLI verification with synthetic keys
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_release_key -v
       - name: Complete rescue package descriptors and signed inputs
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_installation_payload -v
       - name: Authenticated installed frontend result probe
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_installed_update_result -v
+      - name: Rescue broker isolation and interrupted rotation
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_broker_coordinator -v
+      - name: Verified repair package assembly without installation
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_package -v
       - name: Protected live rescue identity
+        if: ${{ !cancelled() && matrix.suite == 'primitives' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_executor.VPNRescueExecutorRootTests -v
       - name: Authorized rescue destination exchange
+        if: ${{ !cancelled() && matrix.suite == 'primitives' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_exchange.VPNRescueExchangeRootTests -v
       - name: Live preparation role and legacy source staging
+        if: ${{ !cancelled() && matrix.suite == 'primitives' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_preparation_executor test_vpn_rescue_preparation_staging -v
       - name: Dual-role rescue protected namespace exchange
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'primitives' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_protected_swap.VPNRescueProtectedSwapRootTests -v
       - name: Journal-bound rescue preparation and interrupted retry
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'transactions' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_preparation_coordinator -v
       - name: Prepared journal through installed destination replacement
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'transactions' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_replacement_coordinator -v
       - name: Pending rescue ordering and interrupted retries
+        if: ${{ !cancelled() && matrix.suite == 'transactions' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_pending_coordinator.VPNRescuePendingCoordinatorRootTests -v
       - name: Root ownership in disposable fixture directories
+        if: ${{ !cancelled() && matrix.suite == 'primitives' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 /usr/bin/python3 -m unittest discover -s tests -p test_vpn_destination_root_vm.py -v
       - name: Exact receipt rescue cleanup and interrupted retry
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'transactions' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_cleanup.VPNRescueCleanupRootTests -v
       - name: Source clone refuses ordinary users
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_legacy_source_clone.VPNLegacySourceCloneUnprivilegedTests -v
       - name: Private source clone with real ownership
+        if: ${{ !cancelled() && matrix.suite == 'primitives' }}
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_legacy_source_clone.VPNLegacySourceCloneTests -v
