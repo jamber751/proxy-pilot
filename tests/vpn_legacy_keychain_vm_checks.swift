@@ -17,18 +17,26 @@ import CryptoKit
     static let build = "v1-original-code"
     #endif
 
-    static func require(_ condition: Bool) {
-        if !condition { exit(77) }
+    static func refuse(_ stage: String, checks: [String: Any]) -> Never {
+        // Fixed stage names, booleans and numeric OSStatus only. No argv,
+        // paths, environment contents, accounts or exception descriptions.
+        let data = try! JSONSerialization.data(withJSONObject: ["guardStage": stage, "checks": checks], options: .sortedKeys)
+        print(String(decoding: data, as: UTF8.self))
+        exit(77)
     }
 
     static func safeDirectory(_ path: String) -> String {
         let url = URL(fileURLWithPath: path)
         let canonical = url.resolvingSymlinksInPath().path
-        require(canonical == path && url.lastPathComponent.hasPrefix("pp-legacy-keychain-vm-"))
-        require(url.deletingLastPathComponent().path == "/private/tmp")
         var info = stat()
-        require(lstat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR
-                && info.st_uid == getuid() && info.st_mode & 0o7777 == 0o700)
+        let present = lstat(path, &info) == 0
+        let checks = ["canonicalMatch": canonical == path,
+                      "prefixMatch": url.lastPathComponent.hasPrefix("pp-legacy-keychain-vm-"),
+                      "parentMatch": url.deletingLastPathComponent().path == "/private/tmp",
+                      "present": present, "directoryMatch": present && info.st_mode & S_IFMT == S_IFDIR,
+                      "ownerMatch": present && info.st_uid == getuid(),
+                      "modeMatch": present && info.st_mode & 0o7777 == 0o700]
+        guard checks.values.allSatisfy({ $0 }) else { refuse("privateDirectory", checks: checks) }
         return path + "/experiment.keychain"
     }
 
@@ -69,10 +77,11 @@ import CryptoKit
     static func main() {
         let env = ProcessInfo.processInfo.environment
         // Must precede ANY Security API, including the interaction-flag getter.
-        guard env["GITHUB_ACTIONS"] == "true",
-              env["PROXYPILOT_VM_KEYCHAIN_TESTS"] == "1",
-              getuid() == geteuid(), getuid() >= 500,
-              CommandLine.arguments.count == 3 else { exit(77) }
+        let checks = ["ciMatch": env["GITHUB_ACTIONS"] == "true",
+                      "vmFlagMatch": env["PROXYPILOT_VM_KEYCHAIN_TESTS"] == "1",
+                      "uidMatch": getuid() == geteuid(), "ordinaryUID": getuid() >= 500,
+                      "argumentCountMatch": CommandLine.arguments.count == 3]
+        guard checks.values.allSatisfy({ $0 }) else { refuse("execution", checks: checks) }
         let action = CommandLine.arguments[1]
         guard ["create", "read", "locked-read", "delete", "observe", "metadata"].contains(action) else { exit(64) }
         let path = safeDirectory(CommandLine.arguments[2])
@@ -81,7 +90,10 @@ import CryptoKit
             print(String(decoding: data, as: UTF8.self)); return
         }
         var prior: DarwinBoolean = false
-        require(SecKeychainGetUserInteractionAllowed(&prior) == errSecSuccess)
+        let initialFlagStatus = SecKeychainGetUserInteractionAllowed(&prior)
+        guard initialFlagStatus == errSecSuccess else {
+            refuse("initialInteractionFlag", checks: ["status": initialFlagStatus])
+        }
         var result: [String: Any] = ["build": build, "priorInteraction": prior.boolValue]
         // No early exits inside this scope: always restore before reporting.
         do {

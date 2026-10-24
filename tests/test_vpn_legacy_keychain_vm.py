@@ -71,7 +71,25 @@ class VPNLegacyKeychainVMTests(unittest.TestCase):
             tool = active
         result = subprocess.run([str(tool), action, str(self.base)], capture_output=True,
                                 text=True, timeout=12)
-        self.assertEqual(result.returncode, 0, 'VM experiment child failed without diagnostic payload')
+        if result.returncode != 0:
+            # Preserve only the fixed guard schema, never raw stderr/argv or
+            # arbitrary child output that could grow secret-bearing later.
+            diagnostic = 'No fixed guard diagnostic'
+            try:
+                refused = json.loads(result.stdout)
+                allowed = {'ciMatch', 'vmFlagMatch', 'uidMatch', 'ordinaryUID', 'argumentCountMatch',
+                           'canonicalMatch', 'prefixMatch', 'parentMatch', 'present', 'directoryMatch',
+                           'ownerMatch', 'modeMatch', 'status'}
+                if (isinstance(refused, dict)
+                        and set(refused) == {'guardStage', 'checks'}
+                        and refused.get('guardStage') in {'execution', 'privateDirectory', 'initialInteractionFlag'}
+                        and isinstance(refused.get('checks'), dict)
+                        and set(refused['checks']) <= allowed
+                        and all(type(value) in (bool, int) for value in refused['checks'].values())):
+                    diagnostic = json.dumps(refused, sort_keys=True)
+            except (ValueError, TypeError):
+                pass
+            self.fail(f'VM experiment child exit={result.returncode}; {diagnostic}')
         value = json.loads(result.stdout)
         if action != 'observe':
             self.assertTrue(value.get('interactionRestored'), value)
