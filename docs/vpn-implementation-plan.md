@@ -4255,3 +4255,32 @@ Update package и clean package явно помечены TEST ONLY. Пока э
 - [x] Package harness с полным frontend и новой диагностикой успешно собран;
   `test_full_app_verification_exits_before_gui_proxy_and_updater` passed.
 - [ ] Реальная причина единичного UI power-on failure остаётся открытой.
+
+### Продолжение 1.5ct — legacy CLI, имена bridge config и recovery (24 октября)
+
+- [x] Изолированное сравнение production `write_gost_config` текущего CLI и
+  stable 1.5.1 (`0518754`): оба сохраняют user matcher, старый writer удаляет
+  active VPN matcher из того же YAML. Сеть/живой мост при воспроизведении не
+  менялись. Это подтверждённый риск, не только предположение о старом CLI.
+- [x] VPN frontend теперь выбирает только bundled executable CLI; отсутствие
+  или отсутствие execute permission даёт отказ вместо fallback к старой
+  standalone копии. Non-VPN build сохраняет прежний fallback. Исполняемые
+  Swift selector fixtures: 5/5 passed, без запуска настоящих CLI.
+- [x] `write_gost_config` больше не вычисляет имя файла в том же `local`, где
+  объявляет mode: раньше expansion мог прочитать mode вызывающей функции.
+  Проверены чужой dynamic mode и отсутствие mode; route argument задаёт
+  точное имя. Это отдельный исправленный дефект, не установленная причина
+  исторического единичного GUI power-on failure. Power regression: 22/22.
+- [x] Recovery tests: lifecycle ownership 15/15 (отдельные процессы), broker
+  rotation 8/8 (модель/source contracts), recovery daemon entry 8/8 (настоящий
+  per-user launchd в disposable fixtures), update quiescence 4/4.
+  Это не новый privileged install, reboot или connected VPN recovery.
+- [x] Bridge handoff 15/15; real loopback HTTP/SOCKS5 7 passed, 1 live-target
+  skipped. Использован установленный bundled GOST 137, без изменения live config.
+  Всего в этом ограниченном прогоне: 84 passed, 1 skipped.
+- [x] Исправления закоммичены отдельно: `d7b9f02` (filename), `c2b1a61` (CLI).
+- [ ] Universal frontend 138 собирается с диагностикой и исправлениями.
+  Helper/importer/engine graph совпадает с 137; повторная сборка helper не нужна.
+- [ ] Произвольно запущенные старые внешние CLI всё ещё способны перезаписать
+  bridge config. Защита выбора CLI в приложении не является блокировкой всех
+  legacy writers; общий delivery/migration gate остаётся открытым.
