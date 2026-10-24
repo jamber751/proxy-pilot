@@ -1,0 +1,40 @@
+name: VPN isolated interface acceptance
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-ui.yml'
+      - 'app/VPN*.swift'
+      - 'app/Controls.swift'
+      - 'app/main.swift'
+      - 'app/vpn-helper/VPNHelperProtocol.swift'
+      - 'app/vpn-helper/VPNApplicationSpec.swift'
+      - 'app/vpn-helper/VPNTunnelStateStore.swift'
+      - 'tests/test_vpn_ui*.py'
+      - 'tests/test_vpn_panel*.py'
+      - 'tests/vpn_panel*.swift'
+      - 'tests/test_vpn_resource_list.py'
+      - 'tests/vpn_resource_list_checks.swift'
+      - 'tests/test_vpn_live_controller.py'
+      - 'tests/vpn_live_controller_checks.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  interface:
+    name: Native isolated interface (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Credential, drop, scrolling and offscreen layout regressions
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_live_controller test_vpn_ui_contract test_vpn_ui_layout test_vpn_panel_credentials test_vpn_panel_import test_vpn_resource_list -v

@@ -3,6 +3,25 @@ name: VPN isolated ownership acceptance
 on:
   push:
     branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-ownership.yml'
+      - 'app/vpn-helper/**'
+      - 'app/vpn-rescue/**'
+      - 'app/vpn-package/**'
+      - 'app/vpn-engine/**'
+      - 'app/vpn-release-*'
+      - 'app/VPNConfiguration.swift'
+      - 'app/VPNProfileImporter.swift'
+      - 'app/build-joint-release.sh'
+      - 'app/verify-release-candidate.sh'
+      - 'tests/**'
+      - '!tests/test_vpn_ui*.py'
+      - '!tests/test_vpn_panel*.py'
+      - '!tests/vpn_panel*.swift'
+      - '!tests/test_vpn_resource_list.py'
+      - '!tests/vpn_resource_list_checks.swift'
+      - '!tests/test_vpn_live_controller.py'
+      - '!tests/vpn_live_controller_checks.swift'
   workflow_dispatch:
 
 permissions:
