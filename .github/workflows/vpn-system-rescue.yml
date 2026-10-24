@@ -12,6 +12,10 @@ on:
       - 'tests/vpn_recovery_service_lock_order_checks.swift'
       - 'tests/test_vpn_update_broker_source_owner.py'
       - 'tests/vpn_update_broker_source_owner_checks.swift'
+      - 'tests/test_vpn_update_broker_copy.py'
+      - 'tests/vpn_update_broker_copy_checks.swift'
+      - 'tests/test_vpn_update_broker_volume.py'
+      - 'tests/vpn_update_broker_volume_checks.swift'
       - 'tests/test_vpn_engine_build.py'
       - 'tests/vpn_rescue_system_*.swift'
       - 'tests/vpn_rescue_package_signer.swift'
@@ -43,11 +47,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Fast signed fixture, engine continuity and source extraction checks
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_rescue_system_diagnostics test_vpn_engine_build test_vpn_recovery_service_lock_order -v
-      - name: Prove root broker accepts ordinary-owned source without trusting its ownership
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_rescue_system_diagnostics test_vpn_engine_build test_vpn_recovery_service_lock_order test_vpn_update_broker_inbox test_vpn_update_broker_copy -v
+      - name: Prove root broker accepts ordinary-owned and readonly DMG input
         run: |
           test "$GITHUB_ACTIONS" = true
-          sudo -n env GITHUB_ACTIONS=true PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_update_broker_source_owner -v
+          sudo -n env GITHUB_ACTIONS=true PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_update_broker_source_owner test_vpn_update_broker_volume -v
       - name: Build production artifacts with synthetic trust as ordinary user
         env:
           PROXYPILOT_VM_SYSTEM_RESCUE_BUILD: '1'

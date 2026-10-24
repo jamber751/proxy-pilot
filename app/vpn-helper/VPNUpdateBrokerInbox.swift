@@ -99,6 +99,7 @@ final class VPNUpdateBrokerInbox {
         }
         defer { close(pending) }
 
+        try Self.recoverCopyScratch(pending, source: source)
         let existing = try Self.topNames(pending)
         guard existing.isSubset(of: Self.fixedLayout) else {
             throw VPNUpdateBrokerInboxError.invalidLayout
@@ -113,9 +114,7 @@ final class VPNUpdateBrokerInbox {
         }
 
         for name in Self.fixedLayout.sorted() where !existing.contains(name) {
-            guard Self.cloneDirectChild(sourceDirectory, name, pending, name) == 0 else {
-                throw VPNUpdateBrokerInboxError.unsafeStorage
-            }
+            try Self.copyDirectChild(sourceDirectory, name, pending, source: source, checkpoint: checkpoint)
             try checkpoint("afterCopy:\(name)")
         }
         let after = try Self.snapshot(sourceDirectory, requireFixedLayout: true, untrustedSource: true)
@@ -349,9 +348,9 @@ final class VPNUpdateBrokerInbox {
     }
 
     private static func walk(_ directory: Int32, prefix: String, depth: Int, untrustedSource: Bool,
-                             nodes: inout [String: Node], bytes: inout Int64) throws {
+                             excluding: Set<String> = [], nodes: inout [String: Node], bytes: inout Int64) throws {
         guard depth <= maximumDepth else { throw VPNUpdateBrokerInboxError.limitExceeded }
-        for name in try names(directory) {
+        for name in try names(directory) where !excluding.contains(name) {
             let path = prefix.isEmpty ? name : prefix + "/" + name
             var info = stat()
             guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
@@ -363,6 +362,11 @@ final class VPNUpdateBrokerInbox {
             }
             if type != S_IFDIR && info.st_nlink != 1 {
                 throw VPNUpdateBrokerInboxError.hardlink
+            }
+            // Never turn caller privilege bits into a broker-owned executable.
+            // clonefile strips these bits; the byte-copy path must not widen it.
+            guard type != S_IFREG || info.st_mode & 0o6000 == 0 else {
+                throw VPNUpdateBrokerInboxError.invalidLayout
             }
             guard type == S_IFLNK || info.st_mode & 0o0022 == 0 else {
                 throw VPNUpdateBrokerInboxError.invalidLayout
@@ -628,8 +632,219 @@ final class VPNUpdateBrokerInbox {
         return (owned, writable)
     }
 
+    #if VPN_UPDATE_BROKER_INBOX_TESTING || VPN_UPDATE_BROKER_INBOX_COPY_TESTING
+    static var testCloneFailure: Int32?
+    #endif
+
+    private static func scratchName(_ name: String, source: Snapshot) -> String {
+        ".copy-" + source.top[name]!.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A source-bound pending directory and an exact top digest name are the
+    /// durable marker. No incomplete payload is ever placed at a fixed name.
+    private static func copyDirectChild(_ sourceFD: Int32, _ name: String, _ pending: Int32,
+                                        source: Snapshot, checkpoint: (String) throws -> Void) throws {
+        if cloneDirectChild(sourceFD, name, pending, name) == 0 { return }
+        let failure = errno
+        guard failure == EXDEV || failure == ENOTSUP else {
+            throw VPNUpdateBrokerInboxError.unsafeStorage
+        }
+        var absent = stat()
+        guard fstatat(pending, name, &absent, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
+            throw VPNUpdateBrokerInboxError.unsafeStorage
+        }
+        let marker = scratchName(name, source: source)
+        guard mkdirat(pending, marker, 0o700) == 0, fsync(pending) == 0,
+              let scratch = try openDirectory(pending, marker) else {
+            throw VPNUpdateBrokerInboxError.commitUncertain
+        }
+        defer { close(scratch) }
+        try checkpoint("copyScratchCreated:" + name)
+        try copyNode(sourceFD, name, scratch, name, path: name, source: source,
+                     depth: 0, checkpoint: checkpoint)
+        let actual = try snapshot(scratch, requireFixedLayout: false)
+        let expected = source.nodes.filter { $0.key == name || $0.key.hasPrefix(name + "/") }
+        guard actual.nodes == expected else { throw VPNUpdateBrokerInboxError.sourceChanged }
+        try synchronizeTree(scratch)
+        guard fsync(pending) == 0,
+              renameat(scratch, name, pending, name) == 0,
+              fsync(scratch) == 0, fsync(pending) == 0 else { throw VPNUpdateBrokerInboxError.commitUncertain }
+        try checkpoint("copyPublished:" + name)
+        guard unlinkat(pending, marker, AT_REMOVEDIR) == 0, fsync(pending) == 0 else {
+            throw VPNUpdateBrokerInboxError.commitUncertain
+        }
+    }
+
+    /// On restart remove only this candidate's exact, bounded scratch shape.
+    /// Foreign names, owners, duplicate payloads and unknown nodes are refused.
+    private static func recoverCopyScratch(_ pending: Int32, source: Snapshot) throws {
+        let names = try topNames(pending)
+        let markers = names.subtracting(fixedLayout)
+        guard markers.count <= 1 else { throw VPNUpdateBrokerInboxError.invalidLayout }
+        for marker in markers {
+            guard let name = fixedLayout.first(where: { scratchName($0, source: source) == marker }),
+                  let scratch = try openDirectory(pending, marker) else {
+                throw VPNUpdateBrokerInboxError.invalidLayout
+            }
+            defer { close(scratch) }
+            let children = try topNames(scratch)
+            guard children.isSubset(of: [name]), !(names.contains(name) && children.contains(name)) else {
+                throw VPNUpdateBrokerInboxError.invalidLayout
+            }
+            // Validate completed siblings too, before changing any scratch.
+            // They and the disjoint partial child share one payload budget.
+            var nodes: [String: Node] = [:], bytes: Int64 = 0
+            try walk(pending, prefix: "", depth: 0, untrustedSource: false,
+                     excluding: [marker], nodes: &nodes, bytes: &bytes)
+            for fixed in names.subtracting([marker]) {
+                guard digest(nodes.filter { $0.key == fixed || $0.key.hasPrefix(fixed + "/") }) == source.top[fixed] else {
+                    throw VPNUpdateBrokerInboxError.invalidLayout
+                }
+            }
+            if children.contains(name) {
+                var entries = nodes.count
+                try validatePartialCopy(scratch, name, path: name, source: source,
+                                        depth: 0, entries: &entries, bytes: &bytes)
+                var budget = maximumEntries
+                try removeChildren(scratch, depth: 0, budget: &budget)
+            }
+            guard unlinkat(pending, marker, AT_REMOVEDIR) == 0, fsync(pending) == 0 else {
+                throw VPNUpdateBrokerInboxError.commitUncertain
+            }
+        }
+    }
+
+    private static func validatePartialCopy(_ parent: Int32, _ name: String, path: String,
+                                            source: Snapshot, depth: Int,
+                                            entries: inout Int, bytes: inout Int64) throws {
+        entries += 1
+        var info = stat()
+        guard depth <= maximumDepth, entries <= maximumEntries,
+              let expected = source.nodes[path],
+              fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+              info.st_uid == geteuid() else { throw VPNUpdateBrokerInboxError.invalidLayout }
+        switch expected.kind {
+        case .directory:
+            guard info.st_mode & S_IFMT == S_IFDIR,
+                  info.st_mode & 0o7777 == 0o700 || info.st_mode & 0o7777 == expected.mode,
+                  let child = try openDirectory(parent, name, privateMode: false) else {
+                throw VPNUpdateBrokerInboxError.invalidLayout
+            }
+            defer { close(child) }
+            for next in try names(child) {
+                try validatePartialCopy(child, next, path: path + "/" + next, source: source,
+                                        depth: depth + 1, entries: &entries, bytes: &bytes)
+            }
+        case .file:
+            guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
+                  info.st_mode & 0o7777 == 0o600 || info.st_mode & 0o7777 == expected.mode,
+                  info.st_size >= 0, info.st_size <= expected.size,
+                  info.st_size <= maximumBytes - bytes else { throw VPNUpdateBrokerInboxError.invalidLayout }
+            bytes += info.st_size
+        case .link:
+            guard info.st_mode & S_IFMT == S_IFLNK, info.st_nlink == 1,
+                  try readLink(parent, name) == expected.target,
+                  expected.size <= maximumBytes - bytes else { throw VPNUpdateBrokerInboxError.invalidLayout }
+            bytes += expected.size
+        }
+    }
+
+    private static func copyNode(_ sourceFD: Int32, _ sourceName: String,
+                                  _ destination: Int32, _ destinationName: String,
+                                  path: String, source: Snapshot, depth: Int,
+                                  checkpoint: (String) throws -> Void) throws {
+        var before = stat()
+        guard depth <= maximumDepth, let node = source.nodes[path],
+              fstatat(sourceFD, sourceName, &before, AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw VPNUpdateBrokerInboxError.sourceChanged
+        }
+        switch node.kind {
+        case .directory:
+            guard before.st_mode & S_IFMT == S_IFDIR, before.st_mode & 0o7777 == node.mode,
+                  let input = try openSourceDirectory(sourceFD, sourceName, expected: before) else {
+                throw VPNUpdateBrokerInboxError.sourceChanged
+            }
+            defer { close(input) }
+            guard mkdirat(destination, destinationName, 0o700) == 0,
+                  let output = try openDirectory(destination, destinationName) else {
+                throw VPNUpdateBrokerInboxError.unsafeStorage
+            }
+            defer { close(output) }
+            try checkpoint("copyDirectory:" + path)
+            let children = try names(input)
+            let expected = Set(source.nodes.keys.filter { $0.hasPrefix(path + "/") }
+                .map { String($0.dropFirst(path.count + 1).split(separator: "/")[0]) })
+            guard Set(children) == expected else { throw VPNUpdateBrokerInboxError.sourceChanged }
+            for child in children {
+                try copyNode(input, child, output, child, path: path + "/" + child,
+                             source: source, depth: depth + 1, checkpoint: checkpoint)
+            }
+            guard fchmod(output, node.mode) == 0, fsync(output) == 0 else {
+                throw VPNUpdateBrokerInboxError.commitUncertain
+            }
+        case .file:
+            guard before.st_mode & S_IFMT == S_IFREG, before.st_nlink == 1,
+                  before.st_size == node.size, before.st_mode & 0o7777 == node.mode else {
+                throw VPNUpdateBrokerInboxError.sourceChanged
+            }
+            let input = openat(sourceFD, sourceName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard input >= 0 else { throw VPNUpdateBrokerInboxError.sourceChanged }
+            defer { close(input) }
+            var held = stat()
+            guard fstat(input, &held) == 0, held.st_dev == before.st_dev, held.st_ino == before.st_ino,
+                  held.st_mode & S_IFMT == S_IFREG, held.st_nlink == 1 else {
+                throw VPNUpdateBrokerInboxError.sourceChanged
+            }
+            let output = openat(destination, destinationName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard output >= 0 else { throw VPNUpdateBrokerInboxError.unsafeStorage }
+            defer { close(output) }
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024), total: Int64 = 0, hash = SHA256()
+            while true {
+                let count = Darwin.read(input, &buffer, buffer.count)
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else { throw VPNUpdateBrokerInboxError.sourceChanged }
+                if count == 0 { break }
+                guard Int64(count) <= node.size - total else { throw VPNUpdateBrokerInboxError.sourceChanged }
+                try buffer.withUnsafeBytes { raw in
+                    var written = 0
+                    while written < count {
+                        let part = Darwin.write(output, raw.baseAddress!.advanced(by: written), count - written)
+                        if part < 0, errno == EINTR { continue }
+                        guard part > 0 else { throw VPNUpdateBrokerInboxError.unsafeStorage }
+                        written += part
+                    }
+                }
+                total += Int64(count); hash.update(data: Data(buffer.prefix(count)))
+                try checkpoint("copyBytes:" + path)
+            }
+            var after = stat(), named = stat()
+            guard total == node.size, Data(hash.finalize()) == node.digest,
+                  fstat(input, &after) == 0,
+                  fstatat(sourceFD, sourceName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+                  before.st_dev == named.st_dev, before.st_ino == named.st_ino,
+                  before.st_size == after.st_size,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                  before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+                  before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+                  fchmod(output, node.mode) == 0, fsync(output) == 0 else {
+                throw VPNUpdateBrokerInboxError.sourceChanged
+            }
+        case .link:
+            guard before.st_mode & S_IFMT == S_IFLNK, before.st_nlink == 1,
+                  try readLink(sourceFD, sourceName) == node.target,
+                  symlinkat(node.target!, destination, destinationName) == 0 else {
+                throw VPNUpdateBrokerInboxError.sourceChanged
+            }
+        }
+    }
+
     private static func cloneDirectChild(_ source: Int32, _ sourceName: String,
                                          _ destination: Int32, _ destinationName: String) -> Int32 {
+        #if VPN_UPDATE_BROKER_INBOX_TESTING || VPN_UPDATE_BROKER_INBOX_COPY_TESTING
+        if let failure = testCloneFailure { errno = failure; return -1 }
+        #endif
         let basic = UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
         if clonefileat(source, sourceName, destination, destinationName,
                        basic | cloneResolveBeneath) == 0 { return 0 }
