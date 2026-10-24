@@ -4611,3 +4611,28 @@ swap второй переход завершается через сущест�
 - [ ] Проверить эти новые root cases на обеих архитектурах; затем связать
   подготовку с selected-state/preparation journal, protected swap и production
   entry. Отдельные seams ещё не являются готовым двухэтапным установщиком.
+
+### Продолжение 1.5dh — восстановление работы после reset и разбор CI
+
+- [x] Git/рабочая папка проверены после reset: коммиты до `a6c020f` сохранены;
+  незавершённые context/protected-swap файлы сохранены и продолжены.
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40082520285
+  завершился **failure**. Live preparation proof:10 passed на каждой архитектуре;
+  staging:2 failures из8, cleanup в этом прогоне ещё не запускался из-за порядка
+  шагов. Причина staging в fixture: inherited sign принимал `entitlements=None`
+  как `hardened=false`. Подключён правильный метод; добавлен preflight статической
+  проверки обеих app, чтобы negative cases не проходили из-за ошибочной подписи.
+- [x] Intel frozen recovery не дошёл до runtime: optimized compile32 source files
+  превысил180s. Лимит только compile увеличен до300s; runtime deadlines сохранены.
+  Apple Silicon frozen recovery2 cases passed; предыдущий308-pass run остаётся
+  отдельным историческим результатом, новый прогон зелёным не считаем.
+- [x] Typed protected swap требует live start+finish и retained signed executorA;
+  ordinary live-A проверка сохранена. Локально ordinary12 passed, Universal
+  root fixture собран. 14 root cases подготовлены для CI.
+- [x] Read-only preparation context:29 passed локально. Clean/staging/prepared/
+  conversionPending принимаются только для selected exact A/owner/edge/UUID под
+  тем же lease; чужие preparation, receipt и поздние phases отказывают.
+- [ ] Повторить remote acceptance с исправленной staging fixture, context и
+  protected swap. Независимые protected-swap/cleanup шаги запускаются также при
+  отказе предыдущего test step, чтобы получить все ошибки за один прогон.
+- [ ] Подготовка под journal и общий rescue entry остаются в работе.
