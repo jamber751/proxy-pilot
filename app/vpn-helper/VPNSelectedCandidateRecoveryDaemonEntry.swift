@@ -71,14 +71,16 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
         removeRecoveryJob: (Int32, UInt64) throws -> Void,
         testPolicy: Bool
     ) throws -> Int32 {
+        // An armed waiter must not hold the metadata lock while an updater
+        // owns Service and validates a partially published exchange.
+        let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
+        defer { lease.release() }
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory,
                                         authority: authority)
         guard var journal = try store.loadUpdateJournal() else {
             let selected = try store.loadDeployment()
             try VPNPeerAuthentication.validateCurrentProcess(
                 policy: currentPolicy(selected.release))
-            let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
-            defer { lease.release() }
             try retiredMaintenance {
                 try completeCleanup(directory, lease)
                 try VPNSelectedCandidateRecovery.cleanRetiredRecoveryJob(
@@ -99,8 +101,6 @@ enum VPNSelectedCandidateRecoveryDaemonEntry {
         guard sourceRecoverable || cancelled || recoverable else { return 0 }
         try VPNPeerAuthentication.validateCurrentProcess(
             policy: currentPolicy(journal.candidate.release))
-        let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory)
-        defer { lease.release() }
         guard let fresh = try store.loadUpdateJournal(),
               fresh.transactionID == journal.transactionID,
               fresh.revision == journal.revision,

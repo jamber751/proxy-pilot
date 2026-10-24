@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;780 isolated checks на ARM/Intel до passive wait | Полный настоящий Installer/system recovery, обычное обновление после rescue, passive wait на обеих arch, macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;796 isolated checks ARM/Intel; исходные5 Installer cases прошли ARM | Повторный rescue выявил новый отказ; текущий lock-order fix, полный7-case gate/обычный update, macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение 137 с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay | Connected overlay 137, legacy CLI, domain/split-DNS backend |
@@ -5387,3 +5387,58 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Тот же grouped suite на Intel ещё выполняется. Полный Installer7 run
   40099963908 (`5484e67`) выполняет свежую сборку; этапы теперь видны отдельно.
   Нельзя считать его пройденным по grouped tests или обычной компиляции.
+
+### Продолжение 1.5eq — полный grouped gate796 и первый полный ARM rescue5
+
+- [x] Run40099963919 (`5484e67`) successful:796 tests без skips,42 summaries.
+  Все30 pending coordinator root cases прошли на обеих архитектурах, включая
+  реальную доступность Service lease при passive metadata wait.
+- [x] Run40099963908 ARM: исходные5 real Installer cases прошли, каждый success
+  case включал повторную idempotent установку; phase6On156.9s, freshOff168.7s,
+  freshOn152.2s, retainedOff138.1s. Это не полный7-case acceptance.
+- [ ] Шестой case повторил fresh rescue и отказал ДО owner submit D:
+  secondReplace/protectedSwap, selected139/pending1, installedB, stageAbsent,
+  Recovery C valid/runs2. Intel отказал в phase6 test после достижения второго
+  leg: selected139/pending1/installedB/stageC, Recovery C valid/runs5.
+  Нельзя утверждать, что C→D проверен или что первый успех5 закрыл нестабильность.
+
+### Продолжение 1.5er — reviewable unsigned genuine C140
+
+- [x] Existing137/139 manifests и genuine137→139 edge независимо проверены
+  production verifier с committed public key. Использованы только verify modes,
+  без Keychain/private key/sign/generate операций.
+- [x] `/private/tmp/pp-release-140-offline-review-v1`: copied frontend + bundled
+  GOST SHA7569c3fd... побайтно равен GOST в verified139 sealed app; app139 pins
+  совпали с genuine signed manifest. Upstream archive origin заново не заявлен.
+  Добавлена точная MIT license из pinned official GOST v3.2.6 commit, затем app
+  sealed ad-hoc/deepStrict: ARM470b445e7a50ed6fb341b3fafeb5ac9b9d9ce1a7 /
+  Intel5a5586f4fff467c739635a5ad047a34146846a07. Это окончательные app resource
+  bytes данного C-кандидата; bare frontend pins больше не его идентичность.
+- [x] Standard CandidateStage подготовлен с genuine helper/real engine/полными
+  corresponding sources; Cmanifest unsigned, signature placeholder EMPTY.
+  Pure-codec drafts139→140 и3rescue statements сохранены ОТДЕЛЬНО как
+  UNSIGNED-DRAFT. Нет installable package, publisher authority или host install.
+- [ ] Helper450c/native7a inputs этого review-v1 теперь superseded изменением
+  ниже. Frozen app seal/engine можно переиспользовать; manifest/drafts нужно
+  заново получить из новых helper/native bytes. Publisher signing не начинался.
+
+### Продолжение 1.5es — recovery получает Service до metadata
+
+- [x] Найден разрешённый concurrency механизм: current Recovery читает journal
+  через release.lock ДО acquire Service. Armed waiter может мешать checkpoint
+  validation updater, уже владеющего Service. Protected swap после rename
+  заворачивает любой callback error (включая Store.busy) в commitUncertain.
+  Это доказанный механизм, не доказанная атрибуция последнего ARM/Intel trace.
+- [x] Два ordinary/direct-current-daemon regression сначала RED: при настоящем
+  held Service clean record дал75+созданный release.lock; malformed record дал
+  0+созданный release.lock. После переноса acquire/defer в начало private run
+  оба GREEN:75, release.lock absent, другие bytes/inodes unchanged, callbacks0.
+  Никакого root/launchd/network/Keychain/profile исполнения на host.
+- [x] Четыре existing no-launchd recovery/cleanup/refusal cases также прошли.
+  Frozen B139 не изменён; peer/signature checks не ослаблены. Текущий C-daemon
+  теперь вовсе не открывает Store до Service ownership.
+- [ ] Genuine helper-v2/native-v2 пересобираются из immutable snapshots;
+  обновлённые full grouped и System7 gates нужны вновь. Добавлены только fixed
+  protected error subtypes/progress checkpoints и fixed protected slot identity
+  diagnostics, чтобы следующий отказ не терял своё место. Нет blind retry или
+  повышения deadline. Новый regression включён в ordinary CI до дорогой сборки.
