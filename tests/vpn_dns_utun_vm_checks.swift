@@ -558,11 +558,13 @@ private func childSIGPIPE(_ protected: Bool) throws {
     var pair: [Int32] = [-1,-1]
     try check(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0, .sigpipe)
     defer { if pair[0] >= 0 { close(pair[0]) }; if pair[1] >= 0 { close(pair[1]) } }
-    close(pair[1]); pair[1] = -1
     let calls = VPNDarwinDNSUpstreamSyscalls()
     let role: SocketDiagnostic.Role = protected ? .protected : .baseline
     SocketDiagnostic.emit(role, .signalState, 0) // Default/unblocked established above.
     if protected { try SocketDiagnostic.configure(calls, pair[0], role) }
+    // Match production: configure while alive, then exercise peer loss. XNU
+    // refuses setsockopt after both directions have already been shut down.
+    close(pair[1]); pair[1] = -1
     SocketDiagnostic.emit(role, .sendBegin)
     do {
         do { _ = try calls.send(pair[0], bytes: Data([1]), offset: 0) }
