@@ -4455,3 +4455,17 @@ Update package и clean package явно помечены TEST ONLY. Пока э
 - [ ] Следующий обязательный этап — восстановление старой signed пары 137→139.
   Обычный uninstall не является обходным путём: completeAllSystem отвергает
   replacementPending. Нужна отдельная проверка forward recovery со старым A.
+- [x] Повторный read-only host check: helper launchd снова `running`, recovery
+  job отсутствует; bridge probe по-прежнему 69. Это не доказательство остановки
+  службы: pending journal переводит listener в readiness-only и блокирует owner
+  requests. Согласуется с reconcilePrevious, который поднимает A, но оставляет
+  pending journal. Точный root journal обычным пользователем не прочитан.
+- [ ] Проверить recovery migration на стенде: неизменённый signed A остаётся
+  executor; exact installed A клонируется в отдельное защищённое staging, clone
+  получает владельца из trusted journal, проходит полную проверку и атомарно
+  заменяет старое имя. Original root-owned A сохраняется для диагностики;
+  отдельный durable record обязан покрыть crash/retry до resume A→B.
+  Это пока design candidate, не реализовано и не авторизует изменение host.
+  Пофайловый chown живого app недопустим: crash оставляет mixed ownership.
+  Отдельно решить окно между migration и resume: старый recovery daemon ожидает
+  root-owned installed A. Без доказательства восстановления этот путь не готов.
