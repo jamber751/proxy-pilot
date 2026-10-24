@@ -81,7 +81,7 @@ final class VPNLegacyPasswordBackend: VPNPasswordWorkerBackend {
         guard CommandLine.arguments.count == 2, CommandLine.arguments[1] == VPNPasswordWorker.argument,
               getuid() == geteuid(), getuid() >= 500 else { throw VPNLegacyPasswordError.unavailable }
     }
-    /// Not wired: GUI callers cannot instantiate a real backend by default.
+    /// Called only by the authenticated installer worker entry, never GUI initialization.
     static func makeForCurrentWorker() throws -> VPNLegacyPasswordBackend {
         try requireWorker()
         return try VPNLegacyPasswordBackend(api: VPNLegacyPasswordSecurityAPI(privateAddPath: nil))

@@ -25,6 +25,8 @@ class VPNPasswordWorkerTests(unittest.TestCase):
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
         names = ['VPNConfiguration.swift', 'VPNProfileImporter.swift', 'VPNStore.swift',
                  'VPNPasswordWorkerWire.swift', 'VPNPasswordWorkerIdentity.swift', 'VPNPasswordWorker.swift',
+                 'VPNPasswordWorkerSession.swift', 'VPNPasswordPersistenceCoordinator.swift',
+                 'VPNPasswordCleanupCoordinator.swift', 'vpn-helper/VPNHelperProtocol.swift',
                  'vpn-helper/VPNPeerAuthentication.swift', 'vpn-helper/VPNApplicationSpec.swift',
                  'vpn-helper/VPNTunnelStateStore.swift', 'vpn-helper/OpenVPNManagementEvent.swift',
                  'vpn-helper/OpenVPNStateEvidence.swift',
@@ -145,6 +147,12 @@ class VPNPasswordWorkerTests(unittest.TestCase):
     def test_stale_locator_read_never_returns_replacement_secret(self): self.run_case('stale-read')
     def test_late_positive_delete_settles_only_captured_item(self): self.run_case('late-delete')
     def test_late_delete_cannot_acknowledge_changed_locator(self): self.run_case('changed-delete-locator')
+
+    def test_adapter_roundtrip_uses_store_gates_and_clears_input(self): self.run_case('adapter-roundtrip')
+    def test_adapter_read_denied_preserves_slot_and_falls_back(self): self.run_case('adapter-read-denied')
+    def test_adapter_delete_not_found_retains_obligation(self): self.run_case('adapter-delete-not-found')
+    def test_adapter_delete_unavailable_retains_obligation(self): self.run_case('adapter-delete-unavailable')
+    def test_adapter_no_io_is_typed_and_clears_input(self): self.run_case('adapter-noio')
 
     def test_legacy_or_unknown_worker_role_is_refused_before_storage(self):
         for role in ('--vpn-password-worker-v1', '--vpn-password-worker-v3', '--vpn-password-worker'):

@@ -311,6 +311,59 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
                 throw Failure.check
             } catch VPNValidationError.invalidConfiguration { }
             try check(attempts == 1)
+        case "adapter-noio":
+            try Data("noio".utf8).write(to: folder.appendingPathComponent("behavior"))
+            let adapter = VPNPasswordWorkerSession(prepared: try VPNPasswordWorker.prepare(store: store))
+            var bytes = Data("synthetic-static-password".utf8)
+            let result = try adapter.addOnce(store: store, reference: reference, revision: revision, secret: &bytes)
+            guard case .definitelyNoIO = result else { throw Failure.check }
+            try joinOwnChildren()
+            try check(bytes.isEmpty && events(folder).isEmpty)
+            try check(store.load()!.passwordLedger.active?.writeState == .noItem)
+        case "adapter-roundtrip", "adapter-read-denied", "adapter-delete-not-found", "adapter-delete-unavailable":
+            let adapter = VPNPasswordWorkerSession(prepared: try VPNPasswordWorker.prepare(store: store))
+            var bytes = Data("synthetic-static-password".utf8)
+            let result = try adapter.addOnce(store: store, reference: reference, revision: revision, secret: &bytes)
+            guard case .added = result else { throw Failure.check }
+            try joinOwnChildren()
+            try check(bytes.isEmpty)
+            if args[1] == "adapter-read-denied" {
+                let before = try store.load()!.passwordLedger.active
+                try Data("denied".utf8).write(to: folder.appendingPathComponent("behavior"))
+                let reader: VPNPasswordPersistenceSession = VPNPasswordWorkerSession(prepared: try VPNPasswordWorker.prepare(store: store))
+                try check(reader.read(store: store, reference: reference, revision: revision) == nil)
+                try joinOwnChildren()
+                try check(store.load()!.passwordLedger.active == before)
+                try check(events(folder) == ["add", "read"])
+            } else {
+                if args[1] == "adapter-roundtrip" {
+                    let reader: VPNPasswordPersistenceSession = VPNPasswordWorkerSession(prepared: try VPNPasswordWorker.prepare(store: store))
+                    var received = try reader.read(store: store, reference: reference, revision: revision)!
+                    try check(received == Data("synthetic-static-password".utf8))
+                    VPNPasswordWorkerWire.clear(&received)
+                    try joinOwnChildren()
+                    var again = Data("another".utf8)
+                    try rejects { _ = try adapter.addOnce(store: store, reference: reference, revision: revision, secret: &again) }
+                    try check(again.isEmpty)
+                }
+                try revoke(store)
+                if args[1] == "adapter-delete-not-found" {
+                    try FileManager.default.removeItem(at: folder.appendingPathComponent("item-" + reference.itemID.uuidString))
+                } else if args[1] == "adapter-delete-unavailable" {
+                    try Data("delete-unavailable".utf8).write(to: folder.appendingPathComponent("behavior"))
+                }
+                let cleaner: VPNPasswordCleanupSession = VPNPasswordWorkerSession(prepared: try VPNPasswordWorker.prepare(store: store))
+                let deleted = try cleaner.deletePendingOutcome(store: store, reference: reference)
+                try joinOwnChildren()
+                if args[1] == "adapter-roundtrip" {
+                    try check(deleted == .deleted && store.load()!.passwordLedger.pendingDeletion.isEmpty)
+                    try check(events(folder) == ["add", "read", "delete"])
+                } else {
+                    try check(deleted == (args[1] == "adapter-delete-not-found" ? .notFound : .unavailable))
+                    try check(store.load()!.passwordLedger.pendingDeletion.count == 1)
+                    try check(events(folder) == ["add", "delete"])
+                }
+            }
         case "roundtrip":
             let worker = try VPNPasswordWorker.prepare(store: store)
             var secret = Data("synthetic-static-password".utf8)

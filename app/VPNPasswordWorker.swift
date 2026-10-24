@@ -2,9 +2,8 @@ import Darwin
 import Dispatch
 import Foundation
 
-/// Trusted synchronous backend runs ONLY in the isolated child. The real
-/// Keychain locator is intentionally not integrated: current-default-keychain
-/// changes must not turn not-found in a different keychain into deletion proof.
+/// Trusted synchronous backend runs ONLY in the authenticated isolated child.
+/// Reads and deletion stay bound to the captured owning-keychain locator.
 protocol VPNPasswordWorkerBackend {
     var available: Bool { get }
     func execute(_ request: inout VPNPasswordWorkerWire.Request) throws -> VPNPasswordWorkerWire.Response
@@ -31,7 +30,15 @@ enum VPNPasswordWorker {
     }
 
     static func runIfRequested(arguments: [String]) -> Int32? {
-        runIfRequested(arguments: arguments, backend: { _ in VPNPasswordWorkerUnavailableBackend() })
+        #if VPN_INSTALLER_ENTRY
+        // The shared entry authenticates role, parent, private directory and
+        // inherited socket before this factory may touch any Keychain API.
+        return runIfRequested(arguments: arguments, backend: { _ in
+            try VPNLegacyPasswordBackend.makeForCurrentWorker()
+        })
+        #else
+        return runIfRequested(arguments: arguments, backend: { _ in VPNPasswordWorkerUnavailableBackend() })
+        #endif
     }
 
     final class Prepared {

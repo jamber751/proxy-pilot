@@ -51,10 +51,18 @@ class VPNLegacyPasswordBackendTests(unittest.TestCase):
                           'kSecAttrAccount', 'SecItemCopyMatching', 'SecKeychainOpen'):
             self.assertNotIn(forbidden, body)
 
-    def test_real_factory_stays_unwired(self):
+    def test_real_factory_is_installer_only_and_after_inherited_peer_authentication(self):
         worker = (ROOT / 'app/VPNPasswordWorker.swift').read_text()
         self.assertIn('VPNPasswordWorkerUnavailableBackend()', worker)
-        self.assertNotIn('VPNLegacyPasswordBackend', worker)
+        entry = worker.split('    static func runIfRequested(arguments: [String]) -> Int32? {', 1)[1].split('    final class Prepared', 1)[0]
+        self.assertIn('#if VPN_INSTALLER_ENTRY', entry)
+        self.assertIn('try VPNLegacyPasswordBackend.makeForCurrentWorker()', entry)
+        self.assertIn('#else', entry)
+        authenticated = worker.split('    private static func runIfRequested(arguments: [String],', 1)[1]
+        for prerequisite in ('arguments.count == 2', 'getuid() >= 500', 'identity.validateProcess(parent)',
+                             'VPNPasswordWorkerDirectory(duplicating: childDirectory)', 'getpeereid(childSocket'):
+            self.assertLess(authenticated.index(prerequisite), authenticated.index('try makeBackend(directory.descriptor)'))
+        self.assertLess(authenticated.index('try makeBackend(directory.descriptor)'), authenticated.index('backend.available ?'))
         source = (ROOT / 'app/VPNLegacyPasswordBackend.swift').read_text()
         for forbidden in ('SecKeychainSetDefault', 'SecKeychainSetSearchList', 'SecKeychainUnlock',
                           'SecKeychainCreate', 'SecItemUpdate', 'SecAccessCreate', 'kSecAttrAccessGroup'):

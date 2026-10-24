@@ -47,7 +47,10 @@ cp "${HERE:h}/bin/proxypilot" "$APP/Contents/Resources/bin/proxypilot"
 SOURCES=("$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
   "$HERE/VPNConfiguration.swift" "$HERE/VPNProfileImporter.swift" "$HERE/VPNStore.swift")
 if [[ "$VPN_INSTALLER" == 1 ]]; then
-  SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNPasswordPersistenceCoordinator.swift" "$HERE/VPNPasswordCleanupCoordinator.swift" "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift"
+  SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNPasswordPersistenceCoordinator.swift" "$HERE/VPNPasswordCleanupCoordinator.swift"
+    "$HERE/VPNPasswordWorker.swift" "$HERE/VPNPasswordWorkerWire.swift" "$HERE/VPNPasswordWorkerIdentity.swift"
+    "$HERE/VPNLegacyPasswordBackend.swift" "$HERE/VPNPasswordWorkerSession.swift"
+    "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift"
     "$HERE/VPNBridgeBypass.swift" "$HERE/VPNBridgeBypassEntry.swift")
   touch "$APP/Contents/Resources/vpn-bridge-v1" "$APP/Contents/Resources/vpn-bridge-v2"
 fi
@@ -88,6 +91,7 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
   for COMPONENT in VPNPeerAuthentication VPNReleaseAuthorization VPNReleaseTrust VPNHelperArtifact VPNStagedApplication VPNApplicationTransactionStager VPNJointUpdateCleanup VPNJointUpdatePreparation VPNInstalledApplication VPNInstalledCandidateHandoff VPNInstalledCandidateEntry VPNSelectedCandidateFinalizer VPNSelectedCandidateRecovery VPNSelectedCandidateRecoveryEntry VPNReplacementExecutor VPNReplacementExecutorProvisioner VPNProtectedApplicationSwap VPNReplacementExecutorHandoff VPNJointApplicationReplacement VPNReplacementExecutorEntry VPNApplicationDestinationStage VPNApplicationDestinationExchange \
     VPNReleaseStore VPNLifecycleOwnership VPNDirectoryProvisioner VPNEndpointDirectory \
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNApplicationSpec VPNTunnelStateStore \
+    OpenVPNManagementEvent OpenVPNStateEvidence OpenVPNTransientCredential \
     VPNPublicReleaseReceipt VPNFrontendHelperSession VPNInstalledUpdateResultEntry \
     VPNHelperTunnelSession VPNProfileVault VPNEngineProcess VPNEngineSupervisor VPNActivationBudget \
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
