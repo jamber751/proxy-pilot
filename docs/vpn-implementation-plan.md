@@ -26,8 +26,9 @@
 штатный remove package успешно удалил helper 136. Стабильное приложение
 завершено через «Выйти» и после подтверждения Finder перенесено в резервную
 папку. Clean install 137 завершён; authenticated bridge reader отвечает.
-Обнаружен дефект прав bundled GOST (root:0700), подготовлено точечное исправление;
-приёмка прокси ещё не пройдена. См. 1.5cr.
+Дефект прав bundled GOST (root:0700) исправлен штатным repair package;
+ordinary-user signature/bytes и HTTP/SOCKS5 проверены. Один повторный power-on
+дал ошибку, следующий цикл успешен; этот сбой ещё не объяснён. См. 1.5cr.
 Подробности и новые проверки — 1.5cq. Ниже результаты 18 октября исторические.
 
 - [x] Историческая живая приёмка 136: OTP, IP-ресурсы, повторный вход,
@@ -4196,7 +4197,9 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   исходный mode, отсутствие symlink в целевом пути и deep codesign; меняет только
   GOST на 0755 и повторяет signature verification. Не заменяет app/helper,
   не меняет pins/receipt и не выполняет повторную установку VPN.
-- [ ] Repair package открыт в Installer; на последней проверке GOST ещё 0700.
+- [x] Владелец подтвердил repair package; Installer показал успех. GOST root:0755,
+  ordinary-user deep/strict codesign успешен, diff app со signed stage без
+  отличий содержимого, bundled GOST `-V` исполняется (3.2.6).
 - [x] Packaging regression с restricted executable fixture: 18 passed,
   3 optional engine-artifact tests skipped. Проверены 0755 frontend/GOST,
   0644 Info.plist, неизменность исходного 0700 и валидность signed copies.
@@ -4204,5 +4207,20 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   `TEST ONLY - Clean Install ProxyPilot 137 - Fixed Permissions.pkg`.
   Прежние артефакты 18 октября не заменялись; их закрытые права остаются
   известным дефектом, их нельзя использовать для новой установки/релиза.
-- [ ] После repair: ordinary-user deep codesign, exact app bytes, GOST execution,
-  proxy UI и HTTP/SOCKS5 handoff; OTP/live VPN остаются отдельной приёмкой.
+- [x] Исправленный реальный clean package распакован без установки: frontend,
+  CLI и GOST имеют 0755; strict signature valid. Проверка staging-владельцем
+  больше не является единственной проверкой доступности установленного app.
+- [x] Installed UI: enable включил HTTP/HTTPS system proxy 127.0.0.1:3129.
+  HTTPS HEAD к example.com через HTTP и SOCKS5 локального моста: оба 200.
+  Disable снял HTTP/HTTPS/SOCKS system flags. Новый полный UI off/on цикл успешен.
+  В обычной конфигурации CLI выбирает существующий Homebrew GOST; bundled GOST
+  отдельно проверен запуском `-V`, не подменять эти два результата.
+- [ ] Между успешными циклами один UI power-on вернул общую ошибку переключения
+  маршрута, оставив enabled=false. Точный CLI route auto enable затем успешен;
+  следующая UI-пара off/on успешна. Причина единичного сбоя пока не установлена,
+  стабильность многократного переключения не считать полностью принятой.
+- [x] Installed settings сохранили оба пользовательских proxy endpoints;
+  VPN показывает 3 ресурса. Connect показал secure credential prompt, пустая
+  Continue disabled; Cancel вернул VPN off. Секреты не вводились/не отправлялись.
+- [ ] Реальное VPN подключение с OTP, connected overlay и lifecycle остаются
+  открытыми. Прокси оставлен включённым в прежнем auto/direct режиме.
