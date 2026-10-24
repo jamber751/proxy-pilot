@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0 # frozen executor regression reads a pinned historical blob
       - name: Ordinary destination regressions
         run: python3 -m unittest discover -s tests -p test_vpn_application_destination_exchange.py -v
       - name: Root ownership in disposable fixture directories

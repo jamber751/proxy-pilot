@@ -5,6 +5,7 @@ No Installer, launchd, network, Keychain, or real Applications mutation.
 This is not full installed update acceptance.
 """
 import os
+import hashlib
 import plistlib
 import shutil
 import sys
@@ -19,6 +20,47 @@ import test_vpn_application_destination_exchange as destination
                      'requires explicit opt-in inside disposable macOS VM as root')
 class VPNDestinationRootVMTests(destination.VPNApplicationDestinationExchangeTests):
     root_vm_fixture = True
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Frozen source at the recorded 137 baseline. Only the fixture entry's
+        # UID guard is adapted; production exchange behavior remains unchanged.
+        revision = '8519961fdf157252f195b469550f1bcebbd1878d'
+        result = cls.command(['git', '-C', str(destination.ROOT), 'show',
+                              revision + ':app/vpn-helper/VPNApplicationDestinationExchange.swift'])
+        original = result.stdout
+        if hashlib.sha256(original.encode()).hexdigest() != '5b9b4ed417b0aca742d5c979c384e48d30aa7718741111d24ef28d2debb28d65':
+            raise AssertionError('Frozen legacy exchange source mismatch')
+        guard = 'guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }'
+        if original.count(guard) != 1:
+            raise AssertionError('Legacy fixture entry guard changed')
+        legacy = cls.build / 'LegacyDestinationExchange.swift'
+        legacy.write_text(original.replace(guard,
+            'guard getuid() == 0, geteuid() == 0 else { throw VPNPeerAuthenticationError.denied }')
+            .replace('VPNApplicationDestinationExchange', 'VPNLegacyApplicationDestinationExchange'))
+        driver = cls.build / 'legacy-destination-checks.swift'
+        driver.write_text((destination.ROOT / 'tests/vpn_application_destination_exchange_checks.swift')
+            .read_text().replace('VPNApplicationDestinationExchange', 'VPNLegacyApplicationDestinationExchange'))
+        cls.legacy_checker = cls.build / 'legacy-destination-checks'
+        cls.command(['swiftc', '-D', 'VPN_APPLICATION_DESTINATION_TESTING',
+                     '-D', 'VPN_APPLICATION_DESTINATION_ROOT_TESTING',
+                     *[str(destination.HELPER / name) for name in (
+                         'VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift',
+                         'VPNLifecycleOwnership.swift', 'VPNStagedApplication.swift',
+                         'VPNReplacementExecutor.swift', 'VPNProtectedApplicationSwap.swift',
+                         'VPNApplicationDestinationStage.swift')],
+                     str(legacy), str(driver), '-o', str(cls.legacy_checker)])
+
+    def test_frozen_legacy_executor_reproduces_root_source_failure(self):
+        self.checker = self.legacy_checker
+        self.assert_rejected('exchange', 'invalidLayout')
+        self.assertEqual(self.identities(), self.initial)
+
+    def test_frozen_legacy_executor_accepts_uniform_user_owned_source(self):
+        self.set_owner(self.destination / 'ProxyPilot.app', 501)
+        self.checker = self.legacy_checker
+        self.test_exchange_and_idempotent_retry()
 
     def test_sealed_source_capability_required_for_root_owner(self):
         installed = self.destination / 'ProxyPilot.app'
