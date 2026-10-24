@@ -36,6 +36,16 @@ final class VPNRescueExecutor {
         return result
     }
 
+    #if VPN_RESCUE_PREPARATION
+    /// Rechecks the actual held artifact under the distinct start authorization.
+    /// No descriptor or unchecked bytes escape this live proof.
+    func revalidatePreparationArtifact(authorization: VerifiedVPNRescuePreparationAuthorization) throws {
+        try revalidate()
+        try artifact.revalidatePreparationArtifact(authorization: authorization)
+        try revalidate()
+    }
+    #endif
+
     func revalidate() throws {
         try artifact.revalidate()
         guard let arm = authorization.hash(forArchitecture: "arm64"),
@@ -123,6 +133,18 @@ final class VPNRescueArtifactObservation {
             throw VPNRescueExecutorError.changed
         }
     }
+
+    #if VPN_RESCUE_PREPARATION
+    fileprivate func revalidatePreparationArtifact(authorization: VerifiedVPNRescuePreparationAuthorization) throws {
+        try revalidate()
+        let bytes = try readBounded()
+        try authorization.validateArtifact(bytes)
+        try VPNUniversalArtifact.validate(protectedFile: executable, data: bytes,
+            identifier: "kz.documentolog.proxypilot.vpn-rescue", hash: authorization.hash,
+            error: VPNRescueExecutorError.invalidArtifact)
+        try revalidate()
+    }
+    #endif
 
     fileprivate func requireCurrentProcess() throws {
         var bytes = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
