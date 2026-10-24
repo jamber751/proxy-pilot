@@ -18,6 +18,46 @@ enum VPNApplicationTransactionStager {
     enum Layout { case prepared, exchanged }
     private static let app = "ProxyPilot.app"
 
+    private enum Authorization {
+        case ordinary
+        #if VPN_RESCUE_PREPARATION
+        case rescue(VPNRescuePreparationExecutor)
+        #endif
+        func revalidate() throws {
+            switch self {
+            case .ordinary: break
+            #if VPN_RESCUE_PREPARATION
+            case .rescue(let executor): try executor.revalidate()
+            #endif
+            }
+        }
+    }
+
+    #if VPN_RESCUE_PREPARATION && VPN_APPLICATION_TRANSACTION_STAGING_TESTING
+    /// Root VM only. Production additionally needs a fixed selected-source
+    /// context and durable preparation under the service lifecycle lease.
+    /// Ordinary updater compatibility remains mandatory in prepare().
+    static func testRescuePrepare(base: Int32, previousSource: Int32, candidateSource: Int32,
+                                  previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
+                                  transition: VerifiedVPNUpdateTransition,
+                                  executor: VPNRescuePreparationExecutor,
+                                  checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNApplicationTransactionStagingError.requiresRoot
+        }
+        try executor.validateEdge(previous: previous, candidate: candidate, transition: transition)
+        let old = try VPNStagedApplication.inspectInstalled(inApplicationsDirectory: previousSource,
+            ownerUserID: 0, productionParent: false, release: previous)
+        let next = try VPNStagedApplication.inspect(inTrustedDirectory: candidateSource, release: candidate)
+        try VPNStagedApplication.requireUpdateExecutorCompatibility(next, inApplicationsDirectory: candidateSource)
+        try executor.validateEdge(previous: previous, candidate: candidate, transition: transition)
+        return try perform(base: base, previousSource: previousSource, previousInspection: old,
+            candidateSource: candidateSource, candidateInspection: next,
+            previous: previous, candidate: candidate, transition: transition,
+            authorization: .rescue(executor), checkpoint: checkpoint)
+    }
+    #endif
+
     static func prepare(candidateDirectory: Int32,
                         previousOwnerUserID: uid_t,
                         previous: VerifiedVPNRelease,
@@ -134,7 +174,9 @@ enum VPNApplicationTransactionStager {
                                 previous: VerifiedVPNRelease,
                                 candidate: VerifiedVPNRelease,
                                 transition: VerifiedVPNUpdateTransition,
+                                authorization: Authorization = .ordinary,
                                 checkpoint: (String) throws -> Void) throws -> Outcome {
+        try authorization.revalidate()
         guard !previous.isSameRelease(as: candidate),
               transition.matchesSource(previous),
               transition.matchesDestination(candidate) else {
@@ -148,11 +190,11 @@ enum VPNApplicationTransactionStager {
         let current = try prepareSlot(
             base: base, name: "current", source: previousSource,
             sourceInspection: previousInspection, release: previous,
-            lease: lease, checkpoint: checkpoint)
+            lease: lease, authorization: authorization, checkpoint: checkpoint)
         let staged = try prepareSlot(
             base: base, name: "candidate", source: candidateSource,
             sourceInspection: candidateInspection, release: candidate,
-            lease: lease, checkpoint: checkpoint)
+            lease: lease, authorization: authorization, checkpoint: checkpoint)
         try lease.check()
         try checkBase(base)
         try validatePublished(base: base, name: "current", release: previous)
@@ -160,6 +202,7 @@ enum VPNApplicationTransactionStager {
         guard fsync(base) == 0 else {
             throw VPNApplicationTransactionStagingError.commitUncertain
         }
+        try authorization.revalidate()
         if current == .alreadyStaged && staged == .alreadyStaged { return .alreadyStaged }
         if current != .staged || staged != .staged { return .resumed }
         return .staged
@@ -170,7 +213,9 @@ enum VPNApplicationTransactionStager {
                                     sourceInspection: VPNStagedApplicationInspection,
                                     release: VerifiedVPNRelease,
                                     lease: VPNLifecycleLease,
+                                    authorization: Authorization,
                                     checkpoint: (String) throws -> Void) throws -> Outcome {
+        try authorization.revalidate()
         let pendingName = ".\(name).preparing"
         let published = try directory(base, name)
         let pending = try directory(base, pendingName)
@@ -185,6 +230,7 @@ enum VPNApplicationTransactionStager {
             try lease.check()
             try VPNStagedApplication.revalidate(sourceInspection,
                                                  inTrustedDirectory: source)
+            try authorization.revalidate()
             return .alreadyStaged
         }
 
@@ -194,6 +240,7 @@ enum VPNApplicationTransactionStager {
             staging = pending
             resumed = true
         } else {
+            try authorization.revalidate()
             guard mkdirat(base, pendingName, 0o700) == 0,
                   fsync(base) == 0,
                   let created = try directory(base, pendingName) else {
@@ -207,6 +254,7 @@ enum VPNApplicationTransactionStager {
             try lease.check()
             try VPNStagedApplication.revalidate(sourceInspection,
                                                  inTrustedDirectory: source)
+            try authorization.revalidate()
             guard cloneDirectChild(source, app, staging, app) == 0 else {
                 if errno == ENOTSUP || errno == EXDEV {
                     throw VPNApplicationTransactionStagingError.cloneUnavailable
@@ -228,6 +276,7 @@ enum VPNApplicationTransactionStager {
         try VPNStagedApplication.revalidate(sourceInspection,
                                              inTrustedDirectory: source)
         try VPNStagedApplication.revalidate(copy, inTrustedDirectory: staging)
+        try authorization.revalidate()
         guard renameat(base, pendingName, base, name) == 0 else {
             throw VPNApplicationTransactionStagingError.publicationFailed
         }
@@ -238,6 +287,7 @@ enum VPNApplicationTransactionStager {
             try checkpoint("afterPublish:\(name)")
             try lease.check()
             try validatePublished(base: base, name: name, release: release)
+            try authorization.revalidate()
         } catch {
             throw VPNApplicationTransactionStagingError.commitUncertain
         }
