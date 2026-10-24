@@ -37,12 +37,17 @@ class VPNUIContractTests(unittest.TestCase):
         self.assertIn('$0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular', main)
         self.assertIn('guard signature != previous', main)
 
+    def test_panel_initial_configuration_load_precedes_explicit_startup_cleanup(self):
+        # Wiring contract; real helper/Keychain startup remains a VM gate.
+        main = (ROOT / 'app/main.swift').read_text()
+        self.assertLess(main.index('vpn: vpnPanel))'), main.index('passwordRuntime.start()'))
+
     def test_long_resource_list_is_bounded_and_lazy(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text()
         settings = panel.split('private var settings: some View', 1)[1].split('private var profileCard:', 1)[0]
         self.assertNotIn('ScrollView', settings)
         self.assertIn('LazyVStack(spacing: 6)', panel)
-        self.assertIn('private let maximumViewportHeight: CGFloat = 144', panel)
+        self.assertIn('private var maximumViewportHeight: CGFloat { panel.notice == nil ? 144 : 112 }', panel)
         self.assertIn('VStack(spacing: 6) { rows }', panel)
         self.assertIn('ScrollViewReader', panel)
         self.assertIn('showsIndicators: overflows', panel)

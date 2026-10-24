@@ -18,6 +18,7 @@ class VPNUILayoutTests(unittest.TestCase):
         # Presentation-only state injection; production view/control code is unchanged.
         panel = panel.replace('@Published private(set) var liveState:', '@Published var liveState:')
         panel = panel.replace('@Published private(set) var credentialPromptIdentifier:', '@Published var credentialPromptIdentifier:')
+        panel = panel.replace('@Published private(set) var passwordCleanupDetail:', '@Published var passwordCleanupDetail:')
         panel = panel.replace('@Published private var passwordPersistenceEvent:', '@Published var passwordPersistenceEvent:')
         # Preview-only phase injection; there is no driver or credential API.
         panel = panel.replace('configuration: configuration.configuration) == true else { return nil }',
@@ -40,6 +41,8 @@ class VPNUILayoutTests(unittest.TestCase):
                 Color.clear.preference(key: VPNHitBounds.self,
                     value: ["{name}": geometry.frame(in: .named("vpnPopover"))])
             }})''')
+
+        panel = panel.replace('.accessibilityIdentifier("vpnNotice")', '.accessibilityIdentifier("vpnNotice").background(GeometryReader { geometry in Color.clear.preference(key: VPNHitBounds.self, value: ["vpnNotice": geometry.frame(in: .named("vpnPopover"))]) })')
 
         for title, name in (('Отмена', 'cancelLabel'), ('Продолжить', 'submitLabel')):
             label = f'Text("{title}").frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())'
@@ -84,6 +87,15 @@ final class VPNLiveController: ObservableObject {
     func isCurrentPasswordPersistenceEvent(_ event: VPNPasswordPersistenceEvent, configuration: VPNConfiguration) -> Bool { false }
     func submitCredential(_ secret: inout Data, expectedPromptIdentifier: UUID?) { secret.removeAll(); state = .connected }
     func cancelCredential() { state = .off }
+}
+final class VPNPasswordRuntime {
+    let configuration: VPNModel
+    let controller: VPNLiveController
+    init(configuration: VPNModel, controller: VPNLiveController) {
+        self.configuration = configuration; self.controller = controller
+    }
+    var cleanupDetail: String? { nil }
+    func setCleanupHandler(_ handler: @escaping (String?) -> Void) {}
 }
 struct PowerStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -165,12 +177,16 @@ private func secureField(_ view: NSView) -> VPNSecretField.Field? {
     if let field = view as? VPNSecretField.Field { return field }
     return view.subviews.lazy.compactMap { secureField($0) }.first
 }
-for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save", "feedback-saving", "feedback-saved", "feedback-unconfirmed", "feedback-read-confirmation"] {
+for scenario in ["import", "settings0", "settings3", "settings18", "cleanup-settings18", "cleanup-settings100", "cleanup-home", "cleanup-home-save", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save", "feedback-saving", "feedback-saved", "feedback-unconfirmed", "feedback-read-confirmation"] {
     let panel = VPNPanelModel(preview: true)
     if scenario != "import" {
-        try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : (scenario == "credential-save" || scenario == "feedback-read-confirmation") ? 1 : 0,
+        try configure(panel, resources: scenario == "cleanup-settings100" ? 100 : (scenario == "settings18" || scenario == "cleanup-settings18") ? 18 : scenario == "settings3" ? 3 : (scenario == "credential-save" || scenario == "feedback-read-confirmation") ? 1 : 0,
                       credentials: scenario.hasPrefix("auth") || scenario == "credential-save" || scenario == "feedback-read-confirmation")
         panel.settings = true
+    }
+    if scenario.hasPrefix("cleanup-") {
+        panel.passwordCleanupDetail = "Не удалось подтвердить удаление сохранённого пароля."
+        panel.settings = !scenario.hasPrefix("cleanup-home")
     }
     if scenario == "resource" {
         panel.beginResource(); panel.resourceAddress = "10.55.0.0/16"
@@ -183,12 +199,12 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     if scenario == "credential-save" || scenario == "feedback-read-confirmation" {
         panel.choosePasswordPersistence(true); panel.saveAuthentication()
     }
-    if scenario.hasPrefix("feedback-") {
+    if scenario.hasPrefix("feedback-") || scenario == "cleanup-home-save" {
         panel.settings = false
         panel.liveState = scenario == "feedback-read-confirmation" ? .needsCredential(.vpnPassword) : .connected
         if scenario == "feedback-read-confirmation" { panel.credentialPromptIdentifier = UUID() }
         let phase: VPNPasswordPersistenceEvent.Phase = scenario == "feedback-saving" ? .saving
-            : scenario == "feedback-saved" ? .saved : .needsConfirmation
+            : (scenario == "feedback-saved" || scenario == "cleanup-home-save") ? .saved : .needsConfirmation
         panel.passwordPersistenceEvent = VPNPasswordPersistenceEvent(intentIdentifier: UUID(),
             configurationRevision: panel.configuration.configuration.revision, phase: phase)
     }
@@ -207,7 +223,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
-    if scenario.hasPrefix("feedback-") {
+    if scenario.hasPrefix("feedback-") || scenario == "cleanup-home-save" {
         // onAppear's preview refresh deliberately reports unavailable; inject
         // the presentation-only connected state after that lifecycle action.
         panel.liveState = scenario == "feedback-read-confirmation" ? .needsCredential(.vpnPassword) : .connected
@@ -242,6 +258,9 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     case "auth-otp":
         required += ["vpnAuthenticationSave"]
         precondition(bounds["vpnSavePassword"] == nil, "OTP offered password saving")
+    case "cleanup-settings18", "cleanup-settings100":
+        required += ["vpnReplaceProfile", "vpnAddResource", "vpnRemove", "vpnSettingsDone", "vpnNotice"]
+    case "cleanup-home", "cleanup-home-save": required += ["vpnPower", "vpnSettings", "vpnNotice"]
     case "feedback-read-confirmation":
         required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel", "vpnStatusDetail"]
         precondition(panel.statusDetail.contains("Сохранение пароля не подтверждено."), "Manual lookup warning hidden")
@@ -252,7 +271,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     }
     for name in required {
         guard let frame = bounds[name] else { fatalError("Missing \(name) in \(scenario)") }
-        let minimum: CGFloat = name == "vpnImport" ? 100 : name == "vpnCredential" ? 28 : name == "vpnStatusDetail" ? 13 : 36
+        let minimum: CGFloat = name == "vpnImport" ? 100 : name == "vpnCredential" ? 28 : (name == "vpnStatusDetail" || name == "vpnNotice") ? 10 : 36
         precondition(frame.width >= 36 && frame.height >= minimum,
                      "Small target \(name) in \(scenario): \(frame)")
         precondition(frame.minX >= -0.5 && frame.maxX <= 344.5 &&
@@ -309,7 +328,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count(': vpnBack='), 15, result.stdout)
+            self.assertEqual(result.stdout.count(': vpnBack='), 19, result.stdout)
 
 
 if __name__ == '__main__':

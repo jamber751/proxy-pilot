@@ -21,7 +21,7 @@ class VPNPanelCredentialTests(unittest.TestCase):
         # Compile the production adapter, without constructing any SwiftUI views.
         adapter.write_text((ROOT / 'app/VPNPanel.swift').read_text().split('\nstruct VPNPanelView:', 1)[0])
         sources = [ROOT / name for name in ('app/VPNConfiguration.swift', 'app/VPNProfileImporter.swift',
-            'app/VPNStore.swift', 'app/VPNModel.swift', 'app/VPNPasswordPersistenceCoordinator.swift', 'app/VPNLiveController.swift',
+            'app/VPNStore.swift', 'app/VPNModel.swift', 'app/VPNPasswordRuntime.swift', 'app/VPNPasswordCleanupCoordinator.swift', 'app/VPNPasswordPersistenceCoordinator.swift', 'app/VPNLiveController.swift',
             'app/vpn-helper/VPNHelperProtocol.swift', 'app/vpn-helper/VPNApplicationSpec.swift',
             'app/vpn-helper/VPNTunnelStateStore.swift')]
         cls.binary = folder / 'checks'
@@ -38,6 +38,8 @@ class VPNPanelCredentialTests(unittest.TestCase):
             result = subprocess.run([str(self.binary), case, folder], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('credential presentation flow passed', result.stdout)
+
+    def test_revoked_consent_keeps_cleanup_warning_visible_in_vpn_settings(self): self.run_case('cleanup-revoke')
 
     def test_cancel_and_next_attempt_clear_old_otp(self): self.run_case('cancel-new-attempt')
     def test_busy_buttons_do_not_discard_entered_draft(self): self.run_case('busy-preserves-draft')

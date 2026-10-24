@@ -36,6 +36,7 @@ final class UpdateModel: ObservableObject {}
 struct RemovalDestination: Equatable {
     let screen: String
     let vpnStatus: String?
+    var cleanupDetail: String? = nil
 }
 struct RemovalDestinationKey: PreferenceKey {
     static var defaultValue = RemovalDestination(screen: "none", vpnStatus: nil)
@@ -43,15 +44,25 @@ struct RemovalDestinationKey: PreferenceKey {
         let next = nextValue(); if next.screen != "none" { value = next }
     }
 }
+struct RemovalRowBoundsKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
 struct PilotView: View {
     @ObservedObject var model: ProxyModel
     @ObservedObject var updates: UpdateModel
     let openVPN: (() -> Void)?
     let vpnStatus: String?
+    let vpnSettingsDetail: String?
+    private var accent: Color { PilotTheme.accent }
+    private var ink: Color { .primary }
     var body: some View {
-        Text(model.editing ? "Application settings" : "Proxy home")
+        VStack {
+            Text(model.editing ? "Application settings" : "Proxy home")
+            // ACTUAL_VPN_SETTINGS_ROW
+        }
             .preference(key: RemovalDestinationKey.self,
-                value: RemovalDestination(screen: model.editing ? "settings" : "home", vpnStatus: vpnStatus))
+                value: RemovalDestination(screen: model.editing ? "settings" : "home", vpnStatus: vpnStatus, cleanupDetail: vpnSettingsDetail))
     }
 }
 struct PowerStyle: ButtonStyle {
@@ -93,7 +104,7 @@ private final class RemovalStore: VPNModelStore {
         return try actual.save(configuration, importing: profile, expectedRevision: expectedRevision)
     }
 }
-private final class RemovalMetrics { var destination = RemovalDestinationKey.defaultValue }
+private final class RemovalMetrics { var destination = RemovalDestinationKey.defaultValue; var rowBounds: CGRect = .zero }
 @main enum VPNPanelRemovalChecks {
     static func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         guard value() else { throw NSError(domain: message, code: 1) }
@@ -131,7 +142,8 @@ private final class RemovalMetrics { var destination = RemovalDestinationKey.def
         var config = VPNConfiguration()
         try config.setProfile(name: profile.name)
         try config.saveResource(VPNResource(name: "Synthetic", address: "10.20.0.0/16"))
-        try config.setAuthentication(VPNAuthentication(mode: .oneTimePassword, login: "employee"))
+        try config.setAuthentication(VPNAuthentication(mode: mode == "cleanup-warning" ? .password : .oneTimePassword, login: "employee",
+            credentialPersistence: mode == "cleanup-warning" ? .keychain : .none))
         try config.setEnabled(true)
         _ = try store.save(config, importing: profile, expectedRevision: nil)
         let persistence = RemovalStore(actual: store, rejectDeletion: mode == "failed-delete")
@@ -139,7 +151,22 @@ private final class RemovalMetrics { var destination = RemovalDestinationKey.def
         let originalSaved = try store.load()!
         let session = RemovalSession(rejectStop: mode == "failed-stop")
         let controller = VPNLiveController(store: store, openSession: { session })
-        let panel = VPNPanelModel(configuration: configuration, controller: controller)
+        let panel: VPNPanelModel
+        var retainedRuntime: VPNPasswordRuntime?
+        var cleanupJobs: [() -> Void] = []
+        if mode == "cleanup-warning" {
+            let state = try store.load()!
+            let reference = try store.createPasswordSaveGrant(expectedRevision: state.saved.configuration.revision, expectedActive: nil)
+            _ = try store.addPasswordOnce(reference: reference, expectedRevision: state.saved.configuration.revision) { ref in
+                .added(.init(persistentReference: Data(ref.itemID.uuidString.utf8), origin: .init(kind: .legacyKeychain,
+                    path: "/synthetic/removal.keychain-db", device: 1, inode: 1, ownerUID: getuid(), birthSeconds: 1, birthNanoseconds: 0)))
+            }
+            let runtime = VPNPasswordRuntime(store: store, available: true,
+                cleanupPrepare: { _ in RemovalCleanupSession() }, schedule: { cleanupJobs.append($0) }, openSession: { session })
+            retainedRuntime = runtime
+            panel = VPNPanelModel(runtime: runtime)
+        } else { panel = VPNPanelModel(configuration: configuration, controller: controller) }
+        defer { withExtendedLifetime(retainedRuntime) {} }
         panel.settings = true
         var requests: [VPNPanelNavigationRequest] = []
         var emittedAfterCommit = true
@@ -166,6 +193,7 @@ private final class RemovalMetrics { var destination = RemovalDestinationKey.def
         if mode == "pending-on-mount" { panel.confirmRemoveVPN(); try wait(panel) }
         let root = VPNProductView(proxy: proxy, updates: UpdateModel(), vpn: panel)
             .onPreferenceChange(RemovalDestinationKey.self) { metrics.destination = $0 }
+            .onPreferenceChange(RemovalRowBoundsKey.self) { metrics.rowBounds = $0 }
         let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: 344, height: 432)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -179,6 +207,19 @@ private final class RemovalMetrics { var destination = RemovalDestinationKey.def
                 panel.requestVPNRemoval(); panel.confirmVPNRemoval = false
             } else { panel.confirmRemoveVPN(); try wait(panel) }
             settle(host)
+        }
+        if mode == "cleanup-warning" {
+            while !cleanupJobs.isEmpty { cleanupJobs.removeFirst()() }
+            let deadline = Date().addingTimeInterval(2)
+            while panel.passwordCleanupDetail == nil && Date() < deadline { settle(host, cycles: 1) }
+            settle(host)
+            try require(metrics.destination.screen == "settings" && panel.configuration.profile == nil,
+                "removal warning prevented completed product navigation")
+            try require(metrics.destination.cleanupDetail == "Не удалось подтвердить удаление сохранённого пароля.",
+                "unknown cleanup warning lost after navigation")
+            try require(host.fittingSize.height <= 432 && metrics.rowBounds.height >= 48 && metrics.rowBounds.maxX <= 345
+                && metrics.rowBounds.minX >= -1 && metrics.rowBounds.maxY <= 432 && !host.subviewsRecursive.contains(where: { $0 is NSScrollView }),
+                "warning introduced scrolling or excessive height")
         }
         try require(proxy.state == originalState && proxy.drafts == originalDrafts, "proxy runtime or draft state changed")
         if mode == "failed-stop" || mode == "failed-delete" || mode == "cancel" {
@@ -200,15 +241,26 @@ private final class RemovalMetrics { var destination = RemovalDestinationKey.def
                 try require(saved == originalSaved, "failed stop/cancel changed persisted VPN state")
             }
         } else {
-            try require(session.stopConfirmed && configuration.profile == nil && panel.mainStatus == nil,
+            try require(session.stopConfirmed && panel.configuration.profile == nil && panel.mainStatus == nil,
                         "successful removal kept VPN state")
             try require(metrics.destination.screen == "settings" && metrics.destination.vpnStatus == nil,
                         "successful removal did not show application settings without VPN status")
             try require(proxy.editing && !proxy.addingProxy && !proxy.choosingRoute && !proxy.manual,
                         "proxy settings navigation not reset")
             try require(!panel.requestsPresentation && panel.navigationRequest == nil && requests.count == 1 && emittedAfterCommit,
-                        "navigation was not consumed exactly after stop/commit")
+                        "navigation mismatch count=\(requests.count) committed=\(emittedAfterCommit) presenting=\(panel.requestsPresentation) pending=\(panel.navigationRequest != nil)")
         }
         print("removal product flow passed")
     }
+}
+
+private struct RemovalCleanupSession: VPNPasswordCleanupSession {
+    func deletePendingOutcome(store: VPNStore, reference: VPNPasswordReference) throws -> VPNPasswordDeleteOutcome {
+        do { try store.deletePendingPassword(reference: reference) { _, _ in .indeterminate } }
+        catch { return .indeterminate }
+        throw VPNValidationError.storageUnavailable
+    }
+}
+private extension NSView {
+    var subviewsRecursive: [NSView] { subviews + subviews.flatMap { $0.subviewsRecursive } }
 }

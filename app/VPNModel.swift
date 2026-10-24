@@ -96,8 +96,10 @@ final class VPNModel: ObservableObject {
 
     let preview: Bool
     private let store: VPNModelStore?
+    private let didPersist: () -> Void
 
-    init(store: VPNModelStore) {
+    init(store: VPNModelStore, didPersist: @escaping () -> Void = {}) {
+        self.didPersist = didPersist
         self.store = store
         preview = false
         configuration = VPNConfiguration()
@@ -107,6 +109,7 @@ final class VPNModel: ObservableObject {
     /// and editing, but it cannot resolve or create a production storage path.
     init(previewConfiguration: VPNConfiguration = VPNConfiguration()) {
         store = nil
+        didPersist = {}
         preview = true
         configuration = previewConfiguration
     }
@@ -263,6 +266,7 @@ final class VPNModel: ObservableObject {
             if let store {
                 let saved = try store.save(next, importing: imported,
                                            expectedRevision: storedState?.saved.configuration.revision)
+                didPersist() // Store lock is released; adoption may still fail.
                 try adopt(saved)
             } else {
                 configuration = next
@@ -283,6 +287,7 @@ final class VPNModel: ObservableObject {
             if let store {
                 let saved = try store.save(next, importing: nil,
                                            expectedRevision: storedState?.saved.configuration.revision)
+                didPersist() // Store lock is released; adoption may still fail.
                 try adopt(saved)
             } else {
                 configuration = next

@@ -108,7 +108,7 @@ private final class PanelPasswordSession: VPNPasswordPersistenceSession {
         let editingAuthentication = a[1].hasPrefix("auth-")
         let testingConsent = a[1].hasPrefix("consent-")
         let testingFeedback = a[1].hasPrefix("feedback-")
-        let staticPassword = editingAuthentication || testingConsent || testingFeedback || a[1] == "password-consent"
+        let staticPassword = editingAuthentication || testingConsent || testingFeedback || a[1] == "password-consent" || a[1] == "cleanup-revoke"
         let hasConsent = testingConsent ? a[1] == "consent-revoke" : staticPassword && !a[1].hasSuffix("default")
         try config.setAuthentication(VPNAuthentication(mode: staticPassword ? .password : .oneTimePassword,
             login: "employee", credentialPersistence: hasConsent ? .keychain : .none))
@@ -136,6 +136,28 @@ private final class PanelPasswordSession: VPNPasswordPersistenceSession {
                 revision: state.saved.configuration.revision, secret: &initial)
             initial.resetBytes(in: 0..<initial.count); initial.removeAll()
             passwordSession.adds = 0
+        }
+        if a[1] == "cleanup-revoke" {
+            let state = try store.load()!
+            let ref = try store.createPasswordSaveGrant(expectedRevision: state.saved.configuration.revision, expectedActive: nil)
+            var password = Data("synthetic".utf8)
+            _ = try passwordSession.addOnce(store: store, reference: ref, revision: state.saved.configuration.revision, secret: &password)
+            var cleanupJobs: [() -> Void] = []
+            let runtime = VPNPasswordRuntime(store: store, available: true, cleanupPrepare: { _ in PanelCleanupSession() },
+                schedule: { cleanupJobs.append($0) }, openSession: { session })
+            let panel = VPNPanelModel(runtime: runtime)
+            panel.settings = true; panel.beginAuthentication(); panel.choosePasswordPersistence(false); panel.saveAuthentication()
+            try require(!panel.editingAuthentication && panel.configuration.configuration.authentication?.credentialPersistence == VPNCredentialPersistence.none,
+                "revoke did not finish in VPN settings")
+            while !cleanupJobs.isEmpty { cleanupJobs.removeFirst()() }
+            for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            try require(panel.notice == "Не все сохранённые пароли удалены." && !panel.passwordPersistenceSelected,
+                "revoked consent hid retained-password warning")
+            panel.message = "Connection error"
+            try require(panel.notice == "Connection error", "cleanup replaced explicit error")
+            panel.message = ""; panel.beginAuthentication(); panel.selectAuthentication(.oneTimePassword); panel.saveAuthentication()
+            try require(panel.notice == "Не все сохранённые пароли удалены.", "mode change hid cleanup warning")
+            print("credential presentation flow passed"); return
         }
         let controller = VPNLiveController(store: store, passwordPersistence: cache, openSession: { session })
         let panel = VPNPanelModel(configuration: configuration, controller: controller)
@@ -351,5 +373,13 @@ private final class PanelPasswordSession: VPNPasswordPersistenceSession {
         default: exit(64)
         }
         print("credential presentation flow passed")
+    }
+}
+
+private struct PanelCleanupSession: VPNPasswordCleanupSession {
+    func deletePendingOutcome(store: VPNStore, reference: VPNPasswordReference) throws -> VPNPasswordDeleteOutcome {
+        do { try store.deletePendingPassword(reference: reference) { _, _ in .notFound } }
+        catch { return .notFound }
+        throw VPNValidationError.storageUnavailable
     }
 }

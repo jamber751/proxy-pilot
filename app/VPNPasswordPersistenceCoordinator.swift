@@ -82,6 +82,8 @@ final class VPNPasswordPersistenceCoordinator {
     private let intentLock = NSLock()
     private var intentIdentifier = UUID()
     private weak var queuedCandidate: VPNPasswordSaveCandidate?
+    private weak var heldCandidate: VPNPasswordSaveCandidate?
+    private let onSaveFinished: () -> Void
     private var latestEvent: VPNPasswordPersistenceEvent?
     private var eventHandler: (VPNPasswordPersistenceEvent) -> Void = { _ in }
 
@@ -103,7 +105,9 @@ final class VPNPasswordPersistenceCoordinator {
     }
 
     init(store: VPNStore, available: Bool = false,
-         prepare: @escaping Prepare = { _ in nil }, schedule: Schedule? = nil) {
+         prepare: @escaping Prepare = { _ in nil }, schedule: Schedule? = nil,
+         onSaveFinished: @escaping () -> Void = {}) {
+        self.onSaveFinished = onSaveFinished
         self.store = store; self.available = available; self.prepare = prepare
         self.schedule = schedule ?? { work in Self.queue.async(execute: DispatchWorkItem(block: work)) }
     }
@@ -116,9 +120,11 @@ final class VPNPasswordPersistenceCoordinator {
         let captured = current != nil && Self.valid(secret)
         // An empty marker remembers only the eligible intent. It can report a
         // failed capture after connection proof but can never create a grant.
-        return VPNPasswordSaveCandidate(binding: binding,
+        let candidate = VPNPasswordSaveCandidate(binding: binding,
             expectedActive: current?.passwordLedger.active?.reference,
             intentIdentifier: intentIdentifier, secret: captured ? secret : Data(), captureFailed: !captured)
+        heldCandidate = candidate
+        return candidate
     }
 
     /// Cancel only queued, pre-claim work. A persisted fresh grant is an
@@ -134,6 +140,7 @@ final class VPNPasswordPersistenceCoordinator {
     private func invalidateLocked() {
         intentIdentifier = UUID(); latestEvent = nil
         queuedCandidate?.clear(); queuedCandidate = nil
+        heldCandidate?.clear(); heldCandidate = nil
     }
     private func invalidateIfCurrent(_ identifier: UUID) {
         intentLock.lock(); defer { intentLock.unlock() }
@@ -211,7 +218,11 @@ final class VPNPasswordPersistenceCoordinator {
         intentLock.unlock()
         schedule { [self, owned] in
             var secret = owned.take()
-            defer { Self.clear(&secret) }
+            var claimed = false
+            defer {
+                Self.clear(&secret)
+                if claimed { onSaveFinished() }
+            }
             var expectedForFailure = expectedActive
             do {
                 guard Self.valid(secret), isCurrentIntent(identifier) else { return }
@@ -229,6 +240,7 @@ final class VPNPasswordPersistenceCoordinator {
                 // metadata/grant work is serialized with fresh manual capture.
                 guard let fresh = try grantIfCurrent(binding.application,
                     expectedActive: expectedActive, intent: identifier) else { return }
+                claimed = true
                 expectedForFailure = fresh
                 let result = try worker.addOnce(store: store, reference: fresh,
                                                revision: binding.application.revision, secret: &secret)

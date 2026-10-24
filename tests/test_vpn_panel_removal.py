@@ -22,14 +22,20 @@ class VPNPanelRemovalTests(unittest.TestCase):
             value: RemovalDestination(screen: "vpn", vpnStatus: panel.mainStatus)))''')
         source = folder / 'VPNPanel.swift'; source.write_text(panel)
         sources = [ROOT / name for name in ('app/Controls.swift', 'app/VPNConfiguration.swift',
-            'app/VPNProfileImporter.swift', 'app/VPNStore.swift', 'app/VPNModel.swift',
+            'app/VPNProfileImporter.swift', 'app/VPNStore.swift', 'app/VPNModel.swift', 'app/VPNPasswordRuntime.swift', 'app/VPNPasswordCleanupCoordinator.swift',
             'app/VPNPasswordPersistenceCoordinator.swift', 'app/VPNLiveController.swift', 'app/vpn-helper/VPNHelperProtocol.swift',
             'app/vpn-helper/VPNApplicationSpec.swift', 'app/vpn-helper/VPNTunnelStateStore.swift')]
+        checks = (ROOT / 'tests/vpn_panel_removal_checks.swift').read_text()
+        main = (ROOT / 'app/main.swift').read_text()
+        row = main.split('            if let openVPN {',1)[1].split('            ForEach(["socks5", "http"]',1)[0]
+        row = row.replace('.accessibilityIdentifier("vpnSettingsRow")', '.accessibilityIdentifier("vpnSettingsRow").background(GeometryReader { geometry in Color.clear.preference(key: RemovalRowBoundsKey.self, value: geometry.frame(in: .global)) })')
+        checks = checks.replace('// ACTUAL_VPN_SETTINGS_ROW', 'if let openVPN {' + row)
+        check_source = folder / 'checks.swift'; check_source.write_text(checks)
         cls.binary = folder / 'checks'
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
         built = subprocess.run(['swiftc', '-D', 'VPN_PANEL_TESTING', '-D', 'VPN_LIVE_CONTROLLER_TESTING',
             '-target', arch + '-apple-macosx11.0', *map(str, sources), str(source),
-            str(ROOT / 'tests/vpn_panel_removal_checks.swift'), '-o', str(cls.binary)],
+            str(check_source), '-o', str(cls.binary)],
             capture_output=True, text=True, timeout=120)
         if built.returncode: raise AssertionError(built.stdout + built.stderr)
 
@@ -40,6 +46,8 @@ class VPNPanelRemovalTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('flow passed', result.stdout)
             self.assertNotIn('Publishing changes from within view updates', result.stderr)
+
+    def test_unknown_password_cleanup_warning_survives_real_product_removal_navigation(self): self.run_case('cleanup-warning')
 
     def test_success_returns_to_settings_and_preserves_proxy(self): self.run_case('success')
     def test_vpn_only_returns_to_settings_without_proxy_configuration(self): self.run_case('vpn-only')

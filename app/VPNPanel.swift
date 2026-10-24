@@ -39,6 +39,8 @@ final class VPNPanelModel: ObservableObject {
     private let queue = DispatchQueue(label: "proxypilot.vpn.frontend")
     private var modelChanges: AnyCancellable?
     @Published private(set) var credentialPromptIdentifier: UUID?
+    @Published private(set) var passwordCleanupDetail: String?
+    private var passwordRuntime: VPNPasswordRuntime?
     @Published private var passwordPersistenceEvent: VPNPasswordPersistenceEvent?
 
     init(preview: Bool = false) {
@@ -56,6 +58,20 @@ final class VPNPanelModel: ObservableObject {
             catch { message = error.localizedDescription }
         }
         observeConfiguration()
+    }
+
+    init(runtime: VPNPasswordRuntime) {
+        passwordRuntime = runtime
+        configuration = runtime.configuration
+        controller = runtime.controller
+        do { try configuration.load() } catch { message = error.localizedDescription }
+        observeConfiguration()
+        runtime.setCleanupHandler { [weak self, weak runtime] detail in
+            DispatchQueue.main.async {
+                guard let runtime, runtime.cleanupDetail == detail else { return }
+                self?.passwordCleanupDetail = detail
+            }
+        }
     }
 
     #if VPN_PANEL_TESTING
@@ -101,6 +117,12 @@ final class VPNPanelModel: ObservableObject {
         guard passwordPersistenceAvailable, authenticationChoice == .password,
               let draft = try? VPNAuthentication(mode: .password, login: login), let login = draft.login else { return }
         passwordPersistenceChoice = PasswordPersistenceChoice(login: login, enabled: enabled)
+    }
+    /// Explicit connection errors retain priority. Cleanup is independent of
+    /// current authentication consent, but never crowds a credential prompt.
+    var notice: String? {
+        if !message.isEmpty { return message }
+        return needsCredential ? nil : passwordCleanupDetail
     }
     var connected: Bool { liveState == .connected }
     var canImportProfile: Bool {
@@ -625,8 +647,8 @@ struct VPNPanelView: View {
                         .background(accent).foregroundColor(.white).cornerRadius(9)
                 }.buttonStyle(PilotButtonStyle(cornerRadius: 9)).padding(.top, 18)
             }
-            if !panel.message.isEmpty {
-                Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary)
+            if let notice = panel.notice {
+                Text(notice).accessibilityIdentifier("vpnNotice").font(.system(size: 10)).foregroundColor(.secondary)
                     .multilineTextAlignment(.center).padding(.top, 10)
             }
             Spacer(minLength: 10)
@@ -692,8 +714,8 @@ struct VPNPanelView: View {
                 .disabled(!panel.canImportProfile)
                 .onDrop(of: ["public.file-url"], isTargeted: $dropTarget, perform: panel.acceptDrop)
                 .padding(.top, 24)
-            if !panel.message.isEmpty {
-                Text(panel.message).font(.system(size: 11)).foregroundColor(.secondary)
+            if let notice = panel.notice {
+                Text(notice).accessibilityIdentifier("vpnNotice").font(.system(size: 11)).foregroundColor(.secondary)
                     .multilineTextAlignment(.center).padding(.top, 12)
             }
             Spacer()
@@ -709,8 +731,8 @@ struct VPNPanelView: View {
                 profileCard
                 authenticationSummary
                 resourcesCard
-                if !panel.message.isEmpty {
-                    Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary)
+                if let notice = panel.notice {
+                    Text(notice).accessibilityIdentifier("vpnNotice").font(.system(size: 10)).foregroundColor(.secondary)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -1020,7 +1042,7 @@ private struct VPNResourceListView: View {
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
     @State private var rowFrames: [UUID: CGRect] = [:]
-    private let maximumViewportHeight: CGFloat = 144
+    private var maximumViewportHeight: CGFloat { panel.notice == nil ? 144 : 112 }
 
     init(panel: VPNPanelModel) {
         self.panel = panel
@@ -1175,7 +1197,7 @@ struct VPNProductView: View {
                 VPNPanelView(panel: vpn) { vpn.requestsPresentation = false; showingVPN = false }
             } else {
                 PilotView(model: proxy, updates: updates, openVPN: { showingVPN = true },
-                          vpnStatus: vpn.mainStatus)
+                          vpnStatus: vpn.mainStatus, vpnSettingsDetail: vpn.passwordCleanupDetail)
             }
         }
         .onReceive(vpn.$requestsPresentation) { requested in

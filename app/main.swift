@@ -363,6 +363,7 @@ struct PilotView: View {
     @ObservedObject var updates: UpdateModel
     var openVPN: (() -> Void)? = nil
     var vpnStatus: String? = nil
+    var vpnSettingsDetail: String? = nil
     @State private var settingsHeight: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     private var ink: Color { colorScheme == .dark ? Color(red: 0.92, green: 0.94, blue: 0.94) : Color(red: 0.12, green: 0.16, blue: 0.15) }
@@ -554,7 +555,7 @@ struct PilotView: View {
                         Image(systemName: "shield.lefthalf.fill").font(.system(size: 16)).foregroundColor(accent).frame(width: 24)
                         VStack(alignment: .leading, spacing: 3) {
                             Text("VPN").font(.system(size: 12, weight: .semibold))
-                            Text("Файл, вход и рабочие ресурсы").font(.system(size: 9)).foregroundColor(.secondary)
+                            Text(vpnSettingsDetail ?? "Файл, вход и рабочие ресурсы").font(.system(size: 9)).foregroundColor(.secondary)
                         }
                         Spacer(); Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
                     }.padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
@@ -675,7 +676,14 @@ final class App: NSObject, NSApplicationDelegate {
     private let model = ProxyModel(preview: Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true)
     private let updates = UpdateModel()
     #if VPN_INSTALLER_ENTRY
-    private lazy var vpnPanel = VPNPanelModel(preview: model.preview)
+    private lazy var passwordRuntime: VPNPasswordRuntime = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return VPNPasswordRuntime(store: VPNStore(directory: base.appendingPathComponent("ProxyPilot/VPN", isDirectory: true)),
+            available: VPNPasswordRuntime.liveIntegrationEnabled,
+            persistencePrepare: { try VPNPasswordWorkerSession.prepare(store: $0) },
+            cleanupPrepare: { try VPNPasswordWorkerSession.prepare(store: $0) })
+    }()
+    private lazy var vpnPanel = model.preview ? VPNPanelModel(preview: true) : VPNPanelModel(runtime: passwordRuntime)
     #endif
     func applicationDidFinishLaunching(_ notification: Notification) {
         if model.preview, let appearance = Bundle.main.object(forInfoDictionaryKey: "PreviewAppearance") as? String {
@@ -691,6 +699,8 @@ final class App: NSObject, NSApplicationDelegate {
         #if VPN_INSTALLER_ENTRY
         let host = NSHostingController(rootView: VPNProductView(proxy: model, updates: updates,
                                                                  vpn: vpnPanel))
+        // Construct/load the panel before any explicit background cleanup.
+        if !model.preview { passwordRuntime.start() }
         #else
         let host = NSHostingController(rootView: PilotView(model: model, updates: updates))
         #endif
