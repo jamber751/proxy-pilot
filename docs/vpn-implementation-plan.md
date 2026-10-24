@@ -6345,3 +6345,83 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Все7 этапов сохраняются: installed OTP/IP, WARP/lifecycle, domain/split-DNS,
   macOS11 runtime, final UX/VoiceOver, English notes и public release не закрыты.
   Host сеть/пароль/sudoers/Installer в этой итерации не менялись.
+
+
+### Продолжение 1.5fq — свежий readiness context и post-Add anchor
+
+- [x] d3d115b: root fallback readiness и дополнительные peer policies берутся
+  из ОДНОГО свежего полного journal validation на каждой из двух границ:
+  до допуска fallback peer и перед ответом. Между запросами context не живёт.
+  Base installer сохраняет прежний быстрый путь и один final context; итоговая
+  свежесть/ready/live peer reauthentication обязательны для обоих путей.
+  Full Store/signature/artifact validation не сокращена, deadlines/attempts
+  неизменны. stillSelected — metadata/runtime lease checks, не полное чтение
+  Store: дополнительные stamp checks не создают новые artifact scans.
+- [x] Исходный deterministic cost regression RED: fallback3 evaluations,
+  transport closed при условной стоимости750ms и бюджете2s; новое поведение
+  fallback2/base1. Это доказательство количества evaluations, не измерение
+  всей реальной Intel задержки. Final safe signed-peer listener/readiness
+  suite62 PASS60.837s; parent3 regressions PASS29.027s. Actual whole helper
+  no-TESTING ARM/Intel typecheck PASS. Wrong peer, invalid/notready/revoked final
+  context и отсутствие reuse между соединениями проверены.
+- [ ] Реальное устранение Intel readinessTimeout ещё требует System VM gate
+  на d3d115b или потомке. Возможный вклад idle accept в общий2s budget этим
+  изменением не исправлялся и пока не доказан причиной исходного отказа.
+- [x] 4f6b3d1: ТОЛЬКО default-Keychain VM fixture принимает новый anchor после
+  typedAdded + exact owning locator/private parent proof + child join + durable
+  ledger equality + definite operation marker. Повторная proof, полное совпадение
+  path/dev/inode/UID/birth и named/held identity обязательны; старый FD удерживается
+  до успешного доказательства нового. Production Worker/backend/factory unchanged.
+  First Add действительно может заменить файл: старый held inode имеет nlink0;
+  прежний fixture ошибочно требовал его для следующей setDefault.
+- [x] Parent9 source/pure-file checks PASS1.194s: old-anchor baselineRED,
+  confirmed replacementGREEN, foreign/missing/symlink/несовпадающие locator fields
+  отказаны без принятия нового anchor. Unknown-Add случай — sourceguard/control
+  flow, не отдельное реальное доказательство authentication. Botharch production
+  Worker/Session/backend+fixture no-TESTING module builds PASS. Safe pure anchor
+  suite включена в dedicated VM workflow. Actual ARM positive всё ещё OPEN.
+- [ ] Intel genuine cross/round traces теперь точно показывают addA.dispatch
+  storageUnavailable, до locatorProof; это отдельная причина от ARM heldLink.
+  В private fixture добавляются ограниченные stage/typed-busy traces через
+  существующие TESTING hooks, без новых Security API, повторов Add или скрытия
+  ошибок записи. Runtime cache integration остаётся centrally disabled.
+
+- [x] a245689: Intel private fixture теперь оборачивает существующие prepare/
+  initialAdd в закрытые begin/ok/error-category traces и наблюдает существующие
+  TESTING ACK hooks: begin один раз, typed lockBusy максимум3. Нет новых
+  production hooks, Security calls, clock knobs, повторов GO/Add/Delete или
+  подавления ошибок. Parser32-record cap и whitelisted fields; parent4 source/
+  parser tests PASS0.003s, agent5 включая pure path proof PASS1.129s; actual
+  private fixture modules ARM/Intel compile PASS. Следующий VM run ещё нужен.
+- [ ] Read-only deadline audit: server2s действительно включает idle accept
+  wait; client2s отсчитывается отдельно после получения connected FD. Это
+  возможный independent factor, но исходным Intel trace не доказан. Reset после
+  accept увеличил бы общий serveOnce IO budget и потому НЕ вносился как скрытое
+  исправление; сначала результат actual root gate на свежем context коде.
+
+
+### Продолжение 1.5fr — синхронный RTM_GET miss без ослабления mutation custody
+
+- [x] b39c757: public RTM_GET на Darwin может вернуть ESRCH непосредственно
+  из write/send, а не только в matched reply. XNU rtsock.c: rt_lookup miss →
+  senderr(ESRCH) → flush/rtm_errno + queued loopback reply → return error.
+  Production adapter нормализует ТОЛЬКО exact typed send-time ESRCH при RTM_GET
+  в kernel absence. Receive-time ESRCH, send ENOENT/permission, ADD/DELETE errors
+  по-прежнему failures; никакого глобального swallow transport errors.
+  Primary: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/rtsock.c
+- [x] Desired fake regression был RED transport3 до изменения; parent final12
+  PASS5.534s. Обе семьи, ordinary/scoped keys, matched kernel replies, stale own
+  errors/foreign successes, stale mutation receipt, прежние128-frame/deadline
+  bounds и256-miss backlog проверены. Pending/applied journal обеих schema и
+  семей сохраняется byte-for-byte при read uncertainty, без mutations.
+  Новый suite включён в scoped CI. Parent utun compile/guards/protocol6 PASS
+  (ранний общий запуск отказал компилировать параллельно редактируемый новый
+  test source; после explicit freeze финальные12 независимо GREEN).
+- [x] Utun fixture добавляет только закрытые stage/family/op/direction/errno
+  observations вокруг прежних production transport calls; каждый syscall один
+  раз с прежним deadline. API observations не заменяют ни один из19 обязательных
+  PASS markers. No addresses, interface names, payloads or paths in diagnostics.
+- [ ] Actual прежний utun failure3 локализован до baseline/transaction ownership
+  proof; synchronous GET miss теперь воспроизведён pure, но его вклад именно в
+  VM failure требует свежего actual run с закрытыми directional traces. Не
+  считать full utun isolation/no-leak gate завершённым по pure12.
