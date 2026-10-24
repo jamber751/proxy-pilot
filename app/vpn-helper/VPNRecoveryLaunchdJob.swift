@@ -174,13 +174,16 @@ final class VPNRecoveryLaunchdJob {
     }
 
     private func writeDescription(executable: String) throws {
-        let description: [String: Any] = [
+        var description: [String: Any] = [
             "Label": label,
             "ProgramArguments": [executable, Self.recoveryArgument, Self.storagePath],
             "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false],
             "ThrottleInterval": 10,
         ]
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        description["StandardErrorPath"] = try VPNActivationDiagnostics.privateLogPath(recovery: true)
+        #endif
         guard let data = try? PropertyListSerialization.data(
             fromPropertyList: description, format: .xml, options: 0) else {
             throw VPNLaunchdError.invalidConfiguration

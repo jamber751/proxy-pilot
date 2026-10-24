@@ -23,7 +23,7 @@ HELPER = ROOT / 'app/vpn-helper'
 COMPONENTS = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
               'VPNHelperReadiness.swift', 'VPNHelperSession.swift',
               'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNLifecycleOwnership.swift',
-              'VPNLaunchdRuntime.swift', 'VPNRecoveryLaunchdJob.swift',
+              'VPNActivationDiagnostics.swift', 'VPNLaunchdRuntime.swift', 'VPNRecoveryLaunchdJob.swift',
               'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNEndpointDirectory.swift']
 SERVICE = ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperArtifact.swift',
            'VPNReleaseStore.swift', 'VPNHelperProtocol.swift', 'VPNApplicationSpec.swift',

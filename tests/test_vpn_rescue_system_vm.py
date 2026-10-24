@@ -1,7 +1,9 @@
 """Actual Installer/system-launchd rescue in a fresh disposable macOS CI VM.
 
-Builds synthetic releases and production code with only its public trust constant
-changed. Frozen139 uses its full SHA-pinned production source graph. The C app is
+Builds synthetic releases from production code with a synthetic public trust
+constant and closed activation-diagnostic output enabled for current code only.
+No authentication or lifecycle policy is replaced. Frozen139 uses its unchanged
+full SHA-pinned production source graph. The C app is
 a signed probe-only bundle using the production read-only frontend entry; this
 does not claim GUI or live corporate VPN/OTP acceptance. Never run root on a host.
 """
@@ -96,6 +98,12 @@ def snapshot_current(output):
                           ('vpn-engine', ('build.py', 'sources.json'))):
         destination = app / folder; destination.mkdir(mode=0o700)
         for name in names: shutil.copyfile(ROOT / 'app' / folder / name, destination / name)
+    phase('enable closed current-code activation diagnostics; frozen139 unchanged')
+    for script, anchor in ((app / 'vpn-helper/build.sh', '-D VPN_RECOVERY_DAEMON_ENTRY'),
+                           (app / 'vpn-rescue/build.sh', '-D VPN_RESCUE_SYSTEM_ENTRY')):
+        text = script.read_text()
+        if text.count(anchor) != 1: raise AssertionError('Current diagnostic build anchor changed')
+        script.write_text(text.replace(anchor, anchor + ' -D VPN_SYSTEM_ACTIVATION_DIAGNOSTICS'))
     return app
 
 
@@ -245,7 +253,7 @@ def build_fixtures(output, *, compile_only=False):
     probe_sources = [app / 'VPNConfiguration.swift', app / 'VPNProfileImporter.swift']
     probe_sources += [path for path in sorted(helper.glob('*.swift')) if path.name != 'ServiceMain.swift']
     compile_universal([*probe_sources, ROOT / 'tests/vpn_rescue_system_probe_main.swift'], probe,
-                      flags=['-D', 'VPN_INSTALLED_UPDATE_RESULT_DIAGNOSTICS'])
+                      flags=['-D', 'VPN_INSTALLED_UPDATE_RESULT_DIAGNOSTICS', '-D', 'VPN_SYSTEM_ACTIVATION_DIAGNOSTICS'])
     inert_source = output / 'inert.c'; inert_source.write_text('int main(void) { return 86; }\n')
     inert = output / 'inert'; compile_universal([inert_source], inert, compiler='/usr/bin/clang', optimize=False)
     # Compile-only mode exercises code generation without downloads or engine
@@ -356,6 +364,77 @@ def repair_tokens(text):
         elif match.group(2) in REPAIR_ERROR_CATEGORIES: events.append('failure:' + match.group(2))
         elif match.group(1) is None and match.group(2) is None: events.append('repairRejected')
     return events
+
+
+ACTIVATION_LOG_DIRECTORY = Path('/private/tmp/kz.documentolog.proxypilot-vpn-activation-diagnostics')
+ACTIVATION_ROLES = {'helper', 'finalizer', 'runtime', 'journal', 'readinessPolicy'}
+ACTIVATION_STAGES = {'openStore', 'selection', 'journal', 'identity', 'runtime', 'budget', 'receipt',
+                     'endpoint', 'listener', 'ready', 'charge', 'drain', 'start', 'readiness', 'finalValidation',
+                     'budgetSuccess', 'complete', 'helperPath', 'description', 'bootstrap', 'connect', 'readinessPolicy'}
+ACTIVATION_EVENTS = {'enter', 'complete', 'failure'}
+ACTIVATION_CATEGORIES = {'none', 'storeBusy', 'storeState', 'activationOff', 'activationExhausted',
+                         'activationState', 'launchTimeout', 'launchFailed', 'launchStorage', 'launchCleanup', 'readiness',
+                         'readinessTimeout', 'readinessTransport', 'readinessResponse', 'endpoint',
+                         'identity', 'journal', 'application', 'directory', 'other'}
+ACTIVATION_ELAPSED = {'lt50', 'lt250', 'lt1000', 'lt2000', 'lt5000', 'ge5000'}
+
+
+def activation_tokens(text):
+    if not isinstance(text, str): return []
+    result = []
+    for row in text.splitlines():
+        matched = re.fullmatch(r'ProxyPilot VPN activation role: ([A-Za-z]+); stage: ([A-Za-z]+); event: ([A-Za-z]+); category: ([A-Za-z]+); elapsed: ([A-Za-z0-9]+)', row)
+        if not matched: continue
+        values = matched.groups()
+        if all(value in allowed for value, allowed in zip(values, (ACTIVATION_ROLES, ACTIVATION_STAGES,
+                ACTIVATION_EVENTS, ACTIVATION_CATEGORIES, ACTIVATION_ELAPSED))):
+            result.append(':'.join(values))
+    return result
+
+
+def activation_log_diagnostics(folder=ACTIVATION_LOG_DIRECTORY, owner=0, identity=None):
+    result = {}; directory = -1
+    try:
+        directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        info = os.fstat(directory)
+        if identity is not None and (info.st_dev, info.st_ino) != identity:
+            return {'record': 'changed'}
+        if info.st_uid != owner or stat.S_IMODE(info.st_mode) != 0o700:
+            return {'record': 'unsafe'}
+        for name in ('helper.log', 'recovery.log'):
+            descriptor = -1
+            try:
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+                before = os.fstat(descriptor)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != owner or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600:
+                    result[name] = {'record': 'unsafe'}; continue
+                offset = max(0, before.st_size - 65536)
+                os.lseek(descriptor, offset, os.SEEK_SET)
+                data = bytearray()
+                while len(data) < 65536:
+                    chunk = os.read(descriptor, 65536 - len(data))
+                    if not chunk: break
+                    data.extend(chunk)
+                after = os.fstat(descriptor)
+                named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if ((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                        or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)
+                        or after.st_nlink != 1 or after.st_uid != owner or stat.S_IMODE(after.st_mode) != 0o600
+                        or after.st_size < before.st_size):
+                    result[name] = {'record': 'changed'}; continue
+                text = data.decode('utf-8', errors='replace')
+                if offset: text = text.partition(chr(10))[2]
+                tokens = activation_tokens(text)
+                result[name] = {'record': 'valid', 'truncated': offset > 0 or len(tokens) > 96, 'events': tokens[-96:]}
+            except FileNotFoundError: result[name] = {'record': 'absent'}
+            except OSError: result[name] = {'record': 'unreadable'}
+            finally:
+                if descriptor >= 0: os.close(descriptor)
+    except FileNotFoundError: result = {'record': 'absent'}
+    except OSError: result = {'record': 'unreadable'}
+    finally:
+        if directory >= 0: os.close(directory)
+    return result
 
 
 INSTALLED_RESULT_STAGES = {'openStore', 'snapshot', 'installedIdentity', 'selfIdentity',
@@ -693,7 +772,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
             raise AssertionError('Prepared Installer changed')
 
     def setUp(self):
-        for path in (SYSTEM_BASE, PUBLIC_ENDPOINT, APPLICATION, *PLISTS):
+        for path in (SYSTEM_BASE, PUBLIC_ENDPOINT, APPLICATION, ACTIVATION_LOG_DIRECTORY, *PLISTS):
             if os.path.lexists(path): self.fail('System VM is not fresh; refusing existing ProxyPilot paths')
         if list(Path('/Applications').glob('.ProxyPilot.vpn-update*')):
             self.fail('System VM has existing replacement material; refusing setup')
@@ -704,7 +783,13 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         self.assertEqual(receipt.returncode, 1, 'Existing or unknown Installer receipt; refusing VM setup')
         SYSTEM_BASE.mkdir(mode=0o700)
         self.base_identity = (SYSTEM_BASE.stat().st_dev, SYSTEM_BASE.stat().st_ino)
+        self.activation_log_identity = None
         self.addCleanup(self.cleanup_own_system_fixture)
+        ACTIVATION_LOG_DIRECTORY.mkdir(mode=0o700)
+        self.activation_log_identity = (ACTIVATION_LOG_DIRECTORY.stat().st_dev, ACTIVATION_LOG_DIRECTORY.stat().st_ino)
+        for name in ('helper.log', 'recovery.log'):
+            descriptor = os.open(ACTIVATION_LOG_DIRECTORY / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            os.close(descriptor)
         service = SYSTEM_BASE / 'VPN'; service.mkdir(mode=0o700)
         update = SYSTEM_BASE / 'Update'; update.mkdir(mode=0o700)
         self.copy_root_app(self.materials / 'Apps/A/ProxyPilot.app', APPLICATION)
@@ -820,11 +905,23 @@ class VPNRescueSystemVMTests(unittest.TestCase):
                 raise AssertionError('Unexpected replacement material; refusing teardown')
             shutil.rmtree(path)
         shutil.rmtree(SYSTEM_BASE)
+        if self.activation_log_identity is not None:
+            info = ACTIVATION_LOG_DIRECTORY.lstat()
+            if (info.st_dev, info.st_ino) != self.activation_log_identity or not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+                raise AssertionError('Owned diagnostic namespace changed; refusing teardown')
+            if {path.name for path in ACTIVATION_LOG_DIRECTORY.iterdir()} != {'helper.log', 'recovery.log'}:
+                raise AssertionError('Unknown diagnostic entry; refusing teardown')
+            for name in ('helper.log', 'recovery.log'):
+                path = ACTIVATION_LOG_DIRECTORY / name; info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
+                    raise AssertionError('Owned diagnostic file changed; refusing teardown')
+                path.unlink()
+            ACTIVATION_LOG_DIRECTORY.rmdir()
         command(['/usr/sbin/pkgutil', '--forget', PACKAGE_ID], accepted=(0, 1), timeout=30)
 
     def state_summary(self):
         service = SYSTEM_BASE / 'VPN'
-        result = {}
+        result = {'activationEvents': activation_log_diagnostics(identity=self.activation_log_identity)}
         for name in ('preparation.json', 'update.json', 'cleanup.json'):
             path = service / name
             if not path.exists(): result[name] = 'absent'; continue

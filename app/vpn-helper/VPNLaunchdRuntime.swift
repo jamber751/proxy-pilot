@@ -165,22 +165,28 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
     /// close-on-exec descriptor. Readiness authentication is the caller's job:
     /// a listening socket is not proof that our helper is the process behind it.
     func startIdleAndConnect(_ deployment: VPNAuthorizedDeployment, deadline: UInt64) throws -> Int32 {
-        let executable = try checkedHelperPath(deployment)
-        var endpoint = stat()
-        guard fstatat(endpointDirectory, Self.socketName, &endpoint, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
-            throw VPNLaunchdError.cleanupNotConfirmed
-        }
-        try writeServiceDescription(executable: executable)
-        guard try launchctl(["bootstrap", domain, plist.path], deadline: deadline) == 0 else {
-            throw VPNLaunchdError.launchFailed
-        }
-        while true {
-            let socket = try connectToHelper(deadline: deadline)
-            if socket >= 0 {
-                guard fcntl(socket, F_SETFD, FD_CLOEXEC) == 0 else { close(socket); throw VPNLaunchdError.launchFailed }
-                return socket
+        return try VPNActivationDiagnostics.run(role: .runtime, stage: .helperPath) { trace in
+            let executable = try checkedHelperPath(deployment)
+            trace.mark(.endpoint)
+            var endpoint = stat()
+            guard fstatat(endpointDirectory, Self.socketName, &endpoint, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
+                throw VPNLaunchdError.cleanupNotConfirmed
             }
-            try pause(deadline: deadline)
+            trace.mark(.description)
+            try writeServiceDescription(executable: executable)
+            trace.mark(.bootstrap)
+            guard try launchctl(["bootstrap", domain, plist.path], deadline: deadline) == 0 else {
+                throw VPNLaunchdError.launchFailed
+            }
+            trace.mark(.connect)
+            while true {
+                let socket = try connectToHelper(deadline: deadline)
+                if socket >= 0 {
+                    guard fcntl(socket, F_SETFD, FD_CLOEXEC) == 0 else { close(socket); throw VPNLaunchdError.launchFailed }
+                    return socket
+                }
+                try pause(deadline: deadline)
+            }
         }
     }
 
@@ -219,12 +225,15 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
     }
 
     private func writeServiceDescription(executable: String) throws {
-        let description: [String: Any] = [
+        var description: [String: Any] = [
             "Label": label,
             "ProgramArguments": [executable, "serve", storage.path],
             "RunAtLoad": true,
             "KeepAlive": false,
         ]
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        description["StandardErrorPath"] = try VPNActivationDiagnostics.privateLogPath(recovery: false)
+        #endif
         guard let data = try? PropertyListSerialization.data(fromPropertyList: description, format: .xml, options: 0) else {
             throw VPNLaunchdError.invalidConfiguration
         }

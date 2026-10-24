@@ -53,7 +53,7 @@ class VPNRecoveryDaemonEntryTests(unittest.TestCase):
             'VPNHelperListener.swift', 'VPNApplicationSpec.swift', 'VPNTunnelStateStore.swift',
             'VPNProfileVault.swift', 'VPNEngineProcess.swift', 'VPNEngineSupervisor.swift',
             'VPNLifecycleOwnership.swift',
-            'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNLaunchdRuntime.swift',
+            'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNActivationDiagnostics.swift', 'VPNLaunchdRuntime.swift',
             'VPNRecoveryLaunchdJob.swift', 'VPNStagedApplication.swift', 'VPNInstalledApplication.swift',
             'VPNSelectedCandidateFinalizer.swift', 'VPNSelectedCandidateRecovery.swift',
             'VPNJointUpdateCleanup.swift', 'VPNHelperRuntime.swift', 'VPNHelperDaemon.swift',

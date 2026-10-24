@@ -23,7 +23,7 @@ class VPNInstalledUpdateResultTests(unittest.TestCase):
         names = ('VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNReleaseTrust.swift',
                  'VPNHelperArtifact.swift', 'VPNReleaseStore.swift', 'VPNHelperProtocol.swift',
                  'VPNHelperReadiness.swift', 'VPNLifecycleOwnership.swift', 'VPNEndpointDirectory.swift',
-                 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNLaunchdRuntime.swift',
+                 'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNActivationDiagnostics.swift', 'VPNLaunchdRuntime.swift',
                  'VPNStagedApplication.swift', 'VPNInstalledApplication.swift', 'VPNDirectoryProvisioner.swift',
                  'VPNInstalledUpdateResultEntry.swift', 'VPNRescueInstalledResultVerifier.swift')
         cls.helper = cls.build / 'observation-helper'

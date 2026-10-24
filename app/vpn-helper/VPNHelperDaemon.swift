@@ -53,156 +53,172 @@ enum VPNHelperDaemon {
                                   VPNAuthorizedDeployment) throws -> [VPNPeerPolicy])?,
                               recoveryFixtureInstaller: Bool,
                               recoveryCleanup: (VPNLifecycleLease) throws -> Void) throws {
-        let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
-        let stamp = try selectionStamp(directory)
-        let selected = try store.loadDeployment()
-        func recoveryJournal() throws -> VPNUpdateJournalSnapshot? {
-            guard let journal = try store.loadUpdateJournal() else { return nil }
-            let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
-                || journal.phase == .replacementPending && journal.recovery == .inspectApplication
-            let late = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
-                || journal.phase == .selected && journal.recovery == .recoverCandidate
-                || journal.phase == .completed && journal.recovery == .completed
-            let matches = early
-                ? journal.previous.ownerUserID == selected.ownerUserID
-                    && journal.previous.release.isSameRelease(as: selected.release)
-                : journal.candidate.ownerUserID == selected.ownerUserID
-                    && journal.candidate.release.isSameRelease(as: selected.release)
-            guard (early || late), matches else {
-                throw VPNReleaseStoreError.invalidUpdateJournal
+        try VPNActivationDiagnostics.run(role: .helper, stage: .openStore) { trace in
+            let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
+            trace.mark(.selection)
+            let stamp = try selectionStamp(directory)
+            let selected = try store.loadDeployment()
+            func recoveryJournal() throws -> VPNUpdateJournalSnapshot? {
+                return try VPNActivationDiagnostics.run(role: .journal, stage: .journal) { _ in
+                    guard let journal = try store.loadUpdateJournal() else { return nil }
+                    let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
+                        || journal.phase == .replacementPending && journal.recovery == .inspectApplication
+                    let late = journal.phase == .replacementPending && journal.recovery == .recoverCandidate
+                        || journal.phase == .selected && journal.recovery == .recoverCandidate
+                        || journal.phase == .completed && journal.recovery == .completed
+                    let matches = early
+                        ? journal.previous.ownerUserID == selected.ownerUserID
+                            && journal.previous.release.isSameRelease(as: selected.release)
+                        : journal.candidate.ownerUserID == selected.ownerUserID
+                            && journal.candidate.release.isSameRelease(as: selected.release)
+                    guard (early || late), matches else {
+                        throw VPNReleaseStoreError.invalidUpdateJournal
+                    }
+                    return journal
+                }
             }
-            return journal
-        }
-        _ = try recoveryJournal()
-        guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
-        try VPNPeerAuthentication.validateCurrentProcess(policy: policy(selected.release))
-        let runtime = try VPNHelperRuntime(storageDirectory: directory)
-        // A coordinator starting us already owns the lifecycle and accounts for
-        // its attempt. At boot, own the short startup transaction ourselves.
-        var bootLease: VPNLifecycleLease?
-        do { bootLease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory) }
-        catch VPNLifecycleOwnershipError.busy { }
-        defer { bootLease?.release() }
-        let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
-        // A selected/completed journal is allowed only as a readiness-only
-        // recovery launch. Earlier, corrupt or mismatched journals fail before
-        // endpoint creation and never spend an automatic attempt.
-        let startsForRecovery = try recoveryJournal() != nil
-        func mayServeReadiness() -> Bool {
-            guard startsForRecovery else { return true }
-            if (try? recoveryJournal()) != nil { return true }
-            // Once the terminal journal is retired, this same selected helper
-            // becomes the ordinary idle service. A corrupt or mismatched
-            // journal still fails both checks and cannot cross this boundary.
-            return (try? store.requireNoPendingUpdate()) != nil
-        }
-        if bootLease != nil, !startsForRecovery {
-            // Close the window between the preflight above and lifecycle
-            // acquisition: journal preparation can legitimately win that race.
-            try budget.beginAttempt(intent: .automatic)
-        }
-        if shared {
-            let publicReceipt = try store.loadDeploymentReceipt()
-            try VPNPublicReleaseReceipt.publish(ownerUserID: publicReceipt.ownerUserID,
-                payload: publicReceipt.payload, signature: publicReceipt.signature,
-                inTrustedDirectory: endpoint)
-        }
-        try runtime.prepareEndpoint(directory: endpoint, shared: shared)
-        let readinessPolicies: () throws -> [VPNPeerPolicy] = {
-            guard let journal = try recoveryJournal() else { return [] }
-            if let testing = recoveryReadinessPolicies {
-                return try testing(journal, selected)
+            trace.mark(.journal)
+            _ = try recoveryJournal()
+            guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
+            trace.mark(.identity)
+            try VPNPeerAuthentication.validateCurrentProcess(policy: policy(selected.release))
+            trace.mark(.runtime)
+            let runtime = try VPNHelperRuntime(storageDirectory: directory)
+            // A coordinator starting us already owns the lifecycle and accounts for
+            // its attempt. At boot, own the short startup transaction ourselves.
+            var bootLease: VPNLifecycleLease?
+            do { bootLease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: directory) }
+            catch VPNLifecycleOwnershipError.busy { }
+            defer { bootLease?.release() }
+            trace.mark(.budget)
+            let budget = try VPNActivationBudget(trustedDirectoryDescriptor: directory)
+            // A selected/completed journal is allowed only as a readiness-only
+            // recovery launch. Earlier, corrupt or mismatched journals fail before
+            // endpoint creation and never spend an automatic attempt.
+            let startsForRecovery = try recoveryJournal() != nil
+            func mayServeReadiness() -> Bool {
+                guard startsForRecovery else { return true }
+                if (try? recoveryJournal()) != nil { return true }
+                // Once the terminal journal is retired, this same selected helper
+                // becomes the ordinary idle service. A corrupt or mismatched
+                // journal still fails both checks and cannot cross this boundary.
+                return (try? store.requireNoPendingUpdate()) != nil
             }
-            let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
-                || journal.phase == .replacementPending && journal.recovery == .inspectApplication
-            return [
-                try journal.previous.release.installerPolicy(),
-                try (early ? journal.candidate.release : selected.release).helperPolicy(),
-            ]
-        }
-        let listener: VPNHelperListener
-        #if VPN_DAEMON_TESTING && VPN_HELPER_LISTENER_TESTING
-        if recoveryFixtureInstaller {
-            listener = try VPNHelperListener.testBindInstaller(
-                inTrustedDirectory: directory, release: selected.release,
-                ownerUserID: selected.ownerUserID,
-                additionalReadinessPolicies: readinessPolicies)
-        } else {
+            if bootLease != nil, !startsForRecovery {
+                // Close the window between the preflight above and lifecycle
+                // acquisition: journal preparation can legitimately win that race.
+                try budget.beginAttempt(intent: .automatic)
+            }
+            trace.mark(.receipt)
+            if shared {
+                let publicReceipt = try store.loadDeploymentReceipt()
+                try VPNPublicReleaseReceipt.publish(ownerUserID: publicReceipt.ownerUserID,
+                    payload: publicReceipt.payload, signature: publicReceipt.signature,
+                    inTrustedDirectory: endpoint)
+            }
+            trace.mark(.endpoint)
+            try runtime.prepareEndpoint(directory: endpoint, shared: shared)
+            let readinessPolicies: () throws -> [VPNPeerPolicy] = {
+                return try VPNActivationDiagnostics.run(role: .readinessPolicy, stage: .readinessPolicy) { _ in
+                    guard let journal = try recoveryJournal() else { return [] }
+                    if let testing = recoveryReadinessPolicies {
+                        return try testing(journal, selected)
+                    }
+                    let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
+                        || journal.phase == .replacementPending && journal.recovery == .inspectApplication
+                    return [
+                        try journal.previous.release.installerPolicy(),
+                        try (early ? journal.candidate.release : selected.release).helperPolicy(),
+                    ]
+                }
+            }
+            trace.mark(.listener)
+            let listener: VPNHelperListener
+            #if VPN_DAEMON_TESTING && VPN_HELPER_LISTENER_TESTING
+            if recoveryFixtureInstaller {
+                listener = try VPNHelperListener.testBindInstaller(
+                    inTrustedDirectory: directory, release: selected.release,
+                    ownerUserID: selected.ownerUserID,
+                    additionalReadinessPolicies: readinessPolicies)
+            } else {
+                listener = try VPNHelperListener.bind(
+                    inTrustedDirectory: directory, release: selected.release,
+                    ownerUserID: selected.ownerUserID,
+                    endpointDirectory: shared ? endpoint : nil,
+                    additionalReadinessPolicies: readinessPolicies)
+            }
+            #else
+            _ = recoveryFixtureInstaller
             listener = try VPNHelperListener.bind(
-                inTrustedDirectory: directory, release: selected.release,
+                inTrustedDirectory: directory, deployment: selected,
                 ownerUserID: selected.ownerUserID,
                 endpointDirectory: shared ? endpoint : nil,
+                runtimeLease: runtime.tunnelLifecycleLease,
                 additionalReadinessPolicies: readinessPolicies)
-        }
-        #else
-        _ = recoveryFixtureInstaller
-        listener = try VPNHelperListener.bind(
-            inTrustedDirectory: directory, deployment: selected,
-            ownerUserID: selected.ownerUserID,
-            endpointDirectory: shared ? endpoint : nil,
-            runtimeLease: runtime.tunnelLifecycleLease,
-            additionalReadinessPolicies: readinessPolicies)
-        #endif
-        defer { listener.close() }
-        func stillSelected() throws {
-            try runtime.check()
-            // Selection was authenticated before binding. A legal replacement
-            // stops this daemon first. Watch the protected atomic record without
-            // acquiring its writer lock: repeatedly loading it here races the
-            // installer's final check immediately after our readiness reply.
-            guard try selectionStamp(directory) == stamp else {
-                throw VPNHelperDaemonError.selectionChanged
+            #endif
+            defer { listener.close() }
+            func stillSelected() throws {
+                try runtime.check()
+                // Selection was authenticated before binding. A legal replacement
+                // stops this daemon first. Watch the protected atomic record without
+                // acquiring its writer lock: repeatedly loading it here races the
+                // installer's final check immediately after our readiness reply.
+                guard try selectionStamp(directory) == stamp else {
+                    throw VPNHelperDaemonError.selectionChanged
+                }
             }
-        }
-        try stillSelected()
-        if let lease = bootLease {
-            try lease.check()
-            if !startsForRecovery {
-                // This signed, selected daemon has created its authenticated idle
-                // listener. No VPN/profile is applied on boot. External callers
-                // still perform their own mutual readiness authentication.
-                try budget.recordSuccess()
-            }
-            // A recovery-only helper must not keep the lifecycle lease needed by
-            // the exact installed B coordinator that will reconcile the journal.
-            lease.release(); bootLease = nil
-        }
-        var recoveryCleanupComplete = false
-        var nextRecoveryCleanupAttempt: UInt64 = 0
-        func cleanRetiredRecoveryJob() {
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard !recoveryCleanupComplete, now >= nextRecoveryCleanupAttempt else { return }
-            guard let cleanupLease = try? VPNLifecycleOwnership.acquire(
-                    inTrustedDirectory: directory) else {
-                nextRecoveryCleanupAttempt = now + 1_000_000_000
-                return
-            }
-            defer { cleanupLease.release() }
-            guard (try? store.requireNoPendingUpdate()) != nil else { return }
-            // Cleanup is maintenance after the durable transaction has already
-            // retired. It must never turn a successful update into an
-            // unrecoverable failure; a later helper launch retries it.
-            do {
-                try recoveryCleanup(cleanupLease)
-                recoveryCleanupComplete = true
-            } catch {
-                nextRecoveryCleanupAttempt = now + 10_000_000_000
-            }
-        }
-        while true {
             try stillSelected()
-            _ = try? listener.serveOnce(
-                isReady: {
-                    guard (try? stillSelected()) != nil else { return false }
-                    return mayServeReadiness()
-                },
-                allowOwnerRequests: {
-                    !startsForRecovery || (try? store.requireNoPendingUpdate()) != nil
-                })
-            // Never delay the first readiness receipt with maintenance. The
-            // lifecycle lease makes the no-journal check and job removal atomic
-            // with respect to a following update's arm operation.
-            cleanRetiredRecoveryJob()
+            if let lease = bootLease {
+                try lease.check()
+                if !startsForRecovery {
+                    // This signed, selected daemon has created its authenticated idle
+                    // listener. No VPN/profile is applied on boot. External callers
+                    // still perform their own mutual readiness authentication.
+                    try budget.recordSuccess()
+                }
+                // A recovery-only helper must not keep the lifecycle lease needed by
+                // the exact installed B coordinator that will reconcile the journal.
+                lease.release(); bootLease = nil
+            }
+            trace.mark(.ready)
+            trace.complete()
+            var recoveryCleanupComplete = false
+            var nextRecoveryCleanupAttempt: UInt64 = 0
+            func cleanRetiredRecoveryJob() {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard !recoveryCleanupComplete, now >= nextRecoveryCleanupAttempt else { return }
+                guard let cleanupLease = try? VPNLifecycleOwnership.acquire(
+                        inTrustedDirectory: directory) else {
+                    nextRecoveryCleanupAttempt = now + 1_000_000_000
+                    return
+                }
+                defer { cleanupLease.release() }
+                guard (try? store.requireNoPendingUpdate()) != nil else { return }
+                // Cleanup is maintenance after the durable transaction has already
+                // retired. It must never turn a successful update into an
+                // unrecoverable failure; a later helper launch retries it.
+                do {
+                    try recoveryCleanup(cleanupLease)
+                    recoveryCleanupComplete = true
+                } catch {
+                    nextRecoveryCleanupAttempt = now + 10_000_000_000
+                }
+            }
+            while true {
+                try stillSelected()
+                _ = try? listener.serveOnce(
+                    isReady: {
+                        guard (try? stillSelected()) != nil else { return false }
+                        return mayServeReadiness()
+                    },
+                    allowOwnerRequests: {
+                        !startsForRecovery || (try? store.requireNoPendingUpdate()) != nil
+                    })
+                // Never delay the first readiness receipt with maintenance. The
+                // lifecycle lease makes the no-journal check and job removal atomic
+                // with respect to a following update's arm operation.
+                cleanRetiredRecoveryJob()
+            }
         }
     }
 

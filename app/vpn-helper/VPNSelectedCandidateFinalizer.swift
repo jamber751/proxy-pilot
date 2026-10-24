@@ -17,88 +17,100 @@ enum VPNSelectedCandidateFinalizer {
                        transactionID: UUID, expectedRevision: UInt64,
                        candidate: VPNAuthorizedDeployment,
                        testPolicy: Bool = false) throws -> Outcome {
-        guard expectedRevision < UInt64.max else {
-            throw VPNSelectedCandidateFinalizerError.invalidJournal
-        }
-        func selected() throws {
-            try lease.check()
-            let deployment = try store.loadDeployment()
-            guard let journal = try store.loadUpdateJournal(),
-                  journal.transactionID == transactionID,
-                  journal.revision == expectedRevision,
-                  journal.phase == .selected,
-                  journal.recovery == .recoverCandidate,
-                  journal.candidate.ownerUserID == candidate.ownerUserID,
-                  journal.candidate.release.isSameRelease(as: candidate.release),
-                  deployment.ownerUserID == candidate.ownerUserID,
-                  deployment.release.isSameRelease(as: candidate.release) else {
+        return try VPNActivationDiagnostics.run(role: .finalizer, stage: .selection) { trace in
+            guard expectedRevision < UInt64.max else {
                 throw VPNSelectedCandidateFinalizerError.invalidJournal
             }
-            try lease.check()
-        }
-        func completed() throws {
-            try lease.check()
-            guard let journal = try store.loadUpdateJournal(),
-                  journal.transactionID == transactionID,
-                  journal.revision == expectedRevision + 1,
-                  journal.phase == .completed,
-                  journal.recovery == .completed,
-                  journal.candidate.ownerUserID == candidate.ownerUserID,
-                  journal.candidate.release.isSameRelease(as: candidate.release) else {
-                throw VPNSelectedCandidateFinalizerError.invalidJournal
-            }
-            try lease.check()
-        }
-
-        try selected()
-        let desired = try budget.snapshot().desired
-        var mayHaveStarted = false
-        var journalMayHaveCompleted = false
-        do {
-            if desired {
-                try budget.beginAttempt(intent: .automatic)
-                try selected()
-                let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
-                mayHaveStarted = true
-                let socket = try runtime.startIdleAndConnect(candidate, deadline: deadline)
-                let now = DispatchTime.now().uptimeNanoseconds
-                guard now < deadline else {
-                    if socket >= 0 { close(socket) }
-                    throw VPNSelectedCandidateFinalizerError.deadlineExceeded
+            func selected() throws {
+                try lease.check()
+                let deployment = try store.loadDeployment()
+                guard let journal = try store.loadUpdateJournal(),
+                      journal.transactionID == transactionID,
+                      journal.revision == expectedRevision,
+                      journal.phase == .selected,
+                      journal.recovery == .recoverCandidate,
+                      journal.candidate.ownerUserID == candidate.ownerUserID,
+                      journal.candidate.release.isSameRelease(as: candidate.release),
+                      deployment.ownerUserID == candidate.ownerUserID,
+                      deployment.release.isSameRelease(as: candidate.release) else {
+                    throw VPNSelectedCandidateFinalizerError.invalidJournal
                 }
-                let remaining = max(1, min(2000, Int((deadline - now) / 1_000_000)))
-                #if VPN_HELPER_READINESS_TESTING
-                if testPolicy {
-                    _ = try VPNHelperReadiness.testProbe(
-                        takingSocket: socket, release: candidate.release,
-                        timeoutMilliseconds: remaining)
-                } else {
+                try lease.check()
+            }
+            func completed() throws {
+                try lease.check()
+                guard let journal = try store.loadUpdateJournal(),
+                      journal.transactionID == transactionID,
+                      journal.revision == expectedRevision + 1,
+                      journal.phase == .completed,
+                      journal.recovery == .completed,
+                      journal.candidate.ownerUserID == candidate.ownerUserID,
+                      journal.candidate.release.isSameRelease(as: candidate.release) else {
+                    throw VPNSelectedCandidateFinalizerError.invalidJournal
+                }
+                try lease.check()
+            }
+
+            try selected()
+            trace.mark(.budget)
+            let desired = try budget.snapshot().desired
+            var mayHaveStarted = false
+            var journalMayHaveCompleted = false
+            do {
+                if desired {
+                    trace.mark(.charge)
+                    try budget.beginAttempt(intent: .automatic)
+                    trace.mark(.selection)
+                    try selected()
+                    let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+                    trace.mark(.start)
+                    mayHaveStarted = true
+                    let socket = try runtime.startIdleAndConnect(candidate, deadline: deadline)
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    guard now < deadline else {
+                        if socket >= 0 { close(socket) }
+                        throw VPNSelectedCandidateFinalizerError.deadlineExceeded
+                    }
+                    trace.mark(.readiness)
+                    let remaining = max(1, min(2000, Int((deadline - now) / 1_000_000)))
+                    #if VPN_HELPER_READINESS_TESTING
+                    if testPolicy {
+                        _ = try VPNHelperReadiness.testProbe(
+                            takingSocket: socket, release: candidate.release,
+                            timeoutMilliseconds: remaining)
+                    } else {
+                        _ = try VPNHelperReadiness.probe(
+                            takingSocket: socket, release: candidate.release,
+                            timeoutMilliseconds: remaining)
+                    }
+                    #else
+                    _ = testPolicy
                     _ = try VPNHelperReadiness.probe(
                         takingSocket: socket, release: candidate.release,
                         timeoutMilliseconds: remaining)
+                    #endif
+                    trace.mark(.finalValidation)
+                    try selected()
+                    trace.mark(.budgetSuccess)
+                    try budget.recordSuccess()
+                    trace.mark(.finalValidation)
+                    try selected()
                 }
-                #else
-                _ = testPolicy
-                _ = try VPNHelperReadiness.probe(
-                    takingSocket: socket, release: candidate.release,
-                    timeoutMilliseconds: remaining)
-                #endif
-                try selected()
-                try budget.recordSuccess()
-                try selected()
+                trace.mark(.complete)
+                journalMayHaveCompleted = true
+                _ = try store.completeUpdateJournal(
+                    transactionID: transactionID, expectedRevision: expectedRevision)
+                try completed()
+                return desired ? .helperReady : .remainedOff
+            } catch {
+                trace.fail(error)
+                if journalMayHaveCompleted { throw VPNSelectedCandidateFinalizerError.commitUncertain }
+                if mayHaveStarted {
+                    let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+                    do { try runtime.stopAndDrain(deadline: deadline) } catch { }
+                }
+                throw error
             }
-            journalMayHaveCompleted = true
-            _ = try store.completeUpdateJournal(
-                transactionID: transactionID, expectedRevision: expectedRevision)
-            try completed()
-            return desired ? .helperReady : .remainedOff
-        } catch {
-            if journalMayHaveCompleted { throw VPNSelectedCandidateFinalizerError.commitUncertain }
-            if mayHaveStarted {
-                let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
-                do { try runtime.stopAndDrain(deadline: deadline) } catch { }
-            }
-            throw error
         }
     }
 
@@ -110,66 +122,79 @@ enum VPNSelectedCandidateFinalizer {
                                    transactionID: UUID, expectedRevision: UInt64,
                                    candidate: VPNAuthorizedDeployment,
                                    testPolicy: Bool = false) throws -> Outcome {
-        func checkCompleted() throws {
-            try lease.check()
-            let deployment = try store.loadDeployment()
-            guard let journal = try store.loadUpdateJournal(),
-                  journal.transactionID == transactionID,
-                  journal.revision == expectedRevision,
-                  journal.phase == .completed,
-                  journal.recovery == .completed,
-                  journal.candidate.ownerUserID == candidate.ownerUserID,
-                  journal.candidate.release.isSameRelease(as: candidate.release),
-                  deployment.ownerUserID == candidate.ownerUserID,
-                  deployment.release.isSameRelease(as: candidate.release) else {
-                throw VPNSelectedCandidateFinalizerError.invalidJournal
+        return try VPNActivationDiagnostics.run(role: .finalizer, stage: .selection) { trace in
+            func checkCompleted() throws {
+                try lease.check()
+                let deployment = try store.loadDeployment()
+                guard let journal = try store.loadUpdateJournal(),
+                      journal.transactionID == transactionID,
+                      journal.revision == expectedRevision,
+                      journal.phase == .completed,
+                      journal.recovery == .completed,
+                      journal.candidate.ownerUserID == candidate.ownerUserID,
+                      journal.candidate.release.isSameRelease(as: candidate.release),
+                      deployment.ownerUserID == candidate.ownerUserID,
+                      deployment.release.isSameRelease(as: candidate.release) else {
+                    throw VPNSelectedCandidateFinalizerError.invalidJournal
+                }
+                try lease.check()
             }
-            try lease.check()
-        }
-        try checkCompleted()
-        let desired = try budget.snapshot().desired
-        if desired { try budget.beginAttempt(intent: .automatic) }
-        let stopDeadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
-        try runtime.stopAndDrain(deadline: stopDeadline)
-        guard DispatchTime.now().uptimeNanoseconds < stopDeadline else {
-            throw VPNSelectedCandidateFinalizerError.deadlineExceeded
-        }
-        try checkCompleted()
-        guard desired else { return .remainedOff }
-        var mayHaveStarted = false
-        do {
-            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
-            mayHaveStarted = true
-            let socket = try runtime.startIdleAndConnect(candidate, deadline: deadline)
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline else {
-                if socket >= 0 { close(socket) }
+            try checkCompleted()
+            trace.mark(.budget)
+            let desired = try budget.snapshot().desired
+            if desired {
+                trace.mark(.charge)
+                try budget.beginAttempt(intent: .automatic)
+            }
+            trace.mark(.drain)
+            let stopDeadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            try runtime.stopAndDrain(deadline: stopDeadline)
+            guard DispatchTime.now().uptimeNanoseconds < stopDeadline else {
                 throw VPNSelectedCandidateFinalizerError.deadlineExceeded
             }
-            let remaining = max(1, min(2000, Int((deadline - now) / 1_000_000)))
-            #if VPN_HELPER_READINESS_TESTING
-            if testPolicy {
-                _ = try VPNHelperReadiness.testProbe(takingSocket: socket,
-                    release: candidate.release, timeoutMilliseconds: remaining)
-            } else {
+            try checkCompleted()
+            guard desired else { return .remainedOff }
+            var mayHaveStarted = false
+            do {
+                let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+                trace.mark(.start)
+                mayHaveStarted = true
+                let socket = try runtime.startIdleAndConnect(candidate, deadline: deadline)
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else {
+                    if socket >= 0 { close(socket) }
+                    throw VPNSelectedCandidateFinalizerError.deadlineExceeded
+                }
+                trace.mark(.readiness)
+                let remaining = max(1, min(2000, Int((deadline - now) / 1_000_000)))
+                #if VPN_HELPER_READINESS_TESTING
+                if testPolicy {
+                    _ = try VPNHelperReadiness.testProbe(takingSocket: socket,
+                        release: candidate.release, timeoutMilliseconds: remaining)
+                } else {
+                    _ = try VPNHelperReadiness.probe(takingSocket: socket,
+                        release: candidate.release, timeoutMilliseconds: remaining)
+                }
+                #else
+                _ = testPolicy
                 _ = try VPNHelperReadiness.probe(takingSocket: socket,
                     release: candidate.release, timeoutMilliseconds: remaining)
+                #endif
+                trace.mark(.finalValidation)
+                try checkCompleted()
+                trace.mark(.budgetSuccess)
+                try budget.recordSuccess()
+                trace.mark(.finalValidation)
+                try checkCompleted()
+                return .helperReady
+            } catch {
+                trace.fail(error)
+                if mayHaveStarted {
+                    let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+                    do { try runtime.stopAndDrain(deadline: deadline) } catch { }
+                }
+                throw error
             }
-            #else
-            _ = testPolicy
-            _ = try VPNHelperReadiness.probe(takingSocket: socket,
-                release: candidate.release, timeoutMilliseconds: remaining)
-            #endif
-            try checkCompleted()
-            try budget.recordSuccess()
-            try checkCompleted()
-            return .helperReady
-        } catch {
-            if mayHaveStarted {
-                let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
-                do { try runtime.stopAndDrain(deadline: deadline) } catch { }
-            }
-            throw error
         }
     }
 }

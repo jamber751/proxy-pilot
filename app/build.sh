@@ -93,7 +93,7 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
     VPNHelperProtocol VPNHelperReadiness VPNHelperSession VPNApplicationSpec VPNTunnelStateStore \
     OpenVPNManagementEvent OpenVPNStateEvidence OpenVPNTransientCredential \
     VPNPublicReleaseReceipt VPNFrontendHelperSession VPNInstalledUpdateResultEntry \
-    VPNHelperTunnelSession VPNProfileVault VPNEngineProcess VPNEngineSupervisor VPNActivationBudget \
+    VPNHelperTunnelSession VPNProfileVault VPNEngineProcess VPNEngineSupervisor VPNActivationBudget VPNActivationDiagnostics \
     VPNActivationCoordinator VPNLaunchdRuntime VPNRecoveryLaunchdJob VPNUpdateBrokerLaunchdJob \
     VPNUpdateBrokerProtocol VPNUpdateBrokerClient VPNJointArtifactMount VPNCompanionMetadata VPNCompanionMetadataFetcher VPNCompanionStaging VPNCompanionDownloader VPNUpdateBrokerStatusStore VPNUpdateBrokerTransactionStore \
     VPNUpdateBrokerInbox VPNUpdateBrokerRotation VPNUpdateBrokerInstallerCoordinator \
