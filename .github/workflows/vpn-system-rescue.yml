@@ -7,6 +7,7 @@ on:
       - '.github/workflows/vpn-system-rescue.yml'
       - 'tests/test_vpn_rescue_system_vm.py'
       - 'tests/test_vpn_rescue_system_materials.py'
+      - 'tests/test_vpn_engine_build.py'
       - 'tests/vpn_rescue_system_*.swift'
       - 'tests/vpn_rescue_package_signer.swift'
       - 'tests/fixtures/vpn-frozen139-production-sources.sha256'
