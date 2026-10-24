@@ -33,7 +33,7 @@ final class VPNPanelModel: ObservableObject {
     private let controller: VPNLiveController?
     private let queue = DispatchQueue(label: "proxypilot.vpn.frontend")
     private var modelChanges: AnyCancellable?
-    private var credentialPromptIdentifier: UUID?
+    @Published private(set) var credentialPromptIdentifier: UUID?
 
     init(preview: Bool = false) {
         if preview {
@@ -90,6 +90,7 @@ final class VPNPanelModel: ObservableObject {
     }
     var powerTitle: String {
         if working || liveState == .connecting { return "Подождите…" }
+        if needsCredential { return "Подключение" }
         if connected { return "Выключить" }
         return "Включить"
     }
@@ -158,12 +159,13 @@ final class VPNPanelModel: ObservableObject {
         run { controller in shouldDisconnect ? controller.disconnect() : controller.connect() }
     }
     func submitCredential() {
-        guard !secret.isEmpty else { return }
+        guard !working, needsCredential, !secret.isEmpty else { return }
         var bytes = Data(secret.utf8)
         secret = ""
         run { $0.submitCredential(&bytes) }
     }
     func cancelCredential() {
+        guard !working, needsCredential else { return }
         dismissCredentialPrompt()
         run { $0.cancelCredential() }
     }
@@ -171,6 +173,11 @@ final class VPNPanelModel: ObservableObject {
     /// Only the transient field is cleared. Login, password-saving consent and
     /// an authenticated connection are independent of a prompt's visibility.
     func dismissCredentialPrompt() { secret = "" }
+
+    func dismissCredentialPrompt(ifMatching prompt: UUID?) {
+        guard prompt == credentialPromptIdentifier else { return }
+        dismissCredentialPrompt()
+    }
 
     private func adoptLiveState(_ state: VPNLiveState, promptIdentifier: UUID?) {
         let next: UUID?
@@ -485,7 +492,8 @@ struct VPNPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if panel.editingResource { resourceEditor }
+            if panel.needsCredential { home }
+            else if panel.editingResource { resourceEditor }
             else if panel.editingAuthentication { authenticationEditor }
             else if panel.settings { settings }
             else if panel.configured { home }
@@ -494,6 +502,7 @@ struct VPNPanelView: View {
         .padding(.horizontal, 24).frame(width: 344, height: 432)
         .foregroundColor(ink).accentColor(accent).background(background)
         .onAppear { panel.refresh() }
+        .onExitCommand(perform: goBack)
         .onReceive(NotificationCenter.default.publisher(for: NSPopover.didCloseNotification)) { _ in
             panel.dismissCredentialPrompt()
         }
@@ -501,19 +510,14 @@ struct VPNPanelView: View {
 
     private var header: some View {
         HStack(spacing: 7) {
-            Button {
-                if panel.editingResource { panel.cancelResource() }
-                else if panel.editingAuthentication { panel.cancelAuthentication() }
-                else if panel.settings { panel.settings = false }
-                else { close() }
-            } label: {
+            Button(action: goBack) {
                 Image(systemName: "chevron.left").frame(width: 36, height: 36).contentShape(Rectangle())
-            }.buttonStyle(PilotButtonStyle()).accessibilityLabel("Назад").accessibilityIdentifier("vpnBack")
+            }.buttonStyle(PilotButtonStyle()).accessibilityLabel(panel.needsCredential ? "Отменить вход" : "Назад").accessibilityIdentifier("vpnBack")
                 .disabled(panel.working)
-            Text(panel.editingResource ? "Ресурс" : panel.editingAuthentication ? "Вход" : panel.settings ? "Настройки VPN" : "VPN")
+            Text(panel.needsCredential ? "VPN" : panel.editingResource ? "Ресурс" : panel.editingAuthentication ? "Вход" : panel.settings ? "Настройки VPN" : "VPN")
                 .font(.system(size: 14, weight: .semibold))
             Spacer()
-            if panel.configured && !panel.settings && !panel.editingResource {
+            if panel.configured && !panel.needsCredential && !panel.settings && !panel.editingResource && !panel.editingAuthentication {
                 Button { panel.settings = true } label: {
                     Image(systemName: "gearshape").frame(width: 36, height: 36).contentShape(Rectangle())
                 }.buttonStyle(PilotButtonStyle()).accessibilityLabel("Настройки VPN")
@@ -538,7 +542,8 @@ struct VPNPanelView: View {
                     }.frame(width: 104, height: 104).shadow(color: .black.opacity(0.08), radius: 14, x: 0, y: 7)
                     Text(panel.powerTitle).font(.system(size: 13, weight: .medium)).foregroundColor(ink)
                 }.frame(maxWidth: .infinity).contentShape(Rectangle())
-            }.buttonStyle(PowerStyle()).disabled(panel.working)
+            }.buttonStyle(PowerStyle()).disabled(panel.working || panel.needsCredential)
+                .keyboardShortcut(.defaultAction)
                 .accessibilityLabel(panel.powerTitle).accessibilityIdentifier("vpnPower")
             VStack(spacing: 8) {
                 Text(panel.statusTitle).font(.system(size: 22, weight: .semibold)).tracking(-0.5)
@@ -567,21 +572,35 @@ struct VPNPanelView: View {
         }
     }
 
+    private func goBack() {
+        guard !panel.working else { return }
+        if panel.needsCredential { panel.cancelCredential() }
+        else if panel.editingResource { panel.cancelResource() }
+        else if panel.editingAuthentication { panel.cancelAuthentication() }
+        else if panel.settings { panel.settings = false }
+        else { close() }
+    }
+
     private var credentialForm: some View {
-        VStack(spacing: 9) {
-            SecureField("Пароль или код", text: $panel.secret)
-                .textFieldStyle(RoundedBorderTextFieldStyle()).accessibilityIdentifier("vpnCredential")
+        let displayedPrompt = panel.credentialPromptIdentifier
+        return VStack(spacing: 9) {
+            VPNSecretField(text: $panel.secret, prompt: panel.credentialPromptIdentifier,
+                           enabled: !panel.working, label: panel.statusTitle,
+                           submit: panel.submitCredential, cancel: panel.cancelCredential)
+                .frame(height: 28).accessibilityIdentifier("vpnCredential")
             HStack(spacing: 8) {
-                Button("Отмена", action: panel.cancelCredential)
-                    .frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
-                    .buttonStyle(PilotButtonStyle(cornerRadius: 8)).accessibilityIdentifier("vpnCredentialCancel")
-                Button("Продолжить", action: panel.submitCredential)
-                    .frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
-                    .buttonStyle(PilotButtonStyle(cornerRadius: 8)).accessibilityIdentifier("vpnCredentialSubmit")
+                Button(action: panel.cancelCredential) {
+                    Text("Отмена").frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
+                }.buttonStyle(PilotButtonStyle(cornerRadius: 8))
+                    .accessibilityIdentifier("vpnCredentialCancel").keyboardShortcut(.cancelAction)
+                Button(action: panel.submitCredential) {
+                    Text("Продолжить").frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
+                }.buttonStyle(PilotButtonStyle(cornerRadius: 8))
+                    .accessibilityIdentifier("vpnCredentialSubmit").keyboardShortcut(.defaultAction)
                     .disabled(panel.secret.isEmpty)
-            }
+            }.disabled(panel.working)
         }
-        .onDisappear { panel.dismissCredentialPrompt() }
+        .onDisappear { panel.dismissCredentialPrompt(ifMatching: displayedPrompt) }
     }
 
     private var importScreen: some View {
@@ -717,7 +736,7 @@ struct VPNPanelView: View {
                 Text("Сохранить").font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 40)
                     .background(accent).foregroundColor(.white).cornerRadius(9).contentShape(Rectangle())
             }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
-                .accessibilityIdentifier("vpnAuthenticationSave")
+                .accessibilityIdentifier("vpnAuthenticationSave").keyboardShortcut(.defaultAction)
                 .disabled(panel.configuration.profile?.requiresCredentials == true &&
                           (panel.login.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || panel.authenticationChoice == nil))
             if !panel.message.isEmpty { Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary) }
@@ -781,7 +800,7 @@ struct VPNPanelView: View {
                 Text("Сохранить").font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 40)
                     .background(accent).foregroundColor(.white).cornerRadius(9).contentShape(Rectangle())
             }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
-                .accessibilityIdentifier("vpnResourceSave")
+                .accessibilityIdentifier("vpnResourceSave").keyboardShortcut(.defaultAction)
                 .disabled(panel.resourceAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             if panel.configuration.resourceDraft?.id != nil {
                 Button(action: panel.requestResourceRemoval) {
@@ -799,6 +818,97 @@ struct VPNPanelView: View {
                   primaryButton: .destructive(Text("Удалить"), action: panel.confirmResourceRemoval),
                   secondaryButton: .cancel())
         }
+    }
+}
+
+
+/// Local focus bridge for macOS 11. Prompt identity, not secret contents or the
+/// credential kind, determines when a fresh field should receive keyboard focus.
+private struct VPNSecretField: NSViewRepresentable {
+    @Binding var text: String
+    let prompt: UUID?
+    let enabled: Bool
+    let label: String
+    let submit: () -> Void
+    let cancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> Field {
+        let field = Field()
+        field.placeholderString = "Пароль или код"
+        field.bezelStyle = .roundedBezel
+        field.font = .systemFont(ofSize: 13)
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.commit)
+        field.setAccessibilityIdentifier("vpnCredential")
+        return field
+    }
+    func updateNSView(_ field: Field, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+        if enabled && !field.isEnabled { field.focusedPrompt = nil }
+        field.isEnabled = enabled
+        if !enabled { field.cancelPendingFocus() }
+        field.setAccessibilityLabel(label)
+        field.prompt = prompt
+        field.requestFocus()
+    }
+    static func dismantleNSView(_ field: Field, coordinator: Coordinator) {
+        // Detach callbacks before ending editing or wiping this old native
+        // control: neither operation may write a newer prompt's binding.
+        field.delegate = nil; field.target = nil; field.action = nil
+        field.stopObserving(); field.cancelPendingFocus(); field.prompt = nil
+        if field.currentEditor() != nil { field.window?.makeFirstResponder(nil) }
+        field.stringValue = ""
+    }
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: VPNSecretField
+        init(_ parent: VPNSecretField) { self.parent = parent }
+        func controlTextDidChange(_ notification: Notification) {
+            guard parent.enabled, let field = notification.object as? NSSecureTextField else { return }
+            parent.text = field.stringValue
+        }
+        @objc func commit() { if parent.enabled { parent.submit() } }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                if parent.enabled { parent.cancel() }
+                return true
+            }
+            return false
+        }
+    }
+    final class Field: NSSecureTextField {
+        var prompt: UUID?
+        var focusedPrompt: UUID?
+        private var observer: NSObjectProtocol?
+        private var focusEpoch: UInt64 = 0
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopObserving()
+            if let window {
+                observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                    object: window, queue: .main) { [weak self] _ in self?.requestFocus() }
+            }
+            requestFocus()
+        }
+        func requestFocus() {
+            guard let expectedPrompt = prompt, let expectedWindow = window else { return }
+            let epoch = focusEpoch
+            DispatchQueue.main.async { [weak self, weak expectedWindow] in
+                guard let self, self.focusEpoch == epoch, self.isEnabled,
+                      self.prompt == expectedPrompt, self.focusedPrompt != expectedPrompt,
+                      let window = expectedWindow, self.window === window,
+                      window.isVisible, window.isKeyWindow else { return }
+                if window.makeFirstResponder(self) { self.focusedPrompt = expectedPrompt }
+            }
+        }
+        func cancelPendingFocus() { focusEpoch &+= 1; focusedPrompt = nil }
+        func stopObserving() {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+        }
+        deinit { stopObserving() }
     }
 }
 

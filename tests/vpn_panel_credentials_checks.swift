@@ -153,11 +153,29 @@ private final class PromptSession: VPNLiveSession {
             panel.refresh(); try wait(panel)
             try require(panel.secret == "synthetic draft" && controller.credentialPromptIdentifier == firstID,
                         "background refresh erased the current prompt draft")
+        case "busy-preserves-draft":
+            panel.refresh()
+            try require(panel.working, "refresh did not hold busy state")
+            panel.submitCredential(); panel.cancelCredential()
+            try require(panel.secret == "synthetic draft" && !session.cancelled && session.submissions == 0,
+                        "busy action discarded draft or invoked a credential operation")
+            try wait(panel)
+            try require(panel.secret == "synthetic draft", "same prompt refresh discarded draft")
+        case "stale-view-does-not-wipe-new-prompt":
+            session.challenge = VPNCredentialChallenge(generation: session.generation, kind: .vpnPassword)
+            panel.refresh(); try wait(panel)
+            panel.secret = "new synthetic draft"
+            panel.dismissCredentialPrompt(ifMatching: firstID)
+            try require(panel.secret == "new synthetic draft", "old view erased a newer prompt draft")
+            panel.dismissCredentialPrompt(ifMatching: panel.credentialPromptIdentifier)
+            try require(panel.secret.isEmpty, "current disappearing prompt did not clear draft")
         case "same-kind-new-request":
             session.challenge = VPNCredentialChallenge(generation: session.generation, kind: .vpnPassword)
             panel.refresh(); try wait(panel)
             try require(panel.needsCredential && panel.secret.isEmpty && controller.credentialPromptIdentifier != firstID,
                         "new request of same kind inherited old input")
+            try require(panel.credentialPromptIdentifier == controller.credentialPromptIdentifier,
+                        "new prompt identity did not reach presentation")
             // A refresh observes a new request, but does not transfer its held
             // transport ownership. This proves presentation clearing only;
             // submitting a newly entered secret may require reconnecting.

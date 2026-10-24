@@ -15,6 +15,9 @@ class VPNUILayoutTests(unittest.TestCase):
     def test_vpn_states_fit_popover_and_keep_accessible_hit_targets(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text().split(
             '\n/// Keeps the proxy home untouched.', 1)[0]
+        # Presentation-only state injection; production view/control code is unchanged.
+        panel = panel.replace('@Published private(set) var liveState:', '@Published var liveState:')
+        panel = panel.replace('@Published private(set) var credentialPromptIdentifier:', '@Published var credentialPromptIdentifier:')
         identifiers = (
             'vpnBack', 'vpnSettings', 'vpnPower', 'vpnImport', 'vpnReplaceProfile',
             'vpnCredential', 'vpnCredentialSubmit', 'vpnCredentialCancel',
@@ -25,6 +28,14 @@ class VPNUILayoutTests(unittest.TestCase):
             marker = f'.accessibilityIdentifier("{name}")'
             self.assertEqual(panel.count(marker), 1, name)
             panel = panel.replace(marker, marker + f'''.background(GeometryReader {{ geometry in
+                Color.clear.preference(key: VPNHitBounds.self,
+                    value: ["{name}": geometry.frame(in: .named("vpnPopover"))])
+            }})''')
+
+        for title, name in (('Отмена', 'cancelLabel'), ('Продолжить', 'submitLabel')):
+            label = f'Text("{title}").frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())'
+            self.assertEqual(panel.count(label), 1)
+            panel = panel.replace(label, label + f'''.background(GeometryReader {{ geometry in
                 Color.clear.preference(key: VPNHitBounds.self,
                     value: ["{name}": geometry.frame(in: .named("vpnPopover"))])
             }})''')
@@ -125,7 +136,17 @@ func configure(_ panel: VPNPanelModel, resources: Int, credentials: Bool = false
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
-for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth"] {
+// Prohibited offscreen processes never activate another app. Only this owned
+// fixture window supplies a controlled key-state for native responder tests.
+final class OwnCredentialWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var isKeyWindow: Bool { true }
+}
+private func secureField(_ view: NSView) -> VPNSecretField.Field? {
+    if let field = view as? VPNSecretField.Field { return field }
+    return view.subviews.lazy.compactMap { secureField($0) }.first
+}
+for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "credential-settings", "credential-resource"] {
     let panel = VPNPanelModel(preview: true)
     if scenario != "import" {
         try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : 0,
@@ -143,7 +164,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         .onPreferenceChange(VPNHitBounds.self) { bounds = $0 }
     let host = NSHostingView(rootView: root)
     host.frame = NSRect(x: 0, y: 0, width: 344, height: 432)
-    let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
+    let window = OwnCredentialWindow(contentRect: host.frame, styleMask: [.borderless],
                           backing: .buffered, defer: false)
     window.contentView = host
     window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
@@ -151,8 +172,28 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
+    if scenario.hasPrefix("credential-") {
+        if scenario == "credential-resource" { panel.beginResource() }
+        panel.liveState = .needsCredential(.vpnPassword)
+        panel.credentialPromptIdentifier = UUID()
+        panel.secret = "synthetic"
+        window.makeKey()
+        for _ in 0..<6 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
+        guard let field = secureField(host) else { fatalError("Prompt hidden behind nested settings") }
+        precondition(field.currentEditor() != nil, "Native secure field did not become first responder")
+        precondition(field.focusedPrompt == panel.credentialPromptIdentifier, "Fresh prompt did not focus own field")
+        let prior = field.focusedPrompt
+        panel.credentialPromptIdentifier = UUID()
+        for _ in 0..<6 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
+        precondition(field.focusedPrompt == panel.credentialPromptIdentifier && field.focusedPrompt != prior,
+                     "Same-kind fresh prompt did not drive focus")
+        field.requestFocus(); field.cancelPendingFocus(); field.prompt = nil
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        precondition(field.focusedPrompt == nil, "Cancelled queued focus ran after invalidation")
+    }
     var required = ["vpnBack"]
     switch scenario {
+    case "credential-settings", "credential-resource": required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel"]
     case "import": required += ["vpnImport"]
     case "resource": required += ["vpnResourceSave"]
     case "auth": required += ["vpnAuthenticationSave"]
@@ -160,7 +201,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     }
     for name in required {
         guard let frame = bounds[name] else { fatalError("Missing \(name) in \(scenario)") }
-        let minimum: CGFloat = name == "vpnImport" ? 100 : 36
+        let minimum: CGFloat = name == "vpnImport" ? 100 : name == "vpnCredential" ? 28 : 36
         precondition(frame.width >= 36 && frame.height >= minimum,
                      "Small target \(name) in \(scenario): \(frame)")
         precondition(frame.minX >= -0.5 && frame.maxX <= 344.5 &&
@@ -169,6 +210,28 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     }
     let rendered = required.map { "\($0)=\(bounds[$0]!)" }.joined(separator: ", ")
     print("\(scenario): \(rendered)")
+    if scenario.hasPrefix("credential-") {
+        guard let field = secureField(host), let editor = field.currentEditor() as? NSTextView else {
+            fatalError("Native credential control missing")
+        }
+        if scenario == "credential-settings" {
+            guard let action = field.action else { fatalError("Missing secure-field Return action") }
+            precondition(field.sendAction(action, to: field.target), "Native Return target/action not handled")
+        } else {
+            guard let delegate = field.delegate as? VPNSecretField.Coordinator else { fatalError("Missing native delegate") }
+            precondition(delegate.control(field, textView: editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))),
+                         "Native Esc delegate command not handled")
+        }
+        precondition(panel.secret.isEmpty, "Credential action did not clear draft")
+        precondition(panel.settings && (scenario != "credential-resource" || panel.editingResource),
+                     "Credential presentation discarded nested return destination")
+        if let delegate = field.delegate as? VPNSecretField.Coordinator {
+            panel.credentialPromptIdentifier = UUID(); panel.secret = "new synthetic draft"
+            VPNSecretField.dismantleNSView(field, coordinator: delegate)
+            precondition(field.stringValue.isEmpty && panel.secret == "new synthetic draft",
+                         "Old native teardown overwrote a newer draft")
+        }
+    }
     window.orderOut(nil); window.contentView = nil
 }
 '''
@@ -188,7 +251,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count(': vpnBack='), 6, result.stdout)
+            self.assertEqual(result.stdout.count(': vpnBack='), 8, result.stdout)
 
 
 if __name__ == '__main__':

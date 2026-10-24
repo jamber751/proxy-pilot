@@ -40,6 +40,8 @@ class VPNPanelCredentialTests(unittest.TestCase):
             self.assertIn('credential presentation flow passed', result.stdout)
 
     def test_cancel_and_next_attempt_clear_old_otp(self): self.run_case('cancel-new-attempt')
+    def test_busy_buttons_do_not_discard_entered_draft(self): self.run_case('busy-preserves-draft')
+    def test_stale_view_does_not_wipe_newer_prompt_draft(self): self.run_case('stale-view-does-not-wipe-new-prompt')
     def test_same_prompt_refresh_keeps_current_draft(self): self.run_case('same-prompt-refresh')
     def test_new_request_of_same_kind_clears_old_otp(self): self.run_case('same-kind-new-request')
     def test_disappeared_prompt_clears_draft(self): self.run_case('prompt-disappeared')
@@ -61,7 +63,7 @@ class VPNPanelCredentialTests(unittest.TestCase):
         # Wiring only; this does not prove a native popover lifecycle or focus behavior.
         panel = (ROOT / 'app/VPNPanel.swift').read_text()
         credential_view = panel.split('private var credentialForm:', 1)[1].split('private var importScreen:', 1)[0]
-        self.assertIn('.onDisappear { panel.dismissCredentialPrompt() }', credential_view)
+        self.assertIn('.onDisappear { panel.dismissCredentialPrompt(ifMatching: displayedPrompt) }', credential_view)
         self.assertIn('.publisher(for: NSPopover.didCloseNotification)', panel)
         self.assertIn('panel.dismissCredentialPrompt()', panel.split('NSPopover.didCloseNotification', 1)[1].split('\n    }', 1)[0])
 

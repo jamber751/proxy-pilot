@@ -25,7 +25,7 @@ class VPNUIContractTests(unittest.TestCase):
                            'vpnRemove', 'vpnSettingsDone', 'vpnAuthenticationSave',
                            'vpnResourceSave'):
             self.assertEqual(panel.count(f'.accessibilityIdentifier("{identifier}")'), 1)
-        self.assertIn('SecureField("Пароль или код"', panel)
+        self.assertIn('VPNSecretField(text: $panel.secret', panel)
         self.assertIn('.onDrop(of: ["public.file-url"]', panel)
         self.assertIn('configuration.importProfile(files: urls)', panel)
         self.assertIn('func disconnectForQuit(completion:', panel)
