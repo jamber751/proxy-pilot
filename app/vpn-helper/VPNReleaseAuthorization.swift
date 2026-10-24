@@ -162,6 +162,8 @@ struct VPNReleaseAuthority {
     // arbitrary text from being interpreted as authorization for root code.
     static let signatureDomain = Data("kz.documentolog.proxypilot/vpn-release-authorization/v1\0".utf8)
     static let updateTransitionDomain = Data("kz.documentolog.proxypilot/vpn-update-transition/v1\0".utf8)
+    static let rescueAuthorizationDomain = Data("kz.documentolog.proxypilot/vpn-rescue-authorization/v1\0".utf8)
+    static let maximumRescueAuthorizationBytes = 2048
     static let maximumUpdateTransitionBytes = 512
     static let maximumPayloadBytes = 4096
     static let maximumHelperBytes = 32 * 1024 * 1024
@@ -181,6 +183,15 @@ struct VPNReleaseAuthority {
         authorityDigest = Data(SHA256.hash(data: trustedPublicKey))
         self.minimumSequence = minimumSequence
         self.supportedProtocol = supportedProtocol
+    }
+
+    /// Verification-only bridge for the separate rescue codec. This does not
+    /// mint release/peer authority or expose a signing key. Ordinary release and
+    /// transition verification never accepts this signature domain.
+    func verifyRescueSignature(payload: Data, signature: Data) -> Bool {
+        !payload.isEmpty && payload.count <= Self.maximumRescueAuthorizationBytes
+            && signature.count == 64
+            && publicKey.isValidSignature(signature, for: Self.rescueAuthorizationDomain + payload)
     }
 
     #if VPN_ENGINE_DELIVERY_TESTING
