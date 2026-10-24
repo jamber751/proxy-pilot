@@ -6,6 +6,7 @@ a signed probe-only bundle using the production read-only frontend entry; this
 does not claim GUI or live corporate VPN/OTP acceptance. Never run root on a host.
 """
 import base64
+import ctypes
 import errno
 import hashlib
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import re
+import selectors
 import shutil
 import socket
 import stat
@@ -537,7 +539,7 @@ def root_vm_enabled():
             and os.environ.get('PROXYPILOT_VM_SYSTEM_RESCUE_TESTS') == '1')
 
 
-def ordinary_owner_command(owner, arguments, *, timeout=30):
+def ordinary_owner_launch_parameters(owner):
     """Launch the real installed frontend as the trusted ordinary fixture owner.
 
     Only disposable root CI may request the identity drop; the child gets no
@@ -556,8 +558,108 @@ def ordinary_owner_command(owner, arguments, *, timeout=30):
             raise AssertionError('Ordinary owner identity drop failed')
 
     environment = dict(SAFE_ENV, GITHUB_ACTIONS='true', PROXYPILOT_VM_SYSTEM_RESCUE_TESTS='1')
-    return subprocess.run(list(map(str, arguments)), env=environment, preexec_fn=drop_identity,
+    return dict(env=environment, preexec_fn=drop_identity)
+
+
+def ordinary_owner_command(owner, arguments, *, timeout=30):
+    return subprocess.run(list(map(str, arguments)), **ordinary_owner_launch_parameters(owner),
                           capture_output=True, text=True, timeout=timeout)
+
+
+# Public SDK sys/proc_info.h fixed-width structures. Only vnode identity and
+# process incarnation are inspected; no process paths or arbitrary FD contents.
+# https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h
+# The fast ordinary test compares sizes/offsets with the installed SDK, then
+# observes ONLY its own private SCM_RIGHTS fixture; live callers are root-VM gated.
+class ProcFDInfo(ctypes.Structure):
+    _fields_ = [('fd', ctypes.c_int32), ('kind', ctypes.c_uint32)]
+
+
+class ProcFileInfo(ctypes.Structure):
+    _fields_ = [('flags', ctypes.c_uint32), ('status', ctypes.c_uint32), ('offset', ctypes.c_int64),
+                ('kind', ctypes.c_int32), ('guardFlags', ctypes.c_uint32)]
+
+
+class VInfoStat(ctypes.Structure):
+    _fields_ = [('device', ctypes.c_uint32), ('mode', ctypes.c_uint16), ('links', ctypes.c_uint16),
+                ('inode', ctypes.c_uint64), ('uid', ctypes.c_uint32), ('gid', ctypes.c_uint32)] + [
+                (name, ctypes.c_int64) for name in ('atime', 'atimeNS', 'mtime', 'mtimeNS',
+                                                 'ctime', 'ctimeNS', 'birth', 'birthNS', 'size', 'blocks')] + [
+                ('blockSize', ctypes.c_int32), ('flags', ctypes.c_uint32), ('generation', ctypes.c_uint32),
+                ('rdev', ctypes.c_uint32), ('spare', ctypes.c_int64 * 2)]
+
+
+class VNodeInfo(ctypes.Structure):
+    _fields_ = [('stat', VInfoStat), ('kind', ctypes.c_int32), ('pad', ctypes.c_int32), ('fsid', ctypes.c_int32 * 2)]
+
+
+class VNodeFDInfo(ctypes.Structure):
+    _fields_ = [('file', ProcFileInfo), ('vnode', VNodeInfo)]
+
+
+class ProcBSDInfo(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint32) for name in ('flags', 'status', 'exitStatus', 'pid', 'parent',
+                'uid', 'gid', 'realUID', 'realGID', 'savedUID', 'savedGID', 'reserved')] + [
+                ('command', ctypes.c_char * 16), ('name', ctypes.c_char * 32)] + [
+                (name, ctypes.c_uint32) for name in ('files', 'group', 'jobCount', 'tty', 'ttyGroup')] + [
+                ('nice', ctypes.c_int32), ('startSeconds', ctypes.c_uint64), ('startMicroseconds', ctypes.c_uint64)]
+
+
+def private_process_api():
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    library.proc_pidfdinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidfdinfo.restype = ctypes.c_int
+    library.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    library.proc_pidpath.restype = ctypes.c_int
+    return library
+
+
+def private_process_stamp(api, pid, expected_uid):
+    info = ProcBSDInfo()
+    if (type(pid) is not int or pid <= 0
+            or api.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info)
+            or info.pid != pid or info.uid != expected_uid or info.realUID != expected_uid):
+        raise AssertionError('Owned process incarnation unavailable')
+    return (pid, info.startSeconds, info.startMicroseconds)
+
+
+def private_received_directory(api, pid, device, inode):
+    maximum = 1024
+    entries = (ProcFDInfo * maximum)()
+    size = api.proc_pidinfo(pid, 1, 0, entries, ctypes.sizeof(entries))
+    if size <= 0 or size >= ctypes.sizeof(entries) or size % ctypes.sizeof(ProcFDInfo):
+        raise AssertionError('Owned descriptor list unavailable')
+    for entry in entries[:size // ctypes.sizeof(ProcFDInfo)]:
+        if entry.kind != 1 or entry.fd < 0:  # PROX_FDTYPE_VNODE only
+            continue
+        info = VNodeFDInfo()
+        count = api.proc_pidfdinfo(pid, entry.fd, 1, ctypes.byref(info), ctypes.sizeof(info))
+        if count != ctypes.sizeof(info):
+            continue  # concurrent close of an unrelated descriptor
+        observed = info.vnode.stat
+        if (stat.S_ISDIR(observed.mode) and observed.device == (device & 0xffffffff)
+                and observed.inode == inode):
+            return True
+    return False
+
+
+def own_probe_marker(process, expected, deadline):
+    """Only the caller-owned pipe; bounded fixed markers, never raw child logs."""
+    data = b''
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while len(data) < len(expected):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise AssertionError('Owned probe marker timeout')
+            part = os.read(process.stdout.fileno(), len(expected) - len(data))
+            if not part:
+                raise AssertionError('Owned probe exited before marker')
+            data += part
+    if data != expected or process.poll() is not None:
+        raise AssertionError('Owned probe marker rejected')
 
 
 @unittest.skipUnless(root_vm_enabled(), 'explicit fresh disposable macOS system VM only')
@@ -887,11 +989,19 @@ class VPNRescueSystemVMTests(unittest.TestCase):
             'inbox': broker_inbox_diagnostics(SYSTEM_BASE / 'Broker')}), flush=True)
         self.assertIn(submitted.returncode, (0, 75), self.state_summary())
         self.assertNotEqual(safe_outcome, 'unexpected', self.state_summary())
+        self.assert_successor_installed(desired)
+
+    def assert_successor_installed(self, desired, submitter=None, deadline=None):
+        if deadline is None:
+            deadline = time.monotonic() + 300
+        self.assertLess(time.monotonic(), deadline, 'Successor observation budget expired')
+        owner = self.fixture['owner']
         service = SYSTEM_BASE / 'VPN'
-        deadline = time.monotonic() + 300
         installed = False
         last_status = 'notObserved'
         while time.monotonic() < deadline:
+            if submitter is not None:
+                self.assertIsNone(submitter.poll(), 'Own ordinary submitter exited before D completion')
             # Re-execute the actual installed D; an old C process or a `.ready`
             # submit response cannot attest to D's installed startup status.
             if code_pins(APPLICATION) == self.fixture['successorPins']:
@@ -912,6 +1022,82 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         self.assertEqual((len(transaction), int.from_bytes(transaction[10:12], 'big')), (128, 7))
         observed = ordinary_owner_command(owner, [APPLICATION / 'Contents/MacOS/ProxyPilot', '--vm-update-status'])
         self.assertEqual((observed.returncode, observed.stdout.strip()), (0, 'status:installed'))
+        self.assertLess(time.monotonic(), deadline, 'Successor observation budget expired')
+
+    def test_z_ordinary_owner_update_completes_without_ready_receiver(self):
+        # Eighth case; the original seven retain the real production Client API.
+        # This private sender exercises an actual broken response channel only.
+        if not root_vm_enabled(): raise AssertionError('Disposable root VM required')
+        self.exercise(False)
+        successor = self.materials / 'SuccessorStage/Payload'
+        self.assertEqual(code_pins(successor / 'ProxyPilot.app'), self.fixture['successorPins'])
+        candidate = successor.stat()
+        self.assertEqual((candidate.st_uid, stat.S_IMODE(candidate.st_mode)), (self.fixture['owner'], 0o700))
+        broker = self.state_summary()['broker']
+        for origin in ('loadedProgram', 'plistProgram'):
+            self.assertEqual(broker[origin]['release'], 'C')
+            self.assertTrue(broker[origin].get('pinsMatch'))
+            self.assertTrue(broker[origin].get('rootOwned'))
+        broker_pid = broker.get('pid')
+        api = private_process_api()
+        stamp = private_process_stamp(api, broker_pid, 0)
+        expected_programs = [name for name, (release, _) in self.known_helpers.items() if release == 'C']
+        self.assertEqual(len(expected_programs), 1)
+        process_path = ctypes.create_string_buffer(4096)
+        self.assertGreater(api.proc_pidpath(broker_pid, process_path, len(process_path)), 0)
+        self.assertEqual(process_path.value, os.fsencode(expected_programs[0]), 'Broker executable identity differs')
+        self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
+        self.assertFalse(private_received_directory(api, broker_pid, candidate.st_dev, candidate.st_ino))
+        process = subprocess.Popen([str(APPLICATION / 'Contents/MacOS/ProxyPilot'),
+                                    '--vm-submit-without-reply', str(successor)],
+                                   **ordinary_owner_launch_parameters(self.fixture['owner']),
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            probe_stamp = private_process_stamp(api, process.pid, self.fixture['owner'])
+            wire_deadline = time.monotonic() + 20  # existing client budget
+            own_probe_marker(process, b'submit:partial-frame-sent\n', wire_deadline)
+            # Production receive authenticates peer/live code and socket before
+            # recvmsg installs SCM_RIGHTS. Observing the unique candidate vnode
+            # therefore proves that boundary, without any source/policy bypass.
+            barrier_deadline = min(wire_deadline, time.monotonic() + 1.5)
+            observed = False
+            while time.monotonic() < barrier_deadline:
+                self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
+                if private_received_directory(api, broker_pid, candidate.st_dev, candidate.st_ino):
+                    observed = True; break
+            self.assertTrue(observed, 'Authenticated partial-frame descriptor barrier not observed')
+            self.assertEqual(private_process_stamp(api, process.pid, self.fixture['owner']), probe_stamp)
+            # One shared observation budget begins before releasing G. The
+            # child's existing post-close 300s lifetime starts later, so it
+            # covers this deadline without extending our observation budget.
+            completion_deadline = time.monotonic() + 300
+            process.stdin.write(b'G'); process.stdin.flush()
+            own_probe_marker(process, b'submit:reply-socket-closed\n', wire_deadline)
+            # Observe the SAME broker reach handoffStarted. A crash/restart that
+            # happens to resume the transaction must not mask a SIGPIPE failure.
+            handed_off = False
+            while time.monotonic() < completion_deadline:
+                self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
+                progress = broker_record_diagnostics(SYSTEM_BASE / 'Broker', 'transaction')
+                if (progress.get('record') == 'valid' and progress.get('fromSequence') == 141
+                        and progress.get('toSequence') == 142 and progress.get('phase') == 'handoffStarted'):
+                    self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
+                    handed_off = True; break
+            self.assertTrue(handed_off, 'Original authenticated broker handoff not observed')
+            print('Ordinary lost-reply proof: ' + json.dumps({'authenticatedDescriptorObserved': True,
+                  'replySocketClosed': True, 'sameBrokerHandoffObserved': True, 'ordinaryProbeAlive': True}), flush=True)
+            self.assert_successor_installed(False, submitter=process, deadline=completion_deadline)
+            self.assertEqual(private_process_stamp(api, process.pid, self.fixture['owner']), probe_stamp)
+            process.stdin.write(b'Q'); process.stdin.flush()
+            self.assertEqual(process.wait(timeout=5), 0, 'Own ordinary probe failed after D completion')
+        finally:
+            # Popen owns this unreaped child, so its PID cannot be reused before
+            # poll/wait. Never signal a launchd process or arbitrary discovered PID.
+            if process.poll() is None:
+                process.terminate()
+                try: process.wait(timeout=3)
+                except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=3)
+            process.stdin.close(); process.stdout.close()
 
     def test_z_ordinary_owner_updates_repaired_c_desired_off(self): self.ordinary_update_after_repair(False)
     def test_z_ordinary_owner_updates_repaired_c_desired_on(self): self.ordinary_update_after_repair(True)

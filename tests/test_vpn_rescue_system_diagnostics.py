@@ -1,7 +1,13 @@
 """Unprivileged checks for redacted disposable-VM launchd diagnostics."""
 from pathlib import Path
+import array
+import ctypes
 import os
+import socket
 import stat
+import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch, Mock, call
@@ -11,6 +17,120 @@ import test_vpn_rescue_system_vm as vm
 
 
 class RescueSystemDiagnosticTests(unittest.TestCase):
+    def test_successor_observation_reuses_supplied_deadline_and_fixture_owner(self):
+        case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_update_completes_without_ready_receiver')
+        case.fixture = {'owner': 501, 'successorPins': {'synthetic': 'pin'}}
+        with tempfile.TemporaryDirectory(prefix='pp-successor-budget-') as folder:
+            base = Path(folder)
+            (base / 'Broker').mkdir()
+            transaction = bytearray(128); transaction[10:12] = (7).to_bytes(2, 'big')
+            (base / 'Broker/update-broker-transaction.bin').write_bytes(transaction)
+            with patch.object(vm, 'SYSTEM_BASE', base), patch.object(vm, 'APPLICATION', base / 'synthetic-app'), \
+                 patch.object(vm.time, 'monotonic', return_value=50), \
+                 patch.object(vm, 'code_pins', return_value=case.fixture['successorPins']), \
+                 patch.object(vm, 'ordinary_owner_command', return_value=SimpleNamespace(returncode=0, stdout='status:installed')) as status, \
+                 patch.object(case, 'assert_clean_release') as clean, patch.object(case, 'state_summary', return_value={}):
+                case.assert_successor_installed(False, deadline=100)
+                self.assertEqual([entry.args[0] for entry in status.call_args_list], [501, 501])
+                clean.assert_called_once_with(False, 142, case.fixture['successorPins'])
+
+    def test_expired_successor_budget_is_not_restarted(self):
+        case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_update_completes_without_ready_receiver')
+        with patch.object(vm.time, 'monotonic', return_value=100), \
+             patch.object(vm, 'code_pins') as pins, patch.object(vm, 'ordinary_owner_command') as status:
+            with self.assertRaisesRegex(AssertionError, 'budget expired'):
+                case.assert_successor_installed(False, deadline=99)
+            pins.assert_not_called(); status.assert_not_called()
+
+    def test_disconnected_vm_case_denies_before_inspection_or_process_launch(self):
+        case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_update_completes_without_ready_receiver')
+        with patch.object(vm, 'root_vm_enabled', return_value=False), \
+             patch.object(vm, 'private_process_api') as inspect, patch.object(vm.subprocess, 'Popen') as launch, \
+             patch.object(case, 'exercise') as repair:
+            with self.assertRaises(AssertionError): case.test_z_ordinary_owner_update_completes_without_ready_receiver()
+            inspect.assert_not_called(); launch.assert_not_called(); repair.assert_not_called()
+
+    def test_private_probe_uses_guarded_fixed_protocol_without_helper_test_flags(self):
+        source = (vm.ROOT / 'tests/vpn_rescue_system_probe_main.swift').read_text()
+        role = source[source.index('if args.count >= 2 && args[1] == "--vm-submit-without-reply"'):]
+        self.assertLess(role.index('guard ordinaryVMOwner()'), role.index('try submitWithoutReply('))
+        for required in ('VPNUpdateBrokerDaemon.endpointPath',
+                         'VPNUpdateBrokerProtocol.encode(try .submit(expectedFromSequence: 141))',
+                         'expectControl(0x47', 'close(channel); channel = -1', 'expectControl(0x51'):
+            self.assertIn(required, source)
+        self.assertNotIn('VPN_UPDATE_BROKER_TRANSPORT_TESTING', source)
+        self.assertNotIn('shutdown(', source)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'Darwin public proc_info ABI')
+    def test_private_proc_structures_match_installed_public_sdk(self):
+        source = r'''
+#include <libproc.h>
+#include <sys/proc_info.h>
+#include <stddef.h>
+#include <stdio.h>
+int main(void) {
+    printf("%zu %zu %zu %zu %zu %zu %zu\n", sizeof(struct proc_fdinfo), sizeof(struct vnode_fdinfo),
+        sizeof(struct proc_bsdinfo), offsetof(struct vnode_fdinfo, pvi.vi_stat.vst_dev),
+        offsetof(struct vnode_fdinfo, pvi.vi_stat.vst_ino), offsetof(struct proc_bsdinfo, pbi_uid),
+        offsetof(struct proc_bsdinfo, pbi_start_tvsec));
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='pp-own-proc-sdk-') as folder:
+            binary = Path(folder) / 'abi-check'
+            subprocess.run(['/usr/bin/clang', '-x', 'c', '-', '-o', str(binary)], input=source,
+                           capture_output=True, text=True, check=True, timeout=30)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, check=True, timeout=5)
+        self.assertEqual(list(map(int, result.stdout.split())), [ctypes.sizeof(vm.ProcFDInfo),
+            ctypes.sizeof(vm.VNodeFDInfo), ctypes.sizeof(vm.ProcBSDInfo),
+            vm.VNodeFDInfo.vnode.offset + vm.VNodeInfo.stat.offset + vm.VInfoStat.device.offset,
+            vm.VNodeFDInfo.vnode.offset + vm.VNodeInfo.stat.offset + vm.VInfoStat.inode.offset,
+            vm.ProcBSDInfo.uid.offset, vm.ProcBSDInfo.startSeconds.offset])
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'private Darwin AF_UNIX/libproc proof')
+    def test_partial_frame_fd_barrier_then_closed_reply_keeps_process_alive(self):
+        # Only this process, its socketpair and private temporary directory.
+        # Never a host endpoint, another process, Security API or root operation.
+        api = vm.private_process_api()
+        self.assertEqual(vm.private_process_stamp(api, os.getpid(), os.geteuid())[0], os.getpid())
+        with tempfile.TemporaryDirectory(prefix='pp-own-partial-frame-') as folder:
+            directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+            candidate = os.fstat(directory)
+            client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            received_descriptors = array.array('i')
+            try:
+                self.assertEqual(server.family, socket.AF_UNIX)
+                server.getpeername()  # before disconnect, as production auth does
+                token = server.getsockopt(0, 6, 32)  # SOL_LOCAL / LOCAL_PEERTOKEN
+                self.assertEqual(len(token), 32)
+                values = struct.unpack('=8I', token)
+                self.assertEqual((values[1], values[5]), (os.geteuid(), os.getpid()))
+                uid, gid = ctypes.c_uint32(), ctypes.c_uint32()
+                libc = ctypes.CDLL(None, use_errno=True)
+                self.assertEqual(libc.getpeereid(server.fileno(), ctypes.byref(uid), ctypes.byref(gid)), 0)
+                self.assertEqual(uid.value, os.geteuid())
+                frame = struct.pack('>8sHQ', b'PPVPNB01', 1, 141)
+                self.assertEqual(client.sendmsg([frame[:1]], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                                              array.array('i', [directory]))]), 1)
+                os.close(directory); directory = None
+                self.assertFalse(vm.private_received_directory(api, os.getpid(), candidate.st_dev, candidate.st_ino))
+                first, ancillary, flags, _ = server.recvmsg(len(frame), socket.CMSG_SPACE(array.array('i').itemsize))
+                self.assertEqual(first, frame[:1])
+                self.assertEqual(flags & socket.MSG_CTRUNC, 0)
+                self.assertEqual(len(ancillary), 1)
+                level, kind, data = ancillary[0]
+                self.assertEqual((level, kind), (socket.SOL_SOCKET, socket.SCM_RIGHTS))
+                received_descriptors.frombytes(data)
+                self.assertEqual(len(received_descriptors), 1)
+                self.assertTrue(vm.private_received_directory(api, os.getpid(), candidate.st_dev, candidate.st_ino))
+                client.sendall(frame[1:]); client.close()
+                self.assertEqual(first + server.recv(len(frame) - 1), frame)
+                with self.assertRaises(BrokenPipeError): server.send(b'fixed-ready-response')
+                self.assertEqual(vm.private_process_stamp(api, os.getpid(), os.geteuid())[0], os.getpid())
+            finally:
+                client.close(); server.close()
+                if directory is not None: os.close(directory)
+                for descriptor in received_descriptors: os.close(descriptor)
+
     @staticmethod
     def broker_record(kind):
         data = bytearray(48 if kind == 'status' else 128)
