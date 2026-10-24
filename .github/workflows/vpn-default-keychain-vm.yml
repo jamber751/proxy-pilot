@@ -1,0 +1,48 @@
+name: VPN genuine default Keychain disposable VM
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-default-keychain-vm.yml'
+      - 'app/VPNPassword*.swift'
+      - 'app/VPNLegacyPasswordBackend.swift'
+      - 'app/VPNStore.swift'
+      - 'app/VPNConfiguration.swift'
+      - 'app/main.swift'
+      - 'app/build.sh'
+      - 'tests/test_vpn_default_keychain_frontend_vm.py'
+      - 'tests/vpn_default_keychain_frontend_vm.swift'
+      - 'tests/test_vpn_password_frontend.py'
+      - 'tests/vpn_legacy_password_backend_vm_checks.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  genuine-default:
+    name: Genuine factory ${{ matrix.case }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+        case: [roundtrip, cross-image]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Source, custody and negative native guards without any Keychain API
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_default_keychain_frontend_vm.GenuineDefaultSourceGuardTests test_vpn_default_keychain_frontend_vm.GenuineDefaultNativeGuardTests -v
+      - name: Actual genuine factory roundtrip; restore exact prior VM default
+        if: matrix.case == 'roundtrip'
+        env:
+          PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS: '1'
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_default_keychain_frontend_vm.GenuineDefaultKeychainVMTests.test_genuine_default_factory_roundtrip_restores_exact_prior -v
+      - name: Cross-image ACL behavior and conservative unknown custody in separate VM
+        if: matrix.case == 'cross-image'
+        env:
+          PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS: '1'
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_default_keychain_frontend_vm.GenuineDefaultKeychainVMTests.test_genuine_cross_image_access_and_unknown_custody -v

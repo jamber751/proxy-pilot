@@ -2,6 +2,7 @@
 normal app mode, proxies, VPN or a credential/interaction-setting API.
 """
 from pathlib import Path
+import hashlib
 import os
 import shutil
 import signal
@@ -11,6 +12,32 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def snapshot_frontend_sources(snapshot):
+    snapshot = Path(snapshot)
+    # Capture only public source/build inputs, never app/build artifacts,
+    # profiles or a user's application state. Both architectures compile
+    # the same bytes even if another task subsequently edits the checkout.
+    paths = [ROOT / name for name in ('app/build.sh', 'app/fetch-sparkle.sh',
+                                     'app/updater-public-key.txt', 'bin/proxypilot')]
+    for directory in ('app', 'app/vpn-helper', 'app/update-worker'):
+        paths.extend(sorted((ROOT / directory).glob('*.swift')))
+    captured = {path: path.read_bytes() for path in paths}
+    for path, data in captured.items():
+        target = snapshot / path.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        target.chmod(path.stat().st_mode & 0o777)
+    if any(path.read_bytes() != data for path, data in captured.items()):
+        raise AssertionError('Frontend sources changed during snapshot')
+    archive = ROOT / 'vendor/sparkle-2.9.6/Sparkle.zip'
+    if archive.is_file():
+        target = snapshot / archive.relative_to(ROOT)
+        target.parent.mkdir(parents=True)
+        shutil.copyfile(archive, target)
+    return {str(path.relative_to(ROOT)): hashlib.sha256(data).hexdigest()
+            for path, data in captured.items()}
 
 
 class VPNPasswordFrontendContractTests(unittest.TestCase):
@@ -44,26 +71,7 @@ class VPNPasswordGenuineFrontendTests(unittest.TestCase):
         cls.addClassCleanup(cls.folder.cleanup)
         folder = Path(cls.folder.name)
         snapshot = folder / 'Source'
-        # Capture only public source/build inputs, never app/build artifacts,
-        # profiles or a user's application state. Both architectures compile
-        # the same bytes even if another task subsequently edits the checkout.
-        paths = [ROOT / name for name in ('app/build.sh', 'app/fetch-sparkle.sh',
-                                         'app/updater-public-key.txt', 'bin/proxypilot')]
-        for directory in ('app', 'app/vpn-helper', 'app/update-worker'):
-            paths.extend(sorted((ROOT / directory).glob('*.swift')))
-        captured = {path: path.read_bytes() for path in paths}
-        for path, data in captured.items():
-            target = snapshot / path.relative_to(ROOT)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-            target.chmod(path.stat().st_mode & 0o777)
-        if any(path.read_bytes() != data for path, data in captured.items()):
-            raise AssertionError('Frontend sources changed during snapshot')
-        archive = ROOT / 'vendor/sparkle-2.9.6/Sparkle.zip'
-        if archive.is_file():
-            target = snapshot / archive.relative_to(ROOT)
-            target.parent.mkdir(parents=True)
-            shutil.copyfile(archive, target)
+        snapshot_frontend_sources(snapshot)
         environment = dict(os.environ, PROXYPILOT_VPN_INSTALLER='1',
                            PROXYPILOT_VPN_RELEASE_SEQUENCE='140', PROXYPILOT_ISOLATED_UPDATER='1')
         output = folder / 'Build'
