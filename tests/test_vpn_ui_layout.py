@@ -165,11 +165,11 @@ private func secureField(_ view: NSView) -> VPNSecretField.Field? {
     if let field = view as? VPNSecretField.Field { return field }
     return view.subviews.lazy.compactMap { secureField($0) }.first
 }
-for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save", "feedback-saving", "feedback-saved", "feedback-unconfirmed"] {
+for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save", "feedback-saving", "feedback-saved", "feedback-unconfirmed", "feedback-read-confirmation"] {
     let panel = VPNPanelModel(preview: true)
     if scenario != "import" {
-        try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : scenario == "credential-save" ? 1 : 0,
-                      credentials: scenario.hasPrefix("auth") || scenario == "credential-save")
+        try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : (scenario == "credential-save" || scenario == "feedback-read-confirmation") ? 1 : 0,
+                      credentials: scenario.hasPrefix("auth") || scenario == "credential-save" || scenario == "feedback-read-confirmation")
         panel.settings = true
     }
     if scenario == "resource" {
@@ -180,9 +180,13 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         if scenario == "auth-save" { panel.choosePasswordPersistence(true) }
         if scenario == "auth-otp" { panel.selectAuthentication(.oneTimePassword) }
     }
-    if scenario == "credential-save" { panel.choosePasswordPersistence(true); panel.saveAuthentication() }
+    if scenario == "credential-save" || scenario == "feedback-read-confirmation" {
+        panel.choosePasswordPersistence(true); panel.saveAuthentication()
+    }
     if scenario.hasPrefix("feedback-") {
-        panel.settings = false; panel.liveState = .connected
+        panel.settings = false
+        panel.liveState = scenario == "feedback-read-confirmation" ? .needsCredential(.vpnPassword) : .connected
+        if scenario == "feedback-read-confirmation" { panel.credentialPromptIdentifier = UUID() }
         let phase: VPNPasswordPersistenceEvent.Phase = scenario == "feedback-saving" ? .saving
             : scenario == "feedback-saved" ? .saved : .needsConfirmation
         panel.passwordPersistenceEvent = VPNPasswordPersistenceEvent(intentIdentifier: UUID(),
@@ -206,7 +210,8 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     if scenario.hasPrefix("feedback-") {
         // onAppear's preview refresh deliberately reports unavailable; inject
         // the presentation-only connected state after that lifecycle action.
-        panel.liveState = .connected
+        panel.liveState = scenario == "feedback-read-confirmation" ? .needsCredential(.vpnPassword) : .connected
+        if scenario == "feedback-read-confirmation" { panel.credentialPromptIdentifier = UUID() }
         for _ in 0..<3 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
     }
     if scenario.hasPrefix("credential-") {
@@ -237,6 +242,9 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     case "auth-otp":
         required += ["vpnAuthenticationSave"]
         precondition(bounds["vpnSavePassword"] == nil, "OTP offered password saving")
+    case "feedback-read-confirmation":
+        required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel", "vpnStatusDetail"]
+        precondition(panel.statusDetail.contains("Сохранение пароля не подтверждено."), "Manual lookup warning hidden")
     case "feedback-saving", "feedback-saved", "feedback-unconfirmed":
         required += ["vpnPower", "vpnSettings", "vpnStatusDetail"]
         precondition(panel.statusDetail.contains("\n"), "Save feedback not rendered")
@@ -250,6 +258,13 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         precondition(frame.minX >= -0.5 && frame.maxX <= 344.5 &&
                      frame.minY >= -0.5 && frame.maxY <= 432.5,
                      "Overflow \(name) in \(scenario): \(frame)")
+    }
+    if scenario == "feedback-read-confirmation" {
+        panel.liveState = .needsCredential(.privateKeyPassword)
+        precondition(!panel.statusDetail.contains("не подтверждено"), "Private-key prompt showed static-cache warning")
+        try panel.configuration.setAuthentication(mode: .oneTimePassword, login: "employee")
+        panel.liveState = .needsCredential(.vpnPassword)
+        precondition(!panel.statusDetail.contains("не подтверждено"), "OTP prompt showed static-cache warning")
     }
     let rendered = required.map { "\($0)=\(bounds[$0]!)" }.joined(separator: ", ")
     print("\(scenario): \(rendered)")
@@ -294,7 +309,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count(': vpnBack='), 14, result.stdout)
+            self.assertEqual(result.stdout.count(': vpnBack='), 15, result.stdout)
 
 
 if __name__ == '__main__':

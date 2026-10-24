@@ -58,8 +58,12 @@ private final class PromptSession: VPNLiveSession {
 }
 
 private final class PanelPasswordSession: VPNPasswordPersistenceSession {
-    var adds = 0
-    func read(store: VPNStore, reference: VPNPasswordReference, revision: UInt64) throws -> Data? { nil }
+    var adds = 0, reads = 0
+    func read(store: VPNStore, reference: VPNPasswordReference, revision: UInt64) throws -> Data? {
+        try store.readPassword(reference: reference, expectedRevision: revision) { _, _ in
+            reads += 1; return nil
+        }
+    }
     func addOnce(store: VPNStore, reference: VPNPasswordReference, revision: UInt64,
                  secret: inout Data) throws -> VPNPasswordAddOutcome {
         try store.addPasswordOnce(reference: reference, expectedRevision: revision) { reference in
@@ -124,15 +128,35 @@ private final class PanelPasswordSession: VPNPasswordPersistenceSession {
                 return a[1] == "feedback-unconfirmed" ? nil : passwordSession
             }, schedule: { queuedSaves.append($0) }) : testingConsent ? VPNPasswordPersistenceCoordinator(store: store,
             available: a[1] != "consent-unavailable") : nil
+        if a[1] == "feedback-read-fallback" {
+            let state = try store.load()!
+            let reference = try store.grantPasswordPersistence(expectedRevision: state.saved.configuration.revision)
+            var initial = Data("synthetic previously saved password".utf8)
+            _ = try passwordSession.addOnce(store: store, reference: reference,
+                revision: state.saved.configuration.revision, secret: &initial)
+            initial.resetBytes(in: 0..<initial.count); initial.removeAll()
+            passwordSession.adds = 0
+        }
         let controller = VPNLiveController(store: store, passwordPersistence: cache, openSession: { session })
         let panel = VPNPanelModel(configuration: configuration, controller: controller)
         if testingFeedback {
             try require(panel.passwordPersistenceDetail == nil, "feedback invented before connection")
             panel.toggle(); try wait(panel)
+            if a[1] == "feedback-read-fallback" {
+                let warning = "Сохранение пароля не подтверждено."
+                try require(panel.needsCredential && !panel.connected && session.submissions == 0
+                    && passwordSession.reads == 1 && panel.passwordPersistenceDetail == warning
+                    && panel.statusDetail.contains(warning),
+                    "cache read failure warning hidden from the manual password prompt")
+            }
             panel.secret = "synthetic static password"
             panel.submitCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier); try wait(panel)
             try require(panel.connected && panel.secret.isEmpty && panel.message.isEmpty,
                         "feedback affected VPN state or retained input")
+            if a[1] == "feedback-read-fallback" {
+                try require(panel.passwordPersistenceDetail == nil && !panel.statusDetail.contains("не подтверждено"),
+                            "old lookup warning survived a newer manual intent")
+            }
             if a[1] == "feedback-inert" {
                 try require(queuedSaves.isEmpty && panel.passwordPersistenceDetail == nil, "inert driver displayed feedback")
             } else {

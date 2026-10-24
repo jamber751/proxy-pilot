@@ -138,11 +138,17 @@ final class VPNPanelModel: ObservableObject {
             return passwordPersistenceDetail.map { detail + "\n" + $0 } ?? detail
         case .needsCredential(.privateKeyPassword): return "Пароль нужен только для этой попытки подключения."
         case .needsCredential(.vpnPassword):
-            return configuration.configuration.authentication?.mode == .oneTimePassword
-                ? "Введите текущий код или комбинацию, которую выдал администратор."
-                : passwordPersistenceAvailable && configuration.configuration.authentication?.credentialPersistence == .keychain
-                    ? "Пароль сохранится после успешного подключения."
-                    : "Введите пароль VPN. Он не сохраняется."
+            if configuration.configuration.authentication?.mode == .oneTimePassword {
+                return "Введите текущий код или комбинацию, которую выдал администратор."
+            }
+            if configuration.configuration.authentication?.mode == .password,
+               passwordPersistenceEvent?.phase == .needsConfirmation,
+               let detail = passwordPersistenceDetail {
+                return "Введите пароль VPN.\n" + detail
+            }
+            return passwordPersistenceAvailable && configuration.configuration.authentication?.credentialPersistence == .keychain
+                ? "Попробуем сохранить пароль после подключения."
+                : "Введите пароль VPN. Он не сохраняется."
         case .unavailable: return "Компонент VPN недоступен. Проверьте установку и попробуйте ещё раз."
         default: return ready ? "Одно нажатие подключит выбранные ресурсы." : "Откройте настройки и завершите три шага."
         }
@@ -796,7 +802,7 @@ struct VPNPanelView: View {
                 }
                 Text(panel.authenticationChoice == .oneTimePassword ? "Одноразовый код не сохраняется." :
                      panel.passwordPersistenceSelected && panel.passwordPersistenceAvailable ?
-                     "Пароль сохранится после успешного подключения." : "Пароль вводится при подключении.")
+                     "Попробуем сохранить пароль после подключения." : "Пароль вводится при подключении.")
                     .font(.system(size: 9)).foregroundColor(.secondary)
             } else {
                 HStack(spacing: 9) {

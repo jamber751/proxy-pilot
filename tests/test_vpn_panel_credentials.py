@@ -53,7 +53,7 @@ class VPNPanelCredentialTests(unittest.TestCase):
     def test_submit_clears_field_and_completed_identity(self): self.run_case('submit')
 
     def test_save_feedback_uses_latest_phase_and_does_not_change_vpn_state(self):
-        for scenario in ('saved', 'saving', 'unconfirmed', 'inert', 'revoke', 'disconnect'):
+        for scenario in ('saved', 'saving', 'unconfirmed', 'inert', 'revoke', 'disconnect', 'read-fallback'):
             with self.subTest(scenario=scenario): self.run_case('feedback-' + scenario)
 
     def test_explicit_save_choice_is_bound_to_login_and_only_changes_metadata(self):
