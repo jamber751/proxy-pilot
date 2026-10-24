@@ -13,6 +13,59 @@ enum VPNDefaultKeychainVMEntry {
         case baseline, path, createA, createB, setA, setB, addA, addB, readA, readB
         case otherRead, otherDelete, deleteA, deleteB, restore, removeA, removeB
     }
+    // Closed VM-only diagnostics around existing calls. No extra Security API
+    // preflight and no changes to the genuine worker/backend source or factory.
+    enum TraceStage: String {
+        case targetAnchor, expectedDefault, setAPI, resultDefault, requireDefault
+        case prepare, begin, dispatch, locatorProof, children, ledger, definite
+    }
+    enum ErrorCategory: String {
+        case invalid, denied, unavailable, transport, timeout
+        case guardFailed, checkFailed, apiFailed, ambiguous, other
+    }
+    enum AnchorRole: String { case standalone, target, expected, actual }
+    enum AnchorFailure: String { case heldStat, heldIdentity, heldLink, namedStat, namedIdentity, namedRegular }
+    static func category(_ error: Error) -> ErrorCategory {
+        if let error = error as? VPNPasswordWorkerError {
+            switch error {
+            case .invalid: return .invalid
+            case .denied: return .denied
+            case .unavailable: return .unavailable
+            case .transport: return .transport
+            case .timeout: return .timeout
+            }
+        }
+        if let error = error as? VPNPeerAuthenticationError {
+            switch error { case .invalidPolicy: return .invalid; case .denied: return .denied }
+        }
+        if let error = error as? Failure {
+            switch error {
+            case .guardFailed: return .guardFailed
+            case .checkFailed: return .checkFailed
+            case .apiFailed: return .apiFailed
+            case .ambiguous: return .ambiguous
+            }
+        }
+        return .other
+    }
+    static func trace<T>(_ step: Step, _ stage: TraceStage, _ operation: () throws -> T) throws -> T {
+        let prefix = "default-keychain-vm:boundary=" + step.rawValue + ":stage=" + stage.rawValue
+        print(prefix + ":event=begin"); fflush(stdout)
+        do {
+            let result = try operation()
+            print(prefix + ":event=ok"); fflush(stdout)
+            return result
+        } catch {
+            print(prefix + ":event=fail:category=" + category(error).rawValue); fflush(stdout)
+            throw error
+        }
+    }
+    static func anchorCheck(_ value: Bool, role: AnchorRole, failure: AnchorFailure) throws {
+        guard value else {
+            print("default-keychain-vm:anchor=" + role.rawValue + ":failure=" + failure.rawValue); fflush(stdout)
+            throw Failure.guardFailed
+        }
+    }
     enum OtherRead: String { case allowed, fallback }
     enum OtherDelete: String { case deleted, unavailable, notFound, indeterminate }
     static let secretA = Data("genuine-static-password-A".utf8)
@@ -80,14 +133,20 @@ enum VPNDefaultKeychainVMEntry {
             self.canonical = String(cString: full); transferred = true
         }
         deinit { close(descriptor) }
-        func validate() throws {
+        func validate(role: AnchorRole = .standalone) throws {
             var held = stat(), named = stat()
             let name = try path(keychain)
-            guard fstat(descriptor, &held) == 0, same(held, attributes), held.st_nlink == 1,
-                  lstat(name, &named) == 0, same(held, named), named.st_mode & S_IFMT == S_IFREG else { throw Failure.guardFailed }
+            // Same strict checks and short-circuit syscall order as before.
+            // Categories reveal neither paths nor inode/UID values.
+            try anchorCheck(fstat(descriptor, &held) == 0, role: role, failure: .heldStat)
+            try anchorCheck(same(held, attributes), role: role, failure: .heldIdentity)
+            try anchorCheck(held.st_nlink == 1, role: role, failure: .heldLink)
+            try anchorCheck(lstat(name, &named) == 0, role: role, failure: .namedStat)
+            try anchorCheck(same(held, named), role: role, failure: .namedIdentity)
+            try anchorCheck(named.st_mode & S_IFMT == S_IFREG, role: role, failure: .namedRegular)
         }
         func matches(_ other: DefaultAnchor) throws -> Bool {
-            try validate(); try other.validate()
+            try validate(role: .expected); try other.validate(role: .actual)
             return canonical == other.canonical && same(attributes, other.attributes)
         }
     }
@@ -219,11 +278,12 @@ enum VPNDefaultKeychainVMEntry {
             && locator.origin.birthNanoseconds == UInt32(info.st_birthtimespec.tv_nsec))
     }
     static func setDefault(_ root: Root, target: DefaultAnchor, expected: DefaultAnchor, step: Step) throws {
-        try target.validate(); try requireDefault(expected)
-        try root.begin(step)
-        try status(step) { SecKeychainSetDefault(target.keychain) }
-        try requireDefault(target)
-        try root.definite(step)
+        try trace(step, .targetAnchor) { try target.validate(role: .target) }
+        try trace(step, .expectedDefault) { try requireDefault(expected) }
+        try trace(step, .begin) { try root.begin(step) }
+        try trace(step, .setAPI) { try status(step) { SecKeychainSetDefault(target.keychain) } }
+        try trace(step, .resultDefault) { try requireDefault(target) }
+        try trace(step, .definite) { try root.definite(step) }
     }
     static func joinChildren() throws {
         let deadline = DispatchTime.now().uptimeNanoseconds + 7_000_000_000
@@ -272,16 +332,21 @@ enum VPNDefaultKeychainVMEntry {
     }
     static func add(_ root: Root, _ store: VPNStore, reference: VPNPasswordReference, revision: UInt64,
                     secret: Data, target: Created, step: Step) throws -> VPNPasswordItemLocator {
-        try requireDefault(target.anchor)
-        let session = try VPNPasswordWorkerSession.prepare(store: store)
-        try root.begin(step)
+        try trace(step, .requireDefault) { try requireDefault(target.anchor) }
+        let session = try trace(step, .prepare) { try VPNPasswordWorkerSession.prepare(store: store) }
+        try trace(step, .begin) { try root.begin(step) }
         var bytes = secret
         defer { VPNPasswordWorkerWire.clear(&bytes) }
-        let result = try session.addOnce(store: store, reference: reference, revision: revision, secret: &bytes)
-        guard case .added(let locator) = result else { throw Failure.ambiguous }
-        try prove(locator, target); try joinChildren()
-        try check(store.load()?.passwordLedger.active?.locator == locator)
-        try root.definite(step)
+        let result = try trace(step, .dispatch) {
+            try session.addOnce(store: store, reference: reference, revision: revision, secret: &bytes)
+        }
+        let locator = try trace(step, .locatorProof) { () throws -> VPNPasswordItemLocator in
+            guard case .added(let locator) = result else { throw Failure.ambiguous }
+            try prove(locator, target); return locator
+        }
+        try trace(step, .children) { try joinChildren() }
+        try trace(step, .ledger) { try check(store.load()?.passwordLedger.active?.locator == locator) }
+        try trace(step, .definite) { try root.definite(step) }
         return locator
     }
     static func delete(_ root: Root, _ store: VPNStore, reference: VPNPasswordReference, step: Step) throws {

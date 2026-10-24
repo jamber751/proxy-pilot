@@ -26,6 +26,16 @@ ROLE = '--vpn-default-keychain-vm'
 OPT_IN = b'PROXYPILOT-DISPOSABLE-DEFAULT-KEYCHAIN-01'
 COMPLETE = b'POSITIVE-RESTORED-AND-DELETED'
 PRESERVED = b'EXPECTED-UNKNOWN-PRESERVED'
+TRACE_STAGES = {
+    **{step: {'targetAnchor', 'expectedDefault', 'begin', 'setAPI', 'resultDefault', 'definite'}
+       for step in ('setA', 'setB', 'restore')},
+    **{step: {'requireDefault', 'prepare', 'begin', 'dispatch', 'locatorProof', 'children', 'ledger', 'definite'}
+       for step in ('addA', 'addB')},
+}
+TRACE_ERRORS = {'invalid', 'denied', 'unavailable', 'transport', 'timeout',
+                'guardFailed', 'checkFailed', 'apiFailed', 'ambiguous', 'other'}
+ANCHOR_ROLES = {'standalone', 'target', 'expected', 'actual'}
+ANCHOR_FAILURES = {'heldStat', 'heldIdentity', 'heldLink', 'namedStat', 'namedIdentity', 'namedRegular'}
 STEPS = {'baseline', 'path', 'createA', 'createB', 'setA', 'setB', 'addA', 'addB', 'readA', 'readB',
          'otherRead', 'otherDelete', 'deleteA', 'deleteB', 'restore', 'removeA', 'removeB'}
 
@@ -140,6 +150,13 @@ def safe_events(text):
         found = re.fullmatch(r'default-keychain-vm:phase=([A-Za-z]+):status=(-?[0-9]{1,10})', row)
         if found and found[1] in STEPS and -(2**31) <= int(found[2]) < 2**31:
             result.append('phase=' + found[1] + ':status=' + found[2]); continue
+        trace = re.fullmatch(r'default-keychain-vm:boundary=([A-Za-z]+):stage=([A-Za-z]+):event=(begin|ok|fail)(?::category=([A-Za-z]+))?', row)
+        if trace and trace[2] in TRACE_STAGES.get(trace[1], set()):
+            if (trace[3] == 'fail' and trace[4] in TRACE_ERRORS) or (trace[3] != 'fail' and trace[4] is None):
+                result.append(row); continue
+        anchor = re.fullmatch(r'default-keychain-vm:anchor=([A-Za-z]+):failure=([A-Za-z]+)', row)
+        if anchor and anchor[1] in ANCHOR_ROLES and anchor[2] in ANCHOR_FAILURES:
+            result.append(row); continue
         if row in ('default-keychain-vm:outcome=failed', 'default-keychain-vm:outcome=restored-and-clean',
                    'default-keychain-vm:outcome=preserved-unknown', 'default-keychain-vm:cross-read=allowed',
                    'default-keychain-vm:cross-read=fallback', 'default-keychain-vm:cross-delete=positive',
@@ -200,6 +217,57 @@ class GenuineDefaultSourceGuardTests(unittest.TestCase):
         entry = fixture.split('static func runIfRequested(arguments:', 1)[1].split('static func check(', 1)[0]
         self.assertLess(entry.index('GITHUB_ACTIONS'), entry.index('Root.open('))
         self.assertLess(entry.index('PROXYPILOT_VM_DEFAULT_KEYCHAIN_TESTS'), entry.index('runFresh('))
+
+    def test_closed_boundary_and_anchor_categories_are_exactly_whitelisted(self):
+        accepted = []
+        for step, stages in TRACE_STAGES.items():
+            for stage in stages:
+                prefix = 'default-keychain-vm:boundary=' + step + ':stage=' + stage
+                accepted += [prefix + ':event=begin', prefix + ':event=ok']
+                accepted += [prefix + ':event=fail:category=' + category for category in TRACE_ERRORS]
+        accepted += ['default-keychain-vm:anchor=' + role + ':failure=' + failure
+                     for role in ANCHOR_ROLES for failure in ANCHOR_FAILURES]
+        for row in accepted:
+            self.assertEqual(safe_events(row), [row])
+        rejected = [
+            'default-keychain-vm:boundary=addA:stage=prepare:event=fail',
+            'default-keychain-vm:boundary=addA:stage=prepare:event=ok:category=denied',
+            'default-keychain-vm:boundary=addA:stage=setAPI:event=begin',
+            'default-keychain-vm:boundary=baseline:stage=prepare:event=begin',
+            'default-keychain-vm:boundary=addA:stage=PRIVATE:event=begin',
+            'default-keychain-vm:boundary=addA:stage=prepare:event=fail:category=PRIVATE',
+            'default-keychain-vm:anchor=PRIVATE:failure=heldLink',
+            'default-keychain-vm:anchor=expected:failure=PRIVATE',
+        ]
+        rejected += [row + ' /private/path item secret' for row in accepted]
+        rejected += [row + ':path=/private/path' for row in accepted]
+        for row in rejected:
+            self.assertEqual(safe_events(row), [])
+        self.assertEqual(safe_events('\n'.join(['default-keychain-vm:anchor=expected:failure=heldLink'] * 300)),
+                         ['default-keychain-vm:anchor=expected:failure=heldLink'] * 256)
+
+    def test_diagnostics_wrap_existing_calls_without_changing_unknown_custody(self):
+        fixture = fixture_source()
+        add = fixture.split('static func add(_ root:', 1)[1].split('static func delete(_ root:', 1)[0]
+        for first, second in [('requireDefault', 'prepare'), ('prepare', 'begin'), ('begin', 'dispatch'),
+                              ('dispatch', 'locatorProof'), ('locatorProof', 'children'),
+                              ('children', 'ledger'), ('ledger', 'definite')]:
+            self.assertLess(add.index('trace(step, .' + first + ')'), add.index('trace(step, .' + second + ')'))
+        self.assertEqual(add.count('VPNPasswordWorkerSession.prepare('), 1)
+        self.assertEqual(add.count('session.addOnce('), 1)
+        self.assertEqual(add.count('root.begin(step)'), 1)
+        self.assertEqual(add.count('root.definite(step)'), 1)
+        self.assertEqual(fixture.count('SecKeychainSetDefault('), 1)
+        anchor = fixture.split('func validate(role:', 1)[1].split('func matches(', 1)[0]
+        self.assertEqual(anchor.count('fstat(descriptor'), 1)
+        self.assertEqual(anchor.count('lstat(name'), 1)
+        for required in ('same(held, attributes)', 'held.st_nlink == 1', 'same(held, named)',
+                         'named.st_mode & S_IFMT == S_IFREG'):
+            self.assertIn(required, anchor)
+        trace = fixture.split('static func trace<T>', 1)[1].split('static func anchorCheck(', 1)[0]
+        for forbidden in ('SecKeychain', 'VPNPasswordWorker.prepare', 'String(describing:', '.localizedDescription'):
+            self.assertNotIn(forbidden, trace)
+        self.assertIn('throw error', trace)
 
     def test_two_sentinels_and_positive_completion_are_required_for_file_cleanup(self):
         with tempfile.TemporaryDirectory(prefix='pp-default-custody-') as folder:
