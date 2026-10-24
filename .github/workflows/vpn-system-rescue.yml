@@ -1,6 +1,15 @@
 name: VPN complete system rescue acceptance
 
 on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-system-rescue.yml'
+      - 'tests/test_vpn_rescue_system_vm.py'
+      - 'tests/vpn_rescue_system_*.swift'
+      - 'tests/fixtures/vpn-frozen139-production-sources.sha256'
+      - 'app/vpn-helper/**'
+      - 'app/vpn-rescue/**'
   workflow_dispatch:
 
 permissions:
