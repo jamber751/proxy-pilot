@@ -72,6 +72,19 @@ def socket_diagnostic(line):
                 and -(2**31) <= int(match[3]) < 2**31)
 
 
+ROUTE_STAGES = {'baselineLookup', 'baselineAdd', 'baselineVerify', 'baselineCleanup', 'transaction', 'crash'}
+ROUTE_OPERATIONS = {'get', 'add', 'delete', 'open', 'unknown'}
+ROUTE_DIRECTIONS = {'setup', 'call', 'send', 'receive'}
+ROUTE_CATEGORIES = {'begin', 'ok', 'posix', 'kernel', 'transport', 'timeout', 'closed', 'other'}
+
+
+def route_diagnostic(line):
+    match = re.fullmatch(r'API route stage=([A-Za-z]+) family=(0|4|6) op=([A-Za-z]+) direction=([A-Za-z]+) category=([A-Za-z]+) errno=([0-9]{1,10})', line)
+    return bool(match and match[1] in ROUTE_STAGES and match[3] in ROUTE_OPERATIONS
+                and match[4] in ROUTE_DIRECTIONS and match[5] in ROUTE_CATEGORIES
+                and 0 <= int(match[6]) < 2**31)
+
+
 def live(binary):
     if not allowed(os.getuid(), os.geteuid(), os.environ):
         raise RuntimeError('guardDenied')
@@ -101,7 +114,7 @@ def live(binary):
     diagnostics = 0
     proofs = []
     for line in lines:
-        if socket_diagnostic(line):
+        if socket_diagnostic(line) or route_diagnostic(line):
             diagnostics += 1
             if diagnostics > 256: raise RuntimeError('outputProtocol')
             print(line)
@@ -135,6 +148,21 @@ class DiagnosticProtocolTests(unittest.TestCase):
                      'API socket role=protected stage=sendError value=22\nPRIVATE'):
             self.assertFalse(socket_diagnostic(line))
 
+    def test_closed_route_stage_family_operation_direction_and_numeric_errors(self):
+        for stage in ROUTE_STAGES:
+            for family in ('0', '4', '6'):
+                for operation in ROUTE_OPERATIONS:
+                    for direction in ROUTE_DIRECTIONS:
+                        for category in ROUTE_CATEGORIES:
+                            row = f'API route stage={stage} family={family} op={operation} direction={direction} category={category} errno=3'
+                            self.assertTrue(route_diagnostic(row))
+        row = 'API route stage=baselineLookup family=6 op=get direction=send category=posix errno=3'
+        for invalid in (row + ' private', row.replace('baselineLookup', '/private/path'),
+                        row.replace('family=6', 'family=5'), row.replace('op=get', 'op=flush'),
+                        row.replace('direction=send', 'direction=private'), row.replace('category=posix', 'category=private'),
+                        row.replace('errno=3', 'errno=-1'), row.replace('errno=3', 'errno=2147483648')):
+            self.assertFalse(route_diagnostic(invalid))
+
     def test_observations_cannot_replace_any_required_proof(self):
         from unittest.mock import MagicMock
         process = MagicMock()
@@ -144,7 +172,10 @@ class DiagnosticProtocolTests(unittest.TestCase):
             process.communicate.return_value = (output, '')
             with patch(__name__ + '.allowed', return_value=True), patch('subprocess.Popen', return_value=process), patch('builtins.print'):
                 live('unused-mocked-binary')
-        run(observation + '\n' + '\n'.join('PASS ' + marker for marker in sorted(PASS_MARKERS)))
+        route = 'API route stage=baselineLookup family=6 op=get direction=send category=posix errno=3'
+        run(observation + '\n' + route + '\n' + '\n'.join('PASS ' + marker for marker in sorted(PASS_MARKERS)))
+        with self.assertRaisesRegex(RuntimeError, '^missingProof$'):
+            run(route)
         with self.assertRaisesRegex(RuntimeError, '^missingProof$'):
             run(observation)
         with self.assertRaisesRegex(RuntimeError, '^outputProtocol$'):

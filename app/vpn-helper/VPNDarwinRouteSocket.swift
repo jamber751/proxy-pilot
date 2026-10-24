@@ -615,6 +615,16 @@ final class VPNDarwinRouteSocket {
                           deadline: DispatchTime,
                           ordinaryLookupFamily: VPNRouteAddressFamily? = nil) throws -> VPNDarwinRouteSnapshot? {
         do { try transport.send(request, deadline: deadline) }
+        catch VPNRouteSocketTransportError.posix(let code) where type == UInt8(RTM_GET) && code == ESRCH {
+            // Ordinary public RTM_GET misses can fail write() synchronously:
+            // route_output -> senderr(ESRCH) -> flush -> return error.
+            // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/rtsock.c
+            // ONLY this exact send-time result is kernel absence. Never apply
+            // it to read errors, other errno values or ADD/DELETE uncertainty.
+            // A queued old error is skipped by the existing PID/sequence gate;
+            // no drain/wait is invented. Backlogs still fail at the 128 cap.
+            throw VPNDarwinRouteError.kernel(ESRCH)
+        }
         catch { throw translate(error) }
         for _ in 0..<128 {
             let data: Data

@@ -71,6 +71,77 @@ private enum SocketDiagnostic {
     }
 }
 
+// Fixture-only route call boundaries and transport error direction. The wrapper
+// forwards every existing production syscall once, with the original deadline.
+private enum RouteDiagnostic {
+    enum Stage: String { case baselineLookup, baselineAdd, baselineVerify, baselineCleanup, transaction, crash }
+    enum Operation: String { case get, add, delete, open, unknown }
+    enum Direction: String { case setup, call, send, receive }
+    enum Category: String { case begin, ok, posix, kernel, transport, timeout, closed, other }
+    static var emitted = 0
+    static func emit(_ stage: Stage, _ family: Int, _ operation: Operation, _ direction: Direction,
+                     _ category: Category, _ number: Int32 = 0) {
+        guard emitted < 128 else { return }; emitted += 1
+        print("API route stage=\(stage.rawValue) family=\(family) op=\(operation.rawValue) direction=\(direction.rawValue) category=\(category.rawValue) errno=\(max(0,number))"); fflush(stdout)
+    }
+    static func failure(_ stage: Stage, _ family: Int, _ operation: Operation, _ direction: Direction, _ error: Error) {
+        switch error {
+        case VPNRouteSocketTransportError.posix(let value): emit(stage,family,operation,direction,.posix,value)
+        case VPNRouteSocketTransportError.timeout: emit(stage,family,operation,direction,.timeout)
+        case VPNRouteSocketTransportError.closed: emit(stage,family,operation,direction,.closed)
+        case VPNDarwinRouteError.kernel(let value): emit(stage,family,operation,direction,.kernel,value)
+        case VPNDarwinRouteError.transport(let value): emit(stage,family,operation,direction,.transport,value)
+        default: emit(stage,family,operation,direction,.other)
+        }
+    }
+    static func observe<T>(_ stage: Stage, _ identity: VPNOwnedRouteIdentity, _ operation: Operation,
+                           _ body: () throws -> T) throws -> T {
+        let family = Int(identity.destination.family.rawValue)
+        emit(stage,family,operation,.call,.begin)
+        do { let result = try body(); emit(stage,family,operation,.call,.ok); return result }
+        catch { failure(stage,family,operation,.call,error); throw error }
+    }
+    static func accepts(_ line: String) -> Bool {
+        line.range(of: #"^API route stage=(baselineLookup|baselineAdd|baselineVerify|baselineCleanup|transaction|crash) family=(0|4|6) op=(get|add|delete|open|unknown) direction=(setup|call|send|receive) category=(begin|ok|posix|kernel|transport|timeout|closed|other) errno=[0-9]{1,10}$"#,options:.regularExpression) != nil
+        && line.split(separator:" ").last.flatMap { Int32($0.dropFirst(6)) } != nil
+    }
+}
+private final class RouteDiagnosticTransport: VPNRouteSocketTransport {
+    var stage: RouteDiagnostic.Stage
+    private let real: VPNRouteSocketTransport
+    private var operation: RouteDiagnostic.Operation = .unknown
+    private var family = 0
+    init(_ real: VPNRouteSocketTransport, stage: RouteDiagnostic.Stage) { self.real = real; self.stage = stage }
+    static func production(_ stage: RouteDiagnostic.Stage) throws -> (VPNDarwinRouteSocket,RouteDiagnosticTransport) {
+        let real: VPNDarwinRouteSocketTransport
+        do { real = try VPNDarwinRouteSocketTransport() }
+        catch { RouteDiagnostic.failure(stage,0,.open,.setup,error); throw error }
+        let transport = RouteDiagnosticTransport(real,stage:stage)
+        return (VPNDarwinRouteSocket(transport:transport),transport)
+    }
+    func send(_ message: Data, deadline: DispatchTime) throws {
+        // Diagnostics must never alter or reject a production request. Decode
+        // only its fixed header and destination family, never names/addresses.
+        operation = .unknown; family = 0
+        if let header = try? VPNDarwinRouteCodec.identify(message) {
+            if header.rtm_type == RTM_GET { operation = .get }
+            if header.rtm_type == RTM_ADD { operation = .add }
+            if header.rtm_type == RTM_DELETE { operation = .delete }
+            let bytes = Array(message), offset = MemoryLayout<rt_msghdr>.size
+            if header.rtm_addrs & RTA_DST != 0, bytes.count >= offset + 2 {
+                if bytes[offset + 1] == AF_INET { family = 4 }
+                if bytes[offset + 1] == AF_INET6 { family = 6 }
+            }
+        }
+        do { try real.send(message,deadline:deadline) }
+        catch { RouteDiagnostic.failure(stage,family,operation,.send,error); throw error }
+    }
+    func receive(maximumBytes: Int, deadline: DispatchTime) throws -> Data {
+        do { return try real.receive(maximumBytes:maximumBytes,deadline:deadline) }
+        catch { RouteDiagnostic.failure(stage,family,operation,.receive,error); throw error }
+    }
+}
+
 private func canonicalData<T: Encodable>(_ value: T) throws -> Data {
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
     return try encoder.encode(value)
@@ -303,7 +374,7 @@ private func withTransaction<T>(_ namespace: Namespace,
     let lease = try VPNLifecycleOwnership.acquireRuntime(inTrustedDirectory: namespace.descriptor)
     defer { lease.release() }
     let journal = try VPNRouteJournal(trustedDirectoryDescriptor: namespace.descriptor)
-    let kernel = try VPNDarwinRouteSocket.production()
+    let (kernel, _) = try RouteDiagnosticTransport.production(.transaction)
     return try operation(VPNRouteTransaction(journal: journal, kernel: kernel, runtimeLease: lease), journal, kernel)
 }
 private func applied(_ namespace: Namespace) throws -> VPNRouteAppliedProof {
@@ -399,9 +470,12 @@ private struct BaselineState: Codable {
 }
 private final class Baseline {
     let namespace: Namespace, kernel: VPNDarwinRouteSocket
+    let trace: RouteDiagnosticTransport
     var state: BaselineState
     init(_ namespace: Namespace, _ context: Context) throws {
-        self.namespace = namespace; kernel = try VPNDarwinRouteSocket.production()
+        self.namespace = namespace
+        let value = try RouteDiagnosticTransport.production(.baselineLookup)
+        kernel = value.0; trace = value.1
         var identities: [VPNOwnedRouteIdentity] = []
         for text in [Context.server4,Context.server6,Context.peer] {
             let prefix = try VPNRoutePrefix(resource: VPNResource(address: text))
@@ -422,10 +496,13 @@ private final class Baseline {
     func install() throws {
         for index in state.identities.indices {
             let identity = state.identities[index]
-            try check(try kernel.lookupExact(identity.lookupKey) == nil, .route)
+            trace.stage = .baselineLookup
+            let existing = try RouteDiagnostic.observe(.baselineLookup,identity,.get) { try kernel.lookupExact(identity.lookupKey) }
+            try check(existing == nil, .route)
             state.states[index] = "issued"; try save()
+            trace.stage = .baselineAdd
             do {
-                guard try kernel.add(identity) == .installed else {
+                guard try RouteDiagnostic.observe(.baselineAdd,identity,.add, { try kernel.add(identity) }) == .installed else {
                     // A raced identical/preexisting route is not our receipt.
                     state.states[index] = "foreign"; try save(); throw Failure.receipt
                 }
@@ -442,16 +519,21 @@ private final class Baseline {
         }
     }
     func verify() throws {
-        for identity in state.identities { try check(try kernel.lookupExact(identity.lookupKey)?.matches(identity) == true, .route) }
+        trace.stage = .baselineVerify
+        for identity in state.identities {
+            let observed = try RouteDiagnostic.observe(.baselineVerify,identity,.get) { try kernel.lookupExact(identity.lookupKey) }
+            try check(observed?.matches(identity) == true, .route)
+        }
     }
     func cleanup() throws {
+        trace.stage = .baselineCleanup
         // Equality cannot upgrade issued/unknown/foreign to positive custody.
         // Only this process's confirmed .installed receipt permits DELETE.
         for index in state.identities.indices.reversed() where state.states[index] == "confirmed" {
             let identity = state.identities[index]
-            if let current = try kernel.lookupExact(identity.lookupKey) {
+            if let current = try RouteDiagnostic.observe(.baselineCleanup,identity,.get, { try kernel.lookupExact(identity.lookupKey) }) {
                 guard current.matches(identity) else { state.states[index] = "unknown"; try save(); throw Failure.receipt }
-                try check(try kernel.delete(identity) == .removed, .cleanup)
+                try check(try RouteDiagnostic.observe(.baselineCleanup,identity,.delete, { try kernel.delete(identity) }) == .removed, .cleanup)
             }
             state.states[index] = "removed"; try save()
         }
@@ -521,7 +603,7 @@ private func childCrash(_ id: String) throws {
     let lease = try VPNLifecycleOwnership.acquireRuntime(inTrustedDirectory: namespace.descriptor)
     defer { lease.release() }
     let journal = try VPNRouteJournal(trustedDirectoryDescriptor: namespace.descriptor)
-    let kernel = try VPNDarwinRouteSocket.production()
+    let (kernel, _) = try RouteDiagnosticTransport.production(.crash)
     let crash = CrashKernel(kernel)
     do { _ = try VPNRouteTransaction(journal: journal, kernel: crash, runtimeLease: lease).install(plan.staticRoutes) }
     catch {
@@ -632,7 +714,7 @@ private final class Child {
                     try check(ports[family] == nil, .child); ports[family] = port
                 } else if ["PASS exchange","PASS rejected4","PASS rejected6","PASS protected-EPIPE","READY mutation","READY bound","READY polling","READY control"].contains(line) {
                     try check(!markers.contains(line), .child); markers.insert(line)
-                } else if SocketDiagnostic.accepts(line) {
+                } else if SocketDiagnostic.accepts(line) || RouteDiagnostic.accepts(line) {
                     // Diagnostics are observations, never readiness/proof markers.
                     try check(diagnosticCount < 64, .child); diagnosticCount += 1
                     print(line); fflush(stdout)
@@ -926,6 +1008,12 @@ private func pure() throws {
     for ids: (uid_t,uid_t) in [(501,501),(0,501),(501,0)] { try check(!allowed(ids.0,ids.1,environment), .arguments) }
     for missing in [[:],["GITHUB_ACTIONS":"true"],[flag:"1"]] { try check(!allowed(0,0,missing), .arguments) }
     try check(SocketDiagnostic.accepts("API socket role=protected stage=sendError value=32"), .arguments)
+    try check(RouteDiagnostic.accepts("API route stage=baselineLookup family=6 op=get direction=send category=posix errno=3"), .arguments)
+    for invalid in ["API route stage=private family=6 op=get direction=send category=posix errno=3",
+                    "API route stage=baselineLookup family=6 op=get direction=send category=posix errno=2147483648",
+                    "API route stage=baselineLookup family=6 op=get direction=send category=posix errno=3 secret"] {
+        try check(!RouteDiagnostic.accepts(invalid), .arguments)
+    }
     for invalid in ["API socket role=secret stage=sendError value=32", "API socket role=protected stage=path value=32",
                     "API socket role=protected stage=sendError value=2147483648", "API socket role=protected stage=sendError value=32 secret"] {
         try check(!SocketDiagnostic.accepts(invalid), .arguments)
