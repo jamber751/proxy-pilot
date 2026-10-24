@@ -5656,3 +5656,22 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Keychain и системная сеть на host не затрагиваются. Unknown Security mutation
   RPC требует сохранения всего private fixture до удаления VM, даже после выхода
   child; NotFound не подтверждает удаление обязательства.
+
+- [x] `ec968b8`: восьмой scenario добавлен, исходные семь сохраняются. Один
+  300s completion deadline захватывается до releaseG и покрывает handoff/D;
+  wire20s/server2s и child lifetime не продлеваются.19 local diagnostics passed,
+  genuine production probe ARM/Intel typecheck passed. Это не live root proof.
+- [ ] Новый System8 run40112217369, ownership40112217390 и UI40112217315
+  отправлены на `ec968b8`, подтверждены queued. Наблюдать те же run handles;
+  queued не означает success, повторно запускать из-за ожидания нельзя.
+- [x] `7b8fe2e`: legacy backend выделен в новый unwired adapter: actual owning
+  keychain и persistent reference захватываются после Add; Read/Delete ищут
+  только original locator и проверяют owner/account/envelope. Generic mutation
+  errors indeterminate; только positive delete снимает обязательство.
+ 11 injected behavioral subcases passed, production modules ARM/Intel compiled;
+  native C/D test fixtures compiled/signed/strict-verified без запуска Security API.
+  Fixture сохраняет unknown Create/Add/Delete/Lock RPC до VM disposal, даже если
+  child завершился. Late Store receipt разрешён только для exact initial Add.
+- [ ] Dedicated backend CI: шесть actual private-keychain cases на ARM/Intel
+  ещё не выполнены. Factory приложения всё ещё unavailable; app/build/UI wiring,
+  explicit per-mode consent и verified-connected save остаются открытыми.
