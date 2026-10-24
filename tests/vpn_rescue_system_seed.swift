@@ -50,6 +50,10 @@ import Foundation
             let a = try manifest(sourceSequence, "1.6.0", "appA", helperB, "helperB", engine: true)
             let b = try manifest(139, "1.7.0", "appB", helperB, "helperB", engine: true)
             let c = try manifest(141, "1.8.0", "appC", helperC, "helperC", engine: true)
+            let hasDARM = input["appD-arm64"] != nil, hasDIntel = input["appD-x86_64"] != nil
+            guard hasDARM == hasDIntel else { exit(65) }
+            let successor = try hasDARM
+                ? manifest(142, "1.9.0", "appD", helperC, "helperC", engine: true) : nil
             // Fail before writing material if production monotonic-component or
             // exact-edge policy rejects any synthetic release in this chain.
             func releaseSignature(_ bytes: Data) throws -> Data {
@@ -57,12 +61,19 @@ import Foundation
             }
             let verifiedA = try authority.verify(payload: a, signature: releaseSignature(a), previous: nil)
             let verifiedB = try authority.verify(payload: b, signature: releaseSignature(b), previous: verifiedA)
-            _ = try authority.verify(payload: c, signature: releaseSignature(c), previous: verifiedB)
+            let verifiedC = try authority.verify(payload: c, signature: releaseSignature(c), previous: verifiedB)
             for (source, target, from, to, previous) in [(a, b, sourceSequence, 139, verifiedA), (b, c, 139, 141, verifiedB)] {
                 let transition = edge(source, target, from, to)
                 _ = try authority.verifyUpdateTransition(payload: transition,
                     signature: key.signature(for: VPNReleaseAuthority.updateTransitionDomain + transition),
                     previous: previous, candidatePayload: target, candidateSignature: releaseSignature(target))
+            }
+            if let successor {
+                _ = try authority.verify(payload: successor, signature: releaseSignature(successor), previous: verifiedC)
+                let transition = edge(c, successor, 141, 142)
+                _ = try authority.verifyUpdateTransition(payload: transition,
+                    signature: key.signature(for: VPNReleaseAuthority.updateTransitionDomain + transition),
+                    previous: verifiedC, candidatePayload: successor, candidateSignature: releaseSignature(successor))
             }
             let candidate = base.appendingPathComponent("CandidateStage/Payload")
             try signed(base, "source-release.manifest", "source-release.sig", a, VPNReleaseAuthority.signatureDomain)
@@ -70,6 +81,12 @@ import Foundation
             try signed(candidate, "vpn-previous-release.manifest", "vpn-previous-release.sig", b, VPNReleaseAuthority.signatureDomain)
             try signed(candidate, "vpn-release.manifest", "vpn-release.sig", c, VPNReleaseAuthority.signatureDomain)
             try signed(candidate, "vpn-update-transition", "vpn-update-transition.sig", edge(b, c, 139, 141), VPNReleaseAuthority.updateTransitionDomain)
+            if let successor {
+                let directory = base.appendingPathComponent("SuccessorStage/Payload")
+                try signed(directory, "vpn-previous-release.manifest", "vpn-previous-release.sig", c, VPNReleaseAuthority.signatureDomain)
+                try signed(directory, "vpn-release.manifest", "vpn-release.sig", successor, VPNReleaseAuthority.signatureDomain)
+                try signed(directory, "vpn-update-transition", "vpn-update-transition.sig", edge(c, successor, 141, 142), VPNReleaseAuthority.updateTransitionDomain)
+            }
             print("Synthetic materials prepared"); return
         }
         guard args[1] == "seed", args.count == 5, getuid() == 0, geteuid() == 0,

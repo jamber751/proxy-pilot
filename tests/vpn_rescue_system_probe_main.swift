@@ -11,6 +11,56 @@ import Foundation
         // Setup-only fixture role; never compiled into the normal frontend.
         let seedBroker = args.count == 2 && args[1] == "--vm-seed-broker"
         let seedCompleted = args.count == 3 && args[1] == "--vm-seed-completed-broker"
+        // Exercise the real signed frontend's executor/recovery roles. Exact
+        // VM root setup modes remain outside its ordinary-root launch guard.
+        if !seedBroker && !seedCompleted,
+           let status = VPNInstallationEntry.runIfRequested(arguments: args) { exit(status) }
+        if args.count >= 2 && args[1] == "--vm-submit-update" {
+            guard ordinaryVMOwner(), args.count == 3, args[2].hasPrefix("/"),
+                  VPNJointUpdateStartupStatus.sealedRelease()?.sequence == 141 else { exit(77) }
+            do {
+                let candidate = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard candidate >= 0 else { exit(77) }
+                defer { close(candidate) }
+                var facts = stat()
+                guard fstat(candidate, &facts) == 0, facts.st_uid == geteuid(),
+                      facts.st_mode & 0o7777 == 0o700 else { exit(77) }
+                let outcome = try VPNUpdateBrokerClient.submit(candidateDirectory: candidate,
+                    expectedFromSequence: 141, deadline: deadline())
+                switch outcome {
+                case .indeterminate: print("submit:indeterminate"); exit(75)
+                case .response(let response):
+                    guard response.fromSequence == 141, response.toSequence == 142 else { exit(77) }
+                    // A successful transport or `.ready` is never an installed
+                    // receipt. Parent checks the actual startup-status role.
+                    switch response.state {
+                    case .accepted: print("submit:accepted")
+                    case .checking: print("submit:checking")
+                    case .ready: print("submit:ready")
+                    case .installing: print("submit:installing")
+                    case .complete: print("submit:complete")
+                    case .failed: print("submit:failed")
+                    case .busy: print("submit:busy")
+                    case .stale: print("submit:stale")
+                    }
+                }
+                return
+            } catch { print("submit:rejected"); exit(77) }
+        }
+        if args.count >= 2 && args[1] == "--vm-update-status" {
+            guard ordinaryVMOwner(), args.count == 2,
+                  let sealed = VPNJointUpdateStartupStatus.sealedRelease(),
+                  sealed.sequence == 141 || sealed.sequence == 142 else { exit(77) }
+            do {
+                switch try VPNJointUpdateStartupStatus.check(sealedRelease: sealed, deadline: deadline()) {
+                case .idle: print("status:idle")
+                case .verifying: print("status:verifying")
+                case .installed: print("status:installed")
+                case .failed: print("status:failed")
+                }
+                return
+            } catch { print("status:unavailable"); exit(75) }
+        }
         guard seedBroker || seedCompleted, getuid() == 0, geteuid() == 0,
               ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true",
               ProcessInfo.processInfo.environment["PROXYPILOT_VM_SYSTEM_RESCUE_TESTS"] == "1" else { exit(64) }
@@ -70,4 +120,15 @@ import Foundation
             print("Seeded authenticated old system broker")
         } catch { exit(77) }
     }
+
+    private static func ordinaryVMOwner() -> Bool {
+        getuid() == geteuid() && getuid() >= 500 && getuid() != uid_t.max
+            && ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
+            && ProcessInfo.processInfo.environment["PROXYPILOT_VM_SYSTEM_RESCUE_TESTS"] == "1"
+    }
+
+    private static func deadline() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds + 20_000_000_000
+    }
+
 }

@@ -2,13 +2,40 @@
 from pathlib import Path
 import stat
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock, call
 from types import SimpleNamespace
 
 import test_vpn_rescue_system_vm as vm
 
 
 class RescueSystemDiagnosticTests(unittest.TestCase):
+    def test_ordinary_owner_launch_requires_disposable_vm_before_spawning(self):
+        with patch.object(vm, 'root_vm_enabled', return_value=False), patch.object(vm.subprocess, 'run') as run:
+            with self.assertRaises(AssertionError): vm.ordinary_owner_command(501, ['unused'])
+            run.assert_not_called()
+        with patch.object(vm, 'root_vm_enabled', return_value=True), patch.object(vm.subprocess, 'run') as run:
+            for owner in (0, 499, True, '501', 2**32 - 1):
+                with self.assertRaises(AssertionError): vm.ordinary_owner_command(owner, ['unused'])
+            run.assert_not_called()
+
+    def test_ordinary_owner_launch_drops_groups_and_both_uids_in_child_only(self):
+        account = SimpleNamespace(pw_name='synthetic-fixture-owner', pw_gid=20)
+        result = SimpleNamespace(returncode=0, stdout='submit:ready')
+        with patch.object(vm, 'root_vm_enabled', return_value=True), \
+             patch.object(vm.pwd, 'getpwuid', return_value=account), \
+             patch.object(vm.subprocess, 'run', return_value=result) as run:
+            self.assertIs(vm.ordinary_owner_command(501, ['fixed-installed-probe', '--vm-submit-update']), result)
+            kwargs = run.call_args.kwargs
+            self.assertEqual(kwargs['env'], dict(vm.SAFE_ENV, GITHUB_ACTIONS='true',
+                                                PROXYPILOT_VM_SYSTEM_RESCUE_TESTS='1'))
+            ordering = Mock()
+            with patch.object(vm.os, 'initgroups', ordering.groups), \
+                 patch.object(vm.os, 'setgid', ordering.gid), patch.object(vm.os, 'setuid', ordering.uid), \
+                 patch.object(vm.os, 'getuid', return_value=501), patch.object(vm.os, 'geteuid', return_value=501), \
+                 patch.object(vm.os, 'getgid', return_value=20), patch.object(vm.os, 'getegid', return_value=20):
+                kwargs['preexec_fn']()
+            self.assertEqual(ordering.mock_calls, [call.groups(account.pw_name, 20), call.gid(20), call.uid(501)])
+
     def test_final_recovery_retirement_token_suppresses_unrelated_log_content(self):
         self.assertEqual(vm.repair_tokens(
             'unrelated /private/secret\nProxyPilot VPN repair phase: retireRecovery\n'

@@ -5231,3 +5231,44 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Старое intermittent C-installed/B-selected timeout ещё не объявлено решённым;
   run40096802463 с расширенной launchd диагностикой остаётся выполняющимся.
   Новый production artifact не подписан publisher key/не установлен на host.
+
+### Продолжение 1.5ej — следующий update обычным владельцем после rescue
+
+- [x] Подготовлен signed D142/1.9.0 и exact C141→D142 переход с теми же
+  current helper/настоящим engine в полном builder. Fast parser fixtures
+  остаются маленькими synthetic bytes, не притворяются executable artifacts.
+  Production authority проверяет оба releases и переход до записи sidecars.
+- [x] Probe-only C/D используют реальные VPNInstallationEntry hidden roles,
+  BrokerClient.submit с fixed endpoint/SCM_RIGHTS и StartupStatus.check.
+  VM-only submit/status доступны только ordinary real/effective UID, с explicit
+  disposable flags и sealed141/142. Root setup modes отделены; ready никогда
+  не считается installed. Probe/seed/checker module compile прошёл обе arch.
+- [x] Fast materials11 + diagnostics/owner-drop8 passed. Добавлены отказные
+  cases partial D pins, wrong helper bytes, re-signed engine/crypto rollback и
+  неправильная C binding. Mock owner-launch проверяет initgroups→gid→uid;
+  настоящая identity/peer authentication будет доказана только system VM.
+- [ ] Полный gate расширен с5 до7 cases: исходные5 сохранены и выполняются
+  первыми, после них отдельные desiredOff/On rescue+idempotent reinstall,
+  ordinary-owner submit и installedD startup confirmation/phase7/readiness/
+  cleanup. Никакой ручной root финализации D или Installer для C→D нет.
+  Fixture schema2 требует свежую сборку; host root roles не запускались.
+- [ ] Пока ожидается уже запущенный core rescue run40097695769 (`404e36a`);
+  этот новый C→D gate подготовлен локально и ещё не считается пройденным.
+
+### Продолжение 1.5ek — граница срока ожидания Keychain
+
+- [x] [Apple SecItemCopyMatching](https://developer.apple.com/documentation/security/secitemcopymatching(_:_:)),
+  [Add](https://developer.apple.com/documentation/security/secitemadd(_:_:)) и
+  [Update](https://developer.apple.com/documentation/security/secitemupdate(_:_:))
+  документируют blocking calls и советуют background queue, не дают deadline
+  или отмену. UI=false ограничивает запросы интерфейса, не время securityd.
+  В frontend не найден другой Keychain caller; release-key — отдельный tool.
+- [ ] Нельзя отпускать Store lock по GCD timer, пока write ещё выполняется:
+  это допускает late orphan после revoke. Отдельный same-app worker может
+  ограничить ожидание, но kill/reap не доказывает отмену securityd mutation.
+  Timeout write/delete означает indeterminate, не «не сохранено/удалено».
+- [ ] До mutating adapter нужны definite-operation acknowledgement и durable
+  unresolved-write handling: старый reference нельзя полностью вычеркнуть из
+  deletion obligations, пока результат прежней записи неизвестен. Queue-only
+  adapter не объявлять hard-bounded. Реальный adapter пока не реализован;
+  OTP/private-key/certificate persistent calls по-прежнему отсутствуют.

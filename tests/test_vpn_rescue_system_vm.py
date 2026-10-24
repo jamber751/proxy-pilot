@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import pwd
 import re
 import shutil
 import socket
@@ -256,11 +257,14 @@ def build_fixtures(output, *, compile_only=False):
     make_app(apps / 'B/ProxyPilot.app', inert, '1.7.0', 139)
     candidate = materials / 'CandidateStage/Payload'; candidate.mkdir(parents=True, mode=0o700)
     make_app(candidate / 'ProxyPilot.app', probe, '1.8.0', 141, capable=True)
+    successor = materials / 'SuccessorStage/Payload'; successor.mkdir(parents=True, mode=0o700)
+    make_app(successor / 'ProxyPilot.app', probe, '1.9.0', 142, capable=True)
     helper_b = output / 'frozen-helper/vpn-helper'; helper_c = output / 'current-helper/vpn-helper'
     shutil.copyfile(helper_c, candidate / 'vpn-helper'); (candidate / 'vpn-helper').chmod(0o700)
     inputs = {'helperB': str(helper_b), 'helperC': str(helper_c), 'engineB': str(engine_b)}
     for name, path in (('appA', apps / 'A/ProxyPilot.app'), ('appB', apps / 'B/ProxyPilot.app'),
-                       ('appC', candidate / 'ProxyPilot.app'), ('helperB', helper_b), ('helperC', helper_c), ('engineB', engine_b)):
+                       ('appC', candidate / 'ProxyPilot.app'), ('appD', successor / 'ProxyPilot.app'),
+                       ('helperB', helper_b), ('helperC', helper_c), ('engineB', engine_b)):
         for arch, pin in code_pins(path).items(): inputs[name + '-' + arch] = pin
     (materials / 'input.json').write_text(json.dumps(inputs, sort_keys=True))
     if compile_only:
@@ -270,6 +274,9 @@ def build_fixtures(output, *, compile_only=False):
     command([seed, 'materials', materials])
     shutil.copyfile(engine_b, candidate / 'vpn-engine'); (candidate / 'vpn-engine').chmod(0o700)
     copy_engine_material(app, engine_artifact, materials / 'CandidateStage')
+    for source, name in ((helper_c, 'vpn-helper'), (engine_b, 'vpn-engine')):
+        shutil.copyfile(source, successor / name); (successor / name).chmod(0o700)
+    copy_engine_material(app, engine_artifact, materials / 'SuccessorStage')
     first_payload = materials / 'FirstPayload'; first_payload.mkdir(mode=0o700)
     shutil.copytree(apps / 'B/ProxyPilot.app', first_payload / 'ProxyPilot.app')
     for source, name in ((helper_b, 'vpn-helper'), (engine_b, 'vpn-engine'),
@@ -306,6 +313,7 @@ def build_fixtures(output, *, compile_only=False):
     foreign_materials = output / 'ForeignInput'; foreign_materials.mkdir(mode=0o700)
     shutil.copytree(materials / 'CandidateStage', foreign_materials / 'CandidateStage')
     foreign_inputs = dict(inputs, sourceSequence='138')
+    for arch in ('arm64', 'x86_64'): foreign_inputs.pop('appD-' + arch)
     (foreign_materials / 'input.json').write_text(json.dumps(foreign_inputs, sort_keys=True))
     command([seed, 'materials', foreign_materials])
     foreign_stage = output / 'ForeignPackageStage'
@@ -315,10 +323,11 @@ def build_fixtures(output, *, compile_only=False):
              '--candidate-stage', foreign_materials / 'CandidateStage', '--key-tool', key_tool,
              '--public-key', public_file, '--output', foreign_stage], timeout=300)
     command(['/usr/bin/python3', assembler, 'sign', '--stage', foreign_stage, '--key-tool', key_tool, '--public-key', public_file])
-    fixture = dict(schema=1, owner=os.getuid(), materials=str(materials), seed=str(seed), probe=str(probe),
+    fixture = dict(schema=2, owner=os.getuid(), materials=str(materials), seed=str(seed), probe=str(probe),
                    retainedRescue=str(stage / 'Rescue'), foreignRescue=str(foreign_stage / 'Rescue'), package=str(package),
                    packageSHA256=hashlib.sha256(package.read_bytes()).hexdigest(),
                    candidatePins=code_pins(candidate / 'ProxyPilot.app'),
+                   successorPins=code_pins(successor / 'ProxyPilot.app'),
                    sourcePins=code_pins(apps / 'A/ProxyPilot.app'), intermediatePins=code_pins(apps / 'B/ProxyPilot.app'))
     (output / 'fixture.json').write_text(json.dumps(fixture, sort_keys=True))
     print('Built synthetic Installer and actual production rescue/system helper artifacts. Nothing installed.')
@@ -435,6 +444,29 @@ def root_vm_enabled():
             and os.environ.get('PROXYPILOT_VM_SYSTEM_RESCUE_TESTS') == '1')
 
 
+def ordinary_owner_command(owner, arguments, *, timeout=30):
+    """Launch the real installed frontend as the trusted ordinary fixture owner.
+
+    Only disposable root CI may request the identity drop; the child gets no
+    inherited root groups or testing socket/policy substitution.
+    """
+    if not root_vm_enabled() or type(owner) is not int or not 500 <= owner < 2**32 - 1:
+        raise AssertionError('Disposable system VM owner required')
+    account = pwd.getpwuid(owner)
+
+    def drop_identity():
+        os.initgroups(account.pw_name, account.pw_gid)
+        os.setgid(account.pw_gid)
+        os.setuid(owner)
+        if (os.getuid() != owner or os.geteuid() != owner or os.getgid() != account.pw_gid
+                or os.getegid() != account.pw_gid):
+            raise AssertionError('Ordinary owner identity drop failed')
+
+    environment = dict(SAFE_ENV, GITHUB_ACTIONS='true', PROXYPILOT_VM_SYSTEM_RESCUE_TESTS='1')
+    return subprocess.run(list(map(str, arguments)), env=environment, preexec_fn=drop_identity,
+                          capture_output=True, text=True, timeout=timeout)
+
+
 @unittest.skipUnless(root_vm_enabled(), 'explicit fresh disposable macOS system VM only')
 class VPNRescueSystemVMTests(unittest.TestCase):
     @classmethod
@@ -442,7 +474,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         fixture_root = Path(os.environ.get('PROXYPILOT_SYSTEM_RESCUE_FIXTURE', ''))
         if not fixture_root.is_absolute() or fixture_root.is_symlink(): raise AssertionError('Absolute fixture root required')
         cls.fixture = json.loads((fixture_root / 'fixture.json').read_text())
-        if cls.fixture['schema'] != 1 or not 500 <= cls.fixture['owner'] < 2**32 - 1: raise AssertionError('Invalid fixture owner')
+        if cls.fixture['schema'] != 2 or not 500 <= cls.fixture['owner'] < 2**32 - 1: raise AssertionError('Invalid fixture owner')
         cls.materials = Path(cls.fixture['materials']); cls.seed = Path(cls.fixture['seed']); cls.package = Path(cls.fixture['package'])
         cls.probe = Path(cls.fixture['probe'])
         cls.known_helpers = known_helper_programs(cls.materials)
@@ -552,9 +584,9 @@ class VPNRescueSystemVMTests(unittest.TestCase):
             command([self.seed, 'cleanup-endpoint'], env=environment)
         if APPLICATION.exists():
             metadata = plistlib.loads((APPLICATION / 'Contents/Info.plist').read_bytes())
-            if metadata.get('CFBundleIdentifier') != 'kz.documentolog.proxypilot' or metadata.get('CFBundleVersion') not in ('1.6.0', '1.7.0', '1.8.0'):
+            if metadata.get('CFBundleIdentifier') != 'kz.documentolog.proxypilot' or metadata.get('CFBundleVersion') not in ('1.6.0', '1.7.0', '1.8.0', '1.9.0'):
                 raise AssertionError('Unknown installed application; refusing teardown')
-            if code_pins(APPLICATION) not in [self.fixture[key] for key in ('sourcePins', 'intermediatePins', 'candidatePins')]:
+            if code_pins(APPLICATION) not in [self.fixture[key] for key in ('sourcePins', 'intermediatePins', 'candidatePins', 'successorPins')]:
                 raise AssertionError('Installed identity differs from seeded artifacts; refusing teardown')
             shutil.rmtree(APPLICATION)
         transactions = {getattr(self, 'initial_transaction', '')}
@@ -599,7 +631,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
                 pins = code_pins(app)
                 result[key] = next((release for release, known in (
                     ('A', self.fixture['sourcePins']), ('B', self.fixture['intermediatePins']),
-                    ('C', self.fixture['candidatePins'])) if pins == known), 'unknown')
+                    ('C', self.fixture['candidatePins']), ('D', self.fixture['successorPins'])) if pins == known), 'unknown')
             except (AssertionError, OSError, subprocess.TimeoutExpired): result[key] = 'unreadable'
         try:
             selected = json.loads((service / 'release.json').read_text())
@@ -647,10 +679,13 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         return result
 
     def assert_clean_c(self, desired):
+        return self.assert_clean_release(desired, 141, self.fixture['candidatePins'])
+
+    def assert_clean_release(self, desired, sequence, pins):
         service = SYSTEM_BASE / 'VPN'
         selected = json.loads((service / 'release.json').read_text())
         payload = base64.b64decode(selected['payload']).decode()
-        self.assertIn('sequence=141\n', payload)
+        self.assertIn('sequence=' + str(sequence) + '\n', payload)
         for name in ('preparation.json', 'update.json', 'cleanup.json'): self.assertFalse((service / name).exists())
         self.assertEqual({path.name for path in (SYSTEM_BASE / 'Update').iterdir()}, {'lifecycle.lock'})
         self.assertEqual(list((SYSTEM_BASE / 'Retired').iterdir()), [])
@@ -659,7 +694,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         if 'phase6' in self._testMethodName:
             broker = (SYSTEM_BASE / 'Broker/update-broker-transaction.bin').read_bytes()
             self.assertEqual((len(broker), int.from_bytes(broker[10:12], 'big')), (128, 7))
-        self.assertEqual(code_pins(APPLICATION), self.fixture['candidatePins'])
+        self.assertEqual(code_pins(APPLICATION), pins)
         child = command([APPLICATION / 'Contents/MacOS/ProxyPilot', '--vpn-verify-update-result'], accepted=(40, 41), timeout=15)
         self.assertEqual(child.returncode, 40 if desired else 41)
         budget = json.loads((service / 'activation.json').read_text()) if (service / 'activation.json').exists() else {'desired': True, 'failures': 0}
@@ -730,6 +765,46 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         self.assertEqual(material_snapshot(), source)
         self.assertEqual(code_pins(APPLICATION), self.fixture['sourcePins'])
         self.assertFalse(Path('/Applications/.ProxyPilot.vpn-update').exists())
+
+    def ordinary_update_after_repair(self, desired):
+        # Original rescue + idempotent reinstall gate still runs in full before
+        # the ordinary owner is permitted to submit a separately signed D.
+        self.exercise(desired)
+        successor = self.materials / 'SuccessorStage/Payload'
+        self.assertEqual(code_pins(successor / 'ProxyPilot.app'), self.fixture['successorPins'])
+        owner = self.fixture['owner']
+        submitted = ordinary_owner_command(owner, [APPLICATION / 'Contents/MacOS/ProxyPilot',
+                                                   '--vm-submit-update', successor])
+        self.assertIn(submitted.returncode, (0, 75), self.state_summary())
+        self.assertIn(submitted.stdout.strip(), ('submit:ready', 'submit:indeterminate'), self.state_summary())
+        service = SYSTEM_BASE / 'VPN'
+        deadline = time.monotonic() + 300
+        installed = False
+        last_status = 'notObserved'
+        while time.monotonic() < deadline:
+            # Re-execute the actual installed D; an old C process or a `.ready`
+            # submit response cannot attest to D's installed startup status.
+            if code_pins(APPLICATION) == self.fixture['successorPins']:
+                observed = ordinary_owner_command(owner, [APPLICATION / 'Contents/MacOS/ProxyPilot',
+                                                           '--vm-update-status'])
+                last_status = observed.stdout.strip()
+                self.assertIn(last_status, ('status:idle', 'status:verifying', 'status:installed',
+                                            'status:failed', 'status:unavailable'))
+                self.assertNotEqual(last_status, 'status:failed', self.state_summary())
+                retired = all(not (service / name).exists() for name in
+                              ('preparation.json', 'update.json', 'cleanup.json'))
+                if observed.returncode == 0 and last_status == 'status:installed' and retired:
+                    installed = True; break
+            time.sleep(1)
+        self.assertTrue(installed, str(self.state_summary()) + '; ordinaryStatus=' + last_status)
+        self.assert_clean_release(desired, 142, self.fixture['successorPins'])
+        transaction = (SYSTEM_BASE / 'Broker/update-broker-transaction.bin').read_bytes()
+        self.assertEqual((len(transaction), int.from_bytes(transaction[10:12], 'big')), (128, 7))
+        observed = ordinary_owner_command(owner, [APPLICATION / 'Contents/MacOS/ProxyPilot', '--vm-update-status'])
+        self.assertEqual((observed.returncode, observed.stdout.strip()), (0, 'status:installed'))
+
+    def test_z_ordinary_owner_updates_repaired_c_desired_off(self): self.ordinary_update_after_repair(False)
+    def test_z_ordinary_owner_updates_repaired_c_desired_on(self): self.ordinary_update_after_repair(True)
 
 
 if __name__ == '__main__':
