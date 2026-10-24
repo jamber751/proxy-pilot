@@ -4758,3 +4758,71 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   пользователю и64 для лишнего аргумента; GUI/helper не запускались.
 - [ ] После фиксации окончательных исходников собрать реальный C повторно,
   проверить его signed manifest/transition и собрать один итоговый repair.pkg.
+
+### Продолжение 1.5dn — аудит сохранения постоянного пароля
+
+- [x] Readonly аудит исходников: `VPNCredentialPersistence.keychain` в
+  `VPNConfiguration.swift` — только non-secret consent для будущего адаптера.
+  Production хранилища VPN-пароля и вызовов Keychain для VPN-входа пока нет;
+  Keychain в `vpn-release-key.swift` относится исключительно к подписи релизов.
+  `VPNProfileVault` хранит проверенный профиль по digest, а не пароль входа.
+- [x] Найдены конкретные UI gaps: отсутствует необязательное сохранение;
+  `VPNPanel` обещает, что пароль не сохраняется. `saveAuthentication` и
+  `finishSettings` вызывают `setAuthentication` без persistence и тем самым
+  сбрасывают прежнее согласие в `.none` даже при неизменённых данных входа.
+  Existing panel test проверяет сохранение согласия при hide/reopen, но не
+  при сохранении настроек. Это не считается реализованной Keychain-функцией.
+- [x] Проверены существующие границы: `VPNLiveController` передаёт transient
+  bytes через текущую session, очищает их и признаёт подключение только после
+  helper status `.connected` с точным ожидаемым `VPNApplicationSpec`.
+  Challenge связан с generation/UUID/kind; `OpenVPNTransientCredential` и
+  held exchange потребляют секрет однократно и отвергают поздние ответы.
+  Пароль приватного ключа имеет отдельный kind. Importer не принимает
+  встроенный сохранённый пароль; Store запрещает наследование auth при замене
+  содержимого профиля даже с прежним именем файла.
+- [ ] Минимальный production flow: отдельный инъецируемый `VPNPasswordStore`
+  и Security-backed адаптер пользовательского Keychain, generic-password с
+  отдельным service для VPN-входа, без синхронизации. Account связывать с
+  SHA256 точных protected profile bytes, нормализованным login и password mode;
+  имя файла и configuration revision не являются идентичностью секрета.
+  Изменение ресурсов или on/off не должно само менять эту привязку.
+- [ ] В режиме постоянного пароля дать выключенный по умолчанию выбор
+  «Сохранить пароль на этом Mac». Сохранять только по явному согласию после
+  подтверждённого подключения точной попытки; pending bytes очищать при
+  успехе, отмене, ошибке и смене профиля. Ошибка записи Keychain не отменяет
+  реально установленный туннель: показать «Пароль не сохранён».
+  Неизменённые настройки обязаны сохранять существующее consent.
+- [ ] Подстановка сохранённого пароля допустима только для `.password` с
+  `.keychain` и fresh `.vpnPassword` challenge. Один автоматический ответ на
+  попытку; отказ или новый запрос после него возвращает ручную форму без
+  автоматического перебора. Missing/locked/denied Keychain даёт ручной ввод,
+  не ложный статус подключения и не молчаливое изменение согласия.
+- [ ] OTP fail-closed: для `.oneTimePassword`, certificate mode и
+  `.privateKeyPassword` не выполнять lookup/save в password store вообще.
+  Код не сохранять, не повторять при новой попытке, не включать в diagnostics;
+  не считать произвольный static challenge/пароль+OTP поддержанным без
+  отдельного подтверждённого протокола.
+- [ ] Удалять прежнюю Keychain-привязку при снятии согласия, смене login/mode,
+  замене или удалении профиля. Координировать с model transition и проверкой
+  expected revision; не удалять секрет более новой конфигурации из stale UI.
+  При невозможности удаления не утверждать, что секрет удалён, блокировать
+  его автоматическое использование и показать возможность повторить удаление.
+  Keychain и JSON не образуют одну транзакцию: до реализации зафиксировать
+  crash-safe порядок отзыва consent и удаления, чтобы отказ удаления или
+  перезапуск не включал automatic read после принятого отзыва согласия.
+  Если смена policy не принята, явно оставить операцию незавершённой.
+  Digest binding защищает от наследования также при прямом обходе UI через
+  Store; cleanup старого item и восстановление после сбоя проверять отдельно.
+- [ ] Meaningful tests с fake password store и реальными controller/panel:
+  opt-in static save только после verified connected; opt-out/default не
+  сохраняет; точная digest/login привязка и reuse после resource revision;
+  consent сохраняется при unchanged settings; OTP/private-key не вызывают
+  store; stale challenge и неверный connected spec не сохраняют; cancel/fail
+  очищает pending bytes; отклонённый saved password не зацикливается;
+  locked read/write/delete даёт корректный fallback; login/mode/profile removal
+  и same-name content replacement удаляют старую привязку; stale save не
+  удаляет новую. Existing auth migration/live/transient/held tests сохранить.
+- [ ] После fake tests проверить Security adapter на отдельном disposable
+  Keychain изолированного стенда, включая закрытое хранилище и обновление
+  приложения. Аудит не обращался к реальному Keychain, приватным профилям,
+  root-службам или сети и не закрывает исходную приёмку входа из плана.
