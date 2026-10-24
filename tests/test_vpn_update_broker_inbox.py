@@ -4,6 +4,7 @@ Only disposable current-user directories are used. They stand in for the
 production root-owned 0700 parent; no system path, service, app or key is used.
 """
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -17,10 +18,22 @@ FIXTURE = ROOT / 'tests/vpn_update_broker_inbox_checks.swift'
 INBOX = ROOT / 'app/vpn-helper/VPNUpdateBrokerInbox.swift'
 
 
+def native_swift_target(machine=None):
+    architecture = platform.machine() if machine is None else machine
+    if architecture not in ('arm64', 'x86_64'):
+        raise ValueError('Unsupported native test architecture')
+    return architecture + '-apple-macosx11.0'
+
+
 class VPNUpdateBrokerInboxContractSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = FIXTURE.read_text()
+
+    def test_execution_target_matches_each_native_runner(self):
+        self.assertEqual(native_swift_target('arm64'), 'arm64-apple-macosx11.0')
+        self.assertEqual(native_swift_target('x86_64'), 'x86_64-apple-macosx11.0')
+        with self.assertRaises(ValueError): native_swift_target('unknown')
 
     def test_contract_accepts_descriptors_not_paths(self):
         start = self.source.index('protocol VPNUpdateBrokerInboxDriving')
@@ -73,7 +86,7 @@ class VPNUpdateBrokerInboxProductionBindingTests(unittest.TestCase):
             binary = Path(temporary) / 'inbox-checks'
             compiled = subprocess.run(
                 ['swiftc', '-D', 'VPN_UPDATE_BROKER_INBOX_TESTING',
-                 '-target', 'arm64-apple-macosx11.0',
+                 '-target', native_swift_target(),
                  '-module-cache-path', str(Path(temporary) / 'ModuleCache'),
                  str(INBOX), str(FIXTURE), '-o', str(binary)],
                 capture_output=True, text=True, timeout=120,
@@ -94,7 +107,7 @@ class VPNUpdateBrokerInboxProductionBindingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='pp-real-inbox-build-') as temporary:
             binary = Path(temporary) / 'real-checks'
             compiled = subprocess.run(
-                ['swiftc', '-target', 'arm64-apple-macosx11.0',
+                ['swiftc', '-target', native_swift_target(),
                  '-module-cache-path', str(Path(temporary) / 'ModuleCache'),
                  str(INBOX), str(ROOT / 'tests/vpn_update_broker_real_app_checks.swift'),
                  '-o', str(binary)], capture_output=True, text=True, timeout=120)
