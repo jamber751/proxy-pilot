@@ -27,7 +27,10 @@ class VPNDestinationRootVMTests(destination.VPNApplicationDestinationExchangeTes
         # Frozen source at the recorded 137 baseline. Only the fixture entry's
         # UID guard is adapted; production exchange behavior remains unchanged.
         revision = '8519961fdf157252f195b469550f1bcebbd1878d'
-        result = cls.command(['git', '-C', str(destination.ROOT), 'show',
+        # Hosted checkout belongs to the runner user. Scope this read-only
+        # exception to this exact checkout and command; do not alter git config.
+        result = cls.command(['git', '-c', 'safe.directory=' + str(destination.ROOT),
+                              '-C', str(destination.ROOT), 'show',
                               revision + ':app/vpn-helper/VPNApplicationDestinationExchange.swift'])
         original = result.stdout
         if hashlib.sha256(original.encode()).hexdigest() != '5b9b4ed417b0aca742d5c979c384e48d30aa7718741111d24ef28d2debb28d65':
