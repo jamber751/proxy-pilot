@@ -17,6 +17,7 @@ final class VPNRescueJournalContext {
     let ownerUserID: uid_t
     let previous: VPNAuthorizedDeployment
     let candidate: VPNAuthorizedDeployment
+    let transition: VerifiedVPNUpdateTransition
     private let authorization: VerifiedVPNRescueAuthorization
     private let store: VPNReleaseStore
     private let lease: VPNLifecycleLease
@@ -30,6 +31,7 @@ final class VPNRescueJournalContext {
         transactionID = journal.transactionID; revision = journal.revision
         ownerUserID = journal.previous.ownerUserID
         previous = journal.previous; candidate = journal.candidate
+        transition = journal.transition
     }
 
     static func capture(authorization: VerifiedVPNRescueAuthorization,
