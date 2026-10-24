@@ -38,7 +38,7 @@
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
 | 6. Интерфейс | Installed settings137;520 isolated interface checks ARM/Intel на2e159b6, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Приёмка и подключение реального Keychain, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
-| 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
+| 7. Выпуск | Тестовые подписанные комплекты; английский непубликуемый черновик notes | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
 По просьбе владельца продолжен контролируемый переход: после его авторизации
@@ -6625,3 +6625,21 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] PasswordRuntime, production domains/relay/OS barrier, final installed
   lifecycle/OTP/IP/WARP/accessibility/macOS11 и English public release остаются
   OPEN. Новые clocks/route profiles проходят приёмку до включения пользователя.
+
+
+### Продолжение 1.5fx — real private Keychain green и release-text draft
+
+- [x] Fresh private backend40135758246 на9ac5266 terminal SUCCESS ARM/Intel:
+  3 safe+11 VM methods/arch =28 PASS без skips, включая6 actual private-Keychain
+  сценариев/arch. Логи /tmp/pp-private-9ac-{arm,intel}-40135758246.log.
+  Старые b032 failures имели typed ACKbusy; после child-settle-beforeSEND эта
+  же dedicated actual suite прошла обе архитектуры с прежними лимитами.
+- [ ] Это закрывает текущую private-backend регрессию, не всю genuine default
+  factory/installed UX приёмку. Genuine40135758251 остаётся live/queued;
+  PasswordRuntime.liveIntegrationEnabled по-прежнему false до всех gate proofs.
+- [x] docs/vpn-release-notes-draft.md содержит английский черновик будущих notes
+  с явным unpublished статусом, версия ещё не назначена. Public1.5.1 notes и
+  appcast не менялись. Перед публикацией каждый claim требует finalacceptance;
+  domains/ordinary DNS и Keychain отмечены в обязательном внутреннем checklist.
+- [x] Вводная плана теперь явно отделяет historical7–8September observations
+  от текущей25October таблицы; исторические сведения не выдаются за currentstate.
