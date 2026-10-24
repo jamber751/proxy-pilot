@@ -5161,3 +5161,29 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Проверены сохранность profile/resources/desiredOff и отсутствие secret submit.
 - [ ] Это сохранение уже существующего non-secret consent; password storage,
   отзыв и удаление старого item ещё не реализованы и этим изменением не закрыты.
+
+### Продолжение 1.5eg — durable non-secret password bookkeeping
+
+- [x] VPNStore schema2 имеет active reference и bounded pendingDeletion queue,
+  без secret bytes. Schema1 мигрирует в пустой ledger; прежний флаг consent
+  не создаёт lookup identity. Старый schema1 reader обязан отказать schema2,
+  чтобы не потерять новые обязательства при следующей записи.
+- [x] Привязка: UUID отдельного согласия + SHA256 protected profile bytes +
+  нормализованный case-preserved login. Resource/on-off revisions не меняют
+  identity; revoke/regrant создаёт другой UUID и защищает новый item от старого
+  отложенного удаления. Смена login/mode/profile или удаление профиля атомарно
+  отключает active и ставит старый reference на удаление внутри Store.save.
+- [x] Read/write/delete adapter callbacks проверяются под тем же state.lock,
+  что и save/revoke; stale/forged reference не вызывает backend. Отказ удаления
+  сохраняет обязательство, applied snapshot не даёт разрешения на чтение,
+  acknowledgeApplied/Stopped сохраняют ledger. Queue overflow отвергает
+  незавершимую смену целиком, не теряет прежнее согласие или очередь молча.
+- [x] Ledger12 tests passed, включая subprocess crash после fake-delete до ack,
+  restart/not-found retry и cross-process lock. Existing core9+model1 passed;
+  агент также проверил panel12+controller6, всего39 без skips. Парольный backend
+  не запускался. UI workflow теперь включает ledger/core/model на обеих arch.
+- [ ] Callback должен быть silent/bounded/non-reentrant: Store сам этого не
+  обеспечивает. Security adapter, controller cancellation/verified-connect save,
+  opt-in UI, retry pending deletion и отказные installed UX cases ещё нужны.
+- [x] Предыдущий interface run40097002062 (`886c0a6`) прошёл80 tests без skips,
+  40 на каждой архитектуре; он предшествует этому Store/schema изменению.

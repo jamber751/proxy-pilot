@@ -1,5 +1,65 @@
 import Foundation
 import Darwin
+import CryptoKit
+
+/// Non-secret item identity. Each explicit grant has a different UUID, even
+/// when the same profile/login is re-authorized after revocation.
+struct VPNPasswordReference: Codable, Equatable, CustomDebugStringConvertible {
+    let itemID: UUID
+    let profileSHA256: String
+    let login: String
+    var debugDescription: String { "VPNPasswordReference(redacted)" }
+
+    fileprivate func validate() throws {
+        guard profileSHA256.utf8.count == 64,
+              profileSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              try VPNAuthentication(mode: .password, login: login).login == login
+        else { throw VPNValidationError.invalidConfiguration }
+    }
+
+    fileprivate func matches(_ snapshot: VPNSnapshot) -> Bool {
+        guard let auth = snapshot.configuration.authentication,
+              auth.mode == .password, auth.credentialPersistence == .keychain,
+              auth.login == login, let contents = snapshot.profileContents else { return false }
+        return Self.digest(contents) == profileSHA256
+    }
+
+    fileprivate static func digest(_ bytes: Data) -> String {
+        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+struct VPNPasswordLedger: Codable, Equatable {
+    static let maximumPendingDeletions = 64
+    var active: VPNPasswordReference?
+    var pendingDeletion: [VPNPasswordReference]
+
+    init(active: VPNPasswordReference? = nil, pendingDeletion: [VPNPasswordReference] = []) {
+        self.active = active; self.pendingDeletion = pendingDeletion
+    }
+
+    fileprivate func validate(saved: VPNSnapshot) throws {
+        guard pendingDeletion.count <= Self.maximumPendingDeletions,
+              Set(pendingDeletion.map(\.itemID)).count == pendingDeletion.count,
+              active.map({ value in !pendingDeletion.contains(where: { $0.itemID == value.itemID }) }) ?? true
+        else { throw VPNValidationError.invalidConfiguration }
+        for reference in pendingDeletion { try reference.validate() }
+        if let active {
+            try active.validate()
+            guard active.matches(saved) else { throw VPNValidationError.invalidConfiguration }
+        }
+    }
+
+    fileprivate mutating func reconcile(saved: VPNSnapshot) throws {
+        if let previous = active, !previous.matches(saved) {
+            guard pendingDeletion.count < Self.maximumPendingDeletions else {
+                throw VPNValidationError.storageUnavailable
+            }
+            pendingDeletion.append(previous); active = nil
+        }
+        try validate(saved: saved)
+    }
+}
 
 struct VPNSnapshot: Codable, Equatable, CustomDebugStringConvertible {
     let configuration: VPNConfiguration
@@ -39,11 +99,13 @@ struct VPNStoredState: Codable, Equatable {
     let schemaVersion: Int
     let saved: VPNSnapshot
     let applied: VPNSnapshot?
+    let passwordLedger: VPNPasswordLedger
     var hasPendingChanges: Bool { applied?.configuration.revision != saved.configuration.revision }
 
     fileprivate func validate() throws {
-        guard schemaVersion == 1 else { throw VPNValidationError.invalidConfiguration }
+        guard schemaVersion == 2 else { throw VPNValidationError.invalidConfiguration }
         try saved.validate()
+        try passwordLedger.validate(saved: saved)
         if let applied = applied {
             try applied.validate()
             guard applied.configuration.desiredEnabled, applied.configuration.revision <= saved.configuration.revision,
@@ -51,6 +113,28 @@ struct VPNStoredState: Codable, Equatable {
                   applied.configuration.revision != saved.configuration.revision || applied == saved
             else { throw VPNValidationError.invalidConfiguration }
         }
+    }
+
+    init(saved: VPNSnapshot, applied: VPNSnapshot?, passwordLedger: VPNPasswordLedger = VPNPasswordLedger()) {
+        schemaVersion = 2; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
+    }
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, saved, applied, passwordLedger }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .schemaVersion)
+        guard version == 1 || version == 2 else { throw VPNValidationError.invalidConfiguration }
+        saved = try container.decode(VPNSnapshot.self, forKey: .saved)
+        applied = try container.decodeIfPresent(VPNSnapshot.self, forKey: .applied)
+        if version == 1 {
+            // No VPN password backend existed in schema1. Consent alone must
+            // not invent a credential identity or search for a legacy secret.
+            guard !container.contains(.passwordLedger) else { throw VPNValidationError.invalidConfiguration }
+            passwordLedger = VPNPasswordLedger()
+        } else {
+            passwordLedger = try container.decode(VPNPasswordLedger.self, forKey: .passwordLedger)
+        }
+        schemaVersion = 2
     }
 }
 
@@ -105,7 +189,9 @@ final class VPNStore {
                                        suggestedDNS: keepsProfile ? (profile?.suggestedDNS ?? previous?.saved.suggestedDNS ?? []) : [],
                                        suggestedResources: keepsProfile ? (profile?.suggestedResources ?? previous?.saved.suggestedResources ?? []) : [],
                                        hasIgnoredProfileRoutes: keepsProfile ? (profile?.hasIgnoredRoutes ?? previous?.saved.hasIgnoredProfileRoutes ?? false) : false)
-            let next = VPNStoredState(schemaVersion: 1, saved: snapshot, applied: previous?.applied)
+            var ledger = previous?.passwordLedger ?? VPNPasswordLedger()
+            try ledger.reconcile(saved: snapshot)
+            let next = VPNStoredState(saved: snapshot, applied: previous?.applied, passwordLedger: ledger)
             try next.validate()
             try writeState(next, directory: descriptor)
             return next
@@ -119,7 +205,8 @@ final class VPNStore {
             guard let current = try readState(directory: descriptor),
                   current.saved.configuration.revision == revision,
                   current.saved.configuration.desiredEnabled else { throw VPNValidationError.staleRevision }
-            try writeState(VPNStoredState(schemaVersion: 1, saved: current.saved, applied: current.saved), directory: descriptor)
+            try writeState(VPNStoredState(saved: current.saved, applied: current.saved,
+                                          passwordLedger: current.passwordLedger), directory: descriptor)
         }
     }
 
@@ -129,7 +216,68 @@ final class VPNStore {
             guard let current = try readState(directory: descriptor) else { return }
             guard current.applied == nil || current.applied?.configuration.revision == revision
             else { throw VPNValidationError.staleRevision }
-            try writeState(VPNStoredState(schemaVersion: 1, saved: current.saved, applied: nil), directory: descriptor)
+            try writeState(VPNStoredState(saved: current.saved, applied: nil,
+                                          passwordLedger: current.passwordLedger), directory: descriptor)
+        }
+    }
+
+    /// Explicit save opt-in only. Does not store a password or claim it exists.
+    /// A missing item always remains a manual-input fallback for a later adapter.
+    func grantPasswordPersistence(expectedRevision: UInt64) throws -> VPNPasswordReference {
+        try withLock(create: false) { descriptor in
+            guard let current = try readState(directory: descriptor),
+                  current.saved.configuration.revision == expectedRevision else { throw VPNValidationError.staleRevision }
+            let snapshot = current.saved
+            guard let auth = snapshot.configuration.authentication, auth.mode == .password,
+                  auth.credentialPersistence == .keychain, let login = auth.login,
+                  let contents = snapshot.profileContents else { throw VPNValidationError.invalidConfiguration }
+            if let existing = current.passwordLedger.active { return existing }
+            let reference = VPNPasswordReference(itemID: UUID(),
+                profileSHA256: VPNPasswordReference.digest(contents), login: login)
+            var ledger = current.passwordLedger; ledger.active = reference
+            let next = VPNStoredState(saved: snapshot, applied: current.applied, passwordLedger: ledger)
+            try next.validate(); try writeState(next, directory: descriptor)
+            return reference
+        }
+    }
+
+    /// Trusted adapter seam: callback must be silent, bounded and non-reentrant.
+    /// Same file lock as revoke prevents a late write recreating a deleted item.
+    /// No credential bytes enter this store or its serialized state.
+    func readPassword<T>(reference: VPNPasswordReference, expectedRevision: UInt64,
+                         silently read: (VPNPasswordReference) throws -> T) throws -> T {
+        try withActivePassword(reference: reference, expectedRevision: expectedRevision, read)
+    }
+
+    func savePassword(reference: VPNPasswordReference, expectedRevision: UInt64,
+                      silently save: (VPNPasswordReference) throws -> Void) throws {
+        try withActivePassword(reference: reference, expectedRevision: expectedRevision, save)
+    }
+
+    private func withActivePassword<T>(reference: VPNPasswordReference, expectedRevision: UInt64,
+                                      _ operation: (VPNPasswordReference) throws -> T) throws -> T {
+        try withLock(create: false) { descriptor in
+            guard let current = try readState(directory: descriptor),
+                  current.saved.configuration.revision == expectedRevision,
+                  current.passwordLedger.active == reference,
+                  reference.matches(current.saved) else { throw VPNValidationError.staleRevision }
+            return try operation(reference)
+        }
+    }
+
+    /// The adapter treats item-not-found as success. Failure retains the exact
+    /// deletion obligation; revoke is never rolled back. A crash after delete
+    /// but before this acknowledgement is retried against the same old UUID.
+    func deletePendingPassword(reference: VPNPasswordReference,
+                               silently delete: (VPNPasswordReference) throws -> Void) throws {
+        try withLock(create: false) { descriptor in
+            guard let current = try readState(directory: descriptor),
+                  current.passwordLedger.pendingDeletion.contains(reference) else { throw VPNValidationError.staleRevision }
+            try delete(reference)
+            var ledger = current.passwordLedger
+            ledger.pendingDeletion.removeAll { $0 == reference }
+            let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
+            try next.validate(); try writeState(next, directory: descriptor)
         }
     }
 

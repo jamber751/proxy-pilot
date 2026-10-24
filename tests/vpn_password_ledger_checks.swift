@@ -1,0 +1,214 @@
+import Darwin
+import Foundation
+
+// Synthetic profile and in-memory callback observations only, no Keychain,
+// helper session, root state, personal profile or network access.
+private let profileText = """
+client
+dev tun
+proto udp
+remote vpn.company.example 1194
+remote-cert-tls server
+auth-user-pass
+<ca>
+-----BEGIN CERTIFICATE-----
+QUJDRA==
+-----END CERTIFICATE-----
+</ca>
+"""
+
+@main enum VPNPasswordLedgerChecks {
+    enum Failure: Error { case expected, assertion }
+    static func check(_ value: @autoclosure () throws -> Bool) throws {
+        guard try value() else { throw Failure.assertion }
+    }
+    static func rejects(_ operation: () throws -> Void) throws {
+        do { try operation() } catch { return }; throw Failure.assertion
+    }
+    static func seeded(_ store: VPNStore) throws -> VPNStoredState {
+        let profile = try VPNProfileImporter.inspect(data: Data(profileText.utf8), name: "synthetic.ovpn")
+        var config = VPNConfiguration(); try config.setProfile(name: profile.name)
+        try config.saveResource(VPNResource(address: "10.20.0.0/16"))
+        try config.setAuthentication(VPNAuthentication(mode: .password, login: "employee", credentialPersistence: .keychain))
+        return try store.save(config, importing: profile, expectedRevision: nil)
+    }
+    static func auth(_ store: VPNStore, _ mode: VPNAuthenticationMode = .password,
+                     login: String = "employee", consent: VPNCredentialPersistence = .none) throws -> VPNStoredState {
+        let current = try store.load()!; var config = current.saved.configuration
+        try config.setAuthentication(VPNAuthentication(mode: mode, login: login, credentialPersistence: consent))
+        return try store.save(config, expectedRevision: current.saved.configuration.revision)
+    }
+    static func grant(_ store: VPNStore) throws -> VPNPasswordReference {
+        try store.grantPasswordPersistence(expectedRevision: store.load()!.saved.configuration.revision)
+    }
+    static func main() throws {
+        let args = CommandLine.arguments; guard args.count == 3 else { exit(64) }
+        let folder = URL(fileURLWithPath: args[2], isDirectory: true)
+        let store = VPNStore(directory: folder)
+        let file = folder.appendingPathComponent("state.json")
+        if args[1] == "lock-child" {
+            do { _ = try auth(store); exit(1) }
+            catch VPNValidationError.storageUnavailable { exit(0) }
+            catch { exit(1) }
+        }
+        if args[1] == "delete-crash" {
+            let old = try store.load()!.passwordLedger.pendingDeletion[0]
+            try store.deletePendingPassword(reference: old) { _ in
+                try FileManager.default.removeItem(at: folder.appendingPathComponent("fake-item"))
+                _exit(42) // real process crash boundary, before durable ack
+            }
+            throw Failure.assertion
+        }
+        if args[1] == "resume-crash" {
+            let state = try store.load()!
+            try check(state.passwordLedger.active == nil && state.passwordLedger.pendingDeletion.count == 1)
+            try check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("fake-item").path))
+            try store.deletePendingPassword(reference: state.passwordLedger.pendingDeletion[0]) { _ in /* not-found success */ }
+            try check(store.load()!.passwordLedger.pendingDeletion.isEmpty)
+            print("ledger checks passed"); return
+        }
+        let initial = try seeded(store)
+        let reference = try grant(store)
+        let revision = initial.saved.configuration.revision
+        switch args[1] {
+        case "grant":
+            try check(initial.passwordLedger.active == nil && initial.schemaVersion == 2)
+            try check(grant(store) == reference)
+            var reads = 0, writes = 0
+            let result = try store.readPassword(reference: reference, expectedRevision: revision) { observed in
+                try check(observed == reference); reads += 1; return 17
+            }
+            try store.savePassword(reference: reference, expectedRevision: revision) { _ in writes += 1 }
+            try check(result == 17 && reads == 1 && writes == 1)
+            var next = initial.saved.configuration; try next.saveResource(VPNResource(address: "10.30.0.0/16"))
+            let updated = try store.save(next, expectedRevision: revision)
+            try check(updated.passwordLedger.active == reference)
+            try rejects { _ = try store.readPassword(reference: reference, expectedRevision: revision) { _ in throw Failure.assertion } }
+            _ = try store.readPassword(reference: reference, expectedRevision: next.revision) { _ in 0 }
+            try check(!String(decoding: Data(contentsOf: file), as: UTF8.self).contains("synthetic-password-value"))
+        case "revoke", "prepare-crash":
+            let revoked = try auth(store)
+            try check(revoked.passwordLedger.active == nil && revoked.passwordLedger.pendingDeletion == [reference])
+            let restarted = VPNStore(directory: folder)
+            var calls = 0
+            try rejects { _ = try restarted.readPassword(reference: reference, expectedRevision: revoked.saved.configuration.revision) { _ in calls += 1 } }
+            try check(calls == 0)
+            try rejects { try restarted.deletePendingPassword(reference: reference) { _ in throw Failure.expected } }
+            try check(restarted.load()!.passwordLedger == revoked.passwordLedger)
+            if args[1] == "prepare-crash" { try Data("synthetic-password-value".utf8).write(to: folder.appendingPathComponent("fake-item")) }
+            else {
+                try restarted.deletePendingPassword(reference: reference) { _ in calls += 1 }
+                try check(calls == 1 && restarted.load()!.passwordLedger.pendingDeletion.isEmpty)
+            }
+        case "regrant":
+            _ = try auth(store); _ = try auth(store, consent: .keychain)
+            let new = try grant(store); try check(new.itemID != reference.itemID && new.login == reference.login && new.profileSHA256 == reference.profileSHA256)
+            var deleted: VPNPasswordReference?
+            try store.deletePendingPassword(reference: reference) { deleted = $0 }
+            try check(deleted == reference && store.load()!.passwordLedger.active == new)
+            try rejects { try store.deletePendingPassword(reference: new) { _ in throw Failure.assertion } }
+        case "stale":
+            let before = try Data(contentsOf: file)
+            var outdated = initial.saved.configuration; try outdated.setAuthentication(VPNAuthentication(mode: .password, login: "other"))
+            var next = initial.saved.configuration; try next.setDNS(["10.20.0.53"])
+            let current = try store.save(next, expectedRevision: revision)
+            try rejects { _ = try store.save(outdated, expectedRevision: revision) }
+            try check(store.load() == current && before != Data(contentsOf: file))
+            _ = try auth(store)
+            var called = false
+            try rejects { try store.savePassword(reference: reference, expectedRevision: revision) { _ in called = true } }
+            let revokedRevision = try store.load()!.saved.configuration.revision
+            try rejects { try store.savePassword(reference: reference, expectedRevision: revokedRevision) { _ in called = true } }
+            let fake = VPNPasswordReference(itemID: reference.itemID, profileSHA256: reference.profileSHA256, login: "forged")
+            try rejects { try store.deletePendingPassword(reference: fake) { _ in called = true } }
+            try check(!called && store.load()!.passwordLedger.pendingDeletion == [reference])
+        case "identity":
+            _ = try auth(store, login: "Employee", consent: .keychain)
+            try check(store.load()!.passwordLedger.active == nil && store.load()!.passwordLedger.pendingDeletion == [reference])
+            let second = try grant(store)
+            _ = try auth(store, .oneTimePassword, login: "Employee")
+            try check(store.load()!.passwordLedger.pendingDeletion == [reference, second])
+            try rejects { _ = try grant(store) }
+        case "profile":
+            var next = initial.saved.configuration; try next.setProfile(name: "synthetic.ovpn")
+            let changed = try VPNProfileImporter.inspect(data: Data(profileText.replacingOccurrences(of: "1194", with: "1195").utf8), name: "synthetic.ovpn")
+            let replaced = try store.save(next, importing: changed, expectedRevision: revision)
+            try check(replaced.passwordLedger.active == nil && replaced.passwordLedger.pendingDeletion == [reference])
+            _ = try auth(store, consent: .keychain); let second = try grant(store)
+            let before = try store.load()!; next = before.saved.configuration; try next.removeProfile()
+            let removed = try store.save(next, expectedRevision: before.saved.configuration.revision)
+            try check(removed.saved.profileContents == nil && removed.passwordLedger.pendingDeletion == [reference, second])
+        case "ack":
+            var config = initial.saved.configuration; try config.setEnabled(true)
+            _ = try store.save(config, expectedRevision: revision)
+            try store.acknowledgeApplied(revision: config.revision)
+            try check(store.load()!.passwordLedger.active == reference)
+            let revoked = try auth(store)
+            try check(revoked.applied?.configuration.authentication?.credentialPersistence == VPNCredentialPersistence.keychain)
+            try check(revoked.passwordLedger.active == nil)
+            try store.acknowledgeStopped(revision: config.revision)
+            try check(store.load()!.passwordLedger == revoked.passwordLedger)
+            try store.acknowledgeApplied(revision: revoked.saved.configuration.revision)
+            try check(store.load()!.passwordLedger == revoked.passwordLedger)
+        case "lock":
+            var denied = false
+            try store.savePassword(reference: reference, expectedRevision: revision) { _ in
+                let child = Process()
+                child.executableURL = URL(fileURLWithPath: args[0])
+                child.arguments = ["lock-child", folder.path]
+                try child.run(); child.waitUntilExit()
+                denied = child.terminationStatus == 0
+            }
+            try check(denied && store.load()!.passwordLedger.active == reference)
+        case "schema":
+            let current = try Data(contentsOf: file)
+            var envelope = try JSONSerialization.jsonObject(with: current) as! [String: Any]
+            envelope["schemaVersion"] = 1; envelope.removeValue(forKey: "passwordLedger")
+            try JSONSerialization.data(withJSONObject: envelope).write(to: file)
+            let migrated = try store.load()!
+            try check(migrated.schemaVersion == 2 && migrated.passwordLedger.active == nil && migrated.saved == initial.saved)
+            let renewed = try grant(store)
+            try check(renewed != reference)
+            let valid = try Data(contentsOf: file)
+            let parsed = try JSONSerialization.jsonObject(with: valid) as! [String: Any]
+            var ledger = parsed["passwordLedger"] as! [String: Any]
+            let active = ledger["active"] as! [String: Any]
+            let malformed: [[String: Any]] = [[:], ["pendingDeletion": [active, active]],
+                ["active": active, "pendingDeletion": [active]],
+                ["active": ["itemID": UUID().uuidString, "profileSHA256": "bad", "login": "employee"], "pendingDeletion": []]]
+            for bad in malformed {
+                var corrupt = parsed; corrupt["passwordLedger"] = bad
+                try JSONSerialization.data(withJSONObject: corrupt).write(to: file)
+                try rejects { _ = try store.load() }
+            }
+            var corrupt = parsed; corrupt["schemaVersion"] = 1
+            try JSONSerialization.data(withJSONObject: corrupt).write(to: file)
+            try rejects { _ = try store.load() }
+            try valid.write(to: file)
+            ledger["active"] = ["itemID": UUID().uuidString, "profileSHA256": String(repeating: "f", count: 64), "login": "employee"]
+            corrupt = parsed; corrupt["passwordLedger"] = ledger
+            try JSONSerialization.data(withJSONObject: corrupt).write(to: file)
+            try rejects { _ = try store.load() }
+        case "capacity":
+            for index in 0..<VPNPasswordLedger.maximumPendingDeletions {
+                _ = try auth(store)
+                if index + 1 < VPNPasswordLedger.maximumPendingDeletions { _ = try auth(store, consent: .keychain); _ = try grant(store) }
+            }
+            _ = try auth(store, consent: .keychain); let active = try grant(store)
+            let before = try Data(contentsOf: file)
+            try rejects { _ = try auth(store) }
+            try check(before == Data(contentsOf: file) && store.load()!.passwordLedger.active == active)
+        case "errors":
+            let before = try Data(contentsOf: file)
+            try rejects { try store.savePassword(reference: reference, expectedRevision: revision) { _ in throw Failure.expected } }
+            try rejects { _ = try store.readPassword(reference: reference, expectedRevision: revision) { _ in throw Failure.expected } }
+            try check(before == Data(contentsOf: file))
+            _ = try auth(store)
+            let revoked = try Data(contentsOf: file)
+            try rejects { try store.deletePendingPassword(reference: reference) { _ in throw Failure.expected } }
+            try check(revoked == Data(contentsOf: file))
+        default: exit(64)
+        }
+        print("ledger checks passed")
+    }
+}
