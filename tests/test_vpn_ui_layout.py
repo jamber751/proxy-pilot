@@ -18,6 +18,10 @@ class VPNUILayoutTests(unittest.TestCase):
         # Presentation-only state injection; production view/control code is unchanged.
         panel = panel.replace('@Published private(set) var liveState:', '@Published var liveState:')
         panel = panel.replace('@Published private(set) var credentialPromptIdentifier:', '@Published var credentialPromptIdentifier:')
+        panel = panel.replace('@Published private var passwordPersistenceEvent:', '@Published var passwordPersistenceEvent:')
+        # Preview-only phase injection; there is no driver or credential API.
+        panel = panel.replace('configuration: configuration.configuration) == true else { return nil }',
+                              'configuration: configuration.configuration) == true || controller == nil else { return nil }')
         # Presentation-only capability injection; no driver or Keychain is used.
         panel = panel.replace('var passwordPersistenceAvailable: Bool { controller?.passwordPersistenceAvailable ?? false }',
                               'var passwordPersistenceAvailable: Bool { true }')
@@ -27,6 +31,7 @@ class VPNUILayoutTests(unittest.TestCase):
             'vpnAddResource', 'vpnRemoveResource', 'vpnRemove',
             'vpnSettingsDone', 'vpnAuthenticationSave', 'vpnResourceSave',
             'vpnSavePassword',
+            'vpnStatusDetail',
         )
         for name in identifiers:
             marker = f'.accessibilityIdentifier("{name}")'
@@ -60,6 +65,12 @@ enum VPNLiveState: Equatable {
         }
     }
 }
+struct VPNPasswordPersistenceEvent {
+    enum Phase { case saving, saved, needsConfirmation }
+    let intentIdentifier: UUID
+    let configurationRevision: UInt64
+    let phase: Phase
+}
 final class VPNLiveController: ObservableObject {
     @Published private(set) var state: VPNLiveState = .off
     var credentialPromptIdentifier: UUID? { nil }
@@ -68,6 +79,9 @@ final class VPNLiveController: ObservableObject {
     func connect() { state = .connected }
     func disconnect() { state = .off }
     var passwordPersistenceAvailable: Bool { true }
+    var passwordPersistenceEvent: VPNPasswordPersistenceEvent? { nil }
+    func setPasswordPersistenceEventHandler(_ handler: @escaping (VPNPasswordPersistenceEvent) -> Void) {}
+    func isCurrentPasswordPersistenceEvent(_ event: VPNPasswordPersistenceEvent, configuration: VPNConfiguration) -> Bool { false }
     func submitCredential(_ secret: inout Data, expectedPromptIdentifier: UUID?) { secret.removeAll(); state = .connected }
     func cancelCredential() { state = .off }
 }
@@ -151,7 +165,7 @@ private func secureField(_ view: NSView) -> VPNSecretField.Field? {
     if let field = view as? VPNSecretField.Field { return field }
     return view.subviews.lazy.compactMap { secureField($0) }.first
 }
-for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save"] {
+for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save", "feedback-saving", "feedback-saved", "feedback-unconfirmed"] {
     let panel = VPNPanelModel(preview: true)
     if scenario != "import" {
         try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : scenario == "credential-save" ? 1 : 0,
@@ -167,6 +181,13 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         if scenario == "auth-otp" { panel.selectAuthentication(.oneTimePassword) }
     }
     if scenario == "credential-save" { panel.choosePasswordPersistence(true); panel.saveAuthentication() }
+    if scenario.hasPrefix("feedback-") {
+        panel.settings = false; panel.liveState = .connected
+        let phase: VPNPasswordPersistenceEvent.Phase = scenario == "feedback-saving" ? .saving
+            : scenario == "feedback-saved" ? .saved : .needsConfirmation
+        panel.passwordPersistenceEvent = VPNPasswordPersistenceEvent(intentIdentifier: UUID(),
+            configurationRevision: panel.configuration.configuration.revision, phase: phase)
+    }
 
     var bounds: [String: CGRect] = [:]
     let root = VPNPanelView(panel: panel, close: {})
@@ -181,6 +202,12 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     for _ in 0..<5 {
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+    if scenario.hasPrefix("feedback-") {
+        // onAppear's preview refresh deliberately reports unavailable; inject
+        // the presentation-only connected state after that lifecycle action.
+        panel.liveState = .connected
+        for _ in 0..<3 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
     }
     if scenario.hasPrefix("credential-") {
         if scenario == "credential-resource" { panel.beginResource() }
@@ -210,11 +237,14 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     case "auth-otp":
         required += ["vpnAuthenticationSave"]
         precondition(bounds["vpnSavePassword"] == nil, "OTP offered password saving")
+    case "feedback-saving", "feedback-saved", "feedback-unconfirmed":
+        required += ["vpnPower", "vpnSettings", "vpnStatusDetail"]
+        precondition(panel.statusDetail.contains("\n"), "Save feedback not rendered")
     default: required += ["vpnReplaceProfile", "vpnAddResource", "vpnRemove", "vpnSettingsDone"]
     }
     for name in required {
         guard let frame = bounds[name] else { fatalError("Missing \(name) in \(scenario)") }
-        let minimum: CGFloat = name == "vpnImport" ? 100 : name == "vpnCredential" ? 28 : 36
+        let minimum: CGFloat = name == "vpnImport" ? 100 : name == "vpnCredential" ? 28 : name == "vpnStatusDetail" ? 13 : 36
         precondition(frame.width >= 36 && frame.height >= minimum,
                      "Small target \(name) in \(scenario): \(frame)")
         precondition(frame.minX >= -0.5 && frame.maxX <= 344.5 &&
@@ -264,7 +294,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count(': vpnBack='), 11, result.stdout)
+            self.assertEqual(result.stdout.count(': vpnBack='), 14, result.stdout)
 
 
 if __name__ == '__main__':

@@ -57,6 +57,20 @@ private final class PromptSession: VPNLiveSession {
     func close() {}
 }
 
+private final class PanelPasswordSession: VPNPasswordPersistenceSession {
+    var adds = 0
+    func read(store: VPNStore, reference: VPNPasswordReference, revision: UInt64) throws -> Data? { nil }
+    func addOnce(store: VPNStore, reference: VPNPasswordReference, revision: UInt64,
+                 secret: inout Data) throws -> VPNPasswordAddOutcome {
+        try store.addPasswordOnce(reference: reference, expectedRevision: revision) { reference in
+            adds += 1
+            return .added(VPNPasswordItemLocator(persistentReference: Data(reference.itemID.uuidString.utf8),
+                origin: VPNPasswordBackendLocator(kind: .legacyKeychain, path: "/synthetic/panel.keychain",
+                    device: 1, inode: 1, ownerUID: getuid(), birthSeconds: 1, birthNanoseconds: 0)))
+        }
+    }
+}
+
 @main enum VPNPanelCredentialChecks {
     static func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         guard value() else { throw NSError(domain: message, code: 1) }
@@ -89,17 +103,72 @@ private final class PromptSession: VPNLiveSession {
         try config.saveResource(VPNResource(name: "Synthetic", address: "10.20.0.0/16"))
         let editingAuthentication = a[1].hasPrefix("auth-")
         let testingConsent = a[1].hasPrefix("consent-")
-        let staticPassword = editingAuthentication || testingConsent || a[1] == "password-consent"
+        let testingFeedback = a[1].hasPrefix("feedback-")
+        let staticPassword = editingAuthentication || testingConsent || testingFeedback || a[1] == "password-consent"
         let hasConsent = testingConsent ? a[1] == "consent-revoke" : staticPassword && !a[1].hasSuffix("default")
         try config.setAuthentication(VPNAuthentication(mode: staticPassword ? .password : .oneTimePassword,
             login: "employee", credentialPersistence: hasConsent ? .keychain : .none))
         _ = try store.save(config, importing: profile, expectedRevision: nil)
         let configuration = VPNModel(store: store); try configuration.load()
         let session = PromptSession()
-        let cache = testingConsent ? VPNPasswordPersistenceCoordinator(store: store,
+        let passwordSession = PanelPasswordSession()
+        var queuedSaves: [() -> Void] = []
+        let prepareGate = DispatchSemaphore(value: 0)
+        let cache = testingFeedback ? VPNPasswordPersistenceCoordinator(store: store,
+            available: a[1] != "feedback-inert", prepare: { _ in
+                if a[1] == "feedback-saving" {
+                    guard prepareGate.wait(timeout: .now() + 2) == .success else {
+                        throw NSError(domain: "synthetic prepare timed out", code: 1)
+                    }
+                }
+                return a[1] == "feedback-unconfirmed" ? nil : passwordSession
+            }, schedule: { queuedSaves.append($0) }) : testingConsent ? VPNPasswordPersistenceCoordinator(store: store,
             available: a[1] != "consent-unavailable") : nil
         let controller = VPNLiveController(store: store, passwordPersistence: cache, openSession: { session })
         let panel = VPNPanelModel(configuration: configuration, controller: controller)
+        if testingFeedback {
+            try require(panel.passwordPersistenceDetail == nil, "feedback invented before connection")
+            panel.toggle(); try wait(panel)
+            panel.secret = "synthetic static password"
+            panel.submitCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier); try wait(panel)
+            try require(panel.connected && panel.secret.isEmpty && panel.message.isEmpty,
+                        "feedback affected VPN state or retained input")
+            if a[1] == "feedback-inert" {
+                try require(queuedSaves.isEmpty && panel.passwordPersistenceDetail == nil, "inert driver displayed feedback")
+            } else {
+                try require(queuedSaves.count == 1, "verified save not queued")
+                if a[1] == "feedback-saving" {
+                    let work = queuedSaves.removeFirst()
+                    let finished = DispatchSemaphore(value: 0)
+                    DispatchQueue(label: "synthetic.password-save").async { work(); finished.signal() }
+                    let deadline = Date().addingTimeInterval(1)
+                    while panel.passwordPersistenceDetail != "Сохраняем пароль…", Date() < deadline {
+                        RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+                    }
+                    let showedSaving = panel.passwordPersistenceDetail == "Сохраняем пароль…" && panel.connected
+                    prepareGate.signal()
+                    try require(finished.wait(timeout: .now() + 2) == .success, "background save did not finish")
+                    try require(showedSaving, "background saving phase was not presented")
+                } else { queuedSaves.removeFirst()() }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+                let expected = a[1] == "feedback-unconfirmed"
+                    ? "Сохранение пароля не подтверждено." : "Пароль сохранён в Связке ключей."
+                try require(panel.passwordPersistenceDetail == expected && panel.statusDetail.contains(expected),
+                            "latest phase missing or earlier queued saving replaced terminal phase")
+                if a[1] == "feedback-revoke" {
+                    try configuration.setAuthentication(mode: .password, login: "employee", credentialPersistence: .none)
+                    try require(panel.passwordPersistenceDetail == nil && !panel.statusDetail.contains("Связке"),
+                                "revoked consent retained stale saved feedback")
+                } else if a[1] == "feedback-disconnect" {
+                    panel.toggle(); try wait(panel)
+                    try require(panel.passwordPersistenceDetail == nil && panel.liveState == .off,
+                                "disconnected intent retained stale feedback")
+                }
+                try require(panel.connected || a[1] == "feedback-disconnect", "save warning disconnected VPN")
+                try require(passwordSession.adds == (a[1] == "feedback-unconfirmed" ? 0 : 1), "wrong cache side effects")
+            }
+            print("credential presentation flow passed"); return
+        }
         if testingConsent {
             panel.settings = true; panel.beginAuthentication()
             try require(!panel.passwordPersistenceSelected || hasConsent, "save was enabled by default")

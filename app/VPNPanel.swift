@@ -39,6 +39,7 @@ final class VPNPanelModel: ObservableObject {
     private let queue = DispatchQueue(label: "proxypilot.vpn.frontend")
     private var modelChanges: AnyCancellable?
     @Published private(set) var credentialPromptIdentifier: UUID?
+    @Published private var passwordPersistenceEvent: VPNPasswordPersistenceEvent?
 
     init(preview: Bool = false) {
         if preview {
@@ -71,6 +72,18 @@ final class VPNPanelModel: ObservableObject {
         }
         login = configuration.configuration.authentication?.login ?? ""
         authenticationChoice = configuration.configuration.authentication?.mode
+        controller?.setPasswordPersistenceEventHandler { [weak self] event in
+            // The persistence queue never reads or mutates presentation state.
+            DispatchQueue.main.async { [weak self] in
+                self?.receivePasswordPersistenceEvent(event)
+            }
+        }
+    }
+
+    private func receivePasswordPersistenceEvent(_ event: VPNPasswordPersistenceEvent) {
+        guard controller?.isCurrentPasswordPersistenceEvent(event,
+            configuration: configuration.configuration) == true else { return }
+        passwordPersistenceEvent = event
     }
 
     var ready: Bool { configuration.connectionAvailability == .ready }
@@ -120,7 +133,9 @@ final class VPNPanelModel: ObservableObject {
     }
     var statusDetail: String {
         switch liveState {
-        case .connected: return "Рабочие ресурсы открываются через VPN."
+        case .connected:
+            let detail = "Рабочие ресурсы открываются через VPN."
+            return passwordPersistenceDetail.map { detail + "\n" + $0 } ?? detail
         case .needsCredential(.privateKeyPassword): return "Пароль нужен только для этой попытки подключения."
         case .needsCredential(.vpnPassword):
             return configuration.configuration.authentication?.mode == .oneTimePassword
@@ -130,6 +145,17 @@ final class VPNPanelModel: ObservableObject {
                     : "Введите пароль VPN. Он не сохраняется."
         case .unavailable: return "Компонент VPN недоступен. Проверьте установку и попробуйте ещё раз."
         default: return ready ? "Одно нажатие подключит выбранные ресурсы." : "Откройте настройки и завершите три шага."
+        }
+    }
+
+    var passwordPersistenceDetail: String? {
+        guard let event = passwordPersistenceEvent,
+              controller?.isCurrentPasswordPersistenceEvent(event,
+                  configuration: configuration.configuration) == true else { return nil }
+        switch event.phase {
+        case .saving: return "Сохраняем пароль…"
+        case .saved: return "Пароль сохранён в Связке ключей."
+        case .needsConfirmation: return "Сохранение пароля не подтверждено."
         }
     }
 
@@ -499,6 +525,11 @@ final class VPNPanelModel: ObservableObject {
                 self.working = false
                 do { try self.configuration.load() }
                 catch { self.message = error.localizedDescription }
+                // Enabling can advance the revision before an event reaches
+                // this queue. Reconcile only after adopting the saved settings.
+                if let event = controller.passwordPersistenceEvent {
+                    self.receivePasswordPersistenceEvent(event)
+                }
                 if bridgeFailed {
                     self.message = "Не удалось обновить исключения VPN в локальном прокси. Откройте приложение и повторите проверку."
                 }
@@ -578,6 +609,7 @@ struct VPNPanelView: View {
                 Text(panel.statusTitle).font(.system(size: 22, weight: .semibold)).tracking(-0.5)
                 Text(panel.statusDetail).font(.system(size: 13)).foregroundColor(.secondary)
                     .multilineTextAlignment(.center).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("vpnStatusDetail")
             }.padding(.top, 22)
             if panel.needsCredential { credentialForm.padding(.top, 14) }
             else if !panel.ready {
