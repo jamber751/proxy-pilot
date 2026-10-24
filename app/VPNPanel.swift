@@ -20,6 +20,8 @@ final class VPNPanelModel: ObservableObject {
     @Published var confirmLastResourceRemoval = false
     @Published var confirmVPNRemoval = false
     @Published var requestsPresentation = false
+    @Published private(set) var resourceRevealID: UUID?
+    private(set) var topVisibleResourceID: UUID?
 
     let configuration: VPNModel
     var onAttention: (() -> Void)?
@@ -277,6 +279,7 @@ final class VPNPanelModel: ObservableObject {
             else { configuration.beginAddingResource() }
             resourceName = resource?.name ?? ""
             resourceAddress = resource?.address ?? ""
+            resourceRevealID = nil
             editingResource = true
             message = ""
         } catch { message = error.localizedDescription }
@@ -284,6 +287,7 @@ final class VPNPanelModel: ObservableObject {
 
     func saveResource() {
         guard var draft = configuration.resourceDraft else { return }
+        let previousIDs = Set(configuration.configuration.resources.map(\.id))
         do {
             let candidate = try VPNResource(id: draft.id ?? UUID(), name: resourceName,
                                             address: resourceAddress)
@@ -296,12 +300,27 @@ final class VPNPanelModel: ObservableObject {
         configuration.resourceDraft = draft
         do {
             try configuration.saveResourceDraft()
+            resourceRevealID = draft.id ?? configuration.configuration.resources.first {
+                !previousIDs.contains($0.id)
+            }?.id
             editingResource = false; message = ""
         } catch { message = error.localizedDescription }
     }
 
     func cancelResource() {
         configuration.cancelResourceDraft(); editingResource = false; message = ""
+    }
+
+    func recordVisibleResource(_ id: UUID) {
+        // A disappearing scroll view can still emit its final geometry. Freeze
+        // the visible anchor when navigation leaves the list, before unmount.
+        guard settings, !editingResource, !editingAuthentication,
+              configuration.configuration.resources.contains(where: { $0.id == id }) else { return }
+        topVisibleResourceID = id
+    }
+
+    func finishResourceReveal(_ id: UUID?) {
+        if let id, resourceRevealID == id { resourceRevealID = nil }
     }
 
     func finishSettings() {
@@ -355,8 +374,12 @@ final class VPNPanelModel: ObservableObject {
 
     private func removeDraftResource(confirmingVPNOff: Bool) {
         guard let id = configuration.resourceDraft?.id else { return }
+        let index = configuration.configuration.resources.firstIndex(where: { $0.id == id }) ?? 0
         do {
             try configuration.removeResource(id: id, confirmingVPNOff: confirmingVPNOff)
+            let remaining = configuration.configuration.resources
+            resourceRevealID = remaining.isEmpty ? nil : remaining[min(index, remaining.count - 1)].id
+            if remaining.isEmpty { topVisibleResourceID = nil }
             editingResource = false; confirmLastResourceRemoval = false; message = ""
         } catch { message = error.localizedDescription }
     }
@@ -569,7 +592,7 @@ struct VPNPanelView: View {
 
     private var settings: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 profileCard
                 authenticationSummary
                 resourcesCard
@@ -577,8 +600,8 @@ struct VPNPanelView: View {
                     Text(panel.message).font(.system(size: 10)).foregroundColor(.secondary)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 4)
-            }.padding(.top, 12).padding(.bottom, 8).disabled(panel.connected || panel.working)
+                Spacer(minLength: 0)
+            }.padding(.top, 8).padding(.bottom, 8).disabled(panel.connected || panel.working)
             Divider().opacity(0.5)
             HStack(spacing: 8) {
                 Button(action: panel.requestVPNRemoval) {
@@ -691,6 +714,9 @@ struct VPNPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("РЕСУРСЫ ЧЕРЕЗ VPN").font(.system(size: 9, weight: .semibold)).tracking(0.8).foregroundColor(.secondary)
+                Text("\(panel.configuration.configuration.resources.count)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(.secondary)
+                    .accessibilityIdentifier("vpnResourceCount")
                 Spacer()
                 Button { panel.beginResource() } label: {
                     Image(systemName: "plus").frame(width: 36, height: 36).contentShape(Rectangle())
@@ -710,23 +736,7 @@ struct VPNPanelView: View {
                 Text("Добавьте IP-адрес или сеть, например 10.20.0.0/16.")
                     .font(.system(size: 10)).foregroundColor(.secondary).padding(.vertical, 8)
             } else {
-                ScrollView(.vertical, showsIndicators: panel.configuration.configuration.resources.count > 3) {
-                    LazyVStack(spacing: 6) {
-                        ForEach(panel.configuration.configuration.resources) { resource in
-                            Button { panel.beginResource(resource) } label: {
-                                HStack(spacing: 9) {
-                                    Image(systemName: "network").foregroundColor(accent).frame(width: 22)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        if !resource.name.isEmpty { Text(resource.name).font(.system(size: 10, weight: .medium)) }
-                                        Text(resource.address).font(.system(size: 11, design: .monospaced)).lineLimit(1)
-                                    }
-                                    Spacer(); Image(systemName: "pencil").font(.system(size: 10)).foregroundColor(.secondary)
-                                }.padding(.horizontal, 10).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                    .background(ink.opacity(0.035)).cornerRadius(9).contentShape(Rectangle())
-                            }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
-                        }
-                    }
-                }.frame(maxHeight: 144)
+                VPNResourceListView(panel: panel)
             }
         }
     }
@@ -762,6 +772,177 @@ struct VPNPanelView: View {
                   message: Text("VPN будет выключен, а файл конфигурации останется."),
                   primaryButton: .destructive(Text("Удалить"), action: panel.confirmResourceRemoval),
                   secondaryButton: .cancel())
+        }
+    }
+}
+
+private struct VPNResourceRowsKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct VPNResourceContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct VPNResourceViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Only resource rows scroll. Stable row IDs survive editor navigation because
+/// their anchor lives in the presentation model, outside this view's lifetime.
+private struct VPNResourceListView: View {
+    @ObservedObject var panel: VPNPanelModel
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var initialTarget: UUID?
+    @State private var revealTarget: Bool
+    @State private var restoring = true
+    @State private var restorationAttempts = 0
+    @State private var coordinateSpace = UUID()
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    @State private var rowFrames: [UUID: CGRect] = [:]
+    private let maximumViewportHeight: CGFloat = 144
+
+    init(panel: VPNPanelModel) {
+        self.panel = panel
+        _initialTarget = State(initialValue: panel.resourceRevealID ?? panel.topVisibleResourceID)
+        _revealTarget = State(initialValue: panel.resourceRevealID != nil)
+    }
+
+    private var resources: [VPNResource] { panel.configuration.configuration.resources }
+    private var ink: Color {
+        colorScheme == .dark ? Color(red: 0.92, green: 0.94, blue: 0.94) : Color(red: 0.12, green: 0.16, blue: 0.15)
+    }
+    private var viewportLimit: CGFloat {
+        guard resources.count <= 3 else { return maximumViewportHeight }
+        let estimate = CGFloat(resources.count) * 44 + CGFloat(max(0, resources.count - 1)) * 6
+        return min(maximumViewportHeight, max(44, contentHeight > 0 ? contentHeight : estimate))
+    }
+    private var overflows: Bool {
+        resources.count > 3 || (viewportHeight > 0 && contentHeight > viewportHeight + 0.5)
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: overflows) {
+                Group {
+                    if resources.count <= 3 {
+                        // All short-list rows are measured, including wrapped text.
+                        VStack(spacing: 6) { rows }
+                    } else {
+                        LazyVStack(spacing: 6) { rows }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: VPNResourceContentHeightKey.self, value: geometry.size.height)
+                })
+            }
+            .coordinateSpace(name: coordinateSpace)
+            .frame(minHeight: min(44, viewportLimit), idealHeight: viewportLimit, maxHeight: viewportLimit)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: VPNResourceViewportHeightKey.self, value: geometry.size.height)
+            })
+            .accessibilityIdentifier("vpnResourceList")
+            .onPreferenceChange(VPNResourceContentHeightKey.self) { contentHeight = $0 }
+            .onPreferenceChange(VPNResourceViewportHeightKey.self) {
+                viewportHeight = $0
+                if restoring { restoreIfMeasured(using: proxy) }
+            }
+            .onPreferenceChange(VPNResourceRowsKey.self) { frames in
+                rowFrames = frames
+                if restoring { restoreIfMeasured(using: proxy) }
+                else { recordTop(from: frames) }
+            }
+            .onChange(of: panel.resourceRevealID) { target in
+                guard let target, panel.settings, !panel.editingResource, !panel.editingAuthentication else { return }
+                initialTarget = target
+                revealTarget = true
+                restoring = true
+                restorationAttempts = 0
+                DispatchQueue.main.async {
+                    guard restoring, initialTarget == target else { return }
+                    restorationAttempts += 1
+                    proxy.scrollTo(target, anchor: .center)
+                    restoreIfMeasured(using: proxy)
+                }
+            }
+            .onAppear {
+                let target = initialTarget
+                DispatchQueue.main.async {
+                    guard restoring, initialTarget == target else { return }
+                    if let target, resources.contains(where: { $0.id == target }) {
+                        restorationAttempts += 1
+                        proxy.scrollTo(target, anchor: revealTarget ? .center : .top)
+                        restoreIfMeasured(using: proxy)
+                    } else { finishRestoration() }
+                }
+            }
+        }
+    }
+
+    private func restoreIfMeasured(using proxy: ScrollViewProxy) {
+        guard restoring, viewportHeight > 0 else { return }
+        guard let target = initialTarget, resources.contains(where: { $0.id == target }) else {
+            finishRestoration(); return
+        }
+        guard let frame = rowFrames[target] else { return }
+        let positioned = revealTarget
+            ? frame.maxY > 0.5 && frame.minY < viewportHeight - 0.5
+            : abs(frame.minY) <= 0.5
+        if positioned || restorationAttempts >= 3 { finishRestoration() }
+        else {
+            // Lazy rows first provide estimated positions. Repeat only after
+            // the target has a measured frame, using that same stable row ID.
+            restorationAttempts += 1
+            DispatchQueue.main.async {
+                guard restoring, initialTarget == target else { return }
+                proxy.scrollTo(target, anchor: revealTarget ? .center : .top)
+            }
+        }
+    }
+
+    private func finishRestoration() {
+        restoring = false
+        recordTop(from: rowFrames)
+        panel.finishResourceReveal(initialTarget)
+    }
+
+    private func recordTop(from frames: [UUID: CGRect]) {
+        guard viewportHeight > 0,
+              let first = frames.filter({ $0.value.maxY > 0.5 && $0.value.minY < viewportHeight - 0.5 })
+                .min(by: { $0.value.minY < $1.value.minY }) else { return }
+        panel.recordVisibleResource(first.key)
+    }
+
+    private var rows: some View {
+        ForEach(resources) { resource in
+            Button { panel.beginResource(resource) } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "network").foregroundColor(PilotTheme.accent).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if !resource.name.isEmpty {
+                            Text(resource.name).font(.system(size: 10, weight: .medium))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(resource.address).font(.system(size: 11, design: .monospaced))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "pencil").font(.system(size: 10)).foregroundColor(.secondary)
+                }.padding(.horizontal, 10).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .background(ink.opacity(0.035)).cornerRadius(9).contentShape(Rectangle())
+            }.buttonStyle(PilotButtonStyle(cornerRadius: 9))
+                .id(resource.id)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: VPNResourceRowsKey.self,
+                        value: [resource.id: geometry.frame(in: .named(coordinateSpace))])
+                })
         }
     }
 }

@@ -42,8 +42,10 @@ class VPNUIContractTests(unittest.TestCase):
         settings = panel.split('private var settings: some View', 1)[1].split('private var profileCard:', 1)[0]
         self.assertNotIn('ScrollView', settings)
         self.assertIn('LazyVStack(spacing: 6)', panel)
-        self.assertIn('.frame(maxHeight: 144)', panel)
-        self.assertIn('showsIndicators: panel.configuration.configuration.resources.count > 3', panel)
+        self.assertIn('private let maximumViewportHeight: CGFloat = 144', panel)
+        self.assertIn('VStack(spacing: 6) { rows }', panel)
+        self.assertIn('ScrollViewReader', panel)
+        self.assertIn('showsIndicators: overflows', panel)
 
     def test_ui_does_not_offer_unimplemented_secret_persistence(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text()

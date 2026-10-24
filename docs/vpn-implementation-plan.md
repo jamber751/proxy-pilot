@@ -4887,3 +4887,33 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   реального Script extraction/preflight ownership и пяти Installer сценариев.
   Риск Scripts UID из pkgbuild пока не подтверждён actual PackageKit execution;
   ownership checks не ослаблялись.
+
+### Продолжение 1.5ds — длинный список ресурсов в компактном поповере
+
+- [x] Счётчик ресурсов и «+» находятся в header вне прокрутки. Файл и основное
+  действие также остаются снаружи. Только список прокручивается по вертикали,
+  максимум144pt; короткие1..3 строки используют non-lazy stack и измеренную
+  высоту, длинные — LazyVStack. После3→2 высота уменьшается без пустой области.
+- [x] Найден и исправлен фактический layout defect:3 строки занимали144pt при
+  viewport131pt. Уменьшены только внутренние settings gaps/top/spacer; обычные
+  три строки теперь помещаются целиком, общий размер344×432 сохранён.
+  Длинные названия/IPv6-адреса переносятся по высоте, horizontal scroller нет.
+- [x] Верхний видимый UUID хранится в presentation model. Возврат из редактора
+  восстанавливает эту строку; фоновые status/layout updates не сбрасывают anchor.
+  Late geometry при скрытии списка больше не сдвигает сохранённую позицию.
+  Save/add/delete задают отдельный reveal target, включая соседнюю строку после
+  удаления; запрос работает и без unmount списка при batched SwiftUI update.
+- [x] Offscreen runtime harness использует настоящие SwiftUI views/NSScrollView
+  и synthetic preview data:1/3/18/100 ресурсов,3→2 удаление, editor/back, фоновые
+  статусы и встроенное сообщение, edited/added/neighbor reveal. Проверены точный
+  top-row UUID после возврата, полная видимость target rows, header/footer вне
+  viewport≤144pt и внутри432pt. Отдельно измерена multiline высота длинного IPv6.
+- [x] Общий local regression:25 passed (resource runtime1, existing layout1,
+  UI contract4, credential10, import9). Финальный усиленный runtime case повторно
+  passed после добавления3→2 и full-row visibility assertions. Source target
+  остаётся macOS11; macOS12-only API не используется.
+- [ ] Keyboard focus/VoiceOver и реальные wheel/key/мышиные действия пройти
+  отдельно. Runtime harness вызывает adapter actions и native scroll напрямую;
+  он не заменяет живую пользовательскую приёмку. Восстановление позиции здесь
+  row-level, не pixel-exact для частично видимой строки. macOS11 runtime не
+  проверялся. Реальные профили, службы, сеть и настройки host не затрагивались.
