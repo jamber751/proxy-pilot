@@ -5480,3 +5480,29 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   собрать/проверить заново, затем заново получить manifest/edge/rescue drafts.
   В реальном пользовательском хранилище schema3 не записывалась: текущие
   проверки используют только отдельные синтетические каталоги.
+
+### Продолжение 1.5ev — write-once ledger перед подключением Keychain
+
+- [x] Schema3 хранит reference вместе с состоянием notIssued/pending/settled.
+  Schema1 мигрирует без выдуманных credentials; schema2 references консервативно
+  переходят в pending. Выдача нового явного save grant проверяет revision и
+  expectedActive, использует новый UUID; позднее удаление старого не затрагивает
+  новый. Старый schema2 frontend обязан отказаться от schema3, а не потерять её
+  обязательства удаления.
+- [x] Перед единственным Add по UUID хранилище фиксирует pending и требует
+  успешного directory fsync. Ошибка синхронизации оставляет неизвестный исход
+  локальной записи, но callback backend не вызывается. Исключение/timeout/падение
+  процесса после pending не разрешают повторный Add или подтверждение удаления.
+  Это проверка process-crash boundary, не полная аппаратная power-loss гарантия.
+- [x] Только доверенное определённое завершение может перевести exact active
+  или queued reference в settled; presence/notFound/задержка этого не доказывают.
+  Чтение pending запрещено; удаление pending запрещено до backend I/O. Неизданный
+  grant удаляется без backend, settled удаляется по прежнему exact-reference seam.
+- [x] Локально46 regressions passed:18 ledger,9 core,1 model,12 panel,
+  6 live-controller. В том числе настоящий отдельный процесс завершается после
+  pending-before-add; последующий процесс отказывается повторять запись.
+  Тест отказа directory sync также доказывает callback0 и сохранение pending.
+- [ ] Это ещё не пользовательская функция сохранения: Security adapter,
+  доверенный изолированный worker, интеграция после verified connected, opt-in UI
+  и реальная silent Keychain приёмка остаются открыты. Секреты в JSON не добавлены;
+  действия проверок ограничены синтетическими temporary stores.
