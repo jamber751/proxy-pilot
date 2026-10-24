@@ -6089,3 +6089,39 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Исследование: https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api
   Следующий инкремент — bounded inert answer codec/permit transaction;
   live relay и OS protection остаются обязательными до включения domain runtime.
+
+### Продолжение 1.5fk — bounded answer interposition без runtime activation
+
+- [x] `af27ef3`: pure positive DNS codec проверяет exact question/resource,
+  generation/revision, ID, A/AAAA family, complete CNAME chain; bounds65535 bytes,
+  128 records/16 aliases, backward compression только к доказанным boundaries.
+  Unrelated/conflicting records не выдаются. Canonical output убирает непроверенные
+  AA/RA/AD claims; minimum TTL ограничен86400, high-bit TTL считается0, возраст
+  вычитается консервативно. Parser сам не доказывает корпоративный источник.
+- [x] Mandatory answer-release authority должна установить deny и route permits
+  exact ответа, сохранить checkpoints и проверить их под lease, удерживаемой
+  через фактический synchronous output. Default/permissive adapter отсутствует.
+  Atomic one-shot fence не допускает double output при concurrent/reentrant
+  provider; swallowed callback errors остаются ошибкой. Unknown/output failure
+  не повторяет выдачу. Положительные bytes не возвращаются из release методом.
+- [x] Независимый окончательный прогон46 pure tests PASS7.134s: malformed wire,
+  compression/CNAME/TTL, mutation corpus, stale resource/gen/rev, expiry,
+  чужие permits, revoke/unknown/pre/post-checkpoint crashes, double callbacks.
+  Agent no-TESTING macOS11 module compile прошёл ARM/Intel. Workflow scoped DNS
+  теперь включает этот suite; live helper/build/runtime пока не подключены.
+- [ ] Original client request/RD binding, validated negative SOA/NXDOMAIN/NODATA,
+  EDNS/DNSSEC/authority/additional handling остаются OPEN. Positive subset
+  возвращает typed unsupportedNegative/upstreamFailure, не придумывает NXDOMAIN
+  при сетевой ошибке. OS barrier, transport attestation, durable TTL/refcount
+  custody, recovery, actual client I/O и live relay по-прежнему не реализованы.
+- [x] После `f0773ea` независимые Runtime/Live/Cleanup/Core/Model suites:
+  113 PASS23.392s (`/tmp/pp-worker-unlocked-integration-f0773ea.log`). Это
+  дополнение к92 Worker/Ledger checks, не новая actual Keychain приёмка.
+- [ ] System40124194483: ARM прошёл phase6 On, repair Off и repair On;
+  сейчас idempotent same-capsule reinstall. Intel всё ещё build production.
+  Genuine factory40126154510 и utun40125607865 queued; handles не заменялись.
+- [x] Read-only XNU audit не подтвердил гипотезу о CIDR /8, скрытом same-base
+  /24: наш GET передаёт NETMASK, rt_lookup(TRUE) сохраняет её, radix lookup
+  проходит dupedkey chain к нужной маске. Fake contradictory /24 reply не
+  объявляется kernel reproduction. Отдельная defensive rejection такого reply
+  рассматривается без новых host route/sysctl/PF/socket вызовов.
