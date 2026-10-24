@@ -48,6 +48,12 @@ import Foundation
         let fd = directory(path); defer { close(fd) }
         let action = {
             switch operation {
+            case "fixture-source-capability":
+                let receipt = try VPNStagedApplication.inspectInstalledForUpdate(
+                    inApplicationsDirectory: fd, previousOwnerUserID: 501,
+                    productionParent: false, release: candidate)
+                try VPNStagedApplication.requireUpdateExecutorCompatibility(receipt,
+                    inApplicationsDirectory: fd)
             case "update-owner-policy":
                 let rootOwner = try VPNStagedApplication.updateSourceOwner(observed: 0, authorizedUser: 501)
                 let userOwner = try VPNStagedApplication.updateSourceOwner(observed: 501, authorizedUser: 501)

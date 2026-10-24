@@ -5,6 +5,7 @@ No Installer, launchd, network, Keychain, or real Applications mutation.
 This is not full installed update acceptance.
 """
 import os
+import plistlib
 import shutil
 import sys
 import unittest
@@ -18,6 +19,25 @@ import test_vpn_application_destination_exchange as destination
                      'requires explicit opt-in inside disposable macOS VM as root')
 class VPNDestinationRootVMTests(destination.VPNApplicationDestinationExchangeTests):
     root_vm_fixture = True
+
+    def test_sealed_source_capability_required_for_root_owner(self):
+        installed = self.destination / 'ProxyPilot.app'
+        self.app = installed
+        metadata = installed / 'Contents/Info.plist'
+        original = plistlib.loads(metadata.read_bytes())
+        for capability in (None, True, '1'):
+            with self.subTest(capability=capability):
+                info = dict(original)
+                if capability is not None:
+                    info['ProxyPilotVPNRootOwnedUpdateExecutor'] = capability
+                metadata.write_bytes(plistlib.dumps(info))
+                self.sign(installed, 'kz.documentolog.proxypilot')
+                pins = self.pins()
+                args = [str(self.staged_checker), 'fixture-source-capability',
+                        str(self.destination), pins['arm64'], pins['x86_64'], '1.6.0']
+                if capability != '1':
+                    args.append('incompatibleExecutor')
+                self.command(args)
 
     def set_owner(self, bundle, owner):
         # Only the generated fixture subtree can be changed, never a supplied path.

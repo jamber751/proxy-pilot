@@ -4432,3 +4432,17 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   Это проверка filesystem primitive с настоящими владельцами, не полный
   Installer/journal/service lifecycle и не доказательство восстановления 137→139.
   VM пока отсутствует; root-прогон не засчитан. Пароль на основном Mac не запрашивался.
+
+### Продолжение 1.5db — удалённый изолированный стенд
+
+- [x] Вместо локального образа macOS (на диске около 28 GiB свободно) добавлен
+  `.github/workflows/vpn-ownership.yml`: отдельные стандартные GitHub-hosted
+  macOS 14 arm64 и macOS 15 Intel, timeout 15 min, read-only repository permission,
+  checkout без сохранения credentials. Root вызывается только внутри одноразового
+  runner для fixture suite; основной Mac не изменяется.
+- [x] Тестовая ветка `codex/vpn-root-acceptance` отправлена, workflow запущен:
+  https://github.com/jamber751/proxy-pilot/actions/runs/40079896431
+  Commit `005dc01`; теги и release workflow не запускались. Репозиторий публичный,
+  использованы стандартные бесплатные hosted runners, без платных larger runners.
+- [ ] Дождаться результата root/user suites на обеих архитектурах. Эта проверка
+  не заменяет полного first-install/update/recovery и настоящего VPN с OTP.
