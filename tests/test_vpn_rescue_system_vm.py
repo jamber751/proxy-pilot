@@ -380,6 +380,96 @@ def launchd_diagnostics(text):
     return result
 
 
+def broker_record_projection(data, kind):
+    """Fixed numeric diagnostics, NOT transaction authority or a recovery codec.
+
+    Never expose the inbox digest, journal UUID or arbitrary stored bytes.
+    Validate the production framing/checksum before projecting known fields.
+    """
+    sizes = {'status': 48, 'transaction': 128}
+    magics = {'status': b'PPBS\0\0\0\1', 'transaction': b'PPBT\0\0\0\1'}
+    if kind not in sizes: raise ValueError('Unknown broker diagnostic kind')
+    def number(start, end): return int.from_bytes(data[start:end], 'big')
+    if len(data) != sizes[kind] or data[:8] != magics[kind] or number(8, 10) != 1:
+        return {'record': 'invalid'}
+    checksum = 0xcbf29ce484222325
+    for value in data[:-8]: checksum = ((checksum ^ value) * 0x100000001b3) & (2**64 - 1)
+    if number(len(data) - 8, len(data)) != checksum: return {'record': 'invalid'}
+    phases = ('accepted', 'checking', 'ready', 'installing', 'complete', 'failed', 'busy', 'stale')
+    if kind == 'status':
+        state, revision = number(10, 12), number(32, 40)
+        if not 1 <= state <= len(phases) or data[12:16] != bytes(4) or revision == 0:
+            return {'record': 'invalid'}
+        return {'record': 'valid', 'state': phases[state - 1], 'fromSequence': number(16, 24),
+                'toSequence': number(24, 32), 'revision': revision}
+    phases = ('accepted', 'authorized', 'prepared', 'handoffStarted', 'handoffComplete',
+              'rotatingBroker', 'complete', 'failed')
+    recoveries = ('inboxRetained', 'journalRetained', 'executorCommitted', 'complete', 'failed')
+    rotations = ('notStarted', 'pending', 'complete')
+    phase, recovery, rotation, flags = number(10, 12), number(12, 14), number(14, 16), number(16, 20)
+    start, target, revision = number(56, 64), number(64, 72), number(72, 80)
+    if (not 1 <= phase <= len(phases) or not 1 <= recovery <= len(recoveries)
+            or not 1 <= rotation <= len(rotations) or flags not in (0, 1)
+            or data[20:24] != bytes(4) or data[106:120] != bytes(14)
+            or not 0 < start < target or revision == 0
+            or (flags == 0 and data[80:106] != bytes(26))
+            or (flags == 1 and (number(96, 104) == 0 or not 1 <= number(104, 106) <= 8))
+            or (phase >= 3 and phase != 8 and flags == 0)
+            or (phase == 7 and (recovery != 4 or rotation != 3))
+            or (phase == 8 and recovery != 5)):
+        return {'record': 'invalid'}
+    result = {'record': 'valid', 'phase': phases[phase - 1], 'recovery': recoveries[recovery - 1],
+              'rotation': rotations[rotation - 1], 'fromSequence': start, 'toSequence': target,
+              'revision': revision, 'hasJournal': flags == 1}
+    if flags == 1:
+        result.update(journalRevision=number(96, 104), journalPhase=number(104, 106))
+    return result
+
+
+def broker_record_diagnostics(directory, kind):
+    names = {'status': 'update-broker-status.bin', 'transaction': 'update-broker-transaction.bin'}
+    if kind not in names: raise ValueError('Unknown broker diagnostic kind')
+    parent = descriptor = None
+    try:
+        parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(parent)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            return {'record': 'unsafe'}
+        descriptor = os.open(names[kind], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            return {'record': 'unsafe'}
+        data = os.read(descriptor, 129)
+        return broker_record_projection(data, kind)
+    except FileNotFoundError: return {'record': 'absent'}
+    except OSError: return {'record': 'unreadable'}
+    finally:
+        if descriptor is not None: os.close(descriptor)
+        if parent is not None: os.close(parent)
+
+
+def broker_inbox_diagnostics(directory):
+    """Top-level counts only; never print/open an opaque inbox pathname."""
+    descriptor = None
+    try:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(descriptor)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            return {'record': 'unsafe'}
+        result = {'record': 'observed', 'published': 0, 'preparing': 0}
+        with os.scandir(descriptor) as entries:
+            for index, entry in enumerate(entries):
+                if index >= 4096: return {'record': 'overBudget'}
+                if re.fullmatch(r'inbox-[0-9a-f]{64}', entry.name): result['published'] += 1
+                elif re.fullmatch(r'\.inbox-[0-9a-f]{64}\.preparing', entry.name): result['preparing'] += 1
+        return result
+    except FileNotFoundError: return {'record': 'absent'}
+    except OSError: return {'record': 'unreadable'}
+    finally:
+        if descriptor is not None: os.close(descriptor)
+
+
 def helper_program_diagnostics(program, known):
     # An unrecognized program is classified without stat/open/codesign on its
     # path. Known keys come only from B/C manifests at the fixed service root.
@@ -627,6 +717,9 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         result['rescuePresent'] = (SYSTEM_BASE / 'Rescue').exists()
         result['destinationStagePresent'] = Path('/Applications/.ProxyPilot.vpn-update').exists()
         result['brokerBackupPresent'] = (SYSTEM_BASE / 'Broker/update-broker-rescue-rotation.bin').exists()
+        for kind in ('status', 'transaction'):
+            result['broker' + kind.title()] = broker_record_diagnostics(SYSTEM_BASE / 'Broker', kind)
+        result['brokerInbox'] = broker_inbox_diagnostics(SYSTEM_BASE / 'Broker')
         for key, app in (('installedRelease', APPLICATION),
                          ('destinationStageRelease', Path('/Applications/.ProxyPilot.vpn-update/ProxyPilot.app')),
                          ('protectedCurrentRelease', SYSTEM_BASE / 'Update/current/ProxyPilot.app'),
@@ -784,8 +877,16 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         owner = self.fixture['owner']
         submitted = ordinary_owner_command(owner, [APPLICATION / 'Contents/MacOS/ProxyPilot',
                                                    '--vm-submit-update', successor])
+        outcome = submitted.stdout.strip()
+        safe_outcome = outcome if outcome in ('submit:ready', 'submit:indeterminate') else 'unexpected'
+        print('Ordinary update submission: ' + json.dumps({'exit': submitted.returncode,
+              'outcome': safe_outcome}), flush=True)
+        print('Ordinary broker after submission: ' + json.dumps({
+            'status': broker_record_diagnostics(SYSTEM_BASE / 'Broker', 'status'),
+            'transaction': broker_record_diagnostics(SYSTEM_BASE / 'Broker', 'transaction'),
+            'inbox': broker_inbox_diagnostics(SYSTEM_BASE / 'Broker')}), flush=True)
         self.assertIn(submitted.returncode, (0, 75), self.state_summary())
-        self.assertIn(submitted.stdout.strip(), ('submit:ready', 'submit:indeterminate'), self.state_summary())
+        self.assertNotEqual(safe_outcome, 'unexpected', self.state_summary())
         service = SYSTEM_BASE / 'VPN'
         deadline = time.monotonic() + 300
         installed = False
