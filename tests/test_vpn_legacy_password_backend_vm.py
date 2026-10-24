@@ -35,6 +35,23 @@ def build_fixture(folder, arch):
     return binaries
 
 
+class VMFixtureDiagnosticsTests(unittest.TestCase):
+    def test_diagnostics_only_emit_closed_stage_numeric_status_and_boolean(self):
+        source = (ROOT / 'tests/vpn_legacy_password_backend_vm_checks.swift').read_text()
+        body = source.split('private static func evidence(', 1)[1].split('    static func check(', 1)[0]
+        self.assertIn('phase: Evidence', body)
+        self.assertIn('status: OSStatus?', body)
+        self.assertIn('value: Bool?', body)
+        self.assertIn('phase.rawValue', body)
+        for forbidden in ('.path', '.description', '.localizedDescription', 'String(describing:',
+                          'persistentReference', 'envelope', 'secret', 'dictionary', 'account', 'login'):
+            self.assertNotIn(forbidden, body)
+        for expected in ('.searchList, status:', '.defaultKeychain, status:', '.getPath, status:',
+                         '.initialInteraction, status:', '.createKeychain, status:',
+                         '.createdPathIsDB, value:', '.createdPathIsBase, value:'):
+            self.assertIn('evidence(' + expected, source)
+
+
 @unittest.skipUnless(os.environ.get('PROXYPILOT_VM_PASSWORD_BACKEND_TESTS') == '1',
                      'Real Keychain operations require explicit disposable-GHA opt-in')
 class VPNLegacyPasswordBackendVMTests(unittest.TestCase):

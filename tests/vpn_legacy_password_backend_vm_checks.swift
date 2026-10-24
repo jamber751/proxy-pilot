@@ -6,6 +6,22 @@ import Security
 /// REAL APIs ONLY in a fresh opt-in disposable GHA job. Never run on a host.
 @main enum VPNLegacyPasswordBackendVMChecks {
     enum Failure: Error { case guardFailed, check, api }
+    private enum Evidence: String {
+        case searchList, searchListDecoded, defaultKeychain, getPath
+        case initialInteraction, finalInteraction, interactionUnchanged
+        case createKeychain, createHandle, createdPathIsDB, createdPathIsBase
+        case createdPrivateMode, fixtureAdd, fixtureAddResult, itemDictionary
+        case itemOwner, ownerIsPrivate, ownerFileOpen, ownerFileIdentity
+        case privateLock, cleanupKeychain, preferencesUnchanged
+        case workerAddAdded, workerAddNoIO
+    }
+    private static func evidence(_ phase: Evidence, status: OSStatus? = nil, value: Bool? = nil) {
+        // Closed identifiers, decimal status and boolean ONLY. No exceptions,
+        // keychain/default names, paths, dictionaries, refs or credential data.
+        let statusText = status.map { String($0) } ?? "none"
+        let valueText = value.map { $0 ? "true" : "false" } ?? "none"
+        FileHandle.standardError.write(Data("private-backend:\(phase.rawValue):status=\(statusText):ok=\(valueText)\n".utf8))
+    }
     static func check(_ condition: @autoclosure () throws -> Bool) throws {
         guard try condition() else { throw Failure.check }
     }
@@ -22,16 +38,28 @@ import Security
     }
     static func path(_ keychain: SecKeychain) throws -> String {
         var size = UInt32(MAXPATHLEN), bytes = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard SecKeychainGetPath(keychain, &size, &bytes) == errSecSuccess else { throw Failure.api }
+        let status = SecKeychainGetPath(keychain, &size, &bytes)
+        evidence(.getPath, status: status)
+        guard status == errSecSuccess else { throw Failure.api }
         return String(cString: bytes)
     }
     static func preferences() throws -> Data {
         var list: CFArray?, defaultKeychain: SecKeychain?
-        guard SecKeychainCopySearchList(&list) == errSecSuccess, let list = list as? [SecKeychain] else { throw Failure.api }
+        let searchStatus = SecKeychainCopySearchList(&list)
+        evidence(.searchList, status: searchStatus)
+        let decoded = list as? [SecKeychain]
+        evidence(.searchListDecoded, value: decoded != nil)
+        guard searchStatus == errSecSuccess, let list = decoded else { throw Failure.api }
         let status = SecKeychainCopyDefault(&defaultKeychain)
+        evidence(.defaultKeychain, status: status, value: defaultKeychain != nil)
         guard status == errSecSuccess || status == errSecNoDefaultKeychain else { throw Failure.api }
         return try JSONSerialization.data(withJSONObject: ["search": list.map { try path($0) },
             "default": try defaultKeychain.map { try path($0) } ?? "", "status": status], options: .sortedKeys)
+    }
+    static func unchangedPreferences(_ baseline: Data) throws -> Bool {
+        let unchanged = try preferences() == baseline
+        evidence(.preferencesUnchanged, value: unchanged)
+        return unchanged
     }
     static func seed(_ folder: URL) throws -> (VPNStore, VPNPasswordReference, UInt64) {
         let store = VPNStore(directory: folder)
@@ -71,23 +99,38 @@ import Security
         let password = Data("synthetic-disposable-keychain-password".utf8)
         var result: SecKeychain?
         let status = password.withUnsafeBytes { SecKeychainCreate(base, UInt32($0.count), $0.baseAddress, false, nil, &result) }
-        guard status == errSecSuccess, let result,
-              try path(result) == base + "-db" else { throw Failure.api }
-        guard chmod((base + "-db"), 0o600) == 0 else { throw Failure.guardFailed }
+        evidence(.createKeychain, status: status)
+        evidence(.createHandle, value: result != nil)
+        guard status == errSecSuccess, let result else { throw Failure.api }
+        let observed = try path(result)
+        evidence(.createdPathIsDB, value: observed == base + "-db")
+        evidence(.createdPathIsBase, value: observed == base)
+        guard observed == base + "-db" else { throw Failure.api }
+        let privateMode = chmod((base + "-db"), 0o600) == 0
+        evidence(.createdPrivateMode, value: privateMode)
+        guard privateMode else { throw Failure.guardFailed }
         return result
     }
     static func observedLocator(_ raw: CFTypeRef?, folder: URL) throws -> VPNPasswordItemLocator {
+        evidence(.itemDictionary, value: raw as? [String: Any] != nil)
         guard let result = raw as? [String: Any], let persistent = result[kSecValuePersistentRef as String] as? Data,
               let rawItem = result[kSecValueRef as String], CFGetTypeID(rawItem as CFTypeRef) == SecKeychainItemGetTypeID() else { throw Failure.api }
         let item = unsafeBitCast(rawItem as CFTypeRef, to: SecKeychainItem.self)
         var keychain: SecKeychain?
-        guard SecKeychainItemCopyKeychain(item, &keychain) == errSecSuccess, let keychain else { throw Failure.api }
+        let status = SecKeychainItemCopyKeychain(item, &keychain)
+        evidence(.itemOwner, status: status, value: keychain != nil)
+        guard status == errSecSuccess, let keychain else { throw Failure.api }
         let actual = try path(keychain)
-        guard actual.hasPrefix(folder.path + "/"), !actual.contains("/../") else { throw Failure.guardFailed }
+        let privateOwner = actual.hasPrefix(folder.path + "/") && !actual.contains("/../")
+        evidence(.ownerIsPrivate, value: privateOwner)
+        guard privateOwner else { throw Failure.guardFailed }
         let fd = open(actual, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        evidence(.ownerFileOpen, value: fd >= 0)
         guard fd >= 0 else { throw Failure.guardFailed }; defer { close(fd) }
         var info = stat()
-        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(), info.st_nlink == 1 else { throw Failure.guardFailed }
+        let owned = fstat(fd, &info) == 0 && info.st_mode & S_IFMT == S_IFREG && info.st_uid == getuid() && info.st_nlink == 1
+        evidence(.ownerFileIdentity, value: owned)
+        guard owned else { throw Failure.guardFailed }
         let locator = VPNPasswordItemLocator(persistentReference: persistent, origin: .init(kind: .legacyKeychain,
             path: actual, device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino), ownerUID: info.st_uid,
             birthSeconds: Int64(info.st_birthtimespec.tv_sec), birthNanoseconds: UInt32(info.st_birthtimespec.tv_nsec)))
@@ -106,7 +149,10 @@ import Security
             kSecUseKeychain as String: keychain, kSecValueData as String: envelope,
             kSecReturnRef as String: true, kSecReturnPersistentRef as String: true]
         var result: CFTypeRef?
-        guard SecItemAdd(query as CFDictionary, &result) == errSecSuccess else { throw Failure.api }
+        let status = SecItemAdd(query as CFDictionary, &result)
+        evidence(.fixtureAdd, status: status)
+        evidence(.fixtureAddResult, value: result != nil)
+        guard status == errSecSuccess else { throw Failure.api }
         let locator = try observedLocator(result, folder: folder)
         guard locator.origin.path == actual else { throw Failure.guardFailed }
         return locator
@@ -144,7 +190,9 @@ import Security
         guard lstat(folder.path, &info) != 0, errno == ENOENT else { throw Failure.guardFailed }
         let baseline = try preferences()
         var allowed: DarwinBoolean = false
-        guard SecKeychainGetUserInteractionAllowed(&allowed) == errSecSuccess else { throw Failure.api }
+        let initialFlagStatus = SecKeychainGetUserInteractionAllowed(&allowed)
+        evidence(.initialInteraction, status: initialFlagStatus, value: allowed.boolValue)
+        guard initialFlagStatus == errSecSuccess else { throw Failure.api }
         let beforeFlag = allowed.boolValue
         let (store, reference, revision) = try seed(folder)
         let unknownAPI = folder.appendingPathComponent("private-unknown-api")
@@ -165,7 +213,9 @@ import Security
             guard safeToClean() else { return false }
             do {
                 try begin("keychain-delete")
-                guard SecKeychainDelete(keychain) == errSecSuccess else { return false }
+                let status = SecKeychainDelete(keychain)
+                evidence(.cleanupKeychain, status: status)
+                guard status == errSecSuccess else { return false }
                 try definite(); return true
             } catch { return false }
         }
@@ -185,7 +235,7 @@ import Security
         try definite()
         var secondExists = true
         defer { if secondExists { _ = cleanup(second) } }
-        try check(preferences() == baseline)
+        try check(unchangedPreferences(baseline))
         var secret = Data("synthetic-static-password".utf8)
         defer { VPNPasswordWorkerWire.clear(&secret) }
         let locator: VPNPasswordItemLocator
@@ -201,12 +251,16 @@ import Security
             let worker = try VPNPasswordWorker.prepare(store: store)
             try begin("initial-add")
             let result = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
-            if case .added = result { try definite() }
-            else if result == .definitelyNoIO { try definite() }
+            if case .added = result { evidence(.workerAddAdded, value: true); try definite() }
+            else {
+                evidence(.workerAddAdded, value: false)
+                evidence(.workerAddNoIO, value: result == .definitelyNoIO)
+                if result == .definitelyNoIO { try definite() }
+            }
             guard case .added(let captured) = result else { throw Failure.check }; locator = captured
             try waitChildren()
         }
-        try check(preferences() == baseline)
+        try check(unchangedPreferences(baseline))
         try check(locator.origin.path == folder.appendingPathComponent("first.keychain-db").path)
         var fileInfo = stat()
         guard lstat(locator.origin.path, &fileInfo) == 0 else { throw Failure.check }
@@ -250,7 +304,9 @@ import Security
             let held = folder.appendingPathComponent("held-first.keychain-db")
             if action == "locked" {
                 try begin("keychain-lock")
-                try check(SecKeychainLock(first) == errSecSuccess)
+                let status = SecKeychainLock(first)
+                evidence(.privateLock, status: status)
+                try check(status == errSecSuccess)
                 try definite()
             }
             if action == "missing" || action == "replaced" {
@@ -291,12 +347,15 @@ import Security
             try waitChildren(); try check(store.load()!.passwordLedger.pendingDeletion.count == 1)
         }
         try check(safeToClean())
-        try check(preferences() == baseline)
+        try check(unchangedPreferences(baseline))
         try check(cleanup(second)); secondExists = false
         try check(cleanup(first)); firstExists = false
         var afterFlag = DarwinBoolean(!beforeFlag)
-        guard SecKeychainGetUserInteractionAllowed(&afterFlag) == errSecSuccess else { throw Failure.api }
-        try check(afterFlag.boolValue == beforeFlag && preferences() == baseline)
+        let finalFlagStatus = SecKeychainGetUserInteractionAllowed(&afterFlag)
+        evidence(.finalInteraction, status: finalFlagStatus, value: afterFlag.boolValue)
+        guard finalFlagStatus == errSecSuccess else { throw Failure.api }
+        evidence(.interactionUnchanged, value: afterFlag.boolValue == beforeFlag)
+        try check(afterFlag.boolValue == beforeFlag && unchangedPreferences(baseline))
         print("private backend checks passed")
     }
 }
