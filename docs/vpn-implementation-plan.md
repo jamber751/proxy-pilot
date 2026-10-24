@@ -28,12 +28,12 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; System40124194483 ARM прошёл первые7 Installer cases, включая ordinary Off/On | Восьмой ARM case потерял исходный broker PID до наблюдения handoff; причина ещё не установлена. Intel build; полный System8 и macOS11 runtime остаются OPEN |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; System40124194483 ARM прошёл первые7 Installer cases, включая ordinary Off/On | ARM восьмой case требует устойчивого handoff witness; Intel прошёл6 cases, затем readinessTimeout при repair. Исправление повторных journal validations проверяется; полный System8 и macOS11 runtime OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137;446 isolated interface checks ARM/Intel на6e8d524, включая Runtime; OTP/drop, credential focus и список1/3/18/100 | Приёмка и подключение реального Keychain, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;520 isolated interface checks ARM/Intel на2e159b6, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Приёмка и подключение реального Keychain, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -6298,3 +6298,50 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   подтверждения replacements40129583883/40129257113. Live jobs сохранены.
 - [ ] Старый Intel40124194483 прошёл первые4 cases, включая repair On, и
   выполняет idempotent same-capsule reinstall. Полного green8 ещё нет.
+
+
+### Продолжение 1.5fp — терминальные результаты и точные следующие границы
+
+- [x] Source2e159b6: interface40129257099 —260/arch,520 PASS без skips;
+  transport40129257110 —64 synthetic+3 genuine closed-role/arch,134 PASS;
+  scoped/answer40129257116 —193/arch,386 PASS, genuine Universal helper build
+  и проверка подписи также прошли. Это изолированные проверки, не installed VPN.
+- [ ] System40124194483 terminal FAILED: ARM7/8; Intel6/8, седьмой case
+  остановился ВНУТРИ initial repair, до ordinary submit. Closed diagnostics:
+  readinessTimeout после готовности listener, три повторных полных journal
+  evaluations. Минимальный root readiness context должен получать ready/policies
+  из одного свежего validated journal перед auth и ещё одного перед reply;
+  никакого cross-request cache/пропуска hash validation/увеличения deadlines.
+  System10040129583883 на b327ab6 остаётся live; source ещё без этого исправления.
+- [x] Corrected utun40129583995 обе архитектуры прошли actual
+  production-configure-SIGPIPE-baseline-13-protected-EPIPE. Старый fixture дефект
+  закрыт этим конкретным свидетельством, не только pure tests.
+- [ ] Тот же utun40129583995 затем FAILED routeAPI errno3 до первого routing
+  proof;19 исходных обязательных markers не подтверждены. Разбираем initial
+  route boundary, без host route API и без ослабления ownership assertions.
+- [ ] Genuine default40129257088 FAILED4/4. ARM roundtrip trace теперь точно
+  подтверждает AddA dispatch, locatorProof, children, ledger и definite SUCCESS;
+  следующая setB.expectedDefault проверка отказывает expected.heldLink. Прежнее
+  предположение о preGO отказе опровергнуто. Нужен разбор held original anchor
+  после первого Add; production default-origin protection не ослаблять.
+  Unknown namespaces/активный default сохранены до VM disposal, Runtime OFF.
+- [ ] Private backend40129257151: ARM success, Intel2/9 actual failures SIGILL;
+  exact last boundary ещё анализируется. Общую backend приёмку green не считать.
+- [x] Local3660d63: EDNS0 codec/release124 pure PASS10.039s и no-TESTING
+  ARM/Intel module builds. Trusted UDP/TCP ingress; bounded OPT/TLV, full12-bit
+  RCODE; client BADVERS проходит тот же required lease, UDP oversize выдаёт
+  minimal TC без partial RRset. Sealed needsTCP receipt НЕ endpoint proof;
+  same-binding single-TCP-fallback coordinator пока отсутствует.
+  Query AD accepted/ignored, output AD/DO cleared, response DO ignored по
+  RFC6840§5.6; query DO/CD и DNSSEC records явно unsupported. TCP fallback,
+  production relay/OS crash barrier и runtime wiring остаются OPEN.
+- [ ] Read-only actual GOST audit: explicit r0 resolver в bridge теряет
+  macOS domain/interface/port policy и добавляет public DNS fallback; выбранные
+  domains пока production-closed. Перед их включением bridge должен использовать
+  authenticated generation-bound relay как sole resolver, с managed domain/IP
+  hop bypass и без public fallback. Удаление r0 само по себе недостаточно:
+  unresolved hostname может уйти upstream proxy. CGO_ENABLED0 не доказывает
+  невозможность Darwin system resolver. Фактический isolated GOST canary OPEN.
+- [ ] Все7 этапов сохраняются: installed OTP/IP, WARP/lifecycle, domain/split-DNS,
+  macOS11 runtime, final UX/VoiceOver, English notes и public release не закрыты.
+  Host сеть/пароль/sudoers/Installer в этой итерации не менялись.
