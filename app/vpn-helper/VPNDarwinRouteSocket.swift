@@ -503,17 +503,39 @@ enum VPNDarwinRouteCodec {
     }
 }
 
+/// Routing replies are broadcast to other PF_ROUTE sockets, and XNU sets
+/// rtm_pid to the actual sender PID. Default controllers therefore need one
+/// sequence namespace across sockets AND controller types, not one per FD.
+/// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/rtsock.c
+final class VPNDarwinRouteSequenceAllocator {
+    static let process = VPNDarwinRouteSequenceAllocator()
+    private let lock = NSLock()
+    private var sequence: Int32
+
+    init(initialSequence: Int32 = 0) { sequence = max(0, initialSequence) }
+
+    func next() -> Int32? {
+        lock.lock(); defer { lock.unlock() }
+        guard sequence < Int32.max else { return nil }
+        sequence += 1
+        return sequence
+    }
+}
+
 final class VPNDarwinRouteSocket {
     private let transport: VPNRouteSocketTransport
     private let pid: Int32
     private let timeout: TimeInterval
     private let lock = NSLock()
-    private var sequence: Int32
+    private let sequences: VPNDarwinRouteSequenceAllocator
 
-    init(transport: VPNRouteSocketTransport, pid: Int32 = getpid(),
-        initialSequence: Int32 = 0, timeout: TimeInterval = 2) {
-        self.transport = transport; self.pid = pid > 0 ? pid : getpid()
-        sequence = max(0, initialSequence)
+    init(transport: VPNRouteSocketTransport, pid: Int32? = nil,
+        initialSequence: Int32? = nil, timeout: TimeInterval = 2) {
+        self.transport = transport; self.pid = pid.map { $0 > 0 ? $0 : getpid() } ?? getpid()
+        // Explicit correlation inputs retain an isolated deterministic namespace.
+        // No inference from pid equality: an explicitly supplied own PID is local too.
+        sequences = pid == nil && initialSequence == nil ? .process
+            : VPNDarwinRouteSequenceAllocator(initialSequence: initialSequence ?? 0)
         self.timeout = timeout.isFinite ? max(0.01, min(timeout, 30)) : 2
     }
 
@@ -680,8 +702,8 @@ final class VPNDarwinRouteSocket {
     }
 
     private func nextSequence() throws -> Int32 {
-        guard sequence < Int32.max else { throw VPNDarwinRouteError.responseLimit }
-        sequence += 1; return sequence
+        guard let sequence = sequences.next() else { throw VPNDarwinRouteError.responseLimit }
+        return sequence
     }
 
     private func translate(_ error: Error) -> VPNDarwinRouteError {

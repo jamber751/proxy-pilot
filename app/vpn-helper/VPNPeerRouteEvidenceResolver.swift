@@ -34,13 +34,14 @@ final class VPNPeerRouteEvidenceResolver {
     private let pid: Int32
     private let timeout: TimeInterval
     private let lock = NSLock()
-    private var sequence: Int32
+    private let sequences: VPNDarwinRouteSequenceAllocator
 
-    init(transport: VPNRouteSocketTransport, pid: Int32 = getpid(),
-         initialSequence: Int32 = 0, timeout: TimeInterval = 2) {
+    init(transport: VPNRouteSocketTransport, pid: Int32? = nil,
+         initialSequence: Int32? = nil, timeout: TimeInterval = 2) {
         self.transport = transport
-        self.pid = pid > 0 ? pid : getpid()
-        sequence = max(0, initialSequence)
+        self.pid = pid.map { $0 > 0 ? $0 : getpid() } ?? getpid()
+        sequences = pid == nil && initialSequence == nil ? .process
+            : VPNDarwinRouteSequenceAllocator(initialSequence: initialSequence ?? 0)
         self.timeout = timeout.isFinite ? max(0.01, min(timeout, 30)) : 2
     }
 
@@ -55,8 +56,7 @@ final class VPNPeerRouteEvidenceResolver {
     }
     private func resolveLogged(peer: OpenVPNIPAddress) throws -> VPNRoutePeerEvidence {
         guard Self.validPeer(peer) else { throw VPNPeerRouteEvidenceError.invalidPeer }
-        guard sequence < Int32.max else { throw VPNPeerRouteEvidenceError.responseLimit }
-        sequence += 1
+        guard let sequence = sequences.next() else { throw VPNPeerRouteEvidenceError.responseLimit }
         let family: VPNRouteAddressFamily = peer.family == .ipv4 ? .ipv4 : .ipv6
         let destination: VPNRoutePrefix
         do { destination = try VPNRoutePrefix(hostBytes: peer.bytes, family: family) }

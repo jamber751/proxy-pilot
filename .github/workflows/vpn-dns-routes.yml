@@ -7,6 +7,7 @@ on:
       - '.github/workflows/vpn-dns-routes.yml'
       - 'app/vpn-helper/VPNRoute*.swift'
       - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
+      - 'app/vpn-helper/VPNPeerRouteEvidenceResolver.swift'
       - 'app/vpn-helper/VPNDomainNetworkPlan.swift'
       - 'app/vpn-helper/VPNDNSPlan.swift'
       - 'app/vpn-helper/VPNBoundDNSUpstreamSocket.swift'
@@ -32,6 +33,8 @@ on:
       - 'tests/vpn_ipv6_direct_route_profile_checks.swift'
       - 'tests/test_vpn_dns_continuous_clock.py'
       - 'tests/vpn_dns_continuous_clock_checks.swift'
+      - 'tests/test_vpn_route_sequence.py'
+      - 'tests/vpn_route_sequence_checks.swift'
   workflow_dispatch:
 
 permissions:
@@ -51,6 +54,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Private fake interfaces and route tables; no network operations
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan test_vpn_bound_dns_upstream_socket test_vpn_dns_answer_release test_vpn_ordinary_route_lookup test_vpn_route_socket_write_miss test_vpn_dns_upstream_exchange test_vpn_ipv6_direct_route_profile test_vpn_dns_continuous_clock -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan test_vpn_bound_dns_upstream_socket test_vpn_dns_answer_release test_vpn_ordinary_route_lookup test_vpn_route_socket_write_miss test_vpn_dns_upstream_exchange test_vpn_ipv6_direct_route_profile test_vpn_dns_continuous_clock test_vpn_route_sequence -v
       - name: Genuine universal helper compile and signature verification only
         run: zsh app/vpn-helper/build.sh "$RUNNER_TEMP/scoped-dns-helper"
