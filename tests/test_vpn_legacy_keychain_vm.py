@@ -119,6 +119,8 @@ class VPNLegacyKeychainVMTests(unittest.TestCase):
             self.assertEqual(created['addStatus'], 0, created)
             self.assertEqual(created['status'], 0, created)
             self.assertTrue(created['secretMatches'])
+            self.assertEqual(created['createdPermissionsBeforeAdd']['modeAfter'], 0o600, created)
+            self.assertEqual(created['createdPermissionsAfterAdd']['modeAfter'], 0o600, created)
             self.assertEqual(before, self.run_tool(self.v1, 'metadata')['preferences'],
                              'Private create altered default/search-list; stopping without preference setters')
             denied = self.run_tool(self.v2, 'read')

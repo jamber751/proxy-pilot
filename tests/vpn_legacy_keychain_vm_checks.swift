@@ -98,6 +98,38 @@ import CryptoKit
         return SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined()
     }
 
+    static func secureFreshPrivateFile(in directory: Int32) throws -> [String: Int] {
+        // ONLY called in the successful create action, under our held 0700
+        // directory. The OS default 0644 is not accepted by later reopen checks.
+        // Backend add may replace the inode, so inspect again after SecItemAdd.
+        var named = stat()
+        let suffixResult = fstatat(directory, "experiment.keychain-db", &named, AT_SYMLINK_NOFOLLOW)
+        guard suffixResult == 0 || errno == ENOENT else { throw CheckError.unsafe }
+        let name = suffixResult == 0 ? "experiment.keychain-db" : "experiment.keychain"
+        let file = openat(directory, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard file >= 0 else { throw CheckError.unsafe }
+        defer { close(file) }
+        var held = stat()
+        guard fstat(file, &held) == 0,
+              fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              held.st_mode & S_IFMT == S_IFREG, named.st_mode & S_IFMT == S_IFREG,
+              held.st_uid == getuid(), held.st_nlink == 1,
+              held.st_mode & 0o7000 == 0,
+              held.st_dev == named.st_dev, held.st_ino == named.st_ino else { throw CheckError.unsafe }
+        let before = Int(held.st_mode & 0o7777)
+        guard fchmod(file, 0o600) == 0 else { throw CheckError.operation }
+        var after = stat()
+        guard fstat(file, &after) == 0,
+              fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              after.st_dev == held.st_dev, after.st_ino == held.st_ino,
+              after.st_dev == named.st_dev, after.st_ino == named.st_ino,
+              after.st_mode & S_IFMT == S_IFREG, named.st_mode & S_IFMT == S_IFREG,
+              after.st_uid == getuid(), after.st_nlink == 1,
+              after.st_mode & 0o7777 == 0o600, named.st_mode & 0o7777 == 0o600 else { throw CheckError.unsafe }
+        return ["modeBefore": before, "modeAfter": Int(after.st_mode & 0o7777),
+                "usesDBSuffix": suffixResult == 0 ? 1 : 0]
+    }
+
     static func main() {
         let env = ProcessInfo.processInfo.environment
         // Must precede ANY Security API, including the interaction-flag getter.
@@ -176,6 +208,8 @@ import CryptoKit
                 result["status"] = SecKeychainDelete(keychain)
             } else {
                 if action == "create" {
+                    operationStage = "secureCreatedBeforeAdd"
+                    result["createdPermissionsBeforeAdd"] = try secureFreshPrivateFile(in: directory)
                     operationStage = "addSyntheticItem"
                     // Default creator ACL only. No custom ACL, trusted app list,
                     // partition-list rewrite or allow-all policy.
@@ -185,6 +219,8 @@ import CryptoKit
                     let added = SecItemAdd(attrs as CFDictionary, nil)
                     result["addStatus"] = added
                     guard added == errSecSuccess else { throw CheckError.operation }
+                    operationStage = "secureCreatedAfterAdd"
+                    result["createdPermissionsAfterAdd"] = try secureFreshPrivateFile(in: directory)
                 }
                 if action == "locked-read" {
                     operationStage = "lockPrivateKeychain"

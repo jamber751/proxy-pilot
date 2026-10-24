@@ -5105,3 +5105,15 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   file guard ещё не объявляется подтверждённой и permissions/ACL не ослаблены.
 - [ ] Повторить оба isolated workflow; engine production behavior и password
   storage acceptance не выводить из исправления самого test fixture.
+
+### Продолжение 1.5ec — права disposable Keychain
+
+- [x] Run40095593689 на обеих архитектурах подтвердил: созданный OS private
+  Keychain имеет mode0644 внутри собственного mode0700 directory. Reopen guard
+  остановил эксперимент до V2 ACL проверки; это не отказ доступа после обновления.
+- [x] Только successful create action теперь закрепляет свой новый regular,
+  single-link, current-UID файл по no-follow FD и устанавливает mode0600 до и
+  после добавления synthetic item. Reopen guard не ослаблен; login/default,
+  search list и ACL не меняются. Host проверка ограничена компиляцией.
+- [ ] Повторить VM эксперимент: поведение V2 ACL, locked fallback и отсутствие
+  изменений Keychain preferences остаются самостоятельными проверками.
