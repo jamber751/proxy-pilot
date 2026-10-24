@@ -45,10 +45,11 @@ import Foundation
             """.utf8)
         }
         let previousManifest = manifest(10, "1.6.0", a[7], a[8])
-        let candidateManifest = manifest(11, "1.7.0", a[9], a[10])
+        let candidateSequence: UInt64 = operation.hasPrefix("newer-") ? 12 : 11
+        let candidateManifest = manifest(candidateSequence, "1.7.0", a[9], a[10])
         let previousSignature = try key.signature(
             for: VPNReleaseAuthority.signatureDomain + previousManifest)
-        let candidateSignatureURL = URL(fileURLWithPath: a[2]).appendingPathComponent("test-candidate.signature")
+        let candidateSignatureURL = URL(fileURLWithPath: a[2]).appendingPathComponent("test-candidate-\(candidateSequence).signature")
         let candidateSignature: Data
         if operation == "mismatch-signature" {
             candidateSignature = try key.signature(
@@ -68,8 +69,8 @@ import Foundation
         }
         let edge = Data("format=1\nproduct=kz.documentolog.proxypilot\n"
             .appending("from-sequence=10\nfrom-sha256=\(hex(previousManifest))\n")
-            .appending("to-sequence=11\nto-sha256=\(hex(candidateManifest))\n").utf8)
-        let edgeSignatureURL = URL(fileURLWithPath: a[2]).appendingPathComponent("test-transition.signature")
+            .appending("to-sequence=\(candidateSequence)\nto-sha256=\(hex(candidateManifest))\n").utf8)
+        let edgeSignatureURL = URL(fileURLWithPath: a[2]).appendingPathComponent("test-transition-\(candidateSequence).signature")
         let edgeSignature: Data
         if let saved = try? Data(contentsOf: edgeSignatureURL) { edgeSignature = saved }
         else {
@@ -117,12 +118,20 @@ import Foundation
                     candidateDirectory: candidateSource,
                     payload: joint, authority: authority)
             } else {
+                let retirementURL = URL(fileURLWithPath: a[2]).deletingLastPathComponent().appendingPathComponent("retirement")
+                try FileManager.default.createDirectory(at: retirementURL, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                let retirement = open(retirementURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard retirement >= 0 else { exit(65) }
+                defer { close(retirement) }
                 result = try VPNJointUpdatePreparation.testPrepare(
                     service: service, update: update,
                     previousSource: previousSource,
                     candidateSource: candidateSource,
-                    payload: joint, authority: authority) { point in
-                    if operation == "throw-after-preparation",
+                    payload: joint, authority: authority, retirement: retirement) { point in
+                    if operation == "newer-throw-after-retirement",
+                       point == "afterPreparationRetirement" { throw Injected.failure }
+                    if ["throw-after-preparation", "newer-throw-after-preparation"].contains(operation),
                        point == "afterPreparation" { throw Injected.failure }
                     if operation == "throw-after-staging",
                        point == "afterApplicationStaging" { throw Injected.failure }

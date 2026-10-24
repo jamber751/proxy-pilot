@@ -31,6 +31,7 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
                      '-D', 'VPN_EXECUTOR_PROVISIONING_TESTING',
                      '-D', 'VPN_EXECUTOR_HANDOFF_TESTING',
                      '-D', 'VPN_JOINT_UPDATE_PREPARATION_TESTING',
+                     '-D', 'VPN_JOINT_UPDATE_CLEANUP_TESTING',
                      *map(str, sources),
                      str(ROOT / 'tests/vpn_joint_update_preparation_checks.swift'),
                      '-o', str(cls.driver)])
@@ -106,6 +107,45 @@ class VPNJointUpdatePreparationTests(VPNStagedApplicationTests):
         self.assertTrue((self.update / 'executor/ProxyPilot.app').is_dir())
         self.assertTrue((self.service / 'update.json').is_file())
         self.assert_result(output='alreadyPrepared:0')
+
+    def test_newer_signed_candidate_retires_abandoned_preparation(self):
+        self.assert_rejected('throw-after-preparation', 'failure')
+        self.assert_result('newer-prepare')
+        self.assertFalse((self.service / 'preparation.json').exists())
+        self.assert_result('newer-prepare', output='alreadyPrepared:0')
+
+    def test_newer_candidate_retires_partial_application_staging(self):
+        self.assert_rejected('throw-after-staging', 'failure')
+        self.assert_result('newer-prepare')
+        self.assertFalse((self.service / 'preparation.json').exists())
+
+    def test_interruption_after_retirement_can_start_new_preparation(self):
+        self.assert_rejected('throw-after-staging', 'failure')
+        self.assert_rejected('newer-throw-after-retirement', 'failure')
+        self.assertFalse((self.service / 'preparation.json').exists())
+        self.assertFalse((self.service / 'update.json').exists())
+        self.assert_result('newer-prepare')
+
+    def test_newer_candidate_never_supersedes_journal_authority(self):
+        self.assert_result()
+        before = (self.service / 'update.json').read_bytes()
+        self.assert_rejected('newer-prepare', 'invalidState')
+        self.assertEqual((self.service / 'update.json').read_bytes(), before)
+
+    def test_older_candidate_cannot_discard_newer_preparation(self):
+        self.assert_rejected('newer-throw-after-preparation', 'failure')
+        before = (self.service / 'preparation.json').read_bytes()
+        self.assert_rejected('prepare', 'invalidUpdatePreparation')
+        self.assertEqual((self.service / 'preparation.json').read_bytes(), before)
+
+    def test_supersession_refuses_unknown_staging_content(self):
+        self.assert_rejected('throw-after-preparation', 'failure')
+        unexpected = self.update / 'unrecognized'
+        unexpected.write_bytes(b'preserve me')
+        before = (self.service / 'preparation.json').read_bytes()
+        self.assert_rejected('newer-prepare', 'invalidLayout')
+        self.assertEqual(unexpected.read_bytes(), b'preserve me')
+        self.assertEqual((self.service / 'preparation.json').read_bytes(), before)
 
     def test_interruption_after_application_staging_resumes(self):
         self.assert_rejected('throw-after-staging', 'failure')

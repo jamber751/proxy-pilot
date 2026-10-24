@@ -55,6 +55,10 @@ enum VPNJointUpdatePreparation {
                 try VPNJointUpdateCleanup.completeSystem(
                     service: service, lease: lease, authority: authority)
             },
+            retirePreparation: { lease in
+                try VPNJointUpdateCleanup.completePreparationSystem(
+                    service: service, lease: lease, authority: authority)
+            },
             openUpdate: { try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true) },
             stage: { update, owner in
                 try VPNApplicationTransactionStager.prepare(
@@ -83,6 +87,7 @@ enum VPNJointUpdatePreparation {
                             previousSource: Int32, candidateSource: Int32,
                             payload: VPNJointUpdatePayload,
                             authority: VPNReleaseAuthority,
+                            retirement: Int32? = nil,
                             checkpoint: (String) throws -> Void = { _ in }) throws -> Result {
         guard getuid() != 0, geteuid() == getuid() else {
             throw VPNPeerAuthenticationError.denied
@@ -94,6 +99,16 @@ enum VPNJointUpdatePreparation {
                     policy: VPNPeerAuthentication.testCurrentPolicy(userID: geteuid()))
             },
             cleanupCompleted: { _ in },
+            retirePreparation: { lease in
+                #if VPN_JOINT_UPDATE_CLEANUP_TESTING
+                guard let retirement else { throw VPNJointUpdatePreparationError.invalidState }
+                try VPNJointUpdateCleanup.testCompletePreparation(
+                    service: service, update: update, retirement: retirement,
+                    authority: authority, lease: lease)
+                #else
+                throw VPNJointUpdatePreparationError.invalidState
+                #endif
+            },
             openUpdate: {
                 let copy = fcntl(update, F_DUPFD_CLOEXEC, 0)
                 guard copy >= 0 else { throw VPNJointUpdatePreparationError.invalidState }
@@ -131,6 +146,7 @@ enum VPNJointUpdatePreparation {
         authority: VPNReleaseAuthority,
         authenticateCandidate: () throws -> Void,
         cleanupCompleted: (VPNLifecycleLease) throws -> Void,
+        retirePreparation: (VPNLifecycleLease) throws -> Void,
         openUpdate: () throws -> Int32,
         stage: (Int32, uid_t) throws -> VPNApplicationTransactionStager.Outcome,
         provision: (Int32) throws -> VPNReplacementExecutorProvisioner.Outcome,
@@ -170,6 +186,27 @@ enum VPNJointUpdatePreparation {
         }
 
         var before = try existingJournal()
+        // A signed newer candidate may replace abandoned pre-journal staging,
+        // never a committed/pending update. Retire through the existing durable
+        // cleanup protocol under the same service lease; no ad-hoc file removal.
+        if before == nil, let abandoned = try store.loadUpdatePreparation(),
+           !abandoned.candidate.release.isSameRelease(as: payload.candidate.release)
+                || abandoned.phase == .gcAuthorized {
+            guard abandoned.previous.release.isSameRelease(as: current.release),
+                  abandoned.ownerUserID == current.ownerUserID,
+                  abandoned.candidate.release.isSameRelease(as: payload.candidate.release)
+                    || payload.candidate.release.sequence > abandoned.candidate.release.sequence else {
+                throw VPNReleaseStoreError.invalidUpdatePreparation
+            }
+            try retirePreparation(lease)
+            try lease.check()
+            guard try store.loadUpdatePreparation() == nil,
+                  try store.loadUpdateJournal() == nil,
+                  (try store.loadDeployment()).release.isSameRelease(as: current.release) else {
+                throw VPNJointUpdatePreparationError.commitUncertain
+            }
+            try checkpoint("afterPreparationRetirement")
+        }
         if before == nil {
             let preparation = try store.beginUpdatePreparation(
                 payload: payload.candidate.manifest,
