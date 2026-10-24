@@ -63,6 +63,15 @@ final class VPNRescueCleanupContext {
         }
     }
 
+    /// Bind a mutation coordinator to this exact held lifecycle lease and
+    /// protected store, rather than a different store with copied receipts.
+    func checkedStorageIdentity(holding lease: VPNLifecycleLease) throws
+        -> (device: UInt64, inode: UInt64) {
+        guard self.lease === lease else { throw VPNRescueCleanupContextError.mismatchedStorage }
+        try validate()
+        return storage
+    }
+
     private static func boundStorage(store: VPNReleaseStore, lease: VPNLifecycleLease) throws
         -> (device: UInt64, inode: UInt64) {
         let locked = try lease.checkedStorageIdentity()

@@ -12,8 +12,56 @@ enum VPNJointUpdateCleanupError: Error {
 /// The signed cleanup receipt is advanced only after each namespace is durable.
 enum VPNJointUpdateCleanup {
     private static let applicationStage = ".ProxyPilot.vpn-update"
+    private enum MutationAuthorization {
+        case ordinary
+        #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+        case rescue(VPNRescueCleanupBoundary)
+        #endif
+
+        func validate(_ receipt: VPNUpdateCleanupReceiptSnapshot? = nil) throws {
+            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            if case .rescue(let gate) = self { try gate.validate(receipt: receipt) }
+            #endif
+        }
+        func advanced(_ receipt: VPNUpdateCleanupReceiptSnapshot) throws {
+            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            if case .rescue(let gate) = self { try gate.advanced(to: receipt) }
+            #endif
+        }
+        func retired() throws {
+            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            if case .rescue(let gate) = self { try gate.retired() }
+            #endif
+        }
+        var requiresRootRetainedSource: Bool {
+            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            if case .rescue = self { return true }
+            #endif
+            return false
+        }
+    }
     #if VPN_JOINT_UPDATE_CLEANUP_TESTING
     static var checkpoint: ((String) -> Void)?
+    #endif
+
+    #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+    enum RescueOutcome { case retiredAuthenticatedReceipt }
+
+    static func testCompleteRescue(service: Int32, update: Int32, retirement: Int32,
+                                  applications: Int32, authority: VPNReleaseAuthority,
+                                  lease: VPNLifecycleLease, context: VPNRescueCleanupContext,
+                                  executor: VPNRescueExecutor) throws -> RescueOutcome {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNJointUpdateCleanupError.requiresRoot }
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+        let gate = try VPNRescueCleanupBoundary(context: context, executor: executor,
+                                               store: store, lease: lease)
+        try perform(service: service, update: update, retirement: retirement,
+                    applications: applications, authority: authority,
+                    productionApplications: false, existingServiceLease: lease,
+                    authorization: .rescue(gate))
+        try gate.requireRetired()
+        return .retiredAuthenticatedReceipt
+    }
     #endif
 
     static func completeSystem(authority: VPNReleaseAuthority) throws {
@@ -519,7 +567,9 @@ enum VPNJointUpdateCleanup {
     private static func perform(service: Int32, update: Int32, retirement: Int32,
                                 applications: Int32, authority: VPNReleaseAuthority,
                                 productionApplications: Bool,
-                                existingServiceLease: VPNLifecycleLease?) throws {
+                                existingServiceLease: VPNLifecycleLease?,
+                                authorization: MutationAuthorization = .ordinary) throws {
+        try authorization.validate()
         try requirePrivateDirectory(service)
         try requirePrivateDirectory(update)
         try requirePrivateDirectory(retirement)
@@ -537,6 +587,7 @@ enum VPNJointUpdateCleanup {
 
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
         guard var receipt = try store.loadUpdateCleanupReceipt() else { return }
+        try authorization.validate(receipt)
         // The selected floor says B, but cleanup must also observe the exact
         // live installed B before retiring anything and again before deleting
         // the final durable authority.
@@ -553,28 +604,35 @@ enum VPNJointUpdateCleanup {
         if receipt.cleanupPhase == .pending {
             try validateApplicationPair(parent: applications, archiveName: applicationArchiveName(receipt),
                                         owner: receipt.ownerUserID,
-                                        release: receipt.previous.release)
+                                        release: receipt.previous.release,
+                                        requireRootOwnership: authorization.requiresRootRetainedSource)
             testCheckpoint("begin:application-validated")
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
                                      allowSources: true)
             testCheckpoint("begin:update-validated")
+            try authorization.validate(receipt)
             try retireExact(from: applications, source: applicationStage,
                             to: applications, destination: applicationArchiveName(receipt))
             testCheckpoint("application:after-rename")
             try validateApplicationRetired(parent: applications,
                                            archiveName: applicationArchiveName(receipt),
                                            owner: receipt.ownerUserID,
-                                           release: receipt.previous.release)
+                                           release: receipt.previous.release,
+                                           requireRootOwnership: authorization.requiresRootRetainedSource)
+            try authorization.validate(receipt)
             receipt = try store.advanceUpdateCleanupReceipt(
                 transactionID: receipt.transactionID, expectedPhase: .pending,
                 to: .applicationRetired)
+            try authorization.advanced(receipt)
         }
 
         if receipt.cleanupPhase == .applicationRetired {
+            try authorization.validate(receipt)
             try validateApplicationRetired(parent: applications,
                                            archiveName: applicationArchiveName(receipt),
                                            owner: receipt.ownerUserID,
-                                           release: receipt.previous.release)
+                                           release: receipt.previous.release,
+                                           requireRootOwnership: authorization.requiresRootRetainedSource)
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
                                      allowSources: true)
             for name in ["current", "candidate", "executor"] {
@@ -583,40 +641,50 @@ enum VPNJointUpdateCleanup {
             }
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
                                      allowSources: false)
+            try authorization.validate(receipt)
             receipt = try store.advanceUpdateCleanupReceipt(
                 transactionID: receipt.transactionID,
                 expectedPhase: .applicationRetired, to: .updateRetired)
+            try authorization.advanced(receipt)
         }
 
         if receipt.cleanupPhase == .updateRetired {
+            try authorization.validate(receipt)
             try validateApplicationRetired(parent: applications,
                                            archiveName: applicationArchiveName(receipt),
                                            owner: receipt.ownerUserID,
-                                           release: receipt.previous.release)
+                                           release: receipt.previous.release,
+                                           requireRootOwnership: authorization.requiresRootRetainedSource)
             try validateUpdateLayout(update: update, archive: archive, receipt: receipt,
                                      allowSources: false)
             let roots = try cleanupRoots(applications: applications, archive: archive,
                                          receipt: receipt)
+            try authorization.validate(receipt)
             receipt = try store.authorizeUpdateCleanupGC(
                 transactionID: receipt.transactionID, roots: roots)
+            try authorization.advanced(receipt)
             testCheckpoint("gc:after-authorize")
         }
         guard receipt.cleanupPhase == .gcAuthorized, let roots = receipt.gcRoots else {
             throw VPNJointUpdateCleanupError.invalidLayout
         }
+        try authorization.validate(receipt)
         let identities = Dictionary(uniqueKeysWithValues: roots.map { ($0.name, $0) })
+        let cleanupOwner: uid_t = authorization.requiresRootRetainedSource ? 0 : receipt.ownerUserID
         var remainingEntries = 200_000
         try removeTree(parent: applications, name: applicationArchiveName(receipt),
-                       identity: identities["application"]!, owner: receipt.ownerUserID,
+                       identity: identities["application"]!, owner: cleanupOwner,
                        remainingEntries: &remainingEntries)
         for name in ["current", "candidate", "executor"] {
+            try authorization.validate(receipt)
             try removeTree(parent: archive, name: name, identity: identities[name]!,
-                           owner: receipt.ownerUserID,
+                           owner: cleanupOwner,
                            remainingEntries: &remainingEntries)
         }
         guard (try names(archive)).isEmpty else {
             throw VPNJointUpdateCleanupError.invalidLayout
         }
+        try authorization.validate(receipt)
         guard unlinkat(retirement, transactionName, AT_REMOVEDIR) == 0 || errno == ENOENT,
               fsync(retirement) == 0 else {
             throw VPNJointUpdateCleanupError.commitUncertain
@@ -627,7 +695,9 @@ enum VPNJointUpdateCleanup {
             ownerUserID: productionApplications ? 0 : geteuid(),
             productionParent: productionApplications,
             release: receipt.candidate.release)
+        try authorization.validate(receipt)
         try store.retireUpdateCleanupReceipt(transactionID: receipt.transactionID)
+        try authorization.retired()
     }
 
     private static func testCheckpoint(_ name: String) {
@@ -644,24 +714,29 @@ enum VPNJointUpdateCleanup {
 
     private static func validateApplicationPair(parent: Int32, archiveName: String,
                                                 owner: uid_t,
-                                                release: VerifiedVPNRelease) throws {
+                                                release: VerifiedVPNRelease,
+                                                requireRootOwnership: Bool = false) throws {
         try validateApplicationOneOf(parent: parent, source: applicationStage,
                                      archiveName: archiveName, owner: owner,
-                                     release: release, sourceMayExist: true)
+                                     release: release, sourceMayExist: true,
+                                     requireRootOwnership: requireRootOwnership)
     }
 
     private static func validateApplicationRetired(parent: Int32, archiveName: String,
                                                    owner: uid_t,
-                                                   release: VerifiedVPNRelease) throws {
+                                                   release: VerifiedVPNRelease,
+                                                   requireRootOwnership: Bool = false) throws {
         try validateApplicationOneOf(parent: parent, source: applicationStage,
                                      archiveName: archiveName, owner: owner,
-                                     release: release, sourceMayExist: false)
+                                     release: release, sourceMayExist: false,
+                                     requireRootOwnership: requireRootOwnership)
     }
 
     private static func validateApplicationOneOf(parent: Int32, source: String,
                                                  archiveName: String, owner: uid_t,
                                                  release: VerifiedVPNRelease,
-                                                 sourceMayExist: Bool) throws {
+                                                 sourceMayExist: Bool,
+                                                 requireRootOwnership: Bool = false) throws {
         let sourceFD = try directory(parent, source)
         let archiveFD = try directory(parent, archiveName)
         guard (sourceFD == nil) != (archiveFD == nil), sourceMayExist || sourceFD == nil else {
@@ -671,8 +746,12 @@ enum VPNJointUpdateCleanup {
         let selected = sourceFD ?? archiveFD!
         defer { if let sourceFD { close(sourceFD) }; if let archiveFD { close(archiveFD) } }
         try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: selected)
-        _ = try VPNStagedApplication.inspectRetainedUpdateSource(
-            inTrustedDirectory: selected, previousOwnerUserID: owner, release: release)
+        if requireRootOwnership {
+            _ = try VPNStagedApplication.inspect(inTrustedDirectory: selected, release: release)
+        } else {
+            _ = try VPNStagedApplication.inspectRetainedUpdateSource(
+                inTrustedDirectory: selected, previousOwnerUserID: owner, release: release)
+        }
     }
 
     private static func validateUpdateLayout(update: Int32, archive: Int32,
