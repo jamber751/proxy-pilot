@@ -24,8 +24,10 @@ jobs:
           fetch-depth: 0 # frozen executor regression reads a pinned historical blob
       - name: Ordinary destination regressions
         run: python3 -m unittest discover -s tests -p test_vpn_application_destination_exchange.py -v
+      - name: Ordinary staging and cleanup regressions
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_transaction_staging test_vpn_joint_update_cleanup -v
       - name: Rescue authorization and pending journal boundaries
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_release_authorization test_vpn_rescue_authorization test_vpn_rescue_journal_context test_vpn_rescue_cleanup_context -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_release_authorization test_vpn_rescue_authorization test_vpn_rescue_preparation_authorization test_vpn_rescue_journal_context test_vpn_rescue_cleanup_context -v
       - name: Live rescue refuses ordinary users
         run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_executor.VPNRescueExecutorUnprivilegedTests -v
       - name: Rescue signing and CLI verification with synthetic keys
@@ -38,6 +40,10 @@ jobs:
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_exchange.VPNRescueExchangeRootTests -v
+      - name: Live preparation role and legacy source staging
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_preparation_executor test_vpn_rescue_preparation_staging -v
       - name: Pending rescue ordering and interrupted retries
         run: |
           test "$GITHUB_ACTIONS" = true
@@ -46,6 +52,10 @@ jobs:
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 /usr/bin/python3 -m unittest discover -s tests -p test_vpn_destination_root_vm.py -v
+      - name: Exact receipt rescue cleanup and interrupted retry
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_cleanup.VPNRescueCleanupRootTests -v
       - name: Source clone refuses ordinary users
         run: PYTHONPATH=tests python3 -m unittest test_vpn_legacy_source_clone.VPNLegacySourceCloneUnprivilegedTests -v
       - name: Private source clone with real ownership

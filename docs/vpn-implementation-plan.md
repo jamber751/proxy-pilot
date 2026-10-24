@@ -4583,3 +4583,31 @@ preparation/journal переиспользуются, дополнительны
 Перед второй подготовкой полностью завершить cleanup137→139. После protected
 swap второй переход завершается через существующий C recovery. Это утверждённая
 техническая схема реализации, ещё не выполненный end-to-end сценарий.
+
+### Продолжение 1.5dg — cleanup и подготовка второго перехода на стенде
+
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40082077462
+  (`ee5c561`): **308 passed, без skips**, включая по два frozen139 launchd handoff
+  сценария на Apple Silicon и Intel. Проверены retry после busy75, выбор B,
+  завершение journal и точный cleanup receipt. Все 32 production dependencies
+  закреплены SHA256 на `e80b8be8dcf85d985b960ac5e1b4726469b5bce9`; helper пересобран
+  с synthetic trust/test seams. Это не запуск исходного production binary139.
+- [x] Отдельный start codec: 11 passed, существующий finish codec: 10 passed;
+  роли взаимно отвергаются даже после переподписания чужого operation под своим
+  domain. Signer поддерживает start/finish: 15 synthetic tests passed, реальный
+  Keychain не использовался.
+- [x] Typed live preparation proof проверяет оба token на одном edge, реальные
+  bytes/SHA/size и обе CDHash удерживаемого executable. Root fixture Universal
+  собран; 10 случаев отправляются в remote CI, локально root не запускался.
+- [x] Typed staging seam принимает только root-owned A и candidate с sealed
+  capability; обычный compatibility guard не ослаблен. Proof проверяется перед
+  copy/publication независимо от тестовых checkpoints. Обычные 7 тестов passed;
+  8 root cases подготовлены для remote CI.
+- [x] Cleanup использует прежний bounded inode-aware walker; новый typed guard
+  проверяет context/live proof/lease при переходах phase, перед GC roots и
+  retirement. Retained source строго root-owned. Успех требует фактически
+  выполненного retirement, отсутствие receipt при входе — отказ. Обычные
+  13 cleanup + 25 context regressions passed; 13 root cases подготовлены для CI.
+- [ ] Проверить эти новые root cases на обеих архитектурах; затем связать
+  подготовку с selected-state/preparation journal, protected swap и production
+  entry. Отдельные seams ещё не являются готовым двухэтапным установщиком.
