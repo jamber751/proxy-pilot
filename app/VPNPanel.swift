@@ -336,7 +336,11 @@ final class VPNPanelModel: ObservableObject {
     func beginAuthentication() {
         passwordPersistenceChoice = nil
         login = configuration.configuration.authentication?.login ?? login
-        authenticationChoice = configuration.configuration.authentication?.mode
+        // A durable profile import can outlive interruption before the
+        // separate certificate-auth write. Its actual capability is enough to
+        // restore this draft; a credential profile still needs an explicit mode.
+        authenticationChoice = configuration.profile?.requiresCredentials == false
+            ? .certificate : configuration.configuration.authentication?.mode
         editingAuthentication = true; message = ""
     }
 
@@ -348,7 +352,9 @@ final class VPNPanelModel: ObservableObject {
     }
 
     func saveAuthentication() {
-        guard let mode = authenticationChoice else {
+        let selected = configuration.profile?.requiresCredentials == false
+            ? VPNAuthenticationMode.certificate : authenticationChoice
+        guard let mode = selected else {
             message = "Выберите пароль или код / 2FA."
             return
         }
@@ -431,7 +437,9 @@ final class VPNPanelModel: ObservableObject {
 
     func finishSettings() {
         do {
-            if configuration.profile?.requiresCredentials == true {
+            if configuration.profile?.requiresCredentials == false {
+                try persistAuthenticationChoice(.certificate)
+            } else if configuration.profile?.requiresCredentials == true {
                 guard let mode = authenticationChoice ?? configuration.configuration.authentication?.mode else {
                     message = "Выберите пароль или код / 2FA."
                     return
