@@ -30,6 +30,8 @@ on:
       - '!tests/vpn_password_ledger_checks.swift'
       - '!tests/test_vpn_password_worker.py'
       - '!tests/vpn_password_worker_checks.swift'
+      - '!tests/test_vpn_password_cleanup.py'
+      - '!tests/vpn_password_cleanup_checks.swift'
       - '!tests/test_vpn_legacy_password_backend*.py'
       - '!tests/vpn_legacy_password_backend*.swift'
       - '!tests/test_managed_bridge_namespace.py'
@@ -37,6 +39,8 @@ on:
       - '!tests/vpn_dns_session_vm_checks.swift'
       - '!tests/test_vpn_dns_resolver_vm.py'
       - '!tests/vpn_dns_resolver_vm_checks.swift'
+      - '!tests/test_vpn_dns_file_resolver_vm.py'
+      - '!tests/vpn_dns_file_resolver_vm_checks.swift'
   workflow_dispatch:
 
 permissions:
