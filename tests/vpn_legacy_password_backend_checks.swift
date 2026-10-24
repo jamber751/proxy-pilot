@@ -108,7 +108,7 @@ private final class SyntheticLegacyAPI: VPNLegacyPasswordAPI {
             try check(operation(.delete, locator: locator).status == .notFound && api.deletions == 0)
         case "delete-no-ack":
             let added = try operation(.add); guard let locator = added.locator else { throw Failure.check }
-            for status in [errSecItemNotFound, errSecAuthFailed, errSecInteractionNotAllowed] {
+            for status in [errSecItemNotFound, errSecAuthFailed, errSecInteractionNotAllowed, errSecParam, errSecNotAvailable] {
                 api.deleteError = status
                 let expected: VPNPasswordWorkerStatus = status == errSecItemNotFound ? .notFound : .indeterminate
                 try check(operation(.delete, locator: locator).status == expected)

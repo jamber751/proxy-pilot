@@ -265,7 +265,10 @@ private struct VPNLegacyPasswordSecurityAPI: VPNLegacyPasswordAPI {
             #endif
             return errSecNotAvailable
         }
-        let status = SecItemDelete([kSecMatchItemList as String: [reference]] as CFDictionary)
+        // SecItem.h requires an item class even for macOS's exact transient
+        // reference form (SecItemDelete, kSecMatchItemList).
+        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                                    kSecMatchItemList as String: [reference]] as CFDictionary)
         #if VPN_LEGACY_PASSWORD_BACKEND_TESTING
         recordDelete(1, status: status)
         #endif
