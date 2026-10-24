@@ -32,7 +32,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40129583883 ARM прошёл все8 реальных Installer cases на b327ab6 | Полный Intel8 и свежий комплект после context/route/clock fixes ещё проверяются; macOS11 runtime OPEN |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40129583883 прошёл все8 реальных Installer cases на каждой архитектуре ARM/Intel на b327ab6 | Свежий комплект после context/route/clock fixes ещё проверяется; macOS11 runtime OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -6643,3 +6643,38 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   domains/ordinary DNS и Keychain отмечены в обязательном внутреннем checklist.
 - [x] Вводная плана теперь явно отделяет historical7–8September observations
   от текущей25October таблицы; исторические сведения не выдаются за currentstate.
+
+
+### Продолжение 1.5fy — общая корреляция маршрутов и custody тестового Keychain
+
+- [x] System40129583883 на b327ab6 завершён успешно на ARM и Intel:
+  по8 actual Installer cases (16 суммарно). Fast suite каждой архитектуры:
+  150 PASS и1 explicit skip, а не151 PASS. System40132902845 ARM также
+  прошёл8 cases; это результаты прежних исходников, не финального комплекта.
+- [x] c7e2d9f добавляет genuine signed frontend в проверку копирования Inbox:
+  исходная и конечная deep/strict signatures и относительные Sparkle symlinks.
+  Actual Universal frontend suite:4 PASS за270.938s без skips;
+  дополнительные9 guards/contracts: PASS за34.685s в родительском прогоне.
+  Это ordinary-user packaging evidence, не root/cross-UID VPN acceptance.
+- [x] 843bfbe устраняет доказанную fake-broadcast регрессию: несколько PF_ROUTE
+  sockets одного процесса раньше выдавали одинаковые pid/seq. Теперь оба типа
+  default controllers используют общий поток sequence без wrap; явно заданные
+  correlation inputs остаются изолированными. Integrated DNS/route suites:
+  367 PASS за60.712s, включая9 новых случаев. Actual utun40135758303 на9ac5266
+  прошёл baseline ADD и установку A, но упал на последующей проверке маршрута.
+  Новое исправление ещё требует actual VM подтверждения причины этого отказа.
+- [x] ac00ba5 исправляет только disposable genuine-Keychain fixture: после
+  положительного Delete файл B мог сменить inode и старый held anchor отклонял
+  restore. Независимый случайный canary и аутентифицированный fresh child
+  подтверждают владение новым held/named файлом перед обновлением anchor.
+  Unknown/unavailable ветки и исходный prior-default anchor не ослаблены.
+  38 safe checks PASS за11.751s; actual SDK путь пока не подтверждён.
+- [x] Оба новых набора подключены к ARM/Intel CI. Production password runtime
+  остаётся выключенным; host Installer, сеть и Keychain API не запускались.
+- [ ] Genuine40135758251: Intel cross-image120996807429 завершился ошибкой
+  heldLink после положительного DeleteB; ARM roundtrip120996807566 и Intel
+  roundtrip120996807649 сейчас in_progress, ARM cross120996807688 queued.
+  Живые jobs не перезапускаем. Новый snapshot должен проверить canary fixture.
+- [ ] Все7 этапов сохранены: новый final package, installed OTP/IP/resource UX,
+  exact-host domain/split-DNS и bridge, WARP/lifecycle, accessibility/macOS11,
+  итоговая английская документация и отдельно разрешённая публикация.
