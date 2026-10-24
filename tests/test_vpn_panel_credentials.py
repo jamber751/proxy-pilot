@@ -49,6 +49,14 @@ class VPNPanelCredentialTests(unittest.TestCase):
     def test_password_persistence_consent_is_not_erased(self): self.run_case('password-consent')
     def test_submit_clears_field_and_completed_identity(self): self.run_case('submit')
 
+    def test_save_authentication_preserves_only_the_same_normalized_binding(self):
+        for scenario in ('unchanged', 'login', 'case', 'mode', 'invalid', 'default'):
+            with self.subTest(scenario=scenario): self.run_case('auth-save-' + scenario)
+
+    def test_finish_settings_preserves_only_the_same_normalized_binding(self):
+        for scenario in ('unchanged', 'login', 'case', 'mode', 'invalid', 'default'):
+            with self.subTest(scenario=scenario): self.run_case('auth-finish-' + scenario)
+
     def test_view_visibility_hooks_are_wired_source_contract(self):
         # Wiring only; this does not prove a native popover lifecycle or focus behavior.
         panel = (ROOT / 'app/VPNPanel.swift').read_text()

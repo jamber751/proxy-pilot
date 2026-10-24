@@ -5148,3 +5148,16 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   окон не доказывают отсутствие transient GUI prompt; guiAbsenceProven=false.
   Реальный production adapter, login-Keychain, ручной UI fallback, crash-safe
   revocation, macOS11 и полноценное обновление приложения остаются открыты.
+
+### Продолжение 1.5ef — неизменённые настройки сохраняют consent
+
+- [x] Оба panel save route (`saveAuthentication`/`finishSettings`) сохраняют
+  существующий credentialPersistence только для неизменённых password mode и
+  нормализованного, case-preserved login. Изменение login/регистра/mode не
+  наследует прежнее согласие; default.none не становится keychain.
+- [x] Два meaningful unchanged-binding case сначала воспроизвели сброс согласия.
+  После исправления все12 panel credential tests passed, включая сценарии
+  normalized same login/changed login/case/OTP/invalid/default на обоих routes.
+  Проверены сохранность profile/resources/desiredOff и отсутствие secret submit.
+- [ ] Это сохранение уже существующего non-secret consent; password storage,
+  отзыв и удаление старого item ещё не реализованы и этим изменением не закрыты.

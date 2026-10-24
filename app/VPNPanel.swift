@@ -267,10 +267,22 @@ final class VPNPanelModel: ObservableObject {
             return
         }
         do {
-            try configuration.setAuthentication(mode: mode,
-                                                login: mode == .certificate ? nil : login)
+            try persistAuthenticationChoice(mode)
             editingAuthentication = false; message = ""
         } catch { message = error.localizedDescription }
+    }
+
+    private func persistAuthenticationChoice(_ mode: VPNAuthenticationMode) throws {
+        // Use the model's normalization/validation, including case-sensitive
+        // login identity. An unchanged edit preserves consent, never creates it.
+        let draft = try VPNAuthentication(mode: mode, login: mode == .certificate ? nil : login)
+        var persistence: VPNCredentialPersistence = .none
+        if let previous = configuration.configuration.authentication,
+           draft.mode == .password, previous.mode == draft.mode, previous.login == draft.login {
+            persistence = previous.credentialPersistence
+        }
+        try configuration.setAuthentication(mode: draft.mode, login: draft.login,
+                                            credentialPersistence: persistence)
     }
 
     func acceptSuggestions() {
@@ -335,7 +347,7 @@ final class VPNPanelModel: ObservableObject {
                     message = "Выберите пароль или код / 2FA."
                     return
                 }
-                try configuration.setAuthentication(mode: mode, login: login)
+                try persistAuthenticationChoice(mode)
             }
             guard ready else { message = configuration.connectionAvailabilityLabel; return }
             settings = false; message = ""

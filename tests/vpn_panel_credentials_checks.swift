@@ -87,13 +87,55 @@ private final class PromptSession: VPNLiveSession {
         var config = VPNConfiguration()
         try config.setProfile(name: profile.name)
         try config.saveResource(VPNResource(name: "Synthetic", address: "10.20.0.0/16"))
-        try config.setAuthentication(VPNAuthentication(mode: a[1] == "password-consent" ? .password : .oneTimePassword,
-            login: "employee", credentialPersistence: a[1] == "password-consent" ? .keychain : .none))
+        let editingAuthentication = a[1].hasPrefix("auth-")
+        let staticPassword = editingAuthentication || a[1] == "password-consent"
+        let hasConsent = staticPassword && !a[1].hasSuffix("default")
+        try config.setAuthentication(VPNAuthentication(mode: staticPassword ? .password : .oneTimePassword,
+            login: "employee", credentialPersistence: hasConsent ? .keychain : .none))
         _ = try store.save(config, importing: profile, expectedRevision: nil)
         let configuration = VPNModel(store: store); try configuration.load()
         let session = PromptSession()
         let controller = VPNLiveController(store: store, openSession: { session })
         let panel = VPNPanelModel(configuration: configuration, controller: controller)
+        if editingAuthentication {
+            let previous = configuration.configuration.authentication
+            panel.settings = true
+            panel.beginAuthentication()
+            switch a[1].split(separator: "-").last {
+            case "unchanged": panel.login = " \n employee \t" // same normalized, case-preserved login
+            case "login": panel.login = "another-employee"
+            case "case": panel.login = "Employee" // case change is a different credential binding
+            case "mode": panel.selectAuthentication(.oneTimePassword)
+            case "invalid": panel.login = "employ\nee"
+            case "default": break
+            default: exit(64)
+            }
+            if a[1].hasPrefix("auth-save-") { panel.saveAuthentication() }
+            else if a[1].hasPrefix("auth-finish-") { panel.finishSettings() }
+            else { exit(64) }
+            let persisted = try store.load()?.saved.configuration
+            if a[1].hasSuffix("invalid") {
+                try require(!panel.message.isEmpty && persisted?.authentication == previous,
+                            "invalid edit changed persisted authentication consent")
+            } else {
+                try require(panel.message.isEmpty, "authentication edit failed")
+                let auth = persisted?.authentication
+                let retains = a[1].hasSuffix("unchanged")
+                let expectedPersistence: VPNCredentialPersistence = retains ? .keychain : .none
+                try require(auth?.credentialPersistence == expectedPersistence,
+                            "consent was erased for unchanged binding or inherited by a changed binding")
+                let expectedMode: VPNAuthenticationMode = a[1].hasSuffix("mode") ? .oneTimePassword : .password
+                let expectedLogin = a[1].hasSuffix("login") ? "another-employee"
+                    : a[1].hasSuffix("case") ? "Employee" : "employee"
+                try require(auth?.mode == expectedMode && auth?.login == expectedLogin,
+                            "edit persisted incorrect mode or normalized login")
+            }
+            try require(persisted?.profileName == profile.name && persisted?.resources == config.resources
+                        && persisted?.desiredEnabled == false && session.submissions == 0,
+                        "settings edit changed profile/resources or submitted a secret")
+            print("credential presentation flow passed")
+            return
+        }
         panel.toggle(); try wait(panel)
         try require(panel.needsCredential && controller.credentialPromptIdentifier == session.challenge.identifier, "prompt missing")
         let firstID = controller.credentialPromptIdentifier
