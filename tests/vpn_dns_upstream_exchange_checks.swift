@@ -41,6 +41,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
     var outgoing = [Data](), endpoints = [VPNDNSUpstreamBinding](), events = [String]()
     var udp = Data(), tcp = Data(), readAgain = Set<String>(), connectAgain = Set<String>()
     var sendSteps = [Int](), pollErrors = [Int32](), polls = [Int32](), pollZero = false
+    var pollMask: Int16?
     var receiveAdvance: UInt64 = 0, pollAdvance: UInt64?
     var onSocket: (() -> Void)?, onSend: (() throws -> Void)?, onPoll: (() -> Void)?, onClose: (() -> Void)?
     init(_ snapshot: VPNKernelInterfaceSnapshot) { self.snapshot = snapshot }
@@ -89,7 +90,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         clock += pollAdvance ?? UInt64(milliseconds) * 1_000_000
         onPoll?()
         if !pollErrors.isEmpty { throw VPNBoundDNSUpstreamError.posix(pollErrors.removeFirst()) }
-        return pollZero ? 0:events
+        return pollZero ? 0:(pollMask ?? events)
     }
     func close(_ descriptor: Int32) {
         precondition(authority?.held == false && descriptor == 77 && state != nil)
@@ -180,7 +181,40 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         let exchange = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls)
         if mode == "init-pure" { try check(calls.events.isEmpty && calls.timeReads == 0); return }
         let fallback = ["tc4","tc6","tc-aaaa","tcp-client","tcp-tc","tcp-malformed","cancel-tcp-poll","revoked","interface-dead","partial","cancel-partial","cancel-tcp-read-poll","cancel-tcp-allocation","single-budget","original-deadline","oversize"].contains(mode)
-        if fallback { calls.udp = reply(req,truncated:mode != "oversize",count:mode == "oversize" ? 100:1) }
+        if fallback || mode.hasPrefix("halfclose-") && mode != "halfclose-udp" {
+            calls.udp = reply(req,truncated:mode != "oversize",count:mode == "oversize" ? 100:1)
+        }
+        if mode.hasPrefix("halfclose-") {
+            calls.pollMask = Int16(POLLIN | POLLHUP)
+            if mode == "halfclose-write" {
+                calls.sendSteps = [try req.upstreamQuery().count, -Int(EAGAIN)]
+                calls.pollMask = Int16(POLLOUT | POLLHUP)
+            } else if mode == "halfclose-connect" {
+                calls.connectAgain = ["tcp"]; calls.pollMask = Int16(POLLOUT | POLLHUP)
+            } else {
+                calls.readAgain = [mode == "halfclose-udp" ? "udp":"tcp"]
+            }
+            if mode == "halfclose-bare" || mode == "halfclose-udp" { calls.pollMask = Int16(POLLHUP) }
+            if mode == "halfclose-err" { calls.pollMask = Int16(POLLIN | POLLERR | POLLHUP) }
+            if mode == "halfclose-nval" { calls.pollMask = Int16(POLLIN | POLLNVAL | POLLHUP) }
+            if mode == "halfclose-header-eof" || mode == "halfclose-body-eof" {
+                calls.onSocket = {
+                    if calls.state!.transport == .tcp {
+                        calls.state!.input = mode == "halfclose-header-eof" ? Data([0]) : calls.state!.input.dropLast()
+                    }
+                }
+            }
+            if mode == "halfclose-revoked" { calls.onPoll = { authority.valid = false } }
+            if mode == "halfclose-dead" { calls.onPoll = { calls.snapshot = try! VPNKernelInterfaceSnapshot(interfaces:[]) } }
+            if mode == "halfclose-cancel" { calls.onPoll = { token.cancel() } }
+            if mode == "halfclose-postproof" {
+                authority.after = {
+                    if calls.created.count == 2 && calls.lastEvent == "receive" && calls.state!.input.isEmpty {
+                        authority.valid = false
+                    }
+                }
+            }
+        }
         if mode == "tcp-tc" { calls.tcp = reply(req,truncated:true) }
         if mode == "tcp-malformed" { calls.tcp = Data([0x12,0x34,0x81,0]) }
         if mode == "malformed" { calls.udp[0] ^= 1 }
@@ -238,7 +272,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
             }
             try check(successes == 1 && used == 1 && calls.created.count == 1 && calls.closed.count == 1); return
         }
-        let failure = ["malformed","malformed-tc","transport","tcp-tc","tcp-malformed","single-budget","original-deadline","expired","pre-cancel","cancel-allocation","cancel-tcp-allocation","authority-overrun","cancel-udp-poll","cancel-tcp-poll","cancel-tcp-read-poll","cancel-partial","revoked","interface-dead","poll-cancel-retry","poll-timeout","expired-positive","expired-negative"].contains(mode)
+        let failure = (mode.hasPrefix("halfclose-") && mode != "halfclose-tcp") || ["malformed","malformed-tc","transport","tcp-tc","tcp-malformed","single-budget","original-deadline","expired","pre-cancel","cancel-allocation","cancel-tcp-allocation","authority-overrun","cancel-udp-poll","cancel-tcp-poll","cancel-tcp-read-poll","cancel-partial","revoked","interface-dead","poll-cancel-retry","poll-timeout","expired-positive","expired-negative"].contains(mode)
         var answer: VPNDNSValidatedAnswer?
         if failure { try rejects { _ = try exchange.exchange() } }
         else { answer = try exchange.exchange() }
@@ -261,9 +295,21 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         }
         if mode == "poll-timeout" { try check(calls.polls.count == 200 && calls.polls.reduce(0,+) == 20_000) }
         if mode == "poll-zero-ready" { try check(calls.polls == [100,100,100]) }
+        if mode.hasPrefix("halfclose-") {
+            try check(calls.created.count == (mode == "halfclose-udp" ? 1:2))
+            try check(calls.closed.count == calls.created.count && calls.polls == [100])
+            if ["halfclose-revoked","halfclose-dead","halfclose-cancel"].contains(mode) {
+                // One UDP receive and one TCP EAGAIN. No buffered drain is
+                // allowed once current authority/interface/cancellation fails.
+                try check(calls.events.filter { $0 == "receive" }.count == 2)
+            }
+            if ["halfclose-write","halfclose-connect"].contains(mode) {
+                try check(calls.events.filter { $0 == "receive" }.count == 1)
+            }
+        }
         if !failure {
             try check(answer?.request == req)
-            if fallback { try check(calls.created.count == 2 && calls.closed.count == 2) }
+            if fallback || mode == "halfclose-tcp" { try check(calls.created.count == 2 && calls.closed.count == 2) }
             let query = try req.upstreamQuery()
             if aaaa {
                 try check(answer!.request.type == .aaaa && answer!.addresses.count == 1 && answer!.addresses[0].family == .ipv6 && answer!.addresses[0].bytes.count == 16)

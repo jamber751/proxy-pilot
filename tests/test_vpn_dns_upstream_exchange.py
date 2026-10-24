@@ -17,7 +17,10 @@ CASES = ('udp4', 'udp6', 'tc4', 'tc6', 'oversize', 'init-pure', 'binding-uuid', 
          'slow-positive', 'expired-positive', 'slow-negative', 'expired-negative',
          'one-shot', 'reentrant', 'concurrent', 'close-busy',
          'server-error', 'authority-overrun', 'cancel-tcp-allocation', 'poll-timeout', 'poll-zero-ready',
-         'udp-aaaa', 'tc-aaaa', 'tcp-client')
+         'udp-aaaa', 'tc-aaaa', 'tcp-client',
+         'halfclose-tcp', 'halfclose-header-eof', 'halfclose-body-eof', 'halfclose-bare', 'halfclose-err',
+         'halfclose-nval', 'halfclose-write', 'halfclose-connect', 'halfclose-revoked', 'halfclose-dead',
+         'halfclose-cancel', 'halfclose-postproof', 'halfclose-udp')
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS SDK required')
 class DNSUpstreamExchangeTests(unittest.TestCase):

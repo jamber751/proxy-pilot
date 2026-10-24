@@ -256,7 +256,15 @@ final class VPNBoundDNSUpstreamSocket {
                 let result = try calls.poll(descriptor, events: events, milliseconds: milliseconds)
                 try clock(deadline)
                 guard result != 0 else { throw VPNBoundDNSUpstreamError.timeout }
-                guard result & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 else { throw VPNBoundDNSUpstreamError.closed }
+                guard result & Int16(POLLERR | POLLNVAL) == 0 else { throw VPNBoundDNSUpstreamError.closed }
+                if result & Int16(POLLHUP) != 0 {
+                    // A readable half-close may still contain a complete DNS
+                    // frame. Drain only through authorized receive below; EOF
+                    // or incomplete framing still closes this same owner FD.
+                    guard events == Int16(POLLIN), result & Int16(POLLIN) != 0 else {
+                        throw VPNBoundDNSUpstreamError.closed
+                    }
+                }
                 if result & events != 0 { return }
             } catch VPNBoundDNSUpstreamError.posix(let error) where error == EINTR || error == EAGAIN { continue }
         }
