@@ -164,7 +164,8 @@ final class VPNDarwinDNSUpstreamSyscalls: VPNDNSUpstreamSyscalls {
 /// cache, protocol fallback, answer interposition or runtime activation.
 final class VPNBoundDNSUpstreamSocket {
     static let maximumMessageBytes = 65_535
-    private static let maximumIOBudget: UInt64 = 20_000_000_000
+    // Shared with the inert UDP→TCP coordinator: one ceiling, never per-leg reset.
+    static let maximumIOBudget: UInt64 = 20_000_000_000
     private let binding: VPNDNSUpstreamBinding
     private let transport: VPNDNSUpstreamTransport
     private let authority: VPNDNSUpstreamAuthority
@@ -179,6 +180,14 @@ final class VPNBoundDNSUpstreamSocket {
     deinit { closeOwned() }
     private func closeOwned() {
         if descriptor >= 0 { let owned = descriptor; descriptor = -1; calls.close(owned) }
+    }
+    /// Sole-owner completion after exchange unwinds. Busy refuses without
+    /// touching the descriptor; a cancellation signal must NEVER close it from
+    /// another thread. No raw descriptor escapes this API.
+    func close() throws {
+        guard gate.try() else { throw VPNBoundDNSUpstreamError.busy }
+        defer { gate.unlock() }
+        closeOwned()
     }
     private func budget(_ requested: DispatchTime) throws -> DispatchTime {
         let now = calls.now()

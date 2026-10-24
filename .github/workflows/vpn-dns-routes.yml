@@ -10,6 +10,7 @@ on:
       - 'app/vpn-helper/VPNDomainNetworkPlan.swift'
       - 'app/vpn-helper/VPNDNSPlan.swift'
       - 'app/vpn-helper/VPNBoundDNSUpstreamSocket.swift'
+      - 'app/vpn-helper/VPNDNSUpstreamExchange.swift'
       - 'app/vpn-helper/VPNDNSAnswerCodec.swift'
       - 'app/vpn-helper/VPNDNSAnswerRelease.swift'
       - 'tests/test_vpn_scoped_dns_route_custody.py'
@@ -24,6 +25,8 @@ on:
       - 'tests/vpn_ordinary_route_lookup_checks.swift'
       - 'tests/test_vpn_route_socket_write_miss.py'
       - 'tests/vpn_route_socket_write_miss_checks.swift'
+      - 'tests/test_vpn_dns_upstream_exchange.py'
+      - 'tests/vpn_dns_upstream_exchange_checks.swift'
   workflow_dispatch:
 
 permissions:
@@ -43,6 +46,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Private fake interfaces and route tables; no network operations
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan test_vpn_bound_dns_upstream_socket test_vpn_dns_answer_release test_vpn_ordinary_route_lookup test_vpn_route_socket_write_miss -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan test_vpn_bound_dns_upstream_socket test_vpn_dns_answer_release test_vpn_ordinary_route_lookup test_vpn_route_socket_write_miss test_vpn_dns_upstream_exchange -v
       - name: Genuine universal helper compile and signature verification only
         run: zsh app/vpn-helper/build.sh "$RUNNER_TEMP/scoped-dns-helper"
