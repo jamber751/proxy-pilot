@@ -22,6 +22,8 @@ on:
       - '!tests/vpn_resource_list_checks.swift'
       - '!tests/test_vpn_live_controller.py'
       - '!tests/vpn_live_controller_checks.swift'
+      - '!tests/test_vpn_legacy_keychain_vm.py'
+      - '!tests/vpn_legacy_keychain_vm_checks.swift'
   workflow_dispatch:
 
 permissions:

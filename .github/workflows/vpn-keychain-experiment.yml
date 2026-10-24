@@ -1,0 +1,31 @@
+name: VPN disposable Keychain experiment
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-keychain-experiment.yml'
+      - 'tests/test_vpn_legacy_keychain_vm.py'
+      - 'tests/vpn_legacy_keychain_vm_checks.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keychain:
+    name: Private synthetic Keychain (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise only the private disposable keychain as ordinary user
+        env:
+          PROXYPILOT_VM_KEYCHAIN_TESTS: '1'
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_legacy_keychain_vm -v

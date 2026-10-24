@@ -4995,3 +4995,33 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   потребление navigation request. Использованы actual ProductView/adapter и
   temporary VPN store с fake helper и proxy content; CLI/реальная сеть не вызывались.
 - [ ] Живая системная приёмка proxy preservation и всего VPN flow остаётся открытой.
+
+### Продолжение 1.5dx — проверка Keychain модели бесплатной подписи
+
+- [x] Readonly metadata текущего Universal frontend: Signature=adhoc,
+  TeamIdentifier отсутствует, synthesized designated requirement привязан к двум
+  architecture CDHashes. Это не стабильная team identity между версиями.
+  [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements),
+  [TN2206](https://developer.apple.com/library/archive/technotes/tn2206/) и
+  [ACL documentation](https://developer.apple.com/documentation/security/access-control-lists)
+  подтверждают необходимость проверить renewed access после изменения identity;
+  само наличие нового DR ещё не доказывает конкретное поведение нашего adapter.
+- [x] SDK SecItem.h различает Data Protection и legacy file-based backend:
+  общие no-UI dictionary flags нельзя объявлять доказанным suppressor legacy ACL
+  окон. Для отдельной VM проверки выбран процессный legacy interaction flag с
+  сохранением/восстановлением прежнего значения. Production policy не менялась.
+- [x] Добавлен строго opt-in test-only prototype: same-path/same-ID ad-hoc V1/V2,
+  private custom keychain, synthetic secret, bounded silent read/locked fallback,
+  prior flag restoration и readonly equality default/searchlist metadata.
+  Не меняются ACL/default/searchlist setters; нет broad search или allow-all.
+  Host: только compile/signature metadata, actual Keychain API не выполнялись.
+- [x] Prototype использует runtime/hard/kill flags, как frontend. Compile-only
+  обеих разных identities прошёл. Это не runtime acceptance и не реализация
+  сохранения пароля в приложении. Отсутствие окна по sampled metadata не
+  объявляется полной GUI гарантией.
+- [ ] Выполнить отдельный ordinary-user macOS CI experiment. При неожиданном
+  разрешении V2 зафиксировать реальное поведение, не менять ACL ради зелёного теста.
+- [ ] Затем выбрать adapter: silent read→manual fallback; explicit foreground
+  opt-in write после verified connection; cache failure не отменяет connected.
+  OTP/private-key secrets не сохраняются. Никакой платный аккаунт/сертификат или
+  обход macOS permissions этим исследованием не вводится.
