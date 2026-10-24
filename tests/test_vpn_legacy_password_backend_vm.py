@@ -52,6 +52,69 @@ class VMFixtureDiagnosticsTests(unittest.TestCase):
             self.assertIn('evidence(' + expected, source)
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS filesystem proof required')
+class VMFixturePathProofTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.build = tempfile.TemporaryDirectory(prefix='pp-file-proof-build-')
+        cls.addClassCleanup(cls.build.cleanup)
+        source = (ROOT / 'tests/vpn_legacy_password_backend_vm_checks.swift').read_text()
+        helper = source.split('// BEGIN NO-KEYCHAIN FILE IDENTITY', 1)[1].split('// END NO-KEYCHAIN FILE IDENTITY', 1)[0]
+        for forbidden in ('import Security', 'SecKeychain', 'SecItem', 'VPNPasswordWorker'):
+            if forbidden in helper: raise AssertionError('Pure file helper includes a Security dependency')
+        wrapper = """
+@main enum FileProofChecks {
+    enum Failure: Error { case check }
+    static func main() throws {
+        guard CommandLine.arguments.count == 4 else { throw Failure.check }
+        let directory = open(CommandLine.arguments[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        defer { if directory >= 0 { close(directory) } }
+        let proof = VPNPrivateKeychainPathProof.inspect(actual: CommandLine.arguments[1],
+            directory: directory, intendedName: "first.keychain-db")
+        guard proof.accepted == (CommandLine.arguments[3] == "true") else { throw Failure.check }
+        print("owned file proof passed")
+    }
+}
+"""
+        file = Path(cls.build.name) / 'Checks.swift'
+        file.write_text('import Darwin\nimport Foundation\n' + helper + wrapper)
+        cls.binary = Path(cls.build.name) / 'checks'
+        arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
+        result = subprocess.run(['/usr/bin/swiftc', '-parse-as-library', '-target', arch + '-apple-macosx11.0',
+            str(file), '-o', str(cls.binary)], capture_output=True, text=True, timeout=60)
+        if result.returncode: raise AssertionError(result.stderr)
+
+    def test_alias_requires_exact_known_file_and_private_parent(self):
+        with tempfile.TemporaryDirectory(prefix='pp file proof [owned] ') as folder:
+            root = Path(folder)
+            private = root / 'private'; private.mkdir(mode=0o700)
+            intended = private / 'first.keychain-db'
+            intended.write_bytes(b'ordinary synthetic filesystem file; NOT a keychain')
+            intended.chmod(0o600)
+            other = private / 'second.keychain-db'; other.write_bytes(b'other'); other.chmod(0o600)
+            alias = root / 'parent-alias'; alias.symlink_to(private, target_is_directory=True)
+            leaf = private / 'leaf-alias'; leaf.symlink_to(intended)
+            foreign_dir = root / 'foreign'; foreign_dir.mkdir(mode=0o700)
+            foreign = foreign_dir / 'first.keychain-db'; foreign.write_bytes(b'foreign'); foreign.chmod(0o600)
+            cases = [(intended, private, True), (alias / intended.name, private, True),
+                     (leaf, private, False), (other, private, False), (foreign, private, False),
+                     (private / 'absent', private, False), (intended, alias, False)]
+            for actual, directory, accepted in cases:
+                with self.subTest(kind=('accepted' if accepted else 'refused')):
+                    result = subprocess.run([str(self.binary), str(actual), str(directory), str(accepted).lower()],
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            hardlink = private / 'hardlink'; os.link(intended, hardlink)
+            result = subprocess.run([str(self.binary), str(intended), str(private), 'false'],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            hardlink.unlink()
+            intended.chmod(0o620)
+            result = subprocess.run([str(self.binary), str(intended), str(private), 'false'],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 @unittest.skipUnless(os.environ.get('PROXYPILOT_VM_PASSWORD_BACKEND_TESTS') == '1',
                      'Real Keychain operations require explicit disposable-GHA opt-in')
 class VPNLegacyPasswordBackendVMTests(unittest.TestCase):

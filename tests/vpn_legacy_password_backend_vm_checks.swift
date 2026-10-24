@@ -3,6 +3,61 @@ import Darwin
 import Foundation
 import Security
 
+// BEGIN NO-KEYCHAIN FILE IDENTITY
+// Pure filesystem proof, also exercised without importing or invoking Security APIs.
+struct VPNPrivateKeychainPathProof {
+    var actualExists = false, intendedExists = false, regularOwned = false
+    var sameFile = false, sameParent = false, canonicalEqual = false, namesStable = false
+    var canonicalActual: String?
+    var attributes: stat?
+    var accepted: Bool {
+        actualExists && intendedExists && regularOwned && sameFile && sameParent && canonicalEqual && namesStable
+    }
+    private static func same(_ a: stat, _ b: stat) -> Bool {
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid &&
+        a.st_birthtimespec.tv_sec == b.st_birthtimespec.tv_sec && a.st_birthtimespec.tv_nsec == b.st_birthtimespec.tv_nsec
+    }
+    private static func regular(_ a: stat) -> Bool {
+        a.st_mode & S_IFMT == S_IFREG && a.st_uid == getuid() && a.st_nlink == 1 && a.st_mode & 0o022 == 0
+    }
+    private static func fullPath(_ fd: Int32) -> String? {
+        var bytes = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(fd, F_GETPATH, &bytes) == 0 else { return nil }
+        let result = String(cString: bytes)
+        return result.hasPrefix("/") ? result : nil
+    }
+    static func inspect(actual: String, directory: Int32, intendedName: String) -> Self {
+        var proof = Self(), heldDirectory = stat()
+        guard ["first.keychain-db", "second.keychain-db"].contains(intendedName), actual.hasPrefix("/"),
+              fstat(directory, &heldDirectory) == 0, heldDirectory.st_mode & S_IFMT == S_IFDIR,
+              heldDirectory.st_uid == getuid(), heldDirectory.st_mode & 0o777 == 0o700 else { return proof }
+        let actualFD = open(actual, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        let intendedFD = openat(directory, intendedName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        defer { if actualFD >= 0 { close(actualFD) }; if intendedFD >= 0 { close(intendedFD) } }
+        proof.actualExists = actualFD >= 0; proof.intendedExists = intendedFD >= 0
+        guard actualFD >= 0, intendedFD >= 0 else { return proof }
+        var a = stat(), b = stat()
+        guard fstat(actualFD, &a) == 0, fstat(intendedFD, &b) == 0 else { return proof }
+        proof.regularOwned = regular(a) && regular(b)
+        proof.sameFile = same(a, b)
+        guard let actualPath = fullPath(actualFD), let intendedPath = fullPath(intendedFD),
+              let separator = actualPath.lastIndex(of: "/") else { return proof }
+        proof.canonicalActual = actualPath; proof.attributes = a
+        proof.canonicalEqual = actualPath == intendedPath
+        let parentPath = String(actualPath[..<separator])
+        let parentFD = open(parentPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parentFD >= 0 else { return proof }; defer { close(parentFD) }
+        var parent = stat(), directoryAfter = stat(), actualNamed = stat(), intendedNamed = stat(), canonicalNamed = stat()
+        proof.sameParent = fstat(parentFD, &parent) == 0 && same(parent, heldDirectory)
+        proof.namesStable = lstat(actual, &actualNamed) == 0 && regular(actualNamed) && same(a, actualNamed) &&
+            fstatat(directory, intendedName, &intendedNamed, AT_SYMLINK_NOFOLLOW) == 0 && regular(intendedNamed) && same(b, intendedNamed) &&
+            lstat(actualPath, &canonicalNamed) == 0 && regular(canonicalNamed) && same(a, canonicalNamed) &&
+            fstat(directory, &directoryAfter) == 0 && same(heldDirectory, directoryAfter) && directoryAfter.st_mode & 0o777 == 0o700
+        return proof
+    }
+}
+// END NO-KEYCHAIN FILE IDENTITY
+
 /// REAL APIs ONLY in a fresh opt-in disposable GHA job. Never run on a host.
 @main enum VPNLegacyPasswordBackendVMChecks {
     enum Failure: Error { case guardFailed, check, api }
@@ -14,6 +69,8 @@ import Security
         case itemOwner, ownerIsPrivate, ownerFileOpen, ownerFileIdentity
         case privateLock, cleanupKeychain, preferencesUnchanged
         case workerAddAdded, workerAddNoIO
+        case actualFileExists, intendedFileExists, pathRegularOwned, pathSameFile
+        case pathSameParent, pathCanonicalEqual, pathNamesStable
     }
     private static func evidence(_ phase: Evidence, status: OSStatus? = nil, value: Bool? = nil) {
         // Closed identifiers, decimal status and boolean ONLY. No exceptions,
@@ -91,7 +148,19 @@ import Security
         try bytes.write(to: path, options: .atomic)
         guard chmod(path.path, 0o600) == 0 else { throw Failure.guardFailed }
     }
-    static func create(_ folder: URL, name: String) throws -> SecKeychain {
+    static func privateProof(_ actual: String, directory: Int32, intendedName: String) throws -> VPNPrivateKeychainPathProof {
+        let proof = VPNPrivateKeychainPathProof.inspect(actual: actual, directory: directory, intendedName: intendedName)
+        evidence(.actualFileExists, value: proof.actualExists)
+        evidence(.intendedFileExists, value: proof.intendedExists)
+        evidence(.pathRegularOwned, value: proof.regularOwned)
+        evidence(.pathSameFile, value: proof.sameFile)
+        evidence(.pathSameParent, value: proof.sameParent)
+        evidence(.pathCanonicalEqual, value: proof.canonicalEqual)
+        evidence(.pathNamesStable, value: proof.namesStable)
+        guard proof.accepted else { throw Failure.guardFailed }
+        return proof
+    }
+    static func create(_ folder: URL, directory: Int32, name: String) throws -> SecKeychain {
         let base = folder.appendingPathComponent(name + ".keychain").path
         var info = stat()
         guard lstat(base, &info) != 0, errno == ENOENT,
@@ -105,13 +174,15 @@ import Security
         let observed = try path(result)
         evidence(.createdPathIsDB, value: observed == base + "-db")
         evidence(.createdPathIsBase, value: observed == base)
-        guard observed == base + "-db" else { throw Failure.api }
+        // Different POSIX spellings are accepted only with independent held
+        // descriptor proof of this exact known fresh DB and private parent.
+        _ = try privateProof(observed, directory: directory, intendedName: name + ".keychain-db")
         let privateMode = chmod((base + "-db"), 0o600) == 0
         evidence(.createdPrivateMode, value: privateMode)
         guard privateMode else { throw Failure.guardFailed }
         return result
     }
-    static func observedLocator(_ raw: CFTypeRef?, folder: URL) throws -> VPNPasswordItemLocator {
+    static func observedLocator(_ raw: CFTypeRef?, directory: Int32, intendedName: String) throws -> VPNPasswordItemLocator {
         evidence(.itemDictionary, value: raw as? [String: Any] != nil)
         guard let result = raw as? [String: Any], let persistent = result[kSecValuePersistentRef as String] as? Data,
               let rawItem = result[kSecValueRef as String], CFGetTypeID(rawItem as CFTypeRef) == SecKeychainItemGetTypeID() else { throw Failure.api }
@@ -121,29 +192,19 @@ import Security
         evidence(.itemOwner, status: status, value: keychain != nil)
         guard status == errSecSuccess, let keychain else { throw Failure.api }
         let actual = try path(keychain)
-        let privateOwner = actual.hasPrefix(folder.path + "/") && !actual.contains("/../")
-        evidence(.ownerIsPrivate, value: privateOwner)
-        guard privateOwner else { throw Failure.guardFailed }
-        let fd = open(actual, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        evidence(.ownerFileOpen, value: fd >= 0)
-        guard fd >= 0 else { throw Failure.guardFailed }; defer { close(fd) }
-        var info = stat()
-        let owned = fstat(fd, &info) == 0 && info.st_mode & S_IFMT == S_IFREG && info.st_uid == getuid() && info.st_nlink == 1
-        evidence(.ownerFileIdentity, value: owned)
-        guard owned else { throw Failure.guardFailed }
+        let proof = try privateProof(actual, directory: directory, intendedName: intendedName)
+        guard let canonical = proof.canonicalActual, let info = proof.attributes else { throw Failure.guardFailed }
         let locator = VPNPasswordItemLocator(persistentReference: persistent, origin: .init(kind: .legacyKeychain,
-            path: actual, device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino), ownerUID: info.st_uid,
+            path: canonical, device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino), ownerUID: info.st_uid,
             birthSeconds: Int64(info.st_birthtimespec.tv_sec), birthNanoseconds: UInt32(info.st_birthtimespec.tv_nsec)))
         try locator.validate(); return locator
     }
-    static func fixtureAdd(_ keychain: SecKeychain, folder: URL, reference: VPNPasswordReference,
+    static func fixtureAdd(_ keychain: SecKeychain, directory: Int32, intendedName: String, reference: VPNPasswordReference,
                            envelope: Data) throws -> VPNPasswordItemLocator {
         // Explicit owned target verified before API: never an absent target that
         // could accidentally select the CI account's default keychain.
         let actual = try path(keychain)
-        var info = stat()
-        guard actual.hasPrefix(folder.path + "/"), lstat(actual, &info) == 0,
-              info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid() else { throw Failure.guardFailed }
+        let before = try privateProof(actual, directory: directory, intendedName: intendedName)
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: VPNLegacyPasswordBackend.service, kSecAttrAccount as String: reference.itemID.uuidString,
             kSecUseKeychain as String: keychain, kSecValueData as String: envelope,
@@ -153,8 +214,8 @@ import Security
         evidence(.fixtureAdd, status: status)
         evidence(.fixtureAddResult, value: result != nil)
         guard status == errSecSuccess else { throw Failure.api }
-        let locator = try observedLocator(result, folder: folder)
-        guard locator.origin.path == actual else { throw Failure.guardFailed }
+        let locator = try observedLocator(result, directory: directory, intendedName: intendedName)
+        guard locator.origin.path == before.canonicalActual else { throw Failure.guardFailed }
         return locator
     }
     static func main() throws {
@@ -195,6 +256,9 @@ import Security
         guard initialFlagStatus == errSecSuccess else { throw Failure.api }
         let beforeFlag = allowed.boolValue
         let (store, reference, revision) = try seed(folder)
+        // Hold the original private parent across Create/Add and all proofs.
+        let directory = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw Failure.guardFailed }; defer { close(directory) }
         let unknownAPI = folder.appendingPathComponent("private-unknown-api")
         func begin(_ operation: String) throws { try privateWrite(Data(operation.utf8), unknownAPI) }
         func definite() throws { try FileManager.default.removeItem(at: unknownAPI) }
@@ -222,7 +286,7 @@ import Security
         try privateWrite(Data("GHA-PRIVATE-KEYCHAIN-BACKEND-01".utf8), folder.appendingPathComponent("private-keychain-opt-in"))
         try privateWrite(Data("A".utf8), folder.appendingPathComponent("private-add-target"))
         try begin("keychain-create")
-        let first = try create(folder, name: "first")
+        let first = try create(folder, directory: directory, name: "first")
         try definite()
         var firstExists = true
         defer {
@@ -231,7 +295,7 @@ import Security
             if firstExists { _ = cleanup(first) }
         }
         try begin("keychain-create")
-        let second = try create(folder, name: "second")
+        let second = try create(folder, directory: directory, name: "second")
         try definite()
         var secondExists = true
         defer { if secondExists { _ = cleanup(second) } }
@@ -242,7 +306,7 @@ import Security
         if action == "malformed" {
             let result = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in
                 try begin("initial-add")
-                let captured = try fixtureAdd(first, folder: folder, reference: reference, envelope: Data("not-an-envelope".utf8))
+                let captured = try fixtureAdd(first, directory: directory, intendedName: "first.keychain-db", reference: reference, envelope: Data("not-an-envelope".utf8))
                 try definite()
                 return .added(captured)
             }
@@ -261,7 +325,7 @@ import Security
             try waitChildren()
         }
         try check(unchangedPreferences(baseline))
-        try check(locator.origin.path == folder.appendingPathComponent("first.keychain-db").path)
+        _ = try privateProof(locator.origin.path, directory: directory, intendedName: "first.keychain-db")
         var fileInfo = stat()
         guard lstat(locator.origin.path, &fileInfo) == 0 else { throw Failure.check }
         try check(locator.origin.device == UInt64(UInt32(bitPattern: fileInfo.st_dev)) && locator.origin.inode == UInt64(fileInfo.st_ino))
@@ -269,7 +333,7 @@ import Security
             // A different PRIVATE Add target and an explicit B decoy model a
             // default-context change without ever changing CI preferences.
             try begin("decoy-add")
-            _ = try fixtureAdd(second, folder: folder, reference: reference,
+            _ = try fixtureAdd(second, directory: directory, intendedName: "second.keychain-db", reference: reference,
                 envelope: VPNLegacyPasswordEnvelope.encode(reference: reference, secret: Data("decoy".utf8)))
             try definite()
             try privateWrite(Data("B".utf8), folder.appendingPathComponent("private-add-target"))
