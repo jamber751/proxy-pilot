@@ -5092,3 +5092,16 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Полный Universal engine и system Installer повторить с обновлённой recipe.
   Старый локальный artifact135 имеет прежнюю recipe provenance: его нельзя
   переименовать или переписать provenance ради нового финального C; нужен rebuild.
+
+### Продолжение 1.5eb — совместимость диагностических fixtures
+
+- [x] Run40095203114 остановился в fast gate на Python3.14: test tar writer сам
+  отвергал nan/inf ещё до production reader. Nonfinite adversarial timestamps
+  теперь задаются явной PAX строкой при допустимом header mtime. Все17 engine
+  tests passed на Python3.9.6 и3.14; ни один отказной case не удалён.
+- [x] Private Keychain run40095203130 прошёл directory guard, create/V1 read и
+  неизменность search/default metadata, затем отказал на reopen guard до
+  проверки V2 ACL. Добавлены fixed operation/file-check diagnostics; причина
+  file guard ещё не объявляется подтверждённой и permissions/ACL не ослаблены.
+- [ ] Повторить оба isolated workflow; engine production behavior и password
+  storage acceptance не выводить из исправления самого test fixture.

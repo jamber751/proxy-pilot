@@ -3,6 +3,7 @@ import hashlib
 import gzip
 import importlib.util
 import io
+import math
 import os
 from pathlib import Path
 import shutil
@@ -50,7 +51,13 @@ class VPNEngineBuildTests(unittest.TestCase):
         with tarfile.open(fileobj=output, mode='w:gz', format=tarfile.PAX_FORMAT) as archive:
             for name, timestamp, content in entries:
                 info = tarfile.TarInfo(name)
-                info.mtime = timestamp
+                if isinstance(timestamp, float) and not math.isfinite(timestamp):
+                    # Python 3.14 rejects nonfinite TarInfo values while writing.
+                    # An explicit PAX string still exercises the reader boundary.
+                    info.mtime = 0
+                    info.pax_headers['mtime'] = str(timestamp)
+                else:
+                    info.mtime = timestamp
                 if content is None:
                     info.type = tarfile.DIRTYPE
                 else:
