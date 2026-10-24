@@ -50,10 +50,16 @@ enum CLI {
     // Bundle and UI are versioned together, including source builds.
     static var path: String? {
         let bundled = Bundle.main.resourcePath.map { "\($0)/bin/proxypilot" }
+        #if VPN_INSTALLER_ENTRY
+        // VPN handoff requires the CLI shipped with this signed app. A legacy
+        // fallback can rewrite the bridge without its lock or active VPN overlay.
+        return bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
+        #else
         return ([bundled].compactMap { $0 } + [
             "\(NSHomeDirectory())/.local/bin/proxypilot",
             "/opt/homebrew/bin/proxypilot", "/usr/local/bin/proxypilot"
         ]).first { FileManager.default.isExecutableFile(atPath: $0) }
+        #endif
     }
     static func run(_ args: [String]) -> CommandResult {
         guard let path = path else { return CommandResult(output: "CLI not found", code: 127) }
