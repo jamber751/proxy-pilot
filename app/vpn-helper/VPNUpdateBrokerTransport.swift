@@ -66,6 +66,14 @@ enum VPNUpdateBrokerTransport {
 
     static func send(_ response: VPNUpdateBrokerResponse, socket: Int32,
                      deadline: UInt64) throws {
+        // A disconnected ordinary observer must produce a bounded transport
+        // error, not kill the broker before its best-effort READY handling.
+        // Suppress SIGPIPE only on this owned reply socket, never process-wide.
+        var enabled: Int32 = 1
+        guard setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled,
+                         socklen_t(MemoryLayout.size(ofValue: enabled))) == 0 else {
+            throw VPNUpdateBrokerTransportError.unsafeSocket
+        }
         try VPNHelperProtocol.write(
             VPNUpdateBrokerProtocol.encode(response), socket: socket,
             deadline: deadline)

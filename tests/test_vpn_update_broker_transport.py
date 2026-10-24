@@ -57,6 +57,55 @@ class VPNUpdateBrokerTransportSourceTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.source)
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
+class VPNBrokerReplySignalTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix='pp-broker-reply-signal-')
+        cls.addClassCleanup(cls.temporary.cleanup)
+        base = Path(cls.temporary.name)
+        source = base / 'ReplyChecks.swift'
+        source.write_text('''import Darwin
+import Dispatch
+import Foundation
+@main enum ReplyChecks {
+    static func main() throws {
+        guard getuid() == geteuid(), getuid() != 0 else { exit(64) }
+        signal(SIGPIPE, SIG_DFL)
+        let response = VPNUpdateBrokerResponse(state: .ready, fromSequence: 141, toSequence: 142, revision: 1)
+        if CommandLine.arguments.last == "invalid" {
+            do { try VPNUpdateBrokerTransport.send(response, socket: -1, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000); exit(1) }
+            catch VPNUpdateBrokerTransportError.unsafeSocket { print("unsafe-socket"); return }
+        }
+        var pair = [Int32](repeating: -1, count: 2)
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else { exit(2) }
+        close(pair[1]); defer { close(pair[0]) }
+        do { try VPNUpdateBrokerTransport.send(response, socket: pair[0], deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000); exit(1) }
+        catch VPNHelperTransportError.transport { print("reply-error:transport"); return }
+        catch VPNUpdateBrokerTransportError.unsafeSocket { print("reply-error:unsafe-socket"); return }
+    }
+}
+''')
+        cls.binary = base / 'reply-checks'
+        # No TESTING defines: the child calls the actual production send path.
+        subprocess.run(['/usr/bin/swiftc', '-parse-as-library',
+                        str(ROOT / 'app/vpn-helper/VPNPeerAuthentication.swift'),
+                        str(ROOT / 'app/vpn-helper/VPNHelperProtocol.swift'), str(PROTOCOL), str(TRANSPORT),
+                        str(source), '-o', str(cls.binary)], capture_output=True, text=True, check=True, timeout=120)
+        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill',
+                        '--identifier', 'kz.documentolog.proxypilot.synthetic-broker-reply', str(cls.binary)],
+                       capture_output=True, check=True, timeout=20)
+
+    def test_closed_private_peer_throws_with_default_sigpipe_instead_of_dying(self):
+        result = subprocess.run([str(self.binary), 'closed'], capture_output=True, text=True, timeout=5)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertIn(result.stdout, ('reply-error:transport\n', 'reply-error:unsafe-socket\n'))
+
+    def test_failure_to_suppress_sigpipe_refuses_the_socket(self):
+        result = subprocess.run([str(self.binary), 'invalid'], capture_output=True, text=True, timeout=5)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, 'unsafe-socket\n', ''))
+
+
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'),
                      'macOS Swift required')
 class VPNUpdateBrokerTransportTests(unittest.TestCase):
