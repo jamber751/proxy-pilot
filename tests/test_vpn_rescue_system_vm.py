@@ -172,8 +172,25 @@ def build_real_engine(app, output):
                 or hashlib.sha256(archive.read_bytes()).hexdigest() != item['sha256']):
             raise AssertionError('Reviewed engine source checksum mismatch')
     phase('build Universal OpenSSL/OpenVPN and run nonnetwork crypto checks')
-    command(['/usr/bin/python3', app / 'vpn-engine/build.py', '--sources', source,
-             '--output', output / 'EngineBuild', '--jobs', '4'], timeout=2400)
+    try:
+        command(['/usr/bin/python3', app / 'vpn-engine/build.py', '--sources', source,
+                 '--output', output / 'EngineBuild', '--jobs', '4'], timeout=2400)
+    except (AssertionError, subprocess.TimeoutExpired):
+        # These are our unprivileged, source-only compiler logs. Preserve the
+        # actual error before CI discards the runner; never inspect system logs.
+        for arch in ('arm64', 'x86_64'):
+            log = output / 'EngineBuild' / arch / 'build.log'
+            try:
+                descriptor = os.open(log, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode): continue
+                    stream.seek(max(0, info.st_size - 8192))
+                    tail = stream.read(8192).decode('utf-8', errors='replace')
+                print('System rescue engine build log tail (' + arch + '):\n' + tail, flush=True)
+            except OSError:
+                print('System rescue engine build log unavailable (' + arch + ')', flush=True)
+        raise
     return output / 'EngineBuild/artifact'
 
 
