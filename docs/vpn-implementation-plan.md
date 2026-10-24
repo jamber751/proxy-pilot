@@ -4542,10 +4542,13 @@ Ownership clone проверен как эксперимент, но публи�
 - [x] Добавлен test-only pending coordinator: arm → повторная проверка → drain →
   повторная проверка → exchange; журнал и selector не изменяет. Девять сценариев
   прерывания/повтора подготовлены для отдельного root VM прогона.
-- [ ] Проверить новый coordinator в remote CI и подключить реальные recovery/drain
-  операции; синтетические callbacks не подтверждают работоспособность launchd.
-- [ ] Проверить read-only cleanup receipt gate и затем реализовать отдельно
-  авторизованную очистку. Отсутствующий receipt не считается успешным завершением.
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40081843956
+  (`d9ec003`): **282 passed, без skips**, 141 на каждой архитектуре. В том числе
+  9 pending coordinator root cases и 25 read-only cleanup context cases.
+- [ ] Подключить реальные recovery/drain операции; синтетические callbacks
+  coordinator не подтверждают работоспособность launchd.
+- [ ] Реализовать отдельно авторизованную очистку. Отсутствующий receipt
+  не считается успешным завершением.
 - [ ] Полный recovery139, переход139→C и итоговый пакет остаются незавершёнными.
   Пароль macOS и sudoers не меняем; промежуточные host installers не запускаем.
 
@@ -4569,3 +4572,14 @@ Ownership clone проверен как эксперимент, но публи�
   helper не выдавать за исходный подписанный binary139 или root cleanup.
 - [ ] Production rescue entry, recovery/cleanup handoff, второй переход139→C,
   полный crash matrix и итоговый installer ещё не готовы.
+
+Решение для второго перехода: отдельная start-authority
+`prepare-root-owned-update-and-authorize-replacement` плюс существующая
+finish-authority для exact139→C и одного rescue executable. Существующие durable
+preparation/journal переиспользуются, дополнительный журнал всего установщика
+не нужен. Start-role не допускает supersession чужой preparation. Обычный updater
+по-прежнему требует совместимого executor; только отдельный typed start-path
+может принять root-owned139 без capability. Candidate C обязан иметь capability.
+Перед второй подготовкой полностью завершить cleanup137→139. После protected
+swap второй переход завершается через существующий C recovery. Это утверждённая
+техническая схема реализации, ещё не выполненный end-to-end сценарий.
