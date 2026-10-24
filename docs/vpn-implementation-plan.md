@@ -5347,6 +5347,23 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Installer/ordinary owner gate на обеих архитектурах. Устаревшие system runs
   40097695769/40099297749 отменены после подтверждённой новой причины и замены
   реализации ожидания, не из-за истечения времени наблюдения.
-- [ ] Новый engine rebuild выполняется ordinary/offline/jobs2 из проверенных
-  публичных архивов с current recipe; старый135 artifact не переименовывается
-  и provenance не переписывается. Финальный комплект ещё не готов к установке.
+- [x] Новый engine rebuild завершён ordinary/offline/jobs2 из проверенных
+  публичных архивов с current recipe; старый135 artifact не переименовывался
+  и provenance не переписывался. См. 1.5eo. Финальный комплект ещё не готов.
+
+### Продолжение 1.5eo — настоящий engine для финального комплекта пересобран
+
+- [x] Builder exit0: `/private/tmp/pp-engine-140-20261024-mtime-v1/output/artifact`.
+  Universal arm64/x86_64, minOS11, strict ad-hoc runtime/hard/kill signature;
+  native version OpenVPN2.7.7/OpenSSL3.5.8. Dependencies только libresolv/libSystem,
+  OpenSSL static; никаких RPATH/Homebrew/temp output paths по builder check.
+- [x] Пять настоящих non-network crypto selftests прошли: AES128/256-GCM,
+  CHACHA20-POLY1305 и AES128/256-CBC. Это не TLS/VPN/Intel execution приёмка.
+- [x] SHA256 binary d0eb52a653ec35b1efa5f63a09b61d64dd1e80356e6b01cf07cfa7f49dbe367b;
+  source archives, licenses, provenance и full logs сохранены. Parent независимо
+  проверил signature/binary hash и полное совпадение shipped build.py/sources.json
+  с текущим repository после сборки. Никаких Keychain/profile/TUN/network/root
+  действий при сборке не было; воспроизводимость двух сборок не заявлена.
+- [ ] Genuine helper с текущим production trust собирается в отдельном immutable
+ 109-input snapshot; нет synthetic trust/publisher signing. Это ещё не полный
+  подписанный app/helper/engine/rescue комплект и не разрешение на host install.
