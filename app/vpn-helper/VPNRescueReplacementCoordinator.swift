@@ -7,6 +7,9 @@ import Foundation
 /// Recovery is deliberately never disarmed on error, and selector A is unchanged.
 enum VPNRescueReplacementCoordinator {
     enum Failure: Error { case requiresRoot, invalidState }
+    enum Progress {
+        case pending, protectedReady, protectedExchanged, protectedSynced, protectedValidated, destinationStaged
+    }
 
     private enum Mode {
         #if VPN_RESCUE_SYSTEM_ENTRY
@@ -49,7 +52,8 @@ enum VPNRescueReplacementCoordinator {
                           preparationExecutor: VPNRescuePreparationExecutor,
                           executor: VPNRescueExecutor,
                           armCandidateRecovery: (VPNAuthorizedDeployment) throws -> Void,
-                          drainPreviousService: () throws -> Void) throws
+                          drainPreviousService: () throws -> Void,
+                          progress: (Progress) -> Void = { _ in }) throws
         -> VPNApplicationDestinationExchange.Outcome {
         guard getuid() == 0, geteuid() == 0 else { throw Failure.requiresRoot }
         try VPNDirectoryProvisioner.requireSystemDirectory(service)
@@ -60,7 +64,19 @@ enum VPNRescueReplacementCoordinator {
         return try perform(service: service, update: update, destination: applications,
             authority: authority, lease: lease, preparationExecutor: preparationExecutor,
             executor: executor, mode: .system, armCandidateRecovery: armCandidateRecovery,
-            drainPreviousService: drainPreviousService, checkpoint: { _ in })
+            drainPreviousService: drainPreviousService, checkpoint: { point in
+                // Fixed internal checkpoints only; no dynamic identifiers,
+                // paths, error descriptions or arbitrary callback text.
+                switch point {
+                case "afterPending": progress(.pending)
+                case "protected:beforeExchange": progress(.protectedReady)
+                case "protected:afterExchange": progress(.protectedExchanged)
+                case "protected:afterSync": progress(.protectedSynced)
+                case "afterProtectedSwap": progress(.protectedValidated)
+                case "afterDestinationStage": progress(.destinationStaged)
+                default: break
+                }
+            })
     }
     #endif
 

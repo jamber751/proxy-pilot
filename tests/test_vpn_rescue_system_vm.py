@@ -334,10 +334,12 @@ def build_fixtures(output, *, compile_only=False):
 
 
 REPAIR_PHASES = {'verifyInputs', 'firstReplace', 'cleanup', 'secondPrepare', 'secondReplace',
+                 'secondPending', 'protectedReady', 'protectedExchanged', 'protectedSynced', 'protectedValidated', 'destinationStaged',
                  'waitRecovery', 'reconcileBroker', 'verifyFinal', 'retireRecovery', 'success'}
 REPAIR_ERROR_CATEGORIES = {'liveIdentity', 'preparationIdentity', 'directory', 'store', 'broker',
                            'destinationStage', 'destinationExchange', 'protectedSwap', 'cleanup',
                            'destinationLayout', 'destinationStorage', 'destinationUncertain',
+                           'protectedStorage', 'protectedLayout', 'protectedExecutor', 'protectedRename', 'protectedUncertain',
                            'installedResult', 'launchd', 'authorization', 'ownership', 'package',
                            'state', 'timeout', 'other'}
 
@@ -626,8 +628,14 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         result['destinationStagePresent'] = Path('/Applications/.ProxyPilot.vpn-update').exists()
         result['brokerBackupPresent'] = (SYSTEM_BASE / 'Broker/update-broker-rescue-rotation.bin').exists()
         for key, app in (('installedRelease', APPLICATION),
-                         ('destinationStageRelease', Path('/Applications/.ProxyPilot.vpn-update/ProxyPilot.app'))):
-            if not app.exists(): result[key] = 'absent'; continue
+                         ('destinationStageRelease', Path('/Applications/.ProxyPilot.vpn-update/ProxyPilot.app')),
+                         ('protectedCurrentRelease', SYSTEM_BASE / 'Update/current/ProxyPilot.app'),
+                         ('protectedCandidateRelease', SYSTEM_BASE / 'Update/candidate/ProxyPilot.app'),
+                         ('protectedExecutorRelease', SYSTEM_BASE / 'Update/executor/ProxyPilot.app')):
+            # Never inspect a symlink substituted for a fixed diagnostic slot.
+            if app.is_symlink() or (key.startswith('protected') and app.parent.is_symlink()):
+                result[key] = 'unsafe'; continue
+            if not os.path.lexists(app): result[key] = 'absent'; continue
             try:
                 pins = code_pins(app)
                 result[key] = next((release for release, known in (

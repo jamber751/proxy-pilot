@@ -13,6 +13,7 @@ enum VPNRescueSystemEntry {
     private enum Leg { case first, second }
     private enum Phase: String {
         case verifyInputs, firstReplace, cleanup, secondPrepare, secondReplace
+        case secondPending, protectedReady, protectedExchanged, protectedSynced, protectedValidated, destinationStaged
         case waitRecovery, reconcileBroker, verifyFinal, retireRecovery, success
     }
     private static let totalBudget: UInt64 = 300_000_000_000
@@ -22,7 +23,8 @@ enum VPNRescueSystemEntry {
     private enum ErrorCategory: String {
         case liveIdentity, preparationIdentity, directory, store, broker
         case destinationStage, destinationExchange, destinationLayout, destinationStorage, destinationUncertain
-        case protectedSwap, cleanup
+        case protectedSwap, protectedStorage, protectedLayout, protectedExecutor, protectedRename, protectedUncertain
+        case cleanup
         case installedResult, launchd, authorization, ownership, package, state, timeout, other
     }
     private static func category(for error: Error) -> ErrorCategory {
@@ -43,7 +45,15 @@ enum VPNRescueSystemEntry {
             case .commitUncertain: return .destinationUncertain
             default: return .destinationExchange
             }
-        case is VPNApplicationSwapError: return .protectedSwap
+        case let error as VPNApplicationSwapError:
+            switch error {
+            case .unsafeStorage: return .protectedStorage
+            case .invalidLayout: return .protectedLayout
+            case .unsafeExecutor: return .protectedExecutor
+            case .exchangeFailed: return .protectedRename
+            case .commitUncertain: return .protectedUncertain
+            default: return .protectedSwap
+            }
         case is VPNJointUpdateCleanupError, is VPNRescueCleanupContextError: return .cleanup
         case is VPNInstalledUpdateResultError, is VPNInstalledApplicationError: return .installedResult
         case is VPNLaunchdError: return .launchd
@@ -229,6 +239,16 @@ enum VPNRescueSystemEntry {
             try runtime.stopAndDrain(deadline: actionDeadline(deadline))
             try check()
         }
+        func replacementProgress(_ point: VPNRescueReplacementCoordinator.Progress) {
+            switch point {
+            case .pending: report(.secondPending)
+            case .protectedReady: report(.protectedReady)
+            case .protectedExchanged: report(.protectedExchanged)
+            case .protectedSynced: report(.protectedSynced)
+            case .protectedValidated: report(.protectedValidated)
+            case .destinationStaged: report(.destinationStaged)
+            }
+        }
 
         func dispatch(lease: VPNLifecycleLease) throws -> Step {
             try check(); try lease.check()
@@ -313,7 +333,7 @@ enum VPNRescueSystemEntry {
                         authority: authority, lease: lease, preparationExecutor: preparationExecutor,
                         executor: secondExecutor,
                         armCandidateRecovery: { try arm($0, transactionID: journal.transactionID, lease: lease) },
-                        drainPreviousService: drain)
+                        drainPreviousService: drain, progress: replacementProgress)
                     completedExchanges.insert(journal.transactionID)
                     return .waitForRecovery
                 }
@@ -337,7 +357,7 @@ enum VPNRescueSystemEntry {
                     authority: authority, lease: lease, preparationExecutor: preparationExecutor,
                     executor: secondExecutor,
                     armCandidateRecovery: { try arm($0, transactionID: prepared.journal.transactionID, lease: lease) },
-                    drainPreviousService: drain)
+                    drainPreviousService: drain, progress: replacementProgress)
                 completedExchanges.insert(prepared.journal.transactionID)
                 return .waitForRecovery
             }
