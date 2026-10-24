@@ -85,6 +85,28 @@ enum VPNApplicationDestinationExchange {
     }
     #endif
 
+    #if VPN_EXPLICIT_RESCUE && VPN_RESCUE_SYSTEM_ENTRY
+    static func rescueExchange(inTrustedDirectory base: Int32,
+                               previous: VerifiedVPNRelease, previousOwnerUserID: uid_t,
+                               candidate: VerifiedVPNRelease,
+                               transition: VerifiedVPNUpdateTransition,
+                               executor: VPNRescueExecutor,
+                               authorizeMutation: () throws -> Void,
+                               checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNApplicationDestinationExchangeError.requiresRoot
+        }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
+        let destination = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard destination >= 0 else { throw VPNApplicationDestinationExchangeError.unsafeStorage }
+        defer { close(destination) }
+        return try perform(base: base, destination: destination, previous: previous,
+            previousOwnerUserID: previousOwnerUserID, candidate: candidate, transition: transition,
+            productionDestination: true, executorMode: .rescue(executor),
+            authorizeMutation: authorizeMutation, checkpoint: checkpoint)
+    }
+    #endif
+
     private struct Identity: Equatable {
         let device: dev_t
         let inode: ino_t

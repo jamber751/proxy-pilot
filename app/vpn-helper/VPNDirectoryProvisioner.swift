@@ -31,12 +31,27 @@ enum VPNDirectoryProvisioner {
         try openSystemComponent(name: "Broker", create: create)
     }
 
+    /// Temporary, separately authorized rescue executable and signed inputs.
+    /// The installer retires this fixed component only after rescue succeeds.
+    static func openSystemRescueDirectory(create: Bool) throws -> Int32 {
+        try openSystemComponent(name: "Rescue", create: create)
+    }
+
     /// Binds an inherited descriptor to the one fixed production transaction
     /// directory. Root-private is necessary but not sufficient: a privileged
     /// caller must not redirect replacement into some other private tree.
     static func requireSystemUpdateDirectory(_ descriptor: Int32) throws {
         guard getuid() == 0, geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
         let expected = try openSystemUpdateDirectory(create: false)
+        defer { close(expected) }
+        try requireSameDirectory(descriptor, expected)
+    }
+
+    /// Rescue may reuse an already-held service lease, but its descriptor must
+    /// still name the one fixed production store.
+    static func requireSystemDirectory(_ descriptor: Int32) throws {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
+        let expected = try openSystemDirectory(create: false)
         defer { close(expected) }
         try requireSameDirectory(descriptor, expected)
     }
@@ -91,7 +106,7 @@ enum VPNDirectoryProvisioner {
     private static func openComponentBelowTrustedBase(_ base: Int32, name: String,
                                                        create: Bool) throws -> Int32 {
         guard name == "VPN" || name == "Update" || name == "Retired"
-                || name == "Broker" else {
+                || name == "Broker" || name == "Rescue" else {
             throw VPNDirectoryError.unsafeDirectory
         }
         try check(base, privateDirectory: false)

@@ -1,8 +1,9 @@
 import Darwin
 import Foundation
 
-#if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
-/// Test-only bridge to the existing cleanup engine. No system entry is exposed.
+#if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
+/// Typed rescue bridge to the existing cleanup engine. System callers bind all
+/// descriptors to fixed protected locations before invoking that engine.
 /// The engine retains its installed-B checks and inode-bound deletion walker.
 /// One lease serializes receipt writes; only explicit expected phase advances
 /// may replace this gate's immutable context.

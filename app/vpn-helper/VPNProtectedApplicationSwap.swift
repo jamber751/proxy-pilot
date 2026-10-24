@@ -17,7 +17,7 @@ enum VPNProtectedApplicationSwap {
     private static let app = "ProxyPilot.app"
     private enum ExecutorMode {
         case ordinary, inertTest
-        #if VPN_RESCUE_PREPARATION && VPN_APPLICATION_SWAP_ROOT_TESTING
+        #if VPN_RESCUE_PREPARATION && (VPN_RESCUE_SYSTEM_ENTRY || VPN_APPLICATION_SWAP_ROOT_TESTING)
         case rescue(VPNRescuePreparationExecutor)
         #endif
     }
@@ -58,6 +58,20 @@ enum VPNProtectedApplicationSwap {
     }
     #endif
 
+    #if VPN_RESCUE_PREPARATION && VPN_RESCUE_SYSTEM_ENTRY
+    static func rescueExchange(inTrustedDirectory base: Int32,
+                               previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
+                               transition: VerifiedVPNUpdateTransition,
+                               executor: VPNRescuePreparationExecutor,
+                               authorizeMutation: () throws -> Void,
+                               checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNApplicationSwapError.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
+        return try perform(base: base, previous: previous, candidate: candidate, transition: transition,
+            executorMode: .rescue(executor), authorizeMutation: authorizeMutation, checkpoint: checkpoint)
+    }
+    #endif
+
     private struct Identity: Equatable {
         let device: dev_t
         let inode: ino_t
@@ -77,7 +91,7 @@ enum VPNProtectedApplicationSwap {
                 previous.appHash(forArchitecture: "x86_64") != candidate.appHash(forArchitecture: "x86_64") else {
             throw VPNApplicationSwapError.invalidTransition
         }
-        #if VPN_RESCUE_PREPARATION && VPN_APPLICATION_SWAP_ROOT_TESTING
+        #if VPN_RESCUE_PREPARATION && (VPN_RESCUE_SYSTEM_ENTRY || VPN_APPLICATION_SWAP_ROOT_TESTING)
         if case .rescue(let proof) = executorMode {
             try proof.validateEdge(previous: previous, candidate: candidate, transition: transition)
         }
@@ -100,7 +114,7 @@ enum VPNProtectedApplicationSwap {
         case .ordinary:
             executor = try VPNReplacementExecutor.inspect(inTrustedDirectory: base, release: previous)
         case .inertTest: executor = nil
-        #if VPN_RESCUE_PREPARATION && VPN_APPLICATION_SWAP_ROOT_TESTING
+        #if VPN_RESCUE_PREPARATION && (VPN_RESCUE_SYSTEM_ENTRY || VPN_APPLICATION_SWAP_ROOT_TESTING)
         case .rescue:
             executor = try VPNReplacementExecutor.inspectPrepared(inTrustedDirectory: base, release: previous)
         #endif
@@ -113,7 +127,7 @@ enum VPNProtectedApplicationSwap {
             switch executorMode {
             case .ordinary: try executor?.revalidate()
             case .inertTest: break
-            #if VPN_RESCUE_PREPARATION && VPN_APPLICATION_SWAP_ROOT_TESTING
+            #if VPN_RESCUE_PREPARATION && (VPN_RESCUE_SYSTEM_ENTRY || VPN_APPLICATION_SWAP_ROOT_TESTING)
             case .rescue(let proof):
                 try proof.validateEdge(previous: previous, candidate: candidate, transition: transition)
                 try executor?.revalidatePrepared()

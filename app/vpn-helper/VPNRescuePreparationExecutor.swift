@@ -18,7 +18,9 @@ final class VPNRescuePreparationExecutor {
         self.previous = previous; self.candidate = candidate; self.transition = transition
     }
 
+    #if !VPN_RESCUE_SYSTEM_ENTRY
     @available(*, unavailable, message: "Explicit preparation lifecycle boundary is not implemented.")
+    #endif
     static func inspect(executor: VPNRescueExecutor, authorization: VerifiedVPNRescuePreparationAuthorization,
                         previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
                         transition: VerifiedVPNUpdateTransition) throws -> VPNRescuePreparationExecutor {

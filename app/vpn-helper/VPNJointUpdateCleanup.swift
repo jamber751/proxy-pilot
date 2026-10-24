@@ -14,27 +14,27 @@ enum VPNJointUpdateCleanup {
     private static let applicationStage = ".ProxyPilot.vpn-update"
     private enum MutationAuthorization {
         case ordinary
-        #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+        #if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
         case rescue(VPNRescueCleanupBoundary)
         #endif
 
         func validate(_ receipt: VPNUpdateCleanupReceiptSnapshot? = nil) throws {
-            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            #if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
             if case .rescue(let gate) = self { try gate.validate(receipt: receipt) }
             #endif
         }
         func advanced(_ receipt: VPNUpdateCleanupReceiptSnapshot) throws {
-            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            #if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
             if case .rescue(let gate) = self { try gate.advanced(to: receipt) }
             #endif
         }
         func retired() throws {
-            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            #if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
             if case .rescue(let gate) = self { try gate.retired() }
             #endif
         }
         var requiresRootRetainedSource: Bool {
-            #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+            #if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
             if case .rescue = self { return true }
             #endif
             return false
@@ -44,9 +44,11 @@ enum VPNJointUpdateCleanup {
     static var checkpoint: ((String) -> Void)?
     #endif
 
-    #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
+    #if VPN_EXPLICIT_RESCUE && (VPN_RESCUE_SYSTEM_ENTRY || VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING)
     enum RescueOutcome { case retiredAuthenticatedReceipt }
+    #endif
 
+    #if VPN_EXPLICIT_RESCUE && VPN_JOINT_UPDATE_CLEANUP_ROOT_TESTING
     static func testCompleteRescue(service: Int32, update: Int32, retirement: Int32,
                                   applications: Int32, authority: VPNReleaseAuthority,
                                   lease: VPNLifecycleLease, context: VPNRescueCleanupContext,
@@ -58,6 +60,34 @@ enum VPNJointUpdateCleanup {
         try perform(service: service, update: update, retirement: retirement,
                     applications: applications, authority: authority,
                     productionApplications: false, existingServiceLease: lease,
+                    authorization: .rescue(gate))
+        try gate.requireRetired()
+        return .retiredAuthenticatedReceipt
+    }
+    #endif
+
+    #if VPN_EXPLICIT_RESCUE && VPN_RESCUE_SYSTEM_ENTRY
+    /// The exact signed rescue may retire only its matching completed receipt.
+    /// Reuses the caller's service lease; Update is acquired inside perform.
+    static func completeRescueSystem(service: Int32, lease: VPNLifecycleLease,
+                                     authority: VPNReleaseAuthority,
+                                     context: VPNRescueCleanupContext,
+                                     executor: VPNRescueExecutor) throws -> RescueOutcome {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNJointUpdateCleanupError.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemDirectory(service)
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+        let gate = try VPNRescueCleanupBoundary(context: context, executor: executor,
+                                               store: store, lease: lease)
+        let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: false)
+        defer { close(update) }
+        let retired = try VPNDirectoryProvisioner.openSystemRetirementDirectory(create: true)
+        defer { close(retired) }
+        let applications = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard applications >= 0 else { throw VPNJointUpdateCleanupError.unsafeStorage }
+        defer { close(applications) }
+        try perform(service: service, update: update, retirement: retired,
+                    applications: applications, authority: authority,
+                    productionApplications: true, existingServiceLease: lease,
                     authorization: .rescue(gate))
         try gate.requireRetired()
         return .retiredAuthenticatedReceipt

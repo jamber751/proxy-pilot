@@ -14,7 +14,9 @@ final class VPNRescueExecutor {
 
     private init(artifact: VPNRescueArtifactObservation) { self.artifact = artifact }
 
+    #if !VPN_RESCUE_SYSTEM_ENTRY
     @available(*, unavailable, message: "Explicit rescue lifecycle boundary is not implemented.")
+    #endif
     static func inspect(inTrustedDirectory directory: Int32,
                         authorization: VerifiedVPNRescueAuthorization) throws -> VPNRescueExecutor {
         try make(directory: directory, authorization: authorization)

@@ -45,9 +45,41 @@ enum VPNApplicationTransactionStager {
         guard getuid() == 0, geteuid() == 0 else {
             throw VPNApplicationTransactionStagingError.requiresRoot
         }
+        return try rescuePrepare(base: base, previousSource: previousSource,
+            candidateSource: candidateSource, previous: previous, candidate: candidate,
+            transition: transition, executor: executor, productionSource: false, checkpoint: checkpoint)
+    }
+    #endif
+
+    #if VPN_RESCUE_PREPARATION && VPN_RESCUE_SYSTEM_ENTRY
+    /// Only the separate rescue role may stage an exact legacy root-owned A.
+    /// The coordinator supplies its signed preparation and service lease.
+    static func prepareRescue(candidateDirectory: Int32, inTrustedDirectory base: Int32,
+                              previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
+                              transition: VerifiedVPNUpdateTransition,
+                              executor: VPNRescuePreparationExecutor) throws -> Outcome {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNApplicationTransactionStagingError.requiresRoot
+        }
+        try VPNDirectoryProvisioner.requireSystemUpdateDirectory(base)
+        let applications = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard applications >= 0 else { throw VPNApplicationTransactionStagingError.unsafeStorage }
+        defer { close(applications) }
+        return try rescuePrepare(base: base, previousSource: applications,
+            candidateSource: candidateDirectory, previous: previous, candidate: candidate,
+            transition: transition, executor: executor, productionSource: true, checkpoint: { _ in })
+    }
+    #endif
+
+    #if VPN_RESCUE_PREPARATION && (VPN_RESCUE_SYSTEM_ENTRY || VPN_APPLICATION_TRANSACTION_STAGING_TESTING)
+    private static func rescuePrepare(base: Int32, previousSource: Int32, candidateSource: Int32,
+                                      previous: VerifiedVPNRelease, candidate: VerifiedVPNRelease,
+                                      transition: VerifiedVPNUpdateTransition,
+                                      executor: VPNRescuePreparationExecutor, productionSource: Bool,
+                                      checkpoint: (String) throws -> Void) throws -> Outcome {
         try executor.validateEdge(previous: previous, candidate: candidate, transition: transition)
         let old = try VPNStagedApplication.inspectInstalled(inApplicationsDirectory: previousSource,
-            ownerUserID: 0, productionParent: false, release: previous)
+            ownerUserID: 0, productionParent: productionSource, release: previous)
         let next = try VPNStagedApplication.inspect(inTrustedDirectory: candidateSource, release: candidate)
         try VPNStagedApplication.requireUpdateExecutorCompatibility(next, inApplicationsDirectory: candidateSource)
         try executor.validateEdge(previous: previous, candidate: candidate, transition: transition)
