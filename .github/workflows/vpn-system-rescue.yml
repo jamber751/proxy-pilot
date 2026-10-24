@@ -45,7 +45,7 @@ jobs:
       - name: Exercise real Installer and system services in disposable VM
         run: |
           test "$GITHUB_ACTIONS" = true
-          sudo -n env GITHUB_ACTIONS=true PROXYPILOT_VM_SYSTEM_RESCUE_TESTS=1 PROXYPILOT_SYSTEM_RESCUE_FIXTURE="$RUNNER_TEMP/system-rescue" PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_system_vm -v
+          sudo -n env GITHUB_ACTIONS=true PROXYPILOT_VM_SYSTEM_RESCUE_TESTS=1 PROXYPILOT_SYSTEM_RESCUE_FIXTURE="$RUNNER_TEMP/system-rescue" PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_rescue_system_vm -f -v
       - name: Preserve reviewed engine build diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4

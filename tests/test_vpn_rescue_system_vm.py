@@ -324,6 +324,54 @@ def build_fixtures(output, *, compile_only=False):
     print('Built synthetic Installer and actual production rescue/system helper artifacts. Nothing installed.')
 
 
+REPAIR_PHASES = {'verifyInputs', 'firstReplace', 'cleanup', 'secondPrepare', 'secondReplace',
+                 'waitRecovery', 'reconcileBroker', 'verifyFinal', 'success'}
+REPAIR_ERROR_CATEGORIES = {'liveIdentity', 'preparationIdentity', 'directory', 'store', 'broker',
+                           'destinationStage', 'destinationExchange', 'protectedSwap', 'cleanup',
+                           'installedResult', 'launchd', 'authorization', 'ownership', 'package',
+                           'state', 'timeout', 'other'}
+
+
+def repair_tokens(text):
+    """Return only fixed diagnostics; never expose raw Installer log lines."""
+    events = []
+    pattern = r'ProxyPilot VPN repair (?:phase: ([A-Za-z]+)|failure category: ([A-Za-z]+)|could not be completed\.)'
+    for match in re.finditer(pattern, text):
+        if match.group(1) in REPAIR_PHASES: events.append(match.group(1))
+        elif match.group(2) in REPAIR_ERROR_CATEGORIES: events.append('failure:' + match.group(2))
+        elif match.group(1) is None and match.group(2) is None: events.append('repairRejected')
+    return events
+
+
+def install_log_cursor():
+    if not root_vm_enabled(): raise AssertionError('Installer log diagnostics require disposable system VM')
+    try:
+        descriptor = os.open('/var/log/install.log', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode): return None
+            return info.st_dev, info.st_ino, info.st_size
+    except OSError: return None
+
+
+def install_log_tokens(cursor):
+    if not root_vm_enabled(): raise AssertionError('Installer log diagnostics require disposable system VM')
+    try:
+        descriptor = os.open('/var/log/install.log', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode): return []
+            same = cursor is not None and (info.st_dev, info.st_ino) == cursor[:2] and info.st_size >= cursor[2]
+            # A rotated/replaced file can contain tokens from an earlier case.
+            # Missing diagnostics are preferable to attributing those to this run.
+            if cursor is not None and not same: return []
+            start = cursor[2] if same else 0
+            stream.seek(max(start, info.st_size - 1024 * 1024))
+            text = stream.read(1024 * 1024).decode('utf-8', errors='replace')
+        return repair_tokens(text)
+    except OSError: return []
+
+
 def root_vm_enabled():
     return (sys.platform == 'darwin' and os.getuid() == 0 and os.geteuid() == 0
             and os.environ.get('GITHUB_ACTIONS') == 'true'
@@ -486,16 +534,49 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         result['rescuePresent'] = (SYSTEM_BASE / 'Rescue').exists()
         result['destinationStagePresent'] = Path('/Applications/.ProxyPilot.vpn-update').exists()
         result['brokerBackupPresent'] = (SYSTEM_BASE / 'Broker/update-broker-rescue-rotation.bin').exists()
+        for key, app in (('installedRelease', APPLICATION),
+                         ('destinationStageRelease', Path('/Applications/.ProxyPilot.vpn-update/ProxyPilot.app'))):
+            if not app.exists(): result[key] = 'absent'; continue
+            try:
+                pins = code_pins(app)
+                result[key] = next((release for release, known in (
+                    ('A', self.fixture['sourcePins']), ('B', self.fixture['intermediatePins']),
+                    ('C', self.fixture['candidatePins'])) if pins == known), 'unknown')
+            except (AssertionError, OSError, subprocess.TimeoutExpired): result[key] = 'unreadable'
+        try:
+            selected = json.loads((service / 'release.json').read_text())
+            payload = base64.b64decode(selected['payload'], validate=True).decode('ascii')
+            sequence = re.search(r'^sequence=([0-9]{1,19})$', payload, re.M)
+            result['selectedSequence'] = int(sequence[1]) if sequence else 'invalid'
+        except (ValueError, KeyError, OSError): result['selectedSequence'] = 'unreadable'
+        try:
+            budget = json.loads((service / 'activation.json').read_text())
+            result['budget'] = {'desired': budget['desired'] if type(budget.get('desired')) is bool else 'invalid',
+                                'failures': budget['failures'] if type(budget.get('failures')) is int else 'invalid'}
+        except (ValueError, KeyError, OSError): result['budget'] = 'absentOrUnreadable'
+        for role, label in zip(('helper', 'recovery', 'broker'), LABELS):
+            try:
+                job = subprocess.run(['/bin/launchctl', 'print', 'system/' + label],
+                                     capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                result[role] = {'queryStatus': 'unavailable'}
+                continue
+            values = {'present': job.returncode == 0, 'queryStatus': job.returncode}
+            # Never publish launchctl's environment, paths, arguments or output.
+            for field, key in (('pid', 'pid'), ('last exit code', 'lastExitCode')):
+                match = re.search(r'^\s*' + field + r' = (-?[0-9]+)\s*$', job.stdout, re.M)
+                if match: values[key] = int(match[1])
+            result[role] = values
         return result
 
     def install(self):
+        cursor = install_log_cursor()
         result = subprocess.run(['/usr/sbin/installer', '-dumplog', '-pkg', str(self.package), '-target', '/'],
                                 env=SAFE_ENV, capture_output=True, text=True, timeout=420)
-        allowed = {'verifyInputs', 'firstReplace', 'cleanup', 'secondPrepare', 'secondReplace',
-                   'waitRecovery', 'reconcileBroker', 'verifyFinal', 'success'}
-        phases = [phase for phase in re.findall(r'ProxyPilot VPN repair phase: ([A-Za-z]+)',
-                                                result.stdout + result.stderr) if phase in allowed]
-        self.assertEqual(result.returncode, 0, str(self.state_summary()) + '\nrepair phases=' + repr(phases))
+        events = {'command': repair_tokens(result.stdout + result.stderr),
+                  'installLog': install_log_tokens(cursor)}
+        print('System rescue Installer diagnostics: ' + repr(events), flush=True)
+        self.assertEqual(result.returncode, 0, str(self.state_summary()) + '\nrepair events=' + repr(events))
         return result
 
     def assert_clean_c(self, desired):

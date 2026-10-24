@@ -5025,3 +5025,33 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   opt-in write после verified connection; cache failure не отменяет connected.
   OTP/private-key secrets не сохраняются. Никакой платный аккаунт/сертификат или
   обход macOS permissions этим исследованием не вводится.
+
+### Продолжение 1.5dy — настоящие Installer результаты и следующий trace
+
+- [x] Run40091074257 ARM: реальные production engine/helper/rescue/probe graphs
+  собраны; настоящий system Installer suite выполнил все5 scenarios за814.852s.
+  **3 passed,2 failed**, общий gate НЕ пройден. Foreign retained capsule rejection,
+  completed-service/broker-phase6 ON и identical-retained OFF (с повтором установки)
+  прошли. Fresh pending OFF/ON остановились на первом install.
+- [x] Оба отказа оставили pending1, Rescue и destination stage; preparation и
+  cleanup отсутствовали. Одно наличие stage не доказывает успешный обмен.
+  Installer stdout не содержал script phase, поэтому прежний phase list пуст.
+- [x] Добавлен root/GHA-only install.log cursor и bounded1MiB append reader:
+  наружу выходят только allowlisted fixed phase/category tokens, ни одной сырой
+  строки. При ротации старого cursor чужие прошлые tokens не приписываются case.
+  Host guard проверен до любого file open; synthetic token filter прошёл.
+- [x] Failure summary различает installed/stage A/B/C/absent, selected sequence,
+  budget и числовые состояния трёх собственных launchd labels. Timeout самого
+  диагностического запроса не маскирует исходную ошибку установки.
+- [x] Native stderr получил fixed failure category BY TYPE; descriptions,
+  associated values, пути и release/user data не интерполируются. Return codes,
+  authorization, actions, retries и deadlines не менялись. Latest production
+  SYSTEM module компилируется arm64/x86_64 без TESTING. Optimized Universal
+  diagnostic artifact strict-verified, но снят до последнего staged-error mapping;
+  он НЕ используется как итоговый package input. CI пересоберёт полный snapshot.
+- [x] Source audit: destination stage готовится до arm/drain; Recovery.installAndArm
+  не ждёт child PID/readiness. Неподтверждённый live-PID race не стал поводом
+  менять поведение. Конкретная причина двух отказов ещё не доказана.
+- [ ] Повтор с точной фазой, error category и layout. Unittest fail-fast ускоряет
+  получение первого unexpected failure; успешный итоговый gate всё равно обязан
+  выполнить все5 cases. Intel текущего run продолжает actual Installer suite.

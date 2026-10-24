@@ -17,6 +17,40 @@ enum VPNRescueSystemEntry {
     }
     private static let totalBudget: UInt64 = 300_000_000_000
 
+    /// Type-only diagnostics: never interpolate Error descriptions, associated
+    /// values, file names, release material, process arguments or user state.
+    private enum ErrorCategory: String {
+        case liveIdentity, preparationIdentity, directory, store, broker
+        case destinationStage, destinationExchange, protectedSwap, cleanup
+        case installedResult, launchd, authorization, ownership, package, state, timeout, other
+    }
+    private static func category(for error: Error) -> ErrorCategory {
+        switch error {
+        case is VPNRescueExecutorError, is VPNPeerAuthenticationError: return .liveIdentity
+        case is VPNRescuePreparationContextError, is VPNRescuePreparationAuthorizationError: return .preparationIdentity
+        case is VPNDirectoryError, is VPNEndpointError: return .directory
+        case is VPNReleaseStoreError, is VPNActivationBudgetError: return .store
+        case is VPNRescueBrokerCoordinator.Failure, is VPNUpdateBrokerError,
+             is VPNUpdateBrokerTransactionStoreError, is VPNUpdateBrokerInboxError,
+             is VPNUpdateBrokerLaunchdJobError, is VPNUpdateBrokerRotationError,
+             is VPNUpdateBrokerStateRemovalError, is VPNUpdateBrokerStatusStoreError: return .broker
+        case is VPNApplicationDestinationStageError, is VPNStagedApplicationError: return .destinationStage
+        case is VPNApplicationDestinationExchangeError: return .destinationExchange
+        case is VPNApplicationSwapError: return .protectedSwap
+        case is VPNJointUpdateCleanupError, is VPNRescueCleanupContextError: return .cleanup
+        case is VPNInstalledUpdateResultError, is VPNInstalledApplicationError: return .installedResult
+        case is VPNLaunchdError: return .launchd
+        case is VPNReleaseAuthorizationError, is VPNRescueAuthorizationError: return .authorization
+        case is VPNLifecycleOwnershipError: return .ownership
+        case is VPNRescueInstallationPayloadError: return .package
+        case is VPNRescueJournalContextError, is Failure: return .state
+        default: return .other
+        }
+    }
+    private static func reportFailure(_ category: ErrorCategory) {
+        FileHandle.standardError.write(Data("ProxyPilot VPN repair failure category: \(category.rawValue)\n".utf8))
+    }
+
     static func run(arguments: [String]) -> Int32 {
         if arguments.count == 3, arguments[1] == "verify-package" {
             do {
@@ -35,8 +69,9 @@ enum VPNRescueSystemEntry {
         do {
             try perform(deadline: DispatchTime.now().uptimeNanoseconds + totalBudget)
             return 0
-        } catch Failure.timeout { return 75 }
+        } catch Failure.timeout { reportFailure(.timeout); return 75 }
         catch {
+            reportFailure(category(for: error))
             // Error descriptions can include paths or state. Installer output
             // carries only a fixed message and status, never package contents.
             FileHandle.standardError.write(Data("ProxyPilot VPN repair could not be completed.\n".utf8))
