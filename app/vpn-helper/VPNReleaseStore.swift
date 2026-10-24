@@ -214,6 +214,21 @@ final class VPNReleaseStore {
 
     deinit { if directory >= 0 { close(directory) } }
 
+    /// Read-only descriptor identity for binding an independently held lifecycle
+    /// lease to this store. No descriptor or mutable path escapes the store.
+    func storageIdentity() throws -> (device: UInt64, inode: UInt64) {
+        try checkDirectory()
+        // load* uses an ordinary O_CREAT transaction lock. Read-only rescue
+        // coordination must refuse missing lock state rather than seed it.
+        let existingLock = openat(directory, "release.lock", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard existingLock >= 0 else { throw VPNReleaseStoreError.unsafeStorage }
+        defer { close(existingLock) }
+        try checkFile(existingLock)
+        var value = stat()
+        guard fstat(directory, &value) == 0 else { throw VPNReleaseStoreError.unsafeStorage }
+        return (UInt64(truncatingIfNeeded: value.st_dev), UInt64(value.st_ino))
+    }
+
     func load() throws -> VPNAuthorizedRelease {
         try withLock { try readCurrent().1 }
     }

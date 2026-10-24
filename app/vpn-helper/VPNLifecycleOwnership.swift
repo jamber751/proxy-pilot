@@ -43,6 +43,19 @@ final class VPNLifecycleLease {
         if lock >= 0 { flock(lock, LOCK_UN); close(lock); lock = -1 }
         if directory >= 0 { close(directory); directory = -1 }
     }
+
+    /// Proves which protected directory this still-held lease belongs to,
+    /// without exposing its descriptor or allowing a different store to use it.
+    func checkedStorageIdentity() throws -> (device: UInt64, inode: UInt64) {
+        // A runtime.lock lease cannot stand in for installer lifecycle ownership.
+        guard name == Self.lockName else { throw VPNLifecycleOwnershipError.lost }
+        try check()
+        try VPNLifecycleOwnership.checkDirectory(directory)
+        var value = stat()
+        guard fstat(directory, &value) == 0 else { throw VPNLifecycleOwnershipError.lost }
+        try check()
+        return (UInt64(truncatingIfNeeded: value.st_dev), UInt64(value.st_ino))
+    }
 }
 
 /// Descriptor-relative, like the store: production must pass a securely opened
@@ -84,7 +97,7 @@ enum VPNLifecycleOwnership {
         return lease
     }
 
-    private static func checkDirectory(_ descriptor: Int32) throws {
+    fileprivate static func checkDirectory(_ descriptor: Int32) throws {
         var attributes = stat(), filesystem = statfs()
         guard fstat(descriptor, &attributes) == 0, attributes.st_mode & S_IFMT == S_IFDIR,
               attributes.st_nlink > 0, attributes.st_uid == geteuid(),
