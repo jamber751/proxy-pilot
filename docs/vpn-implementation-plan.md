@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; System40124194483 ARM прошёл первые7 Installer cases, включая ordinary Off/On | ARM восьмой case требует устойчивого handoff witness; Intel прошёл6 cases, затем readinessTimeout при repair. Исправление повторных journal validations проверяется; полный System8 и macOS11 runtime OPEN |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40124194483 ARM прошёл первые7 Installer cases, включая ordinary Off/On | ARM восьмой case требует устойчивого handoff witness; Intel прошёл6 cases, затем readinessTimeout при repair. Исправление повторных journal validations проверяется; полный System8 и macOS11 runtime OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -6425,3 +6425,11 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   proof; synchronous GET miss теперь воспроизведён pure, но его вклад именно в
   VM failure требует свежего actual run с закрытыми directional traces. Не
   считать full utun isolation/no-leak gate завершённым по pure12.
+
+- [x] b39c757 final x86_64 no-TESTING compile/link: actual production route+
+  bound-socket+complete utun probe+SDK C shim, и отдельно focused fake binary.
+  Intel binaries на host не запускались. ARM12+6 и прежние ordinary/scoped36
+  PASS; frozen source hashes проверены до отправки.
+- [x] Ownership40129257113 source2e159b6 terminal SUCCESS6/6 jobs: transactions
+  76/arch, primitives77/arch, contracts258/arch =822 PASS без skips. Это новая
+  verified baseline, не доказательство ещё не запущенных context/route fixes.
