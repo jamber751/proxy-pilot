@@ -41,6 +41,69 @@ enum VPNRescuePendingCoordinator {
     }
     #endif
 
+    #if VPN_APPLICATION_DESTINATION_ROOT_TESTING
+    static func testObserve(service: Int32, lease: VPNLifecycleLease,
+                            context: VPNRescueJournalContext, executor: VPNRescueExecutor,
+                            destination: Int32,
+                            checkpoint: (String) throws -> Void = { _ in }) throws {
+        try observe(service: service, lease: lease, context: context, executor: executor,
+                    mode: .fixture(destination), checkpoint: checkpoint)
+    }
+    #endif
+
+    #if VPN_RESCUE_SYSTEM_ENTRY
+    /// Waiting evidence only, after the caller acknowledged this exact exchange.
+    /// It never arms recovery, drains a service or republishes an application.
+    static func observeSystem(service: Int32, lease: VPNLifecycleLease,
+                              context: VPNRescueJournalContext, executor: VPNRescueExecutor) throws {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNRescueExecutorError.requiresRoot }
+        try VPNDirectoryProvisioner.requireSystemDirectory(service)
+        try observe(service: service, lease: lease, context: context, executor: executor,
+                    mode: .system, checkpoint: { _ in })
+    }
+    #endif
+
+    private static func validateExecutor(context: VPNRescueJournalContext, executor: VPNRescueExecutor) throws {
+        try executor.revalidate()
+        guard executor.authorization.matchesSource(context.previous.release),
+              executor.authorization.matchesDestination(context.candidate.release),
+              executor.authorization.matchesTransition(context.transition) else {
+            throw VPNApplicationDestinationExchangeError.invalidTransition
+        }
+    }
+
+    private static func observe(service: Int32, lease: VPNLifecycleLease,
+                                context: VPNRescueJournalContext, executor: VPNRescueExecutor,
+                                mode: Mode, checkpoint: (String) throws -> Void) throws {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNRescueExecutorError.requiresRoot }
+        func check() throws {
+            var facts = stat()
+            guard fstat(service, &facts) == 0,
+                  try context.checkedStorageIdentity(holding: lease)
+                    == (device: UInt64(facts.st_dev), inode: UInt64(facts.st_ino)) else {
+                throw VPNRescueJournalContextError.mismatchedStorage
+            }
+            try validateExecutor(context: context, executor: executor)
+        }
+        try check()
+        let destination: Int32
+        switch mode {
+        #if VPN_RESCUE_SYSTEM_ENTRY
+        case .system: destination = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        #endif
+        #if VPN_APPLICATION_DESTINATION_ROOT_TESTING
+        case .fixture(let descriptor): destination = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+        #endif
+        }
+        guard destination >= 0 else { throw VPNApplicationDestinationStageError.unsafeDestination }
+        defer { close(destination) }
+        let installed = try VPNStagedApplication.inspectInstalled(inApplicationsDirectory: destination,
+            ownerUserID: 0, productionParent: mode.productionDestination, release: context.candidate.release)
+        try checkpoint("afterCandidateInspection")
+        try VPNStagedApplication.revalidate(installed, inTrustedDirectory: destination)
+        try check()
+    }
+
     #if VPN_RESCUE_SYSTEM_ENTRY
     static func runSystem(service: Int32, update: Int32, lease: VPNLifecycleLease,
                           context: VPNRescueJournalContext, executor: VPNRescueExecutor,
@@ -70,12 +133,7 @@ enum VPNRescuePendingCoordinator {
         -> VPNApplicationDestinationExchange.Outcome {
         func validate() throws {
             try context.validate()
-            try executor.revalidate()
-            guard executor.authorization.matchesSource(context.previous.release),
-                  executor.authorization.matchesDestination(context.candidate.release),
-                  executor.authorization.matchesTransition(context.transition) else {
-                throw VPNApplicationDestinationExchangeError.invalidTransition
-            }
+            try Self.validateExecutor(context: context, executor: executor)
         }
         try validate()
         let destination: Int32

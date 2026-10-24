@@ -90,6 +90,11 @@ import Foundation
             let proof = try VPNRescueExecutor.testInspect(inTrustedDirectory: rescue, authorization: token)
             let context = try VPNRescueJournalContext.capture(authorization: token, store: store, lease: lease)
             if operation == "stale-before" { try stale() }
+            if operation == "observe-source" {
+                try VPNRescuePendingCoordinator.testObserve(service: service, lease: lease,
+                    context: context, executor: proof, destination: destination)
+                exit(78)
+            }
             let result = try VPNRescuePendingCoordinator.testRun(context: context, executor: proof,
                 inTrustedDirectory: base, destination: destination,
                 armCandidateRecovery: {
@@ -107,6 +112,27 @@ import Foundation
                         if operation == "stale-after-exchange" { try stale() }
                     }
                 })
+            if operation.hasPrefix("observe-") {
+                if operation == "observe-foreign" {
+                    try Data("foreign".utf8).write(to: URL(fileURLWithPath: destinationPath)
+                        .appendingPathComponent("ProxyPilot.app/Contents/Resources/data.txt"))
+                }
+                for _ in 0..<3 {
+                    try VPNRescuePendingCoordinator.testObserve(service: service, lease: lease,
+                        context: context, executor: proof, destination: destination, checkpoint: { _ in
+                            if operation == "observe-stale" { try stale() }
+                            if operation == "observe-lease" { lease.release() }
+                            if operation == "observe-executor" {
+                                guard chmod(URL(fileURLWithPath: args[4]).appendingPathComponent("vpn-rescue").path, 0o600) == 0 else { exit(65) }
+                            }
+                            if operation == "observe-changed-installed" {
+                                try Data("changed after observation".utf8).write(to: URL(fileURLWithPath: destinationPath)
+                                    .appendingPathComponent("ProxyPilot.app/Contents/Resources/data.txt"))
+                            }
+                        })
+                }
+                print("observed:3:trace=\(trace.joined(separator: ","))"); return
+            }
             print("\(result == .exchanged ? "exchanged" : "alreadyExchanged"):trace=\(trace.joined(separator: ","))")
         } catch {
             print("rejected:\(error):trace=\(trace.joined(separator: ","))")

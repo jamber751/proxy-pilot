@@ -337,6 +337,7 @@ REPAIR_PHASES = {'verifyInputs', 'firstReplace', 'cleanup', 'secondPrepare', 'se
                  'waitRecovery', 'reconcileBroker', 'verifyFinal', 'retireRecovery', 'success'}
 REPAIR_ERROR_CATEGORIES = {'liveIdentity', 'preparationIdentity', 'directory', 'store', 'broker',
                            'destinationStage', 'destinationExchange', 'protectedSwap', 'cleanup',
+                           'destinationLayout', 'destinationStorage', 'destinationUncertain',
                            'installedResult', 'launchd', 'authorization', 'ownership', 'package',
                            'state', 'timeout', 'other'}
 

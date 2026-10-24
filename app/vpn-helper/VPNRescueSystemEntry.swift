@@ -21,7 +21,8 @@ enum VPNRescueSystemEntry {
     /// values, file names, release material, process arguments or user state.
     private enum ErrorCategory: String {
         case liveIdentity, preparationIdentity, directory, store, broker
-        case destinationStage, destinationExchange, protectedSwap, cleanup
+        case destinationStage, destinationExchange, destinationLayout, destinationStorage, destinationUncertain
+        case protectedSwap, cleanup
         case installedResult, launchd, authorization, ownership, package, state, timeout, other
     }
     private static func category(for error: Error) -> ErrorCategory {
@@ -35,7 +36,13 @@ enum VPNRescueSystemEntry {
              is VPNUpdateBrokerLaunchdJobError, is VPNUpdateBrokerRotationError,
              is VPNUpdateBrokerStateRemovalError, is VPNUpdateBrokerStatusStoreError: return .broker
         case is VPNApplicationDestinationStageError, is VPNStagedApplicationError: return .destinationStage
-        case is VPNApplicationDestinationExchangeError: return .destinationExchange
+        case let error as VPNApplicationDestinationExchangeError:
+            switch error {
+            case .invalidLayout: return .destinationLayout
+            case .unsafeStorage: return .destinationStorage
+            case .commitUncertain: return .destinationUncertain
+            default: return .destinationExchange
+            }
         case is VPNApplicationSwapError: return .protectedSwap
         case is VPNJointUpdateCleanupError, is VPNRescueCleanupContextError: return .cleanup
         case is VPNInstalledUpdateResultError, is VPNInstalledApplicationError: return .installedResult
@@ -169,9 +176,10 @@ enum VPNRescueSystemEntry {
         // Reboot/crash retry safely rearms once. Repeated bootout/bootstrap on
         // every poll would starve the recovery job waiting for this same lease.
         var armedRecovery: UUID?
-        // Logging only: a completed exchange is revalidated on every retry,
-        // without repeatedly alternating replace/wait messages on each poll.
-        var reportedExchanges: Set<UUID> = []
+        // Completion in this invocation may select read-only waiting only.
+        // Fresh journal/lease/executor/installed-app proofs are still required;
+        // this set grants no mutation or final-success authority.
+        var completedExchanges: Set<UUID> = []
 
         func check() throws {
             try requireTime(deadline)
@@ -265,8 +273,23 @@ enum VPNRescueSystemEntry {
                     return .waitForRecovery
                 }
                 guard selected.release.isSameRelease(as: journal.previous.release) else { throw Failure.invalidState }
+                if completedExchanges.contains(journal.transactionID) {
+                    guard preparation == nil, journal.phase == .replacementPending,
+                          journal.revision == 1, journal.recovery == .inspectApplication,
+                          armedRecovery == journal.transactionID else { throw Failure.invalidState }
+                    let proof = executor(for: edge)
+                    let context = try VPNRescueJournalContext.capture(authorization: proof.authorization,
+                                                                      store: store, lease: lease)
+                    guard context.transactionID == journal.transactionID else { throw Failure.invalidState }
+                    // Replaying the already acknowledged exchange also replays
+                    // its arm/drain callback and holds the lease recovery needs.
+                    // Observe exact installed B/C instead, then release to it.
+                    try VPNRescuePendingCoordinator.observeSystem(service: service, lease: lease,
+                        context: context, executor: proof)
+                    return .waitForRecovery
+                }
                 if edge == .first {
-                    if !reportedExchanges.contains(journal.transactionID) { report(.firstReplace) }
+                    report(.firstReplace)
                     guard preparation == nil, journal.phase == .replacementPending,
                           journal.revision == 1, journal.recovery == .inspectApplication else { throw Failure.invalidState }
                     let context = try VPNRescueJournalContext.capture(authorization: firstExecutor.authorization,
@@ -277,11 +300,11 @@ enum VPNRescueSystemEntry {
                         context: context, executor: firstExecutor,
                         armCandidateRecovery: { try arm(journal.candidate, transactionID: journal.transactionID, lease: lease) },
                         drainPreviousService: drain)
-                    reportedExchanges.insert(journal.transactionID)
+                    completedExchanges.insert(journal.transactionID)
                     return .waitForRecovery
                 }
                 if journal.phase == .replacementPending {
-                    if !reportedExchanges.contains(journal.transactionID) { report(.secondReplace) }
+                    report(.secondReplace)
                     guard preparation == nil, journal.revision == 1,
                           journal.recovery == .inspectApplication else { throw Failure.invalidState }
                     let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: false)
@@ -291,7 +314,7 @@ enum VPNRescueSystemEntry {
                         executor: secondExecutor,
                         armCandidateRecovery: { try arm($0, transactionID: journal.transactionID, lease: lease) },
                         drainPreviousService: drain)
-                    reportedExchanges.insert(journal.transactionID)
+                    completedExchanges.insert(journal.transactionID)
                     return .waitForRecovery
                 }
                 guard journal.phase == .prepared, journal.revision == 0,
@@ -315,7 +338,7 @@ enum VPNRescueSystemEntry {
                     executor: secondExecutor,
                     armCandidateRecovery: { try arm($0, transactionID: prepared.journal.transactionID, lease: lease) },
                     drainPreviousService: drain)
-                reportedExchanges.insert(prepared.journal.transactionID)
+                completedExchanges.insert(prepared.journal.transactionID)
                 return .waitForRecovery
             }
             guard selected.release.isSameRelease(as: payload.second.candidate.release),

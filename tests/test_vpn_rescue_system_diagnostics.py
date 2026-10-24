@@ -40,8 +40,9 @@ class RescueSystemDiagnosticTests(unittest.TestCase):
         self.assertEqual(vm.repair_tokens(
             'unrelated /private/secret\nProxyPilot VPN repair phase: retireRecovery\n'
             'ProxyPilot VPN repair phase: arbitraryPrivateValue\n'
+            'ProxyPilot VPN repair failure category: destinationUncertain\n'
             'ProxyPilot VPN repair failure category: launchd\n'),
-            ['retireRecovery', 'failure:launchd'])
+            ['retireRecovery', 'failure:destinationUncertain', 'failure:launchd'])
 
     def test_numeric_exit_spawn_and_fixed_state(self):
         raw = ('state = spawn scheduled\nruns = 5\nlast exit code = 0x4b\n'

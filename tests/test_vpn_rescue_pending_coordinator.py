@@ -111,6 +111,41 @@ class VPNRescuePendingCoordinatorRootTests(unittest.TestCase):
         self.assertEqual(self.identities(), self.before[::-1])
         self.assertEqual(self.state(), self.state_before)
 
+    def test_acknowledged_exchange_observations_are_readonly(self):
+        budget = self.service / 'activation.json'
+        budget.write_bytes(b'{"desired":false,"failures":0,"schema":1}'); budget.chmod(0o600)
+        before = self.state()
+        result = self.invoke('observe-repeat')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'observed:3:trace=arm,drain,exchange')
+        self.assertEqual(self.identities(), self.before[::-1])
+        self.assertEqual(self.state(), before)
+
+    def test_observer_refuses_still_installed_source_without_callbacks(self):
+        self.refused('observe-source', '')
+
+    def test_observer_refuses_foreign_installed_app_without_replay(self):
+        self.refused_observation('observe-foreign')
+
+    def test_observer_refuses_installed_app_changed_after_inspection(self):
+        self.refused_observation('observe-changed-installed')
+
+    def test_observer_rechecks_context_after_inspection(self):
+        self.refused_observation('observe-stale', changed=True)
+
+    def test_observer_rechecks_live_lease_after_inspection(self):
+        self.refused_observation('observe-lease')
+
+    def test_observer_rechecks_live_executor_after_inspection(self):
+        self.refused_observation('observe-executor')
+
+    def refused_observation(self, operation, changed=False):
+        result = self.invoke(operation)
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.strip().endswith(':trace=arm,drain,exchange'), result.stdout)
+        self.assertEqual(self.identities(), self.before[::-1])
+        if not changed: self.assertEqual(self.state(), self.state_before)
+
     def test_missing_destination_stage_is_prepared_then_exchanged(self):
         shutil.rmtree(self.stage)
         installed = (self.destination / 'ProxyPilot.app').stat().st_ino

@@ -5272,3 +5272,44 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   deletion obligations, пока результат прежней записи неизвестен. Queue-only
   adapter не объявлять hard-bounded. Реальный adapter пока не реализован;
   OTP/private-key/certificate persistent calls по-прежнему отсутствуют.
+
+### Продолжение 1.5el — Store/frontend regression на обеих архитектурах
+
+- [x] Run40097695719 (`404e36a`) successful:766 tests без skips,42 summaries,
+  включая actual user-launchd stale-plist/idempotent removal/unsafe file/symlink
+  refusal на Intel и ARM. Это ещё до следующего observation-only изменения.
+- [x] Run40097695721 (`404e36a`) successful:124 tests без skips,62 на каждой
+  архитектуре — core/model/ledger и полный прежний interface gate.
+- [x] Настоящий frontend текущих UI/Store sources собран Universal с isolated
+  updater/seq140/capability1: `/tmp/pp-frontend-140-20261024-store-ledger-v1`.
+  Deep strict signature, no main-process Sparkle, nested updater dependency,
+  no entitlements и ordinary guard77/malformedrole64 прошли. Source commit8437365;
+  параллельные последующие rescue-only изменения не входили в frontend sources.
+  Это app build, не полный joint payload и не установленный финальный релиз.
+
+### Продолжение 1.5em — observation вместо повторного exchange
+
+- [x] Run40096802463 ARM: foreign refusal и phase6 desiredOn с idempotent
+  reinstall прошли; fresh pendingOff отказал после первого acknowledged
+  exchange: installedB/stageA/selected137/pending1, error destinationExchange.
+  Recovery B реально пытался запускаться10 раз, state spawn scheduled;
+  executable/plist B root0700/singlelink/pinsMatch=true. Exit code не наблюдался;
+  конкретный exit75 или единственная причина starvation не объявляются доказанными.
+- [x] Source audit: replay `.alreadyExchanged` снова вызывал arm/drain и мог
+  завернуть их отказ в commitUncertain. Entry теперь после acknowledged exact
+  exchange в этой invocation разрешает только read-only observation при том же
+  transaction/armed recovery. Fresh typed pending1 context, exact lease/store,
+  live executor и подписанный root-owned installed candidate проверяются снова.
+  Никаких arm/drain/stage/swap/fsync/select/cleanup в observation нет.
+- [x] После restart память completion отсутствует: первый полный coordinator
+  по-прежнему проверяет protected slots/executor и arms recovery. Completion
+  cache не даёт mutation/success authority. Source/foreign/changed app,
+  changed context/lease/executor должны отказать, а не повторить замену.
+- [x] Fixture и production SYSTEM module compile прошли обе архитектуры;
+  typed JournalContext20 passed. Семь новых root tests используют настоящий
+  initial exchange и3 observation, проверяют единственный trace arm/drain/exchange,
+  inode/journal/activation unchanged и отказные случаи. Host root не запускался.
+- [ ] Optimized Universal native build выполняется; затем root observer cases,
+  полный ownership и Installer7/C→D gate нужны заново. Total budget300s и
+  action deadlines не увеличены. Добавлены только fixed безопасные категории
+  destinationLayout/Storage/Uncertain, без private associated values.
