@@ -39,16 +39,16 @@ class VPNLegacyPasswordBackendTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('legacy injected checks passed', result.stdout)
 
-    def test_delete_query_binds_generic_password_class_and_exact_verified_reference(self):
+    def test_delete_uses_only_exact_verified_reference_without_search_fallback(self):
         source = (ROOT / 'app/VPNLegacyPasswordBackend.swift').read_text()
         body = source.split('    func delete(_ item: VPNLegacyPasswordItem) -> OSStatus {', 1)[1].split('    private func capture(', 1)[0]
         self.assertIn('observed == item.origin', body)
         self.assertIn('(try? identity(item.origin.path)) == item.origin', body)
-        self.assertIn('SecItemDelete([kSecClass as String: kSecClassGenericPassword,', body)
-        self.assertIn('kSecMatchItemList as String: [reference]] as CFDictionary)', body)
-        self.assertEqual(body.count('SecItemDelete('), 1)
-        for forbidden in ('SecKeychainCopyDefault', 'kSecMatchSearchList', 'kSecMatchLimit',
-                          'kSecAttrService', 'kSecAttrAccount', 'SecItemCopyMatching'):
+        self.assertIn('let status = SecKeychainItemDelete(reference)', body)
+        self.assertEqual(body.count('SecKeychainItemDelete('), 1)
+        for forbidden in ('SecKeychainCopyDefault', 'SecItemDelete(', 'kSecMatchItemList',
+                          'kSecMatchSearchList', 'kSecMatchLimit', 'kSecAttrService',
+                          'kSecAttrAccount', 'SecItemCopyMatching', 'SecKeychainOpen'):
             self.assertNotIn(forbidden, body)
 
     def test_real_factory_stays_unwired(self):
