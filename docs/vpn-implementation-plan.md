@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; исходные5 Installer cases прошли | Исправлен ordinary update cleanup; полный System8 run40117891547 ещё выполняется; macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; исходные5 Installer cases прошли; новый ARM ordinary update установил D и завершил cleanup | ARM40117891547 отказал на последнем root result probe77; Intel того же run ещё выполняется; нужны diagnosis/fix и полный System8; macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -5883,3 +5883,59 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   cached read failure есть в model, но prompt detail его не показывает (только
   connected detail). Исправление и seeded-cache/manual-fallback layout test
   готовятся отдельно; до их приёмки feedback UX не считать завершённым.
+
+### Продолжение 1.5fg — worker integration, scoped custody и исправление тестов времени
+
+- [x] `ccab723`: read-fallback warning теперь виден в VPN-password prompt.
+  Seeded settled-cache miss воспроизвёл RED, затем warning/manual/fresh-save
+  переход прошёл. Независимо18 test methods PASS20.913s (17 adapter +1 layout,
+  7 feedback scenarios,15 rendered states). OTP/private-key warning исключён,
+  field/buttons/status помещаются344×432; новых controls/scroll нет. Будущее
+  сохранение сформулировано как попытка, а не безусловная гарантия.
+- [x] `6aaa06d`: inert scoped DNS dependency custody: отдельная role3+utun scope,
+  GET/ADD/DELETE/verify/recovery используют exact typed key; paired plan3/journal2
+  только с dependencies. Обычные plan2/journal1 bytes и recovery сохранены,
+  literal historical golden test проверяет совместимость. Неизвестный/wrong
+  scope ответ не становится absence: pending checkpoint сохраняется, DELETE
+  не отправляется. Независимо27 pure tests PASS10.622s; полный agent suite84 PASS
+  (57 existing через private interface shim,9 domain,18 new). Один existing
+  native UDP/PF_ROUTE case явно НЕ запускался на host. Production route/DNS/
+  lifecycle modules ARM/Intel compiled без TESTING. Dedicated CI добавлен;
+  bound transport и actual utun VM gate ещё обязательны, runtime не включён.
+- [x] `3397637`: installer frontend включает Worker/Wire/Identity/LegacyBackend/
+  Session adapter и credential encoder dependencies; exact worker dispatch
+  стоит до InstallationEntry/GUI. Реальная factory вызывается только после
+  ordinary UID/same-image parent/private directory/socket authentication.
+  Noninstaller и malformed roles остаются закрыты. Adapter сохраняет typed
+  negative read/delete и Store gates; transient input/response очищаются.
+  45 fake-child/backend tests PASS43.536s. Genuine signed Universal frontend
+  negative-entry3/3 PASS244.408s: noGUI/CLI/API path, actual role без authenticated
+  parent получает77, malformed роли64. Это не successful authenticated
+  genuine-default-Keychain proof; Panel capability/cleanup lifecycle пока inert.
+- [ ] Новый dedicated disposable-VM proof должен использовать реальную factory
+  и test-only parent harness после actual worker dispatch. Только fresh opted-in
+  GHA fixture может временно выбрать свой private keychain default и точно
+  восстановить prior default; HOST/prod preferences/search/ACL не меняются.
+  Unknown RPC сохраняет fixture и требует VM disposal, не повторного API.
+  Ad-hoc cross-release ACL/manual fallback/остаточная cleanup queue требуют
+  отдельной honest UX приёмки; widening ACL не допускается.
+- [x] `4473d57`: UI40120720728 (`e603564`) FAILED обе архитектуры по одному
+  timing-dependent positive observer test: ARM cleanup busy, Intel save busy,
+  196 methods на архитектуру. Обе зависимости воспроизведены RED искусственным
+  real60ms descheduling. TESTING-only monotonic clock seam сделал positive
+  сценарий управляемым, сохраняя реальный flock/sleep; separate expiry/oversleep
+  negatives доказывают отсутствие false saved/deleted и второго GO/Add.
+  Production по-прежнему native DispatchTime, single50ms/3reads/10ms sleep.
+  Независимо88 tests PASS11.246s; genuine no-TESTING graph ARM/Intel compiled,
+  все hashes current: `/tmp/pp-observer-clock-production-full-yfwvqqub/verification.json`.
+  Новый remote aggregate run после push ещё нужен; старый failure не объявлен green.
+- [ ] System8 ARM120942929830 run40117891547 завершился FAILED после первых5
+  успешных Installer scenarios: ordinary C→D Off получил installed status и
+  retired cleanup, затем assert_clean_release root --vpn-verify-update-result
+  вернул77 вместо41. Это ДРУГОЙ отказ, не прежний pending cleanup. Verifier
+  generic selected-release, не привязан к rescueC. Исследуется Store.busy при
+  broker reload (оно держит release.lock через helper/engine validation);
+  фактический CI error category пока неизвестен. Нужны native contention
+  regression + bounded busy-only fresh read observation, закрытые diagnostics
+  следующего gate. Auth/signatures/deadlines и final D checks не ослабляются.
+  Intel того же run ещё выполняется; ни один полный System8 не принят.
