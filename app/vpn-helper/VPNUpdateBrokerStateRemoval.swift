@@ -176,15 +176,6 @@ final class VPNUpdateBrokerStateRemoval {
     }
 
     private static func isInbox(_ name: String) -> Bool {
-        if name.hasPrefix("inbox-"), name.count == 70 {
-            return name.dropFirst(6).allSatisfy { $0.isHexDigit && !$0.isUppercase }
-        }
-        guard name.hasPrefix(".inbox-"), name.hasSuffix(".preparing") else {
-            return false
-        }
-        let digest = name.dropFirst(7).dropLast(10)
-        return digest.count == 64 && digest.allSatisfy {
-            $0.isHexDigit && !$0.isUppercase
-        }
+        VPNUpdateBrokerInbox.isInboxTreeName(name)
     }
 }

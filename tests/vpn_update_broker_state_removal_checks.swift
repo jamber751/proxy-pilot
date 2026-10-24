@@ -29,6 +29,18 @@ enum Checks {
             FileManager.default.createFile(atPath: path, contents: Data())
             chmod(path, 0o644)
             try expectRefusal { try removal.preflight() }
+        case "unicode-published", "unicode-preparing":
+            let name = mode == "unicode-published"
+                ? "inbox-" + String(repeating: "ｆ", count: 64)
+                : ".inbox-" + String(repeating: "１", count: 64) + ".preparing"
+            let foreign = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: foreign,
+                withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+            try expectRefusal { try removal.preflight() }
+            guard try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == before else {
+                throw NSError(domain: "foreign-namespace-mutated", code: 5)
+            }
         case "partial":
             let pending = root.appendingPathComponent(".inbox-" + String(repeating: "a", count: 64) + ".preparing")
             try FileManager.default.createDirectory(at: pending,

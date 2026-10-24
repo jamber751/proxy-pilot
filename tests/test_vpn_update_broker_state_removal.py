@@ -28,7 +28,7 @@ class VPNUpdateBrokerStateRemovalTests(unittest.TestCase):
                  *map(str, sources), "-o", str(binary)],
                 capture_output=True, text=True, timeout=120)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-            for case in ("unknown", "symlink", "mode", "partial"):
+            for case in ("unknown", "symlink", "mode", "partial", "unicode-published", "unicode-preparing"):
                 with self.subTest(case=case):
                     result = subprocess.run([str(binary), case], capture_output=True,
                                             text=True, timeout=60)

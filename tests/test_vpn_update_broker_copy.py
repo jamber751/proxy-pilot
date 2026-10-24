@@ -147,6 +147,95 @@ class VPNUpdateBrokerCopyTests(unittest.TestCase):
                         self.assertFalse(list(self.parent.iterdir()))
                         path.chmod(0o644)
 
+    def test_uninstall_after_process_crash_needs_no_source_material(self):
+        for point in ['copyScratchCreated:ProxyPilot.app', 'copyDirectory:ProxyPilot.app/Contents',
+                      'copyBytes:ProxyPilot.app/Contents/Resources/large', 'copyPublished:ProxyPilot.app']:
+            with self.subTest(point=point):
+                self.assertEqual(self.run_copy(point, success=False).returncode, 43)
+                hidden = self.root / 'unavailable-source'
+                self.source.rename(hidden)
+                try:
+                    self.run_copy(error='uninstall')
+                    self.assertFalse(list(self.parent.iterdir()))
+                finally:
+                    hidden.rename(self.source)
+                    for path in self.parent.iterdir(): shutil.rmtree(path)
+
+    def test_uninstall_broken_relative_scratch_links_only_for_removal(self):
+        self.assertEqual(self.run_copy('copyDirectory:ProxyPilot.app/Contents/Resources', success=False).returncode, 43)
+        _, scratch = self.scratch()
+        resources = scratch / 'ProxyPilot.app/Contents/Resources'
+        os.symlink('not-yet-copied', resources / 'broken')
+        self.run_copy(error='uninstall')
+        self.assertFalse(list(self.parent.iterdir()))
+
+    def test_uninstall_unknown_scratch_duplicate_and_escape_refuse_without_changes(self):
+        self.assertEqual(self.run_copy('copyDirectory:ProxyPilot.app/Contents/Resources', success=False).returncode, 43)
+        pending, scratch = self.scratch()
+        resources = scratch / 'ProxyPilot.app/Contents/Resources'
+        link = resources / 'escape'
+        os.symlink('../../../../outside', link)
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(link.is_symlink())
+        link.unlink()
+        duplicate = pending / 'ProxyPilot.app'
+        duplicate.mkdir(mode=0o700)
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(duplicate.is_dir()); self.assertTrue(scratch.is_dir())
+        duplicate.rmdir()
+        unknown = scratch.with_name(scratch.name + '-unknown')
+        scratch.rename(unknown)
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(unknown.is_dir())
+
+    def test_uninstall_scratch_depth_overhead_is_constant_and_bounded(self):
+        self.assertEqual(self.run_copy('copyDirectory:ProxyPilot.app', success=False).returncode, 43)
+        _, scratch = self.scratch()
+        node = scratch / 'ProxyPilot.app'
+        for _ in range(47):
+            node = node / 'd'; node.mkdir(mode=0o700)
+        self.run_copy(error='uninstall')
+        self.assertFalse(list(self.parent.iterdir()))
+
+    def test_uninstall_oversized_or_too_deep_partial_refuses_without_removal(self):
+        self.assertEqual(self.run_copy('copyDirectory:ProxyPilot.app', success=False).returncode, 43)
+        _, scratch = self.scratch()
+        node = scratch / 'ProxyPilot.app'
+        oversized = node / 'oversized'
+        with oversized.open('wb') as stream: stream.truncate(512 * 1024 * 1024 + 1)
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(oversized.is_file())
+        oversized.unlink()
+        for _ in range(48):
+            node = node / 'd'; node.mkdir(mode=0o700)
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(node.is_dir())
+
+    def test_uninstall_fullwidth_scratch_digest_refuses_without_changes(self):
+        self.assertEqual(self.run_copy('copyScratchCreated:ProxyPilot.app', success=False).returncode, 43)
+        pending, scratch = self.scratch()
+        foreign = pending / ('.copy-' + 'ｆ' * 64)
+        scratch.rename(foreign)
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(foreign.is_dir())
+
+    def test_unicode_lookalike_root_names_are_not_counted_or_removed(self):
+        foreign_names = ['inbox-' + 'ｆ' * 64, '.inbox-' + '１' * 64 + '.preparing']
+        for name in foreign_names: (self.parent / name).mkdir(mode=0o700)
+        self.run_copy(error='uninstall')
+        self.assertEqual(set(path.name for path in self.parent.iterdir()), set(foreign_names))
+
+    def test_uninstall_preflights_every_root_before_deleting_any(self):
+        self.run_copy()
+        published, = self.parent.glob('inbox-*')
+        pending = self.parent / ('.inbox-' + '0' * 64 + '.preparing')
+        pending.mkdir(mode=0o700)
+        foreign = pending / 'unknown'
+        foreign.write_bytes(b'leave untouched')
+        self.assertNotEqual(self.run_copy(error='uninstall', success=False).returncode, 0)
+        self.assertTrue(published.is_dir())
+        self.assertEqual(foreign.read_bytes(), b'leave untouched')
+
     def test_permission_error_does_not_trigger_bytecopy(self):
         self.assertNotEqual(self.run_copy(error='denied', success=False).returncode, 0)
         self.assertFalse(list(self.parent.rglob('.copy-*')))

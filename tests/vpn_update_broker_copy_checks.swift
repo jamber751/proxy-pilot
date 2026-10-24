@@ -7,7 +7,7 @@ import Foundation
     static func main() throws {
         let args = CommandLine.arguments
         guard getuid() == geteuid(), getuid() != 0, args.count == 5 else { exit(77) }
-        let source = open(args[1], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let source = open(args[3] == "uninstall" ? args[2] : args[1], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         let parent = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard source >= 0, parent >= 0 else { throw Failure.check }
         defer { close(source); close(parent) }
@@ -15,6 +15,12 @@ import Foundation
         VPNUpdateBrokerInbox.testCloneFailure = args[3] == "clone" ? nil : args[3] == "unsupported" ? ENOTSUP : (args[3] == "denied" ? EACCES : EXDEV)
         #endif
         let inbox = try VPNUpdateBrokerInbox(trustedParent: parent)
+        if args[3] == "uninstall" {
+            try inbox.removeAllForUninstall()
+            guard try inbox.publishedCount() == 0 else { throw Failure.check }
+            print("bounded copy passed")
+            return
+        }
         var mutated = false
         let receipt = try inbox.ingest(sourceDirectory: source) { point in
             if args[3] == "mutate", point.hasPrefix("copyBytes:"), !mutated {

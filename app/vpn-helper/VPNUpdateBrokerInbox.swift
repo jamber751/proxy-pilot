@@ -227,11 +227,10 @@ final class VPNUpdateBrokerInbox {
                 throw VPNUpdateBrokerInboxError.publishedChanged
             }
             defer { close(directory) }
-            let complete = name.hasPrefix("inbox-")
-            let value = try Self.snapshot(
-                directory, requireFixedLayout: complete)
-            if !complete, !Set(value.top.keys).isSubset(of: Self.fixedLayout) {
-                throw VPNUpdateBrokerInboxError.invalidLayout
+            if name.hasPrefix("inbox-") {
+                _ = try Self.snapshot(directory, requireFixedLayout: true)
+            } else {
+                try Self.validatePreparingForRemoval(directory)
             }
         }
     }
@@ -274,24 +273,25 @@ final class VPNUpdateBrokerInbox {
 
     private func countPublished() throws -> Int {
         try Self.topNames(parent).filter { name in
-            name.hasPrefix("inbox-") && name.count == 70
-                && name.dropFirst(6).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+            name.hasPrefix("inbox-") && Self.isLowercaseHexDigest(name.dropFirst(6))
         }.count
     }
 
-    private static func isInboxTreeName(_ name: String) -> Bool {
-        if name.hasPrefix("inbox-"), name.count == 70 {
-            return name.dropFirst(6).allSatisfy {
-                $0.isHexDigit && !$0.isUppercase
-            }
+    private static func isLowercaseHexDigest(_ value: Substring) -> Bool {
+        let bytes = value.utf8
+        return bytes.count == 64 && bytes.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    static func isInboxTreeName(_ name: String) -> Bool {
+        if name.hasPrefix("inbox-") {
+            return isLowercaseHexDigest(name.dropFirst(6))
         }
         guard name.hasPrefix(".inbox-"), name.hasSuffix(".preparing") else {
             return false
         }
-        let digest = name.dropFirst(7).dropLast(10)
-        return digest.count == 64 && digest.allSatisfy {
-            $0.isHexDigit && !$0.isUppercase
-        }
+        return isLowercaseHexDigest(name.dropFirst(7).dropLast(10))
     }
 
     private func removeInboxTree(_ name: String) throws {
@@ -304,8 +304,10 @@ final class VPNUpdateBrokerInbox {
             guard fstat(directory, &root) == 0 else {
                 throw VPNUpdateBrokerInboxError.publishedChanged
             }
-            var budget = Self.maximumEntries
-            try Self.removeChildren(directory, depth: 0, budget: &budget)
+            let overhead = name.hasPrefix(".inbox-") ? 1 : 0
+            var budget = Self.maximumEntries + overhead
+            try Self.removeChildren(directory, depth: 0, budget: &budget,
+                                    depthLimit: Self.maximumDepth + overhead)
             guard fsync(directory) == 0 else {
                 throw VPNUpdateBrokerInboxError.commitUncertain
             }
@@ -320,6 +322,89 @@ final class VPNUpdateBrokerInbox {
               unlinkat(parent, name, AT_REMOVEDIR) == 0,
               fsync(parent) == 0 else {
             throw VPNUpdateBrokerInboxError.commitUncertain
+        }
+    }
+
+    /// Removal authority is confined to our private source-bound namespace.
+    /// Scratch content may be unfinished; this never authorizes publication.
+    private static func validatePreparingForRemoval(_ directory: Int32) throws {
+        let names = try topNames(directory)
+        let markers = names.subtracting(fixedLayout)
+        guard markers.count <= 1 else { throw VPNUpdateBrokerInboxError.invalidLayout }
+        var fixed: [String: Node] = [:], bytes: Int64 = 0
+        try walk(directory, prefix: "", depth: 0, untrustedSource: false,
+                 excluding: markers, nodes: &fixed, bytes: &bytes)
+        try validateLinks(fixed)
+        for marker in markers {
+            guard marker.hasPrefix(".copy-"), isLowercaseHexDigest(marker.dropFirst(6)),
+                  let scratch = try openDirectory(directory, marker) else {
+                throw VPNUpdateBrokerInboxError.invalidLayout
+            }
+            defer { close(scratch) }
+            let children = try topNames(scratch)
+            guard children.count <= 1, children.isSubset(of: fixedLayout),
+                  children.isDisjoint(with: names.intersection(fixedLayout)) else {
+                throw VPNUpdateBrokerInboxError.invalidLayout
+            }
+            var entries = fixed.count
+            try walkRemovalScratch(scratch, prefix: "", depth: 0,
+                                   entries: &entries, bytes: &bytes)
+        }
+    }
+
+    /// No link is followed. Dangling relative links within the app are safe to
+    /// unlink, unlike the complete link graph required by signed publications.
+    private static func walkRemovalScratch(_ directory: Int32, prefix: String, depth: Int,
+                                            entries: inout Int, bytes: inout Int64) throws {
+        guard depth <= maximumDepth else { throw VPNUpdateBrokerInboxError.limitExceeded }
+        for name in try names(directory) {
+            let path = prefix.isEmpty ? name : prefix + "/" + name
+            entries += 1
+            var info = stat()
+            guard entries <= maximumEntries,
+                  fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                  info.st_uid == geteuid() else { throw VPNUpdateBrokerInboxError.invalidLayout }
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR:
+                guard let child = try openDirectory(directory, name, privateMode: false) else {
+                    throw VPNUpdateBrokerInboxError.invalidLayout
+                }
+                defer { close(child) }
+                try walkRemovalScratch(child, prefix: path, depth: depth + 1,
+                                       entries: &entries, bytes: &bytes)
+            case S_IFREG:
+                guard info.st_nlink == 1, info.st_mode & 0o6022 == 0,
+                      info.st_size >= 0, info.st_size <= maximumBytes - bytes else {
+                    throw VPNUpdateBrokerInboxError.invalidLayout
+                }
+                let held = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                guard held >= 0 else { throw VPNUpdateBrokerInboxError.invalidLayout }
+                defer { close(held) }
+                var actual = stat()
+                guard fstat(held, &actual) == 0, actual.st_dev == info.st_dev,
+                      actual.st_ino == info.st_ino, actual.st_mode == info.st_mode,
+                      actual.st_uid == info.st_uid, actual.st_nlink == 1,
+                      actual.st_size == info.st_size else { throw VPNUpdateBrokerInboxError.invalidLayout }
+                bytes += info.st_size
+            case S_IFLNK:
+                guard info.st_nlink == 1, path.hasPrefix("ProxyPilot.app/") else {
+                    throw VPNUpdateBrokerInboxError.symlink
+                }
+                let target = try readLink(directory, name)
+                var resolved = path.split(separator: "/").dropLast().map(String.init)
+                for part in target.split(separator: "/", omittingEmptySubsequences: false) {
+                    if part.isEmpty || part == "." { continue }
+                    if part == ".." {
+                        guard resolved.count > 1 else { throw VPNUpdateBrokerInboxError.symlink }
+                        resolved.removeLast()
+                    } else { resolved.append(String(part)) }
+                }
+                guard Int64(target.utf8.count) <= maximumBytes - bytes else {
+                    throw VPNUpdateBrokerInboxError.limitExceeded
+                }
+                bytes += Int64(target.utf8.count)
+            default: throw VPNUpdateBrokerInboxError.special
+            }
         }
     }
 
@@ -539,8 +624,8 @@ final class VPNUpdateBrokerInbox {
     }
 
     private static func removeChildren(_ directory: Int32, depth: Int,
-                                       budget: inout Int) throws {
-        guard depth <= maximumDepth else {
+                                       budget: inout Int, depthLimit: Int = maximumDepth) throws {
+        guard depth <= depthLimit else {
             throw VPNUpdateBrokerInboxError.limitExceeded
         }
         let children = try names(directory)
@@ -568,7 +653,7 @@ final class VPNUpdateBrokerInbox {
                         throw VPNUpdateBrokerInboxError.publishedChanged
                     }
                     try removeChildren(child, depth: depth + 1,
-                                       budget: &budget)
+                                       budget: &budget, depthLimit: depthLimit)
                     guard fsync(child) == 0 else {
                         throw VPNUpdateBrokerInboxError.commitUncertain
                     }
