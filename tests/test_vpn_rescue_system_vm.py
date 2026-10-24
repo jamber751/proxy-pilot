@@ -343,6 +343,63 @@ def repair_tokens(text):
     return events
 
 
+def launchd_diagnostics(text):
+    """Whitelist fields only. Unknown strings and all raw paths are suppressed."""
+    result = {}
+    for field, key in (('pid', 'pid'), ('runs', 'runs'), ('last exit code', 'lastExitCode'),
+                       ('last exit status', 'lastExitStatus'), ('spawn error', 'spawnErrno'),
+                       ('last spawn error', 'spawnErrno'), ('last terminating signal', 'terminatingSignal')):
+        match = re.search(r'^\s*' + field + r' = (-?(?:0x[0-9a-fA-F]{1,8}|[0-9]{1,10}))(?=\s|$)', text, re.M)
+        if match:
+            value = match[1]
+            result[key] = int(value, 16 if '0x' in value else 10)
+    if re.search(r'^\s*last exit (?:code|status) = \(never exited\)\s*$', text, re.M):
+        result['lastExit'] = 'neverExited'
+    state = re.search(r'^\s*state = ([a-z ]+)\s*$', text, re.M)
+    if state and state[1].strip() in {'running', 'waiting', 'not running', 'exited', 'spawn scheduled',
+                                     'spawn pending', 'spawned', 'initializing', 'throttled'}:
+        result['state'] = state[1].strip()
+    signal = re.search(r'^\s*last terminating signal = (SIG[A-Z0-9]+)\s*$', text, re.M)
+    if signal and signal[1] in {'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGTRAP'}:
+        result['terminatingSignal'] = signal[1]
+    if 'terminatingSignal' not in result:
+        signal_number = re.search(r'^\s*last terminating signal = (?:Killed|Terminated|Abort trap): ([0-9]{1,3})\s*$', text, re.M)
+        if signal_number: result['terminatingSignal'] = int(signal_number[1])
+    return result
+
+
+def helper_program_diagnostics(program, known):
+    # An unrecognized program is classified without stat/open/codesign on its
+    # path. Known keys come only from B/C manifests at the fixed service root.
+    if program is None: return {'release': 'absent'}
+    if program not in known: return {'release': 'unknown'}
+    release, pins = known[program]
+    result = {'release': release, 'filePresent': False}
+    try:
+        facts = os.lstat(program)
+        result.update(filePresent=True, regular=stat.S_ISREG(facts.st_mode), rootOwned=facts.st_uid == 0,
+                      privateMode=stat.S_IMODE(facts.st_mode) == 0o700, singleLink=facts.st_nlink == 1)
+        if result['regular']:
+            try: result['pinsMatch'] = code_pins(Path(program)) == pins
+            except (AssertionError, OSError, subprocess.TimeoutExpired): result['pinsMatch'] = False
+    except OSError: pass
+    return result
+
+
+def known_helper_programs(materials):
+    result = {}
+    payload = materials / 'CandidateStage/Payload'
+    for release, name in (('B', 'vpn-previous-release.manifest'), ('C', 'vpn-release.manifest')):
+        record = (payload / name).read_text()
+        digest = re.search(r'^helper-sha256=([0-9a-f]{64})$', record, re.M)
+        pins = {arch: re.search(r'^helper-' + arch + r'=([0-9a-f]{40})$', record, re.M)
+                for arch in ('arm64', 'x86_64')}
+        if not digest or not all(pins.values()): raise AssertionError('Invalid fixture helper metadata')
+        path = str(SYSTEM_BASE / 'VPN' / ('helper-' + digest[1]))
+        result[path] = (release, {arch: match[1] for arch, match in pins.items()})
+    return result
+
+
 def install_log_cursor():
     if not root_vm_enabled(): raise AssertionError('Installer log diagnostics require disposable system VM')
     try:
@@ -388,6 +445,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         if cls.fixture['schema'] != 1 or not 500 <= cls.fixture['owner'] < 2**32 - 1: raise AssertionError('Invalid fixture owner')
         cls.materials = Path(cls.fixture['materials']); cls.seed = Path(cls.fixture['seed']); cls.package = Path(cls.fixture['package'])
         cls.probe = Path(cls.fixture['probe'])
+        cls.known_helpers = known_helper_programs(cls.materials)
         if hashlib.sha256(cls.package.read_bytes()).hexdigest() != cls.fixture['packageSHA256']:
             raise AssertionError('Prepared Installer changed')
 
@@ -562,10 +620,19 @@ class VPNRescueSystemVMTests(unittest.TestCase):
                 result[role] = {'queryStatus': 'unavailable'}
                 continue
             values = {'present': job.returncode == 0, 'queryStatus': job.returncode}
-            # Never publish launchctl's environment, paths, arguments or output.
-            for field, key in (('pid', 'pid'), ('last exit code', 'lastExitCode')):
-                match = re.search(r'^\s*' + field + r' = (-?[0-9]+)\s*$', job.stdout, re.M)
-                if match: values[key] = int(match[1])
+            values.update(launchd_diagnostics(job.stdout))
+            loaded = re.search(r'^\s*program = (.+?)\s*$', job.stdout, re.M)
+            values['loadedProgram'] = helper_program_diagnostics(loaded[1] if loaded else None, self.known_helpers)
+            # Only our three fixed plist files are read. Their unknown program
+            # values are never followed, opened or printed.
+            try:
+                plist = plistlib.loads(PLISTS[LABELS.index(label)].read_bytes())
+                args = plist.get('ProgramArguments')
+                program = plist.get('Program')
+                if program is None and isinstance(args, list) and args and isinstance(args[0], str): program = args[0]
+                values['plistProgram'] = helper_program_diagnostics(program if isinstance(program, str) else None,
+                                                                    self.known_helpers)
+            except (OSError, ValueError, plistlib.InvalidFileException): values['plistProgram'] = {'release': 'unreadable'}
             result[role] = values
         return result
 

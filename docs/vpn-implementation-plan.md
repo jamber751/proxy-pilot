@@ -5117,3 +5117,18 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   search list и ACL не меняются. Host проверка ограничена компиляцией.
 - [ ] Повторить VM эксперимент: поведение V2 ACL, locked fallback и отсутствие
   изменений Keychain preferences остаются самостоятельными проверками.
+
+### Продолжение 1.5ed — точная диагностика system recovery
+
+- [x] Run40094114643 ARM: foreign capsule refusal прошёл; phase6 desiredOn
+  дошёл до installed C, но selected139/pending revision1 остались до timeout.
+  Recovery label загружен без наблюдаемого PID; это локализация, не доказанная
+  причина. Изменение таймаутов и ослабление проверок не применялись.
+- [x] Harness отдельно классифицирует plist/loaded program только по известным
+  B/C manifest paths, выводит fixed file/signature facts, launchd state/runs,
+  numeric exit/spawn error и allowlisted signal. Неизвестные пути не читаются
+  и не печатаются. Пять mocked diagnostics tests passed без host root действий.
+- [x] Ownership regression run40095203133: все760 tests passed, без skips.
+- [ ] Run40095760561: fast material/engine gate прошёл обе архитектуры;
+  полная сборка и реальные Installer cases ещё выполняются. Полный system
+  acceptance остаётся незакрытым, новый host installer не предлагается.
