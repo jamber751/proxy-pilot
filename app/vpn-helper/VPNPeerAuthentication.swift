@@ -34,6 +34,13 @@ struct VPNPeerPolicy {
                           codeDirectoryHashes: codeDirectoryHashes)
     }
 
+    /// Explicit rescue is a separate root role, never an ordinary A/B policy.
+    /// Pins must come from the independently verified rescue authorization.
+    static func rescue(codeDirectoryHashes: Set<Data>) throws -> VPNPeerPolicy {
+        try VPNPeerPolicy(trustedUserID: 0, signingIdentifier: "kz.documentolog.proxypilot.vpn-rescue",
+                          codeDirectoryHashes: codeDirectoryHashes)
+    }
+
     #if VPN_HELPER_READINESS_TESTING
     // Only for unprivileged disposable process tests, absent in normal builds.
     static func testHelper(codeDirectoryHashes: Set<Data>) throws -> VPNPeerPolicy {

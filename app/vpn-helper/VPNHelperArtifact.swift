@@ -12,7 +12,7 @@ enum VPNHelperArtifact {
     static func validate(protectedFile file: Int32, data: Data, release: VerifiedVPNRelease) throws {
         try release.validateHelperArtifact(data)
         try VPNUniversalArtifact.validate(protectedFile: file, data: data, identifier: signingIdentifier,
-                                          hash: release.helperHash, error: .invalidHelperArtifact)
+                                          hash: release.helperHash, error: VPNReleaseAuthorizationError.invalidHelperArtifact)
     }
 }
 
@@ -25,13 +25,15 @@ enum VPNEngineArtifact {
         guard let engine = release.engine else { throw VPNReleaseAuthorizationError.invalidEngineArtifact }
         try engine.validateArtifact(data)
         try VPNUniversalArtifact.validate(protectedFile: file, data: data, identifier: signingIdentifier,
-                                          hash: engine.hash, error: .invalidEngineArtifact)
+                                          hash: engine.hash, error: VPNReleaseAuthorizationError.invalidEngineArtifact)
     }
 }
 
-private enum VPNUniversalArtifact {
+/// Shared static checks. Exposing this internally adds no authorization: callers
+/// still supply independently authenticated pins and validate their own bytes.
+enum VPNUniversalArtifact {
     static func validate(protectedFile file: Int32, data: Data, identifier: String,
-                         hash: (String) -> Data?, error: VPNReleaseAuthorizationError) throws {
+                         hash: (String) -> Data?, error: Error) throws {
         try validateUniversalExecutable(data, error: error)
         var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         guard fcntl(file, F_GETPATH, &path) == 0 else { throw error }
@@ -69,7 +71,7 @@ private enum VPNUniversalArtifact {
         }
     }
 
-    private static func validateUniversalExecutable(_ data: Data, error: VPNReleaseAuthorizationError) throws {
+    private static func validateUniversalExecutable(_ data: Data, error: Error) throws {
         func reject() throws -> Never { throw error }
         let bytes = Array(data.prefix(48))
         guard bytes.count == 48 else { try reject() }
