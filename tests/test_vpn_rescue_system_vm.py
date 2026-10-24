@@ -2,6 +2,8 @@
 
 Builds synthetic releases from production code with a synthetic public trust
 constant and closed activation-diagnostic output enabled for current code only.
+A declared private snapshot delta records the original broker actor after its
+durable handoff; its last-case-only gate is never enabled in release sources.
 No authentication or lifecycle policy is replaced. Frozen139 uses its unchanged
 full SHA-pinned production source graph. The C app is
 a signed probe-only bundle using the production read-only frontend entry; this
@@ -104,6 +106,25 @@ def snapshot_current(output):
         text = script.read_text()
         if text.count(anchor) != 1: raise AssertionError('Current diagnostic build anchor changed')
         script.write_text(text.replace(anchor, anchor + ' -D VPN_SYSTEM_ACTIVATION_DIAGNOSTICS'))
+    # Explicit fixture delta: only current C/D, never the frozen139 graph.
+    witness = ROOT / 'tests/vpn_rescue_system_handoff_witness.swift'
+    shutil.copyfile(witness, app / 'vpn-helper' / witness.name)
+    handler = app / 'vpn-helper/VPNUpdateBrokerHandler.swift'
+    text = handler.read_text()
+    anchor = '        _ = try VPNReplacementExecutorHandoff.launchPreparedFromBroker('
+    if text.count(anchor) != 1: raise AssertionError('Durable handoff witness anchor changed')
+    text = text.replace(anchor, '#if VPN_SYSTEM_HANDOFF_WITNESS\n'
+        '        VPNSystemHandoffWitness.publish(transaction: transaction, inbox: published)\n'
+        '#endif\n' + anchor)
+    handler.write_text(text)
+    script = app / 'vpn-helper/build.sh'
+    script.write_text(script.read_text().replace('-D VPN_SYSTEM_ACTIVATION_DIAGNOSTICS',
+        '-D VPN_SYSTEM_ACTIVATION_DIAGNOSTICS -D VPN_SYSTEM_HANDOFF_WITNESS'))
+    (output / 'handoff-witness-delta.json').write_text(json.dumps({
+        'schema': 1, 'sourceSHA256': hashlib.sha256(witness.read_bytes()).hexdigest(),
+        'handlerOriginalSHA256': hashlib.sha256((HELPER / handler.name).read_bytes()).hexdigest(),
+        'handlerSnapshotSHA256': hashlib.sha256(handler.read_bytes()).hexdigest(),
+        'flag': 'VPN_SYSTEM_HANDOFF_WITNESS', 'frozen139Unchanged': True}, sort_keys=True))
     return app
 
 
@@ -469,10 +490,10 @@ def launchd_diagnostics(text):
                                      'spawn pending', 'spawned', 'initializing', 'throttled'}:
         result['state'] = state[1].strip()
     signal = re.search(r'^\s*last terminating signal = (SIG[A-Z0-9]+)\s*$', text, re.M)
-    if signal and signal[1] in {'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGTRAP'}:
+    if signal and signal[1] in {'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGTRAP', 'SIGPIPE'}:
         result['terminatingSignal'] = signal[1]
     if 'terminatingSignal' not in result:
-        signal_number = re.search(r'^\s*last terminating signal = (?:Killed|Terminated|Abort trap): ([0-9]{1,3})\s*$', text, re.M)
+        signal_number = re.search(r'^\s*last terminating signal = (?:Killed|Terminated|Abort trap|Broken pipe): ([0-9]{1,3})\s*$', text, re.M)
         if signal_number: result['terminatingSignal'] = int(signal_number[1])
     return result
 
@@ -700,6 +721,125 @@ class ProcBSDInfo(ctypes.Structure):
                 ('nice', ctypes.c_int32), ('startSeconds', ctypes.c_uint64), ('startMicroseconds', ctypes.c_uint64)]
 
 
+def fixture_inbox_identity(directory):
+    """Test expectation only: the production Inbox's public digest grammar."""
+    nodes = []
+    def walk(folder, prefix='', depth=0):
+        if depth > 32: raise AssertionError('Candidate fixture depth exceeded')
+        for item in sorted(folder.iterdir()):
+            name = prefix + item.name; info = item.lstat()
+            if len(nodes) >= 4096: raise AssertionError('Candidate fixture entries exceeded')
+            if stat.S_ISDIR(info.st_mode):
+                nodes.append((name, b'D', info.st_mode & 0o7777, 0, b'')); walk(item, name + '/', depth + 1)
+            elif stat.S_ISREG(info.st_mode):
+                if info.st_size > 512 * 1024 * 1024: raise AssertionError('Candidate fixture file exceeded')
+                data = item.read_bytes(); nodes.append((name, b'F', info.st_mode & 0o7777, len(data), hashlib.sha256(data).digest()))
+            elif stat.S_ISLNK(info.st_mode):
+                target = os.fsencode(os.readlink(item)); nodes.append((name, b'L', 0, len(target), hashlib.sha256(target).digest()))
+            else: raise AssertionError('Unexpected candidate fixture kind')
+    walk(Path(directory))
+    digest = hashlib.sha256()
+    for name, kind, mode, size, content in sorted(nodes):
+        digest.update(name.encode() + b'\0' + kind + mode.to_bytes(4, 'big') + size.to_bytes(8, 'big') + content)
+    return digest.hexdigest()
+
+
+def private_handoff_json(name, directory=ACTIVATION_LOG_DIRECTORY, identity=None, owner=0):
+    parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        node = os.fstat(parent)
+        if node.st_uid != owner or stat.S_IMODE(node.st_mode) != 0o700 or (identity is not None and (node.st_dev, node.st_ino) != identity):
+            raise AssertionError('Owned handoff directory changed')
+        try: fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
+        except FileNotFoundError: return None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600 or not 0 < info.st_size <= 2048:
+                raise AssertionError('Unsafe handoff observation')
+            data = os.read(fd, 2049)
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if len(data) != info.st_size or (named.st_dev, named.st_ino, named.st_size) != (info.st_dev, info.st_ino, info.st_size):
+                raise AssertionError('Handoff observation changed')
+            return json.loads(data)
+        finally: os.close(fd)
+    finally: os.close(parent)
+
+
+def valid_handoff_gate(gate):
+    keys = {'schema', 'nonce', 'pid', 'seconds', 'microseconds', 'from', 'to', 'identity'}
+    return (type(gate) is dict and set(gate) == keys and gate['schema'] == 1
+        and all(type(gate[k]) is int for k in ('schema', 'pid', 'seconds', 'microseconds', 'from', 'to'))
+        and 0 < gate['pid'] < 2**31 and 0 < gate['seconds'] < 2**64 and 0 <= gate['microseconds'] < 1_000_000
+        and gate['from'] == 141 and gate['to'] == 142
+        and isinstance(gate['nonce'], str) and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', gate['nonce']) is not None
+        and isinstance(gate['identity'], str) and re.fullmatch(r'[0-9a-f]{64}', gate['identity']) is not None)
+
+
+def create_handoff_gate(gate, identity):
+    if not root_vm_enabled() or not valid_handoff_gate(gate): raise AssertionError('Handoff gate refused')
+    parent = os.open(ACTIVATION_LOG_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        node = os.fstat(parent)
+        if (node.st_dev, node.st_ino) != identity or node.st_uid != 0 or stat.S_IMODE(node.st_mode) != 0o700:
+            raise AssertionError('Owned handoff directory changed')
+        for name in ('broker-handoff-gate.json', 'broker-handoff.json', '.broker-handoff.preparing'):
+            try: os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError: continue
+            raise AssertionError('Stale handoff evidence refused')
+        fd = os.open('broker-handoff-gate.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        try:
+            data = json.dumps(gate, sort_keys=True, separators=(',', ':')).encode()
+            if os.write(fd, data) != len(data): raise AssertionError('Incomplete handoff gate')
+            os.fsync(fd)
+        finally: os.close(fd)
+        os.fsync(parent)
+        named = ACTIVATION_LOG_DIRECTORY.lstat()
+        if (named.st_dev, named.st_ino) != identity: raise AssertionError('Owned handoff directory changed')
+    finally: os.close(parent)
+
+
+def handoff_projection_matches(witness, gate, transaction, inbox):
+    if not valid_handoff_gate(gate) or type(witness) is not dict or set(witness) != {'gate', 'transaction', 'inboxDevice', 'inboxInode'}:
+        return False
+    if witness['gate'] != gate or not valid_handoff_gate(witness['gate']): return False
+    if broker_record_projection(transaction, 'transaction').get('record') != 'valid': return False
+    if (transaction[24:56].hex() != gate['identity'] or int.from_bytes(transaction[56:64], 'big') != 141
+            or int.from_bytes(transaction[64:72], 'big') != 142 or int.from_bytes(transaction[10:12], 'big') not in (4, 5, 6, 7)):
+        return False
+    if witness['transaction'] != str(uuid.UUID(bytes=transaction[80:96])): return False
+    return (type(witness['inboxDevice']) is int and type(witness['inboxInode']) is int
+            and witness['inboxDevice'] == (inbox.st_dev & 0xffffffff) and witness['inboxInode'] == inbox.st_ino
+            and stat.S_ISDIR(inbox.st_mode) and inbox.st_uid == 0 and stat.S_IMODE(inbox.st_mode) == 0o700)
+
+
+def matching_handoff_witness(gate, identity):
+    witness = private_handoff_json('broker-handoff.json', identity=identity)
+    if witness is None: return False
+    if private_handoff_json('broker-handoff-gate.json', identity=identity) != gate:
+        raise AssertionError('Handoff gate changed')
+    broker = os.open(SYSTEM_BASE / 'Broker', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(broker)
+        if parent.st_uid != 0 or stat.S_IMODE(parent.st_mode) != 0o700:
+            raise AssertionError('Unsafe handoff broker namespace')
+        record = os.open('update-broker-transaction.bin', os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=broker)
+        try:
+            node = os.fstat(record)
+            if not stat.S_ISREG(node.st_mode) or node.st_uid != 0 or stat.S_IMODE(node.st_mode) != 0o600 or node.st_nlink != 1 or node.st_size != 128:
+                raise AssertionError('Unsafe handoff transaction observation')
+            transaction = os.read(record, 129)
+        finally: os.close(record)
+        # Atomic publication may be between revisions; it is not witness authority.
+        if broker_record_projection(transaction, 'transaction').get('record') != 'valid': return False
+        published = os.open('inbox-' + gate['identity'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=broker)
+        try: inbox = os.fstat(published)
+        finally: os.close(published)
+        if not handoff_projection_matches(witness, gate, transaction, inbox):
+            raise AssertionError('Same actor durable handoff evidence mismatched')
+        return True
+    finally: os.close(broker)
+
+
 def private_process_api():
     library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
     library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
@@ -784,6 +924,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         SYSTEM_BASE.mkdir(mode=0o700)
         self.base_identity = (SYSTEM_BASE.stat().st_dev, SYSTEM_BASE.stat().st_ino)
         self.activation_log_identity = None
+        self.handoff_gate = None
         self.addCleanup(self.cleanup_own_system_fixture)
         ACTIVATION_LOG_DIRECTORY.mkdir(mode=0o700)
         self.activation_log_identity = (ACTIVATION_LOG_DIRECTORY.stat().st_dev, ACTIVATION_LOG_DIRECTORY.stat().st_ino)
@@ -909,9 +1050,11 @@ class VPNRescueSystemVMTests(unittest.TestCase):
             info = ACTIVATION_LOG_DIRECTORY.lstat()
             if (info.st_dev, info.st_ino) != self.activation_log_identity or not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
                 raise AssertionError('Owned diagnostic namespace changed; refusing teardown')
-            if {path.name for path in ACTIVATION_LOG_DIRECTORY.iterdir()} != {'helper.log', 'recovery.log'}:
+            extra = {'broker-handoff-gate.json', 'broker-handoff.json', '.broker-handoff.preparing'} if self.handoff_gate is not None else set()
+            names = {path.name for path in ACTIVATION_LOG_DIRECTORY.iterdir()}
+            if not {'helper.log', 'recovery.log'} <= names or not names <= {'helper.log', 'recovery.log'} | extra:
                 raise AssertionError('Unknown diagnostic entry; refusing teardown')
-            for name in ('helper.log', 'recovery.log'):
+            for name in names:
                 path = ACTIVATION_LOG_DIRECTORY / name; info = path.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
                     raise AssertionError('Owned diagnostic file changed; refusing teardown')
@@ -1172,6 +1315,10 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         self.assertEqual(process_path.value, os.fsencode(expected_programs[0]), 'Broker executable identity differs')
         self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
         self.assertFalse(private_received_directory(api, broker_pid, candidate.st_dev, candidate.st_ino))
+        self.handoff_gate = {'schema': 1, 'nonce': str(uuid.uuid4()), 'pid': stamp[0],
+            'seconds': stamp[1], 'microseconds': stamp[2], 'from': 141, 'to': 142,
+            'identity': fixture_inbox_identity(successor)}
+        create_handoff_gate(self.handoff_gate, self.activation_log_identity)
         process = subprocess.Popen([str(APPLICATION / 'Contents/MacOS/ProxyPilot'),
                                     '--vm-submit-without-reply', str(successor)],
                                    **ordinary_owner_launch_parameters(self.fixture['owner']),
@@ -1195,25 +1342,28 @@ class VPNRescueSystemVMTests(unittest.TestCase):
             # child's existing post-close 300s lifetime starts later, so it
             # covers this deadline without extending our observation budget.
             completion_deadline = time.monotonic() + 300
+            self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
             process.stdin.write(b'G'); process.stdin.flush()
             own_probe_marker(process, b'submit:reply-socket-closed\n', wire_deadline)
-            # Observe the SAME broker reach handoffStarted. A crash/restart that
-            # happens to resume the transaction must not mask a SIGPIPE failure.
+            # The original actor may legitimately be retired immediately after
+            # handoff. Its own durable witness survives that legitimate rotation.
             handed_off = False
             while time.monotonic() < completion_deadline:
-                self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
-                progress = broker_record_diagnostics(SYSTEM_BASE / 'Broker', 'transaction')
-                if (progress.get('record') == 'valid' and progress.get('fromSequence') == 141
-                        and progress.get('toSequence') == 142 and progress.get('phase') == 'handoffStarted'):
-                    self.assertEqual(private_process_stamp(api, broker_pid, 0), stamp)
+                if matching_handoff_witness(self.handoff_gate, self.activation_log_identity):
                     handed_off = True; break
-            self.assertTrue(handed_off, 'Original authenticated broker handoff not observed')
+                time.sleep(0.02)
+            self.assertTrue(handed_off, 'Original authenticated broker handoff witness not observed')
             print('Ordinary lost-reply proof: ' + json.dumps({'authenticatedDescriptorObserved': True,
                   'replySocketClosed': True, 'sameBrokerHandoffObserved': True, 'ordinaryProbeAlive': True}), flush=True)
             self.assert_successor_installed(False, submitter=process, deadline=completion_deadline)
             self.assertEqual(private_process_stamp(api, process.pid, self.fixture['owner']), probe_stamp)
             process.stdin.write(b'Q'); process.stdin.flush()
             self.assertEqual(process.wait(timeout=5), 0, 'Own ordinary probe failed after D completion')
+        except BaseException:
+            try: diagnostics = self.state_summary()
+            except Exception: diagnostics = {'observation': 'unavailable'}
+            print('Lost-reply failure diagnostics: ' + json.dumps(diagnostics, sort_keys=True), flush=True)
+            raise
         finally:
             # Popen owns this unreaped child, so its PID cannot be reused before
             # poll/wait. Never signal a launchd process or arbitrary discovered PID.

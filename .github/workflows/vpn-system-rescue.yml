@@ -8,6 +8,7 @@ on:
       - 'tests/test_vpn_rescue_system_vm.py'
       - 'tests/test_vpn_rescue_system_materials.py'
       - 'tests/test_vpn_rescue_system_diagnostics.py'
+      - 'tests/test_vpn_rescue_system_handoff_witness.py'
       - 'tests/test_vpn_activation_diagnostics.py'
       - 'tests/vpn_activation_diagnostics_checks.swift'
       - 'tests/test_vpn_installed_update_result.py'
@@ -60,7 +61,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Fast signed fixture, engine continuity and source extraction checks
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_rescue_system_diagnostics test_vpn_activation_diagnostics test_vpn_installed_update_result test_vpn_engine_build test_vpn_recovery_service_lock_order test_vpn_joint_update_cleanup test_vpn_cancelled_update_cleanup test_vpn_update_broker_inbox test_vpn_update_broker_copy test_vpn_update_broker_transport.VPNBrokerReplySignalTests test_vpn_domain_network_plan -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_rescue_system_diagnostics test_vpn_rescue_system_handoff_witness test_vpn_activation_diagnostics test_vpn_installed_update_result test_vpn_engine_build test_vpn_recovery_service_lock_order test_vpn_joint_update_cleanup test_vpn_cancelled_update_cleanup test_vpn_update_broker_inbox test_vpn_update_broker_copy test_vpn_update_broker_transport.VPNBrokerReplySignalTests test_vpn_domain_network_plan -v
       - name: Prove root broker accepts ordinary-owned and readonly DMG input
         run: |
           test "$GITHUB_ACTIONS" = true
