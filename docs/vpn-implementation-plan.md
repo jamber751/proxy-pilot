@@ -19,7 +19,7 @@
 настоящую системную установку или изменение сети. При необходимости новых прав
 или существенного решения вне согласованного плана остановиться на этой границе.
 
-### Актуальная граница на 24 октября
+### Актуальная граница на 25 октября
 
 Текущий путь приёмки: **[✓ установка 137 и базовый прокси] →
 [● восстановление 137→139→исправленный C] → [○ VPN-приёмка исправленного комплекта] →
@@ -5983,3 +5983,58 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   bridge40121630191, interface40121630238, backend40121630261,
   transport40121630273, scoped-custody40121630322 queued при последнем наблюдении.
   Это тот же набор handles, не повод повторно запускать jobs из-за ожидания.
+
+### Продолжение 1.5fi — runtime остаётся OFF до устранения contention
+
+- [x] Snapshot37357a2 завершил6 remote gates SUCCESS на ARM/Intel без skips:
+  interface40121630238 —410 methods/205 на архитектуру; transport40121630273 —96
+  (45 fake/backend +3 genuine closed-role на архитектуру); backend40121630261 —24
+  (включая те же6 real private API cases на архитектуру); scoped40121630322 —54
+  pure (27 на архитектуру) и actual universal helper compile/sign-only;
+  ownership40121630189 —812; bridge40121630191 —160. Эти counts пересекаются по
+  проверяемым компонентам, не складываются в число уникальных сценариев.
+  System40121630182 остаётся live; это pre-busy/pre-diagnostic graph.
+- [x] `ada737f`: отдельный Runtime связывает Persistence/Cleanup с явным installer
+  owner, fresh per-operation workers, one-shot startup и post-durable-save
+  lifecycle callbacks. No-op/failed save не запускает cleanup; committed save
+  вызывает callback до возможной adoption failure, вне Store lock. Held manual
+  candidate через private-key prompt очищается при смене saved intent. Save
+  completion callback после fresh claim очищает secret ДО cleanup request.
+  Init/default unavailable/start не выполняют Security API. Real availability
+  централизованно FALSE; это integration groundwork, не включённая функция.
+- [x] Counts-only cleanup warning не исчезает от пустого/частичного отчёта при
+  неизвестной мутации. Оно видно после revoke в VPN settings и после удаления
+  VPN в существующей строке обычных настроек. Явная ошибка имеет приоритет;
+  credential prompts не загружаются дополнительным cleanup notice. При notice
+  только resource viewport уменьшается144→112, anchor сохраняется. Agent43
+  notice/scroll/contracts tests passed (27+14+5 wiring отдельно по наборам);
+  independently Runtime/Panel/layout/removal42 methods PASS41.082s.19 rendered
+  states включают18/100 resources +warning и home save/cleanup combination.
+  Full actual build.sh87-source frontend no-TESTING ARM/Intel PASS:
+  `/tmp/pp-runtime-final-combined-proof-m46_4qhc/verification.json`; owned app
+  hashes проверены. CI14d1893 добавляет Runtime suite в interface gate.
+- [ ] ДО включения Runtime подтверждён отдельный реальный concurrency RED:
+  fake cleanup удерживает actual Store.deletePendingPassword lock; одновременно
+  OTP/static submit получает0helper exchanges/input wiped/connectedfalse,
+  Model.save busy. Artifact `/tmp/pp-runtime-cleanup-contention-red-ziu052g7`.
+  Причина: Prepared.perform ждал Security response до5s ВНУТРИ Store callback.
+  Следующий отдельный fix должен оставить durable gate+oneGO под lock, ждать
+  response вне lock, затем точно/idempotently acknowledge verified receipt;
+  Read обязан свежепроверять ref/locator/revision/consent. Нельзя закрывать это
+  длинной сериализацией64refs перед user flow или увеличением бюджетов.
+- [x] `cad8f7a`: activation diagnostics — closed roles/stages/categories/elapsed
+  buckets, production OSLog info/error без файлов/новых прав. VM-only current
+  helper/rescue/probe flags и precreated root0700 directory с exact0600 logs
+  дают bounded whitelist events в failure summary; frozen139 binary/source
+  не менялись. Fixture sink дублирует и проверяет exact regular/private stderr
+  FD; pipe/devnull/unknownpath пропускаются, global SIGPIPE не меняется.
+  Native closedpipe/default-SIGPIPE proof прошёл. Независимо43 tests PASS22.891s;
+  all8 baseline production/diagnostic ARM/Intel graphs compiled, safe-sink
+  revision подтверждена4 latest production+diagnostic helper module passes.
+  Manifest `/tmp/pp-activation-safe-sink-final-_4_dzyt4/source-sha256.json`, все5
+  owned root hashes совпали. Deadlines/3attempts/auth не ослаблялись. Это
+  диагностика Intel activation failure, а не неподтверждённый fix его причины.
+- [ ] Genuine default-Keychain VM proof и Worker contention RED→GREEN остаются
+  обязательными перед liveIntegrationEnabled. DNS bound transport real-utun
+  isolation, relay/answers/OS protection/dead-interface cleanup, full installed
+  OTP/IP/lifecycle/WARP/macOS11 и English release сохраняются в полном плане.
