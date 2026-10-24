@@ -5747,3 +5747,50 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   только два точно известных requested base/DB имени с positive ENOENT другого,
   held-vnode/parent/canonical/name-binding proof; arbitrary returned leaf запрещён.
   Production identity/factory не ослабляются до фактической приёмки.
+
+### Продолжение 1.5fd — ordinary update установил D, исправлен cleanup prelude
+
+- [x] ARM40112217369 прошёл исходные5 Installer cases. Owner C→D Off получил
+  submit:ready/exit0, установил D/selected142 и завершил broker transaction/status;
+  actual ordinary D startup ответил status:installed. Полный gate всё же FAILED:
+  cleanup.json pending, destination C/protected slots остались. Recovery повторял
+  запуск. Лог `/tmp/pp-system-arm-40112217369.log`. DesiredOn/lost-reply не пройдены.
+- [x] `aec529a`: найдена детерминированная причина — ordinary cleanup prelude
+  вызывал finishUpdatePreparationConversion даже без preparation; эта API
+  запрещает уже существующий cleanup receipt и давала cleanupPending. Rescue
+  использовал другой путь, поэтому исходные5 проходили. Теперь actual production
+  prelude общий с тестами: validates preparation, конвертирует только при её
+  наличии; существующая Store equality проверяет exact terminal journal/receipt
+  перед unlink. Store API/lease/auth/GC policy не ослаблены. RED старого prelude
+  подтверждён; cleanup19 + cancellation13 passed, genuine helper graph ARM/Intel
+  compiled без TESTING. Полный новый System8 всё ещё требуется.
+- [x] `de34f43`: typed deletePendingOutcome сохраняет все nonpositive obligations;
+  старый Void wrapper по-прежнему throws. Positive backend Delete без successful
+  Store acknowledgment не становится .deleted.37 hardened fake-child cases
+  passed, production ARM/Intel modules compiled. Реального Keychain это не доказывает.
+- [x] `44a7460`: inert cleanup coordinator:27 fake/private-Store checks passed,
+  production ARM/Intel compile passed. Только explicit serialized/coalesced passes,
+  max64 refs, process-global bounded quarantine без eviction, stop-first-unknown;
+  .pending Add не вызывает API, noItem/notIssued retires metadata без worker.
+  После typed.deleted допускается только bounded read-only observation для
+  реальной late-child Store contention: max3 reads/one50ms budget; новых GO нет.
+- [ ] Actual backend40115312150 (`f953cb1`): ARM5/6 actual cases passed; остаётся
+  roundtrip с decoy/context switch. Оба Create прошли exact base-file/parent/
+  canonical proof, normal Add успешен; отказ VPNValidationError.storageUnavailable
+  позже в сценарии. `0a0b708` добавляет test-only13-byte closed stage/OSStatus
+  diagnostic через inherited private directory, сохраняя worker stdio/devnull.
+  Diagnostic не является receipt и не снимает unknown RPC sentinel.5 no-API tests
+  passed, production+fixture typechecks ARM/Intel passed. Production query/factory
+  не изменены; точный Delete status ещё ожидается от CI.
+- [x] `57c5c6f`: подготовлен отдельный /etc/resolver public-file canary,7 pure
+  tests passed, ARM/Intel probe compile passed. Actual root execution разрешён
+  только в fresh opted-in GHA VM; на host файлов/сокетов/DNS не меняли.
+- [ ] Canary должен доказать A/AAAA + UDP TC→TCP и реальное разрешение после
+  SIGKILL своего writer при сохранённом exact file. Negative closed-listener
+  outcome НЕ доказывает отсутствие default fallback. Exact-host/CNAME/TTL,
+  utun pin, OS protection и daemon-restart proof остаются открытыми.
+- [ ] До включения cache UI нужны real backend acceptance, authenticated worker
+  bridge/early role wiring и explicit lifecycle cleanup triggers. Нужна также
+  понятная обратная связь при недоступном Keychain/неполной очистке (требование
+  «Нужно подтверждение» не заменяется молчаливым fallback). Все7 этапов плана,
+  final OTP/IP/WARP/macOS11 и release gate сохраняются в исходном объёме.
