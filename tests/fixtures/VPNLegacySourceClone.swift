@@ -5,7 +5,7 @@ enum VPNLegacySourceCloneError: Error {
     case requiresRoot, unsafeStorage, occupiedDestination, cloneUnavailable, incomplete
 }
 
-/// Preparatory snapshot ONLY: does not publish an app, launch an executor, change
+/// Experimental test fixture ONLY: does not publish an app, launch an executor, change
 /// a journal/selector, or repair a pending update. No production role calls this.
 /// A future caller must retain service→Update leases, authenticate the exact
 /// pending transaction, and supply a fresh root-private destination under trusted

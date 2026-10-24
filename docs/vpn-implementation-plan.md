@@ -4489,6 +4489,35 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   ownership check и source revalidation. Никакого swap/journal/service mutation.
   Production prepare недоступен компилятору до durable migration/resume.
   Локально ordinary-user refusal passed; root-сценарии локально не запускались.
-- [ ] Remote run 40080484055 (`ed502af`) проверяет clone на обеих архитектурах.
+- [x] Remote run 40080484055 (`ed502af`) завершился success: **66 passed, без skips**,
+  по 8 ordinary + 14 ownership + 1 nonroot refusal + 10 clone на каждой архитектуре.
 - [ ] Durable migration record, publication/retry, recovery job и общий сценарий
   frozen A→B с прерываниями ещё не реализованы. Host installation не выполнялась.
+
+### Продолжение 1.5dd — выбран отдельный signed rescue
+
+Ownership clone проверен как эксперимент, но публикация user-owned A создаёт
+неподдерживаемое старым recovery окно. Не развиваем этот путь: primitive перенесён
+в `tests/fixtures/VPNLegacySourceClone.swift`, в production source graph его нет.
+
+- [ ] Отдельный signature domain и типизированный verified rescue token для exact
+  signed A137/B139 manifests, transition и hash/CDHash rescue executable. Фиксированная
+  операция завершения root-owned destination и matching cleanup. UUID не wildcard:
+  авторизация задаёт exact edge, фактические UUID/revision захватываются под lease
+  и проверяются на каждом шаге. Обычная authentication A не расширяется.
+- [ ] Только pending/inspectApplication + selected A + protected B/A/executorA
+  допускают destination completion. Root-owned A/B остаются root-owned.
+  Existing signed B recovery job arm до drain/swap, без нового ownership journal.
+- [ ] Отдельный typed rescue exchange: static проверка old executor, собственная
+  rescue identity; нельзя вызвать обычный exchange, который требует PID A,
+  или передать `skipAuthentication`. Обычный B child также ожидает parent A.
+- [ ] После swap journal/selector остаются прежними; existing signed helper139
+  распознаёт installedB/selectedA и завершает forward recovery. Исправленный cleanup
+  разрешён только для exact matching receipt/transaction/candidate после selection.
+- [ ] Crash matrix: до/после arm, drain, rename, sync, selection, retirement,
+  cleanup; неизвестные layout/signature/edge/phase/owner отказывают без mutation.
+  Обычные роли продолжают отвергать rescue. Synthetic signing на удалённых VM.
+- [ ] Восстановить 139 недостаточно для окончательного пакета: у139 всё ещё старый
+  executor и нет root-owned capability. Нужен отдельно проверенный переход139→C
+  с исправленным executor в том же финальном установщике либо другой полностью
+  доказанный путь. Нельзя объявлять всё готовым после одного только recovery139.

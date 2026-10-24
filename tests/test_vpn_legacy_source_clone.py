@@ -28,7 +28,8 @@ class VPNLegacySourceCloneTests(unittest.TestCase):
         cls.command(['swiftc', '-D', 'VPN_LEGACY_SOURCE_CLONE_TESTING',
                      *[str(staged.HELPER / name) for name in (
                          'VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift',
-                         'VPNStagedApplication.swift', 'VPNLegacySourceClone.swift')],
+                         'VPNStagedApplication.swift')],
+                     str(staged.ROOT / 'tests/fixtures/VPNLegacySourceClone.swift'),
                      str(staged.ROOT / 'tests/vpn_legacy_source_clone_checks.swift'),
                      '-o', str(cls.clone_checker)])
 
