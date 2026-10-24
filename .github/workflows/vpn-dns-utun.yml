@@ -1,0 +1,45 @@
+name: VPN disposable owned-utun DNS socket isolation
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-dns-utun.yml'
+      - 'tests/test_vpn_dns_utun_vm.py'
+      - 'tests/vpn_dns_utun_vm_checks.swift'
+      - 'tests/vpn_dns_utun_vm_support.c'
+      - 'app/VPNConfiguration.swift'
+      - 'app/vpn-helper/OpenVPNManagementEvent.swift'
+      - 'app/vpn-helper/OpenVPNStateEvidence.swift'
+      - 'app/vpn-helper/VPNKernelInterfaceSnapshot.swift'
+      - 'app/vpn-helper/VPNTunnelInterfaceResolver.swift'
+      - 'app/vpn-helper/VPNRoutePlan.swift'
+      - 'app/vpn-helper/VPNRouteJournal.swift'
+      - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
+      - 'app/vpn-helper/VPNRouteTransaction.swift'
+      - 'app/vpn-helper/VPNDNSPlan.swift'
+      - 'app/vpn-helper/VPNDomainNetworkPlan.swift'
+      - 'app/vpn-helper/VPNLifecycleOwnership.swift'
+      - 'app/vpn-helper/VPNBoundDNSUpstreamSocket.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  utun:
+    name: Owned synthetic utun selection and custody (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile actual production sources and test only guards and pure packets
+        run: python3 tests/test_vpn_dns_utun_vm.py -v
+      - name: Own both synthetic interfaces and keep unresolved protected receipt until VM disposal
+        run: sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_DNS_UTUN_TESTS=1 python3 tests/test_vpn_dns_utun_vm.py --acceptance
