@@ -28,12 +28,12 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;800 isolated checks ARM/Intel; исходные5 Installer cases теперь прошли на обеих архитектурах | Обычный update после repair отказал на обеих архитектурах; исправления Inbox/READY подготовлены, новый полный gate ещё не пройден; macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; исходные5 Installer cases прошли | Исправлен ordinary update cleanup; полный System8 run40117891547 ещё выполняется; macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137;140 isolated core/model/ledger/UI checks суммарно на ARM/Intel, OTP/drop, credential focus и список1/3/18/100 | Реальный Keychain adapter и opt-in UI, диагностика, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;342 isolated interface checks ARM/Intel на527484a, OTP/drop, credential focus и список1/3/18/100;53 отдельных feedback tests | Приёмка и подключение реального Keychain, UI статусов сохранения/очистки, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -5800,7 +5800,8 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [x] `527484a`: isolated interface run40118563490 SUCCESS обе архитектуры:
   342 tests,171 на архитектуру, без пропусков. Этот snapshot включает worker37
   и cleanup27; новый feedback commit ниже проверен отдельно, не этим CI run.
-- [x] Ownership run40117891554 (`b650e74`) завершил все6 групп SUCCESS;
+- [x] Ownership run40117891554 (`b650e74`) завершил все6 групп SUCCESS:812 tests,
+  без пропусков;
   managed bridge40117891514 SUCCESS:160 tests,80 на архитектуру, без пропусков.
   Это изолированные проверки, не full installed VPN/lifecycle acceptance.
 - [ ] System8 run40117891547 (`b650e74`) продолжает выполняться: ARM уже дошёл
@@ -5820,6 +5821,15 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   после передачи секрета. Отдельный следующий fix должен проверять текущие
   profile/auth/revision/resources/DNS/desiredEnabled ДО каждого credential
   exchange, во всех режимах, с очисткой входного Data даже при раннем отказе.
+- [x] `80e2cff`: Delete заменён на SecKeychainItemDelete уже полностью проверенного
+  transient item reference; прежние owner/persistent-reference/envelope checks
+  сохранены. Независимо3 injected/source tests PASS (6.187s); полный private
+  safe набор6/6 и genuine production+fixture ARM/Intel compile/sign-only passed.
+  [Apple SecItem implementation](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/SecItem.cpp#L2816)
+  показывает, что MatchItemList фильтрует search results, а
+  [direct item Delete](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/SecKeychainItem.cpp#L196)
+  использует owning keychain самого item. Никакого default search fallback нет.
+  Новый actual backend run40120310858 запущен на этом snapshot; результат pending.
 - [ ] Actual backend40118563662 (`527484a`) FAILED обе архитектуры:5/6 actual
   cases PASS. Class исправил errSecParam(-50), но точный Delete query возвращает
   errSecItemNotFound(-25300) при original private keychain вне defaults.
@@ -5839,3 +5849,37 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   по себе не равен RTF_IFSCOPE. Нельзя заявлять utun/no-leak readiness по этому
   planner или прежним system resolver canaries. Все7 этапов остаются открыты
   до соответствующей финальной приёмки; повторных host installs не было.
+
+### Продолжение 1.5ff — реальный Keychain прошёл, stale submit закрыт
+
+- [x] Actual backend run40120310858 (`80e2cff`) SUCCESS ARM/Intel: на каждой
+  архитектуре3 injected methods +9 VM methods (6 real private-keychain scenarios
+  и3 no-API guards), без пропусков. Original A после смены Add target наB удалён
+  точно, decoyB сохранён. Это закрывает ошибку Delete; genuine frontend role/
+  build adapter integration и production default-keychain UX остаются отдельно.
+- [x] `6ee46b9`: перед каждым manual/cached/OTP/private-key credential exchange
+  Store читается заново и полная saved application сравнивается с held attempt.
+  Disabled intent не включается обратно; preflight failure очищает входной Data
+  до response construction и не тратит helper frames. Это fresh read перед send,
+  не atomic fence от чужого writer после read; Store lock не удерживается через
+  IPC. Ledger-only writes не меняют application и допускаются. Независимо57 tests
+  PASS7.924s; stale matrix включает same-revision изменённые profile bytes.
+  Agent RED до fix воспроизвёл11 credential leak cases; старый8-frame flow сохранён.
+- [x] `9f8f075`: Panel получает redacted feedback на main queue и повторно
+  проверяет phase/intent/revision/consent при delivery и display. После connect
+  configuration reload сверяет latest event, чтобы enabling revision не теряла
+  результат. Connected detail показывает saving/saved/unconfirmed без новых
+  кнопок; предупреждение не отключает VPN и не называет unknown result успешным.
+  17 adapter test methods PASS7.543s (6 feedback scenarios),14 real offscreen
+  states PASS13.229s; import9 PASS6.705s и removal7 PASS11.613s. Real cache capability
+  пока не включена в Panel: early role/build/adapter wiring и cleanup feedback
+  остаются обязательными следующими действиями.
+- [x] Combined genuine frontend graph из77 actual build sources без TESTING:
+  ARM/Intel typecheck exit0. Immutable snapshot/proof:
+  `/tmp/pp-frontend-feedback-preflight-flib525y/verification.json`.
+  Controller после snapshot потерял только один лишний EOF newline; нового
+  worker/main/build integration этот compile proof не включает.
+- [ ] Targeted review обнаружил дополнительный UI gap: needsConfirmation при
+  cached read failure есть в model, но prompt detail его не показывает (только
+  connected detail). Исправление и seeded-cache/manual-fallback layout test
+  готовятся отдельно; до их приёмки feedback UX не считать завершённым.
