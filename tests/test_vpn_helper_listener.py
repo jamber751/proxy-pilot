@@ -498,6 +498,54 @@ class VPNHelperListenerTests(unittest.TestCase):
                           self.pins[client]['x86_64'], str(policy_state)])
         return policy_state
 
+    def test_fresh_context_fits_same_two_second_validation_budget_with_two_evaluations(self):
+        # Callback-local fake cost clock: 750ms per complete state evaluation.
+        # No sleeps or claim of measured Intel cost; actual socket deadlines
+        # remain unchanged. Old production consumes three evaluations and fails.
+        self.seed()
+        state = self.transition_service(state='context-cost')
+        observed = self.probe(client='previous')
+        self.assertEqual((observed, Path(str(state) + '.evaluations').read_text()), ('ready:10 closed', '2'))
+
+    def test_base_installer_role_keeps_one_final_fresh_context_evaluation(self):
+        self.seed()
+        state = self.transition_service(state='context-cost')
+        self.assertEqual(self.probe(), 'ready:10 closed')
+        self.assertEqual(Path(str(state) + '.evaluations').read_text(), '1')
+
+    def test_base_installer_cannot_skip_invalid_or_not_ready_final_context(self):
+        for mode in ('context-invalid-immediate', 'context-not-ready-immediate'):
+            with self.subTest(mode=mode):
+                test = type(self)('test_authenticated_client_receives_a_receipt')
+                test.setUp()
+                try:
+                    test.seed(); state = test.transition_service(state=mode)
+                    self.assertIn('rejected:', test.probe())
+                    self.assertEqual(Path(str(state) + '.evaluations').read_text(), '1')
+                finally: test.doCleanups()
+
+    def test_fresh_context_is_not_reused_across_connections_or_wrong_peers(self):
+        self.seed()
+        state = self.transition_service(state='context-enabled')
+        self.assertIn('rejected:', self.probe(client='stranger'))
+        self.assertEqual(Path(str(state) + '.evaluations').read_text(), '1')
+        self.assertEqual(self.probe(client='previous'), 'ready:10 closed')
+        self.assertEqual(Path(str(state) + '.evaluations').read_text(), '3')
+        self.assertEqual(self.probe(client='previous'), 'ready:10 closed')
+        self.assertEqual(Path(str(state) + '.evaluations').read_text(), '5')
+
+    def test_fresh_context_refuses_changed_invalid_or_not_ready_final_snapshot(self):
+        for mode in ('context-revoked', 'context-invalid', 'context-not-ready'):
+            with self.subTest(mode=mode):
+                # A separate service/namespace per boundary mutation.
+                test = type(self)('test_authenticated_client_receives_a_receipt')
+                test.setUp()
+                try:
+                    test.seed(); state = test.transition_service(state=mode)
+                    self.assertIn('rejected:', test.probe(client='previous'))
+                    self.assertEqual(Path(str(state) + '.evaluations').read_text(), '2')
+                finally: test.doCleanups()
+
     def test_previous_app_is_readiness_only_while_transition_policy_exists(self):
         self.seed()
         self.transition_service()

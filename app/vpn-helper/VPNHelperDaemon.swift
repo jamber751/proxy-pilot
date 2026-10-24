@@ -118,18 +118,17 @@ enum VPNHelperDaemon {
             }
             trace.mark(.endpoint)
             try runtime.prepareEndpoint(directory: endpoint, shared: shared)
+            func policiesForJournal(_ journal: VPNUpdateJournalSnapshot?) throws -> [VPNPeerPolicy] {
+                guard let journal else { return [] }
+                if let testing = recoveryReadinessPolicies { return try testing(journal, selected) }
+                let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
+                    || journal.phase == .replacementPending && journal.recovery == .inspectApplication
+                return [try journal.previous.release.installerPolicy(),
+                        try (early ? journal.candidate.release : selected.release).helperPolicy()]
+            }
             let readinessPolicies: () throws -> [VPNPeerPolicy] = {
-                return try VPNActivationDiagnostics.run(role: .readinessPolicy, stage: .readinessPolicy) { _ in
-                    guard let journal = try recoveryJournal() else { return [] }
-                    if let testing = recoveryReadinessPolicies {
-                        return try testing(journal, selected)
-                    }
-                    let early = journal.phase == .prepared && journal.recovery == .canCancelOrReplace
-                        || journal.phase == .replacementPending && journal.recovery == .inspectApplication
-                    return [
-                        try journal.previous.release.installerPolicy(),
-                        try (early ? journal.candidate.release : selected.release).helperPolicy(),
-                    ]
+                try VPNActivationDiagnostics.run(role: .readinessPolicy, stage: .readinessPolicy) { _ in
+                    try policiesForJournal(recoveryJournal())
                 }
             }
             trace.mark(.listener)
@@ -213,6 +212,17 @@ enum VPNHelperDaemon {
                     },
                     allowOwnerRequests: {
                         !startsForRecovery || (try? store.requireNoPendingUpdate()) != nil
+                    },
+                    rootReadinessContext: {
+                        try VPNActivationDiagnostics.run(role: .readinessPolicy, stage: .readinessPolicy) { _ in
+                            try stillSelected()
+                            let journal = try recoveryJournal()
+                            let ready = !startsForRecovery || journal != nil
+                                || (try? store.requireNoPendingUpdate()) != nil
+                            let policies = try policiesForJournal(journal)
+                            try stillSelected()
+                            return VPNHelperRootReadinessContext(ready: ready, additionalPolicies: policies)
+                        }
                     })
                 // Never delay the first readiness receipt with maintenance. The
                 // lifecycle lease makes the no-journal check and job removal atomic

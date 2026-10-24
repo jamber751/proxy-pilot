@@ -3,6 +3,14 @@ import Dispatch
 import Foundation
 import os.log
 
+/// One fresh server-side state evaluation, never an IPC authorization token.
+/// A root handshake obtains independent snapshots before authentication and
+/// immediately before its reply; no snapshot survives a request.
+struct VPNHelperRootReadinessContext {
+    let ready: Bool
+    let additionalPolicies: [VPNPeerPolicy]
+}
+
 enum VPNHelperListenerError: Error { case unsafeStorage, unavailable, invalidTimeout }
 
 /// Authenticated readiness and bounded owner commands inside the helper. The
@@ -254,7 +262,8 @@ final class VPNHelperListener {
     /// the helper's state at that moment rather than the fact it is running.
     @discardableResult
     func serveOnce(timeoutMilliseconds: Int = 2000, isReady: () -> Bool,
-                   allowOwnerRequests: () -> Bool = { true }) throws -> Bool {
+                   allowOwnerRequests: () -> Bool = { true },
+                   rootReadinessContext: (() throws -> VPNHelperRootReadinessContext)? = nil) throws -> Bool {
         guard (1...5000).contains(timeoutMilliseconds) else { throw VPNHelperListenerError.invalidTimeout }
         guard listener >= 0 else { throw VPNHelperListenerError.unavailable }
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
@@ -269,47 +278,44 @@ final class VPNHelperListener {
         do {
             var peerUID: uid_t = 0, peerGID: gid_t = 0
             guard getpeereid(client, &peerUID, &peerGID) == 0 else { return false }
-            var installationProbe = peerUID == 0
-            func rootReadinessPolicy() throws -> VPNPeerPolicy {
-                if (try? VPNPeerAuthentication.validate(
-                        connectedSocket: client, policy: installerPolicy)) != nil {
-                    return installerPolicy
+            #if VPN_HELPER_LISTENER_TESTING
+            let installationProbe = peerUID == 0 || fixtureInstaller
+            let baseRootPolicy = fixtureInstaller ? policy : installerPolicy
+            #else
+            let installationProbe = peerUID == 0
+            let baseRootPolicy = installerPolicy
+            #endif
+            func rootReadinessPolicy(_ context: VPNHelperRootReadinessContext?, checkBase: Bool = true) throws -> VPNPeerPolicy {
+                if let context {
+                    guard context.ready, context.additionalPolicies.count <= 2 else {
+                        throw VPNPeerAuthenticationError.denied
+                    }
                 }
-                let additional = try additionalReadinessPolicies()
-                guard additional.count <= 2 else {
-                    throw VPNPeerAuthenticationError.denied
+                if checkBase, (try? VPNPeerAuthentication.validate(
+                        connectedSocket: client, policy: baseRootPolicy)) != nil {
+                    return baseRootPolicy
                 }
+                let additional = try context?.additionalPolicies ?? additionalReadinessPolicies()
+                guard additional.count <= 2 else { throw VPNPeerAuthenticationError.denied }
                 for candidate in additional {
                     if (try? VPNPeerAuthentication.validate(
-                            connectedSocket: client, policy: candidate)) != nil {
-                        return candidate
-                    }
+                            connectedSocket: client, policy: candidate)) != nil { return candidate }
                 }
                 throw VPNPeerAuthenticationError.denied
             }
-            var connectionPolicy = installationProbe ? try rootReadinessPolicy() : policy
-            #if VPN_HELPER_LISTENER_TESTING
-            if fixtureInstaller {
-                installationProbe = true
+            var connectionPolicy = policy
+            if installationProbe {
+                // The base installer never needed an initial journal lookup.
+                // Fallback roles require one fresh context before admission.
                 if (try? VPNPeerAuthentication.validate(
-                        connectedSocket: client, policy: policy)) != nil {
-                    connectionPolicy = policy
+                        connectedSocket: client, policy: baseRootPolicy)) != nil {
+                    connectionPolicy = baseRootPolicy
                 } else {
-                    let additional = try additionalReadinessPolicies()
-                    guard additional.count <= 2,
-                          let matched = additional.first(where: {
-                              (try? VPNPeerAuthentication.validate(
-                                  connectedSocket: client, policy: $0)) != nil
-                          }) else {
-                        throw VPNPeerAuthenticationError.denied
-                    }
-                    connectionPolicy = matched
+                    connectionPolicy = try rootReadinessPolicy(try rootReadinessContext?(), checkBase: false)
                 }
             }
-            #endif
             if !installationProbe {
-                try VPNPeerAuthentication.validate(
-                    connectedSocket: client, policy: connectionPolicy)
+                try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
             }
             let challenge = try VPNHelperProtocol.read(count: 56, socket: client, deadline: deadline)
             guard Array(challenge.prefix(8)) == Self.request,
@@ -322,27 +328,14 @@ final class VPNHelperListener {
             guard installationProbe || allowOwnerRequests() else { return false }
             // Answer only for the state at this instant. A running process is
             // not readiness, and a rejected answer must not be a stale success.
-            guard isReady() else { return false }
             if installationProbe {
-                #if VPN_HELPER_LISTENER_TESTING
-                if fixtureInstaller {
-                    let baseStillMatches = (try? VPNPeerAuthentication.validate(
-                        connectedSocket: client, policy: policy)) != nil
-                    if !baseStillMatches {
-                        let current = try additionalReadinessPolicies()
-                        guard current.count <= 2,
-                              current.contains(where: {
-                                  (try? VPNPeerAuthentication.validate(
-                                      connectedSocket: client, policy: $0)) != nil
-                              }) else { throw VPNPeerAuthenticationError.denied }
-                    }
-                } else {
-                    connectionPolicy = try rootReadinessPolicy()
-                }
-                #else
-                connectionPolicy = try rootReadinessPolicy()
-                #endif
+                // Fresh final state and its policies come from the SAME journal
+                // evaluation. Never reuse a pre-authentication context across this boundary.
+                let finalContext = try rootReadinessContext?()
+                if finalContext == nil { guard isReady() else { return false } }
+                connectionPolicy = try rootReadinessPolicy(finalContext)
             } else {
+                guard isReady() else { return false }
                 try VPNPeerAuthentication.validate(connectedSocket: client, policy: connectionPolicy)
             }
             try VPNHelperProtocol.write(Self.response + challenge.dropFirst(8), socket: client, deadline: deadline)

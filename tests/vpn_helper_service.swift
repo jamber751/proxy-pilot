@@ -48,6 +48,7 @@ enum VPNHelperService {
                 exit(0)
             }
             let deployment = try store.loadDeployment()
+            var contextEvaluation: (() throws -> (ready: Bool, policies: [VPNPeerPolicy]))?
             let listener: VPNHelperListener
             #if VPN_HELPER_LISTENER_TESTING
             if args.count == 7,
@@ -73,10 +74,33 @@ enum VPNHelperService {
                         : "kz.documentolog.proxypilot",
                     codeDirectoryHashes: Set([arm, intel]))
                 let state = args[6]
+                if (try? String(contentsOfFile: state, encoding: .utf8))?.hasPrefix("context-") == true {
+                    var evaluations = 0
+                    contextEvaluation = {
+                        evaluations += 1
+                        try Data(String(evaluations).utf8).write(to: URL(fileURLWithPath: state + ".evaluations"), options: .atomic)
+                        _ = chmod(state + ".evaluations", 0o600)
+                        let mode = try String(contentsOfFile: state, encoding: .utf8)
+                        // Deterministic virtual validation cost, not a sleep or
+                        // a replacement for actual socket/code authentication.
+                        if mode == "context-cost", evaluations * 750_000_000 > 2_000_000_000 {
+                            throw VPNHelperTransportError.timeout
+                        }
+                        if mode == "context-invalid-immediate" { throw VPNReleaseStoreError.invalidUpdateJournal }
+                        if mode == "context-not-ready-immediate" { return (false, [transitionPolicy]) }
+                        if evaluations >= 2 {
+                            if mode == "context-invalid" { throw VPNReleaseStoreError.invalidUpdateJournal }
+                            if mode == "context-revoked" { return (true, []) }
+                            if mode == "context-not-ready" { return (false, [transitionPolicy]) }
+                        }
+                        return (true, [transitionPolicy])
+                    }
+                }
                 listener = try VPNHelperListener.testBindInstaller(
                     inTrustedDirectory: directory, release: deployment.release,
                     ownerUserID: deployment.ownerUserID,
                     additionalReadinessPolicies: {
+                        if let evaluate = contextEvaluation { return try evaluate().policies }
                         guard let value = try? String(contentsOfFile: state, encoding: .utf8) else {
                             return []
                         }
@@ -154,13 +178,21 @@ enum VPNHelperService {
             let ownerRequestsAllowed = !args.contains("owner-blocked")
             if args.contains("tunnel-once") {
                 _ = try? listener.serveOnce(
-                    isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed })
+                    isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed },
+                    rootReadinessContext: contextEvaluation.map { evaluate in {
+                        let snapshot = try evaluate()
+                        return VPNHelperRootReadinessContext(ready: snapshot.ready, additionalPolicies: snapshot.policies)
+                    } })
                 listener.close()
                 exit(0)
             }
             while true {
                 _ = try? listener.serveOnce(
-                    isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed })
+                    isReady: { ready }, allowOwnerRequests: { ownerRequestsAllowed },
+                    rootReadinessContext: contextEvaluation.map { evaluate in {
+                        let snapshot = try evaluate()
+                        return VPNHelperRootReadinessContext(ready: snapshot.ready, additionalPolicies: snapshot.policies)
+                    } })
             }
         } catch {
             FileHandle.standardError.write(Data("service:\(error)\n".utf8))
