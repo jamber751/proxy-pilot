@@ -5794,3 +5794,48 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   понятная обратная связь при недоступном Keychain/неполной очистке (требование
   «Нужно подтверждение» не заменяется молчаливым fallback). Все7 этапов плана,
   final OTP/IP/WARP/macOS11 и release gate сохраняются в исходном объёме.
+
+### Продолжение 1.5fe — актуальные результаты и обратная связь сохранения
+
+- [x] `527484a`: isolated interface run40118563490 SUCCESS обе архитектуры:
+  342 tests,171 на архитектуру, без пропусков. Этот snapshot включает worker37
+  и cleanup27; новый feedback commit ниже проверен отдельно, не этим CI run.
+- [x] Ownership run40117891554 (`b650e74`) завершил все6 групп SUCCESS;
+  managed bridge40117891514 SUCCESS:160 tests,80 на архитектуру, без пропусков.
+  Это изолированные проверки, не full installed VPN/lifecycle acceptance.
+- [ ] System8 run40117891547 (`b650e74`) продолжает выполняться: ARM уже дошёл
+  до recovery completed service/broker phase6 while enabled; Intel собирает
+  genuine production artifacts с synthetic trust. Полного результата ещё нет.
+  Старый40113952613 отменён как superseded graph с уже установленным cleanup
+  defect; причиной не был observation timeout. Новый run не перезапускается.
+- [x] `e55fcc0`: redacted persistence events saving/saved/needsConfirmation
+  связаны с точным intent/revision/consent. Saved требует positive Add + matching
+  settled Store receipt; capture failure хранит только пустой intent marker и
+  предупреждает после verified connection. Callbacks вне intent/Store locks;
+  obsolete phase/intent/revoked consent отклоняются. Независимо53 tests PASS
+  (7.104s), genuine production modules ARM/Intel compile exit0; hashes совпали.
+  UI subscriber и реальная worker factory этим commit не включены.
+- [ ] Свежая read-only проверка выявила stale held-prompt gap: настройки другого
+  экземпляра могут измениться до submit, а acknowledgment замечает это уже
+  после передачи секрета. Отдельный следующий fix должен проверять текущие
+  profile/auth/revision/resources/DNS/desiredEnabled ДО каждого credential
+  exchange, во всех режимах, с очисткой входного Data даже при раннем отказе.
+- [ ] Actual backend40118563662 (`527484a`) FAILED обе архитектуры:5/6 actual
+  cases PASS. Class исправил errSecParam(-50), но точный Delete query возвращает
+  errSecItemNotFound(-25300) при original private keychain вне defaults.
+  Проверяется supported direct item-reference Delete после прежней полной
+  owner/persistent-reference/envelope verification; fallback/search расширять
+  нельзя. Реальная factory остаётся отключённой.
+- [ ] Persistent resolver-file canary40117891630 FAILED обе архитектуры:
+  до/после SIGKILL writer настоящие A/AAAA UDP и TC→TCP прошли, все12 packet
+  categories подтверждены. После закрытия listener getaddrinfo не завершился
+  за20s, child остановлен; numeric negative result не получен. File timeout2
+  не доказывает такой deadline для system resolver. Это positive persistence
+  evidence, не fail-closed/no-fallback acceptance; бюджет не увеличивался ради
+  green. Независимое наблюдение cleanup после failure ещё нужно.
+- [ ] Domain planner остаётся inert: dependency DNS routes сейчас обычные
+  unscoped resource routes. До подключения необходимы scope-aware route
+  identity/lookup/add/delete/custody и bound UDP/TCP transport; rtm_index сам
+  по себе не равен RTF_IFSCOPE. Нельзя заявлять utun/no-leak readiness по этому
+  planner или прежним system resolver canaries. Все7 этапов остаются открыты
+  до соответствующей финальной приёмки; повторных host installs не было.
