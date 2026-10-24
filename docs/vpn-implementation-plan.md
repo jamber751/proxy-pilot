@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;766 isolated checks на ARM/Intel до нового observer | Полный настоящий Installer/system recovery, обычное обновление после rescue, новые observer root cases, macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;780 isolated checks на ARM/Intel до passive wait | Полный настоящий Installer/system recovery, обычное обновление после rescue, passive wait на обеих arch, macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение 137 с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay | Connected overlay 137, legacy CLI, domain/split-DNS backend |
@@ -5374,3 +5374,16 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Это ещё не полный подписанный app/helper/engine/rescue комплект и не
   разрешение на host install. GOST/final bundle inputs, publisher statements и
   real Installer/ordinary update acceptance остаются необходимыми.
+
+### Продолжение 1.5ep — observer root cases прошли обе архитектуры
+
+- [x] Run40099297765 (`8c19ff2`) successful:780 tests без skips,42 summaries.
+  Включены7 новых acknowledged-exchange observer root cases на Intel/ARM;
+  подтверждены readonly trace/state/inodes и отказные случаи. Эта версия
+  предшествует passive metadata wait и не доказывает его интеграцию в Installer.
+- [x] Новый run40099963919 (`5484e67`), ARM transactions job120889906643:
+  все30 pending coordinator root cases passed, включая8 metadata-wait cases
+  и READY/GO реальный Service lease другого процесса. Никаких host root действий.
+- [ ] Тот же grouped suite на Intel ещё выполняется. Полный Installer7 run
+  40099963908 (`5484e67`) выполняет свежую сборку; этапы теперь видны отдельно.
+  Нельзя считать его пройденным по grouped tests или обычной компиляции.
