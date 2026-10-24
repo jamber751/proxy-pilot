@@ -4636,3 +4636,25 @@ swap второй переход завершается через сущест�
   protected swap. Независимые protected-swap/cleanup шаги запускаются также при
   отказе предыдущего test step, чтобы получить все ошибки за один прогон.
 - [ ] Подготовка под journal и общий rescue entry остаются в работе.
+
+### Продолжение 1.5di — подготовка под журналом и первая полная root cleanup проверка
+
+- [x] Run40083872105 (`5dd1d89`) закончен failure. Frozen139 handoff прошёл на обеих
+  архитектурах, как и start live proof, исправленный staging и protected swap.
+  Cleanup:12 passed из13 на каждой архитектуре; один отказ — новый пустой
+  `Update/lifecycle.lock` при первом acquisition нарушил слишком строгий snapshot
+  теста изменённого installedB. Файлы приложения/receipt не удалены.
+- [x] Root cleanup fixture теперь заранее содержит этот lock, как реальная
+  staging-транзакция. Сравнение snapshot продолжает проверять отсутствие изменений
+  после отказа installedB. Повтор13 root cases ещё требуется.
+- [x] Добавлен test-only preparation coordinator: exact selected source/context,
+  begin/reuse preparation, typed staging, commit prepared journal, retained
+  executor provisioning под одним service lease. Использует существующий durable
+  protocol; чужие записи не supersede. Candidate capability проверяется до записи
+  preparation. Обе архитектуры integration fixture скомпилированы.
+- [ ] 11 root integration cases отправляются в CI: clean/retry, прерывания
+  preparation/staging/journal/executor, conversion window, foreign state,
+  missing capability и nonlive executor. Локально root не запускался.
+- [ ] Связать prepared→pending→protected swap→destination stage/exchange под одним
+  service lease и проверить forward retry. System arm/drain, dispatcher, подпись
+  итогового пакета и end-to-end установка остаются впереди.

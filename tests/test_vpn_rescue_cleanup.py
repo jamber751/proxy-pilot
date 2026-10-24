@@ -45,6 +45,10 @@ class VPNRescueCleanupRootTests(unittest.TestCase):
 
     def setUp(self):
         cleanup.VPNJointUpdateCleanupTests.setUp(self)
+        # A real staged transaction already acquired this namespace lease.
+        # Seed its lock before snapshots so refusal checks measure payload
+        # mutations rather than the first acquisition creating an empty lock.
+        (self.update / 'lifecycle.lock').touch(mode=0o600, exist_ok=False)
         self.rescue = self.work / 'rescue'; self.rescue.mkdir(mode=0o700)
         self.runner = self.rescue / 'vpn-rescue'
         shutil.copyfile(self.rescue_binary, self.runner); self.runner.chmod(0o700)
