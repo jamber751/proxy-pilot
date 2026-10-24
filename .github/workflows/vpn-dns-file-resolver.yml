@@ -1,0 +1,31 @@
+name: VPN disposable persistent resolver-file canary
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-dns-file-resolver.yml'
+      - 'tests/test_vpn_dns_file_resolver_vm.py'
+      - 'tests/vpn_dns_file_resolver_vm_checks.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolver-file:
+    name: Resolver file survives its writer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check guards, wire answers and owned cleanup without system changes
+        run: python3 tests/test_vpn_dns_file_resolver_vm.py -v
+      - name: Resolve unique canaries before and after killing their resolver-file writer
+        run: sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_DNS_FILE_RESOLVER_TESTS=1 python3 tests/test_vpn_dns_file_resolver_vm.py --acceptance
