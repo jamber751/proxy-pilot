@@ -1,0 +1,31 @@
+name: VPN disposable system resolver canary
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-dns-resolver.yml'
+      - 'tests/vpn_dns_resolver_vm_checks.swift'
+      - 'tests/test_vpn_dns_resolver_vm.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolver:
+    name: Synthetic DNS selection and TCP fallback (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check guards and DNS encoding without system APIs or sockets
+        run: python3 tests/test_vpn_dns_resolver_vm.py -v
+      - name: Resolve exact random canaries using only owned loopback DNS responders
+        run: sudo /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_DNS_RESOLVER_TESTS=1 python3 tests/test_vpn_dns_resolver_vm.py --acceptance
