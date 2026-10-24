@@ -25,7 +25,9 @@
 По просьбе владельца продолжен контролируемый переход: после его авторизации
 штатный remove package успешно удалил helper 136. Стабильное приложение
 завершено через «Выйти» и после подтверждения Finder перенесено в резервную
-папку. Clean install 137 открыт и ожидает авторизации Installer.
+папку. Clean install 137 завершён; authenticated bridge reader отвечает.
+Обнаружен дефект прав bundled GOST (root:0700), подготовлено точечное исправление;
+приёмка прокси ещё не пройдена. См. 1.5cr.
 Подробности и новые проверки — 1.5cq. Ниже результаты 18 октября исторические.
 
 - [x] Историческая живая приёмка 136: OTP, IP-ресурсы, повторный вход,
@@ -4171,9 +4173,36 @@ Update package и clean package явно помечены TEST ONLY. Пока э
 - [x] Владелец подтвердил Finder: оригинал перенесён из Applications в резервную
   подпапку `original`, побайтово совпадает с предварительной копией. App, старые
   системные каталоги и application update staging отсутствуют перед установкой.
-- [ ] Clean package 137 открыт в Installer, нажата Install; ожидает системной
-  авторизации. На последней проверке приложение и public receipt ещё отсутствуют.
-  После установки проверить installed pins/readiness. SecurityAgent недоступен
-  инструменту автоматизации; права/пароль/sudoers не изменялись.
+- [x] Clean package 137 завершён: Installer показал успех. Public receipt payload
+  и signature совпали с signed stage 137; installed bridge reader вернул
+  `v1|0|0|` через authenticated helper session. Это idle/off, не VPN connection.
+  SecurityAgent недоступен инструменту автоматизации; пароль/sudoers не менялись.
 - [ ] Живая приёмка handoff/OTP/lifecycle остаётся открытой. Никаких релизов,
   тегов или публикаций в этом прогоне не выполнялось.
+
+### Продолжение 1.5cr — installed GOST permissions regression (24 октября)
+
+- [x] Живая проверка после установки обнаружила root-owned bundled GOST с 0700.
+  Из ordinary user невозможны запуск GOST, полное сравнение app и deep codesign.
+  Причина: ditto/pkgbuild сохранили приватный mode staging-файла после смены owner.
+  Успех Installer и ответ helper не означают готовность прокси.
+- [x] В packager добавлена нормализация только копии public app: directories и
+  executable files 0755, data 0644; symlinks не разыменовываются, special nodes
+  отвергаются. Source app, helper, engine и private sidecars не изменяются.
+  Существующие подписи/pins проверяются после копирования.
+- [x] Подготовлен локальный scripts-only repair package в
+  `Acceptance/bridge-integration-137-20261018/permissions-repair-20261024`.
+  Он проверяет фиксированные SHA-256 frontend/GOST 137, root owner/link count/
+  исходный mode, отсутствие symlink в целевом пути и deep codesign; меняет только
+  GOST на 0755 и повторяет signature verification. Не заменяет app/helper,
+  не меняет pins/receipt и не выполняет повторную установку VPN.
+- [ ] Repair package открыт в Installer; на последней проверке GOST ещё 0700.
+- [x] Packaging regression с restricted executable fixture: 18 passed,
+  3 optional engine-artifact tests skipped. Проверены 0755 frontend/GOST,
+  0644 Info.plist, неизменность исходного 0700 и валидность signed copies.
+  Отдельно из реального signed stage собран новый clean package
+  `TEST ONLY - Clean Install ProxyPilot 137 - Fixed Permissions.pkg`.
+  Прежние артефакты 18 октября не заменялись; их закрытые права остаются
+  известным дефектом, их нельзя использовать для новой установки/релиза.
+- [ ] После repair: ordinary-user deep codesign, exact app bytes, GOST execution,
+  proxy UI и HTTP/SOCKS5 handoff; OTP/live VPN остаются отдельной приёмкой.

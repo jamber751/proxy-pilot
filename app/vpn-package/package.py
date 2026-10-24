@@ -248,6 +248,25 @@ def new_path(path):
         raise ValueError('Output must be a new absolute path; never overwrite a release')
 
 
+def normalize_application_permissions(app):
+    """Public app bytes must remain usable after Installer changes owner to root.
+
+    Only call on a private copied bundle, never the caller's source. Preserve
+    executable intent and symlinks; do not follow links into framework targets.
+    The signed bytes are unchanged and callers reverify the resulting bundle.
+    """
+    for path in [app, *app.rglob('*')]:
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            continue
+        if stat.S_ISDIR(mode):
+            path.chmod(0o755)
+        elif stat.S_ISREG(mode):
+            path.chmod(0o755 if mode & 0o111 else 0o644)
+        else:
+            raise ValueError('Unexpected application payload node')
+
+
 def prepare(app, helper, sequence, output, engine_artifact=None):
     new_path(output)
     if (not app.is_absolute() or app.name != 'ProxyPilot.app' or app.is_symlink()
@@ -267,6 +286,7 @@ def prepare(app, helper, sequence, output, engine_artifact=None):
     output.mkdir(mode=0o700)
     payload = output / 'Payload'; payload.mkdir(mode=0o700)
     run('/usr/bin/ditto', '--noextattr', '--norsrc', app, payload / 'ProxyPilot.app')
+    normalize_application_permissions(payload / 'ProxyPilot.app')
     shutil.copyfile(helper, payload / 'vpn-helper'); (payload / 'vpn-helper').chmod(0o700)
     # Pin the completed signed app, then keep the manifest outside its seal.
     if pins(payload / 'ProxyPilot.app', APP_ID) != app_pins: raise ValueError('App changed while copying')
@@ -411,6 +431,7 @@ def build_first_install(stage, output):
         copied.mkdir(mode=0o700, parents=True)
         run('/usr/bin/ditto', '--noextattr', '--norsrc',
             payload / 'ProxyPilot.app', applications / 'ProxyPilot.app')
+        normalize_application_permissions(applications / 'ProxyPilot.app')
         run('/usr/bin/ditto', '--noextattr', '--norsrc',
             payload / 'ProxyPilot.app', copied / 'ProxyPilot.app')
         sidecars = ['vpn-helper', 'vpn-release.manifest', 'vpn-release.sig']

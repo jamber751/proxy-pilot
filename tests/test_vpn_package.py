@@ -100,6 +100,10 @@ final class ProxyModel:''' + model
         (cls.app / 'Contents/MacOS').mkdir(parents=True)
         shutil.copyfile(cls.build / 'app', cls.app / 'Contents/MacOS/ProxyPilot')
         (cls.app / 'Contents/MacOS/ProxyPilot').chmod(0o700)
+        restricted = cls.app / 'Contents/Resources/bin/gost'
+        restricted.parent.mkdir(parents=True)
+        restricted.write_text('#!/bin/sh\nexit 0\n')
+        restricted.chmod(0o700)
         info = dict(CFBundleIdentifier='kz.documentolog.proxypilot', CFBundleName='ProxyPilot',
                     CFBundleVersion='1.6.0', CFBundleShortVersionString='1.6.0', CFBundleExecutable='ProxyPilot',
                     CFBundlePackageType='APPL', LSMinimumSystemVersion='11.0', LSUIElement=True,
@@ -276,6 +280,13 @@ final class ProxyModel:''' + model
         verifier = expanded / 'Scripts/Payload/ProxyPilot.app'
         self.assertTrue(installed.is_dir())
         self.assertTrue(verifier.is_dir())
+        # Checking as the staging owner alone misses root-owned 0700 payloads.
+        # Both frontend and bundled proxy must run as an ordinary installed user.
+        for relative in ('Contents/MacOS/ProxyPilot', 'Contents/Resources/bin/gost'):
+            self.assertEqual((installed / relative).stat().st_mode & 0o7777, 0o755)
+        self.assertEqual((installed / 'Contents/Info.plist').stat().st_mode & 0o7777, 0o644)
+        self.assertEqual((self.app / 'Contents/Resources/bin/gost').stat().st_mode & 0o7777, 0o700,
+                         'Never alter source bundle permissions')
         self.command(['/usr/bin/codesign', '--verify', '--deep', '--strict',
                       str(installed)])
         self.command(['/usr/bin/codesign', '--verify', '--deep', '--strict',
