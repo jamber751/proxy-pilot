@@ -21,8 +21,9 @@
 
 ### Актуальная граница на 24 октября
 
-Текущий путь приёмки: **[✓ локальная установка] → [✓ базовый прокси] →
-[● VPN-приёмка] → [○ DNS/жизненный цикл] → [○ выпуск]**.
+Текущий путь приёмки: **[✓ установка 137 и базовый прокси] →
+[● восстановление обновления 137→139] → [○ VPN-приёмка исправленного комплекта] →
+[○ DNS/жизненный цикл] → [○ выпуск]**.
 Это ориентир по ближайшим контрольным точкам, не процент завершения семи этапов.
 
 | Этап исходного плана | Подтверждено | Что осталось |
@@ -35,7 +36,7 @@
 | 6. Интерфейс | Installed settings, сохранённые адреса, вход/отмена | Объяснить единичную ошибку power-on, финальная UX-приёмка |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
 
-24 октября исходники и Git восстановлены на `8519961`, рабочая копия чистая.
+В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
 По просьбе владельца продолжен контролируемый переход: после его авторизации
 штатный remove package успешно удалил helper 136. Стабильное приложение
 завершено через «Выйти» и после подтверждения Finder перенесено в резервную
@@ -43,7 +44,13 @@
 Дефект прав bundled GOST (root:0700) исправлен штатным repair package;
 ordinary-user signature/bytes и HTTP/SOCKS5 проверены. Один повторный power-on
 дал ошибку, следующий цикл успешен; этот сбой ещё не объяснён. См. 1.5cr.
-Подробности и новые проверки — 1.5cq. Ниже результаты 18 октября исторические.
+Подробности той установки — 1.5cq. Затем обновление 137→139 остановилось до
+замены Applications: старый executor137 несовместим с root-owned A. Исправление
+в новом B не изменяет старый executor. Разрабатывается отдельный подписанный
+rescue для этой пары; текущие isolated проверки описаны в 1.5dd/1.5de.
+Повторные host installers остановлены по просьбе владельца: один итоговый пакет
+после изолированной приёмки, без изменения пароля macOS или sudoers.
+Ниже результаты 18 октября исторические.
 
 - [x] Историческая живая приёмка 136: OTP, IP-ресурсы, повторный вход,
   штатное выключение и очистка (4 октября; не утверждение о текущей сети).
@@ -52,8 +59,9 @@ ordinary-user signature/bytes и HTTP/SOCKS5 проверены. Один пов
 - [x] Текущий регрессионный прогон: 181 passed, 1 live-target test явно skipped
   (155 integration/lifecycle + 26 packaging/transport, см. 1.5co/1.5cp).
 - [x] Согласованный app/helper комплект 137 подписан и проверен без установки.
-- [ ] Installed acceptance нового handoff; текущая пара stable app / helper 136
-  не является допустимой исходной A-парой для обычного joint update.
+- [ ] Завершить восстановление pending137→139 и отдельно авторизованный переход
+  139→исправленный C; затем installed acceptance нового handoff. Историческая
+  несовместимая пара stable app / helper136 уже заменена установкой137.
 - [ ] Политика доставки/миграции сторонних и старых CLI writers: их бинарники
   не получают новый lock/overlay протокол автоматически. До проверки конкуренции
   legacy CLI автоматические исключения не считать готовыми к публичному выпуску.
@@ -61,7 +69,7 @@ ordinary-user signature/bytes и HTTP/SOCKS5 проверены. Один пов
 - [ ] Domain/split-DNS backend: остаётся архитектурный gate, см. 1.5bo.
 - [ ] Полная финальная приёмка и отдельно разрешённый публичный выпуск.
 
-Стабильное приложение в Applications не заменялось. Вопросы по каждому
+После неудачного обновления в Applications остаётся137. Вопросы по каждому
 следующему безопасному пункту не требуются; системное согласие, OTP и изменение
 согласованных границ остаются отдельными действиями владельца.
 
@@ -4500,7 +4508,7 @@ Ownership clone проверен как эксперимент, но публи�
 неподдерживаемое старым recovery окно. Не развиваем этот путь: primitive перенесён
 в `tests/fixtures/VPNLegacySourceClone.swift`, в production source graph его нет.
 
-- [ ] Отдельный signature domain и типизированный verified rescue token для exact
+- [x] Отдельный signature domain и типизированный verified rescue token для exact
   signed A137/B139 manifests, transition и hash/CDHash rescue executable. Фиксированная
   операция завершения root-owned destination и matching cleanup. UUID не wildcard:
   авторизация задаёт exact edge, фактические UUID/revision захватываются под lease
@@ -4508,7 +4516,7 @@ Ownership clone проверен как эксперимент, но публи�
 - [ ] Только pending/inspectApplication + selected A + protected B/A/executorA
   допускают destination completion. Root-owned A/B остаются root-owned.
   Existing signed B recovery job arm до drain/swap, без нового ownership journal.
-- [ ] Отдельный typed rescue exchange: static проверка old executor, собственная
+- [x] Отдельный typed rescue exchange (пока test-only): static проверка old executor, собственная
   rescue identity; нельзя вызвать обычный exchange, который требует PID A,
   или передать `skipAuthentication`. Обычный B child также ожидает parent A.
 - [ ] После swap journal/selector остаются прежними; existing signed helper139
@@ -4540,3 +4548,24 @@ Ownership clone проверен как эксперимент, но публи�
   авторизованную очистку. Отсутствующий receipt не считается успешным завершением.
 - [ ] Полный recovery139, переход139→C и итоговый пакет остаются незавершёнными.
   Пароль macOS и sudoers не меняем; промежуточные host installers не запускаем.
+
+### Продолжение 1.5df — подпись rescue и передача управления старой службе
+
+- [x] `sign-rescue` / `verify-rescue` проверяют подписанные A/B, transition,
+  каноническое описание rescue и bytes предоставленного executable до публикации
+  подписи. 11 synthetic-key тестов passed локально, включая actual verifier CLI,
+  повреждённые inputs, иной domain, подмену/симлинк/oversized artifact.
+  Это byte/signature verification, не подтверждение live executor identity.
+  Реальный Keychain и ключ релиза не использовались.
+- [x] Read-only cleanup context: 25 passed локально после исправления canonical
+  JSON тестовой fixture. Чужие UUID/phase/owner/edge/GC roots и отсутствие receipt
+  отказывают; legitimate phase advance требует нового capture. Удалений нет.
+- [x] Аудит порядка блокировок: service lifecycle → внутренний Update lifecycle
+  exchange. Recovery bootstrap не ждёт готовности B под service lease: старый
+  helper возвращает75 и повторяется launchd после освобождения блокировки.
+  Arm предшествует drain; recovery нельзя снимать в общем error/defer пути.
+- [ ] Изолированно проверить frozen139 recovery через настоящий user launchd,
+  включая ожидание блокировки и exact completed receipt. Synthetic rebuilt
+  helper не выдавать за исходный подписанный binary139 или root cleanup.
+- [ ] Production rescue entry, recovery/cleanup handoff, второй переход139→C,
+  полный crash matrix и итоговый installer ещё не готовы.
