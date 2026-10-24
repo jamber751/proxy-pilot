@@ -806,6 +806,7 @@ final class App: NSObject, NSApplicationDelegate {
 }
 
 #if VPN_INSTALLER_ENTRY
+if let status = VPNInstalledUpdateResultEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNBridgeBypassEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNInstallationEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 #else

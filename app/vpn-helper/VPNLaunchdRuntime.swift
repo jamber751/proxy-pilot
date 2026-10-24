@@ -39,6 +39,54 @@ final class VPNLaunchdRuntime: VPNActivationRuntime {
                                      storageDirectory: storageDirectory, endpointDirectory: endpoint)
     }
 
+    /// Positive read-only desired-off observation. Unlike stopAndDrain, this
+    /// never boots out a job, creates a directory, or removes a stale socket.
+    /// launchctl's exact service-not-found result is 113; other failures are
+    /// unavailable evidence, never confirmation that our helper is stopped.
+    static func requireSystemStopped(deadline: UInt64) throws {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNLaunchdError.requiresRoot }
+        func absentJob() throws {
+            guard try readOnlyLaunchctl(["print", "system"], deadline: deadline) == 0,
+                  try readOnlyLaunchctl(["print", "system/" + productionLabel], deadline: deadline) == 113 else {
+                throw VPNLaunchdError.cleanupNotConfirmed
+            }
+        }
+        try absentJob()
+        let endpoint = try VPNEndpointDirectory.openSystem(create: false)
+        defer { close(endpoint) }
+        func absentSocket() throws {
+            _ = try VPNEndpointDirectory.checkedPath(endpoint, owner: 0, shared: true)
+            var value = stat()
+            guard fstatat(endpoint, VPNHelperProtocol.socketName, &value, AT_SYMLINK_NOFOLLOW) != 0,
+                  errno == ENOENT else { throw VPNLaunchdError.cleanupNotConfirmed }
+        }
+        try absentSocket()
+        try absentJob()
+        try absentSocket()
+    }
+
+    private static func readOnlyLaunchctl(_ arguments: [String], deadline: UInt64) throws -> Int32 {
+        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw VPNLaunchdError.timeout }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.launchctl)
+        process.arguments = arguments
+        process.environment = [:]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { throw VPNLaunchdError.launchFailed }
+        while process.isRunning {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                kill(process.processIdentifier, SIGKILL); process.waitUntilExit()
+                throw VPNLaunchdError.timeout
+            }
+            usleep(10_000)
+        }
+        guard process.terminationReason == .exit,
+              DispatchTime.now().uptimeNanoseconds < deadline else { throw VPNLaunchdError.launchFailed }
+        return process.terminationStatus
+    }
+
     #if VPN_LAUNCHD_TESTING
     /// Unprivileged per-user domain for disposable tests, absent from normal
     /// builds. It proves the launchd mechanics, never root service ownership.
