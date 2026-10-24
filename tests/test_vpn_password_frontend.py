@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from test_vpn_update_broker_inbox import assert_real_signed_app_survives_inbox
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -107,6 +109,11 @@ class VPNPasswordGenuineFrontendTests(unittest.TestCase):
         self.assertEqual(result.returncode, status)
         self.assertEqual(result.stdout, b'')
         self.assertEqual(result.stderr, b'')
+
+    def test_already_built_signed_frontend_preserves_sparkle_links_in_real_inbox(self):
+        # Share this class's actual signed app; never build another app or use
+        # a host-installed/environment-selected application for this acceptance.
+        assert_real_signed_app_survives_inbox(self, self.app)
 
     def test_actual_v2_without_authenticated_parent_or_private_fds_is_denied(self):
         self.assert_refused_without_gui(['--vpn-password-worker-v2'], 77)
