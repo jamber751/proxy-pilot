@@ -45,7 +45,7 @@ struct VPNInstallationPayload {
         return VPNInstallationPayload(manifest: manifest, signature: signature, helper: helper, engine: engine, release: release)
     }
 
-    fileprivate static func readSignature(_ name: String, in parent: Int32) throws -> Data {
+    static func readSignature(_ name: String, in parent: Int32) throws -> Data {
         let encoded = try read(name, in: parent, limit: 89)
         guard let text = String(data: encoded, encoding: .utf8),
               text.count == 89, text.last == "\n",
@@ -57,7 +57,7 @@ struct VPNInstallationPayload {
         return signature
     }
 
-    fileprivate static func read(_ name: String, in parent: Int32, limit: Int,
+    static func read(_ name: String, in parent: Int32, limit: Int,
                                  validate: ((Int32, Data) throws -> Void)? = nil) throws -> Data {
         let file = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard file >= 0 else { throw VPNInstallationPayloadError.unsafePackage }
@@ -92,7 +92,7 @@ struct VPNInstallationPayload {
         return data
     }
 
-    fileprivate static func check(_ fd: Int32, directory: Bool) throws {
+    static func check(_ fd: Int32, directory: Bool) throws {
         var info = stat(), filesystem = statfs()
         guard fstat(fd, &info) == 0, info.st_uid == geteuid(),
               info.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
