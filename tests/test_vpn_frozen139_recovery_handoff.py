@@ -57,7 +57,16 @@ FROZEN_SHA256 = {'app/VPNConfiguration.swift': '091efe7b41a3653808cdf42a86a68e88
                      and os.environ.get('PROXYPILOT_VM_LAUNCHD_TESTS') == '1',
                      'explicit disposable macOS user launchd fixture')
 class VPNFrozen139RecoveryHandoffTests(unittest.TestCase):
-    command = existing.VPNRecoveryDaemonEntryTests.__dict__['command']
+    @classmethod
+    def command(cls, args):
+        # The optimized Universal helper compiles 32 frozen source files.
+        # Intel hosted runners occasionally exceed the smaller fixture limit;
+        # keep compilation bounded independently from runtime recovery waits.
+        timeout = 300 if args[0] == 'swiftc' else 180
+        result = subprocess.run(args, env=ENV, capture_output=True, text=True, timeout=timeout)
+        if result.returncode:
+            raise AssertionError(' '.join(map(str, args)) + '\n' + result.stdout + result.stderr)
+        return result
     code_pins = existing.VPNRecoveryDaemonEntryTests.__dict__['code_pins']
     make_app = existing.VPNRecoveryDaemonEntryTests.make_app
     rebuild = existing.VPNRecoveryDaemonEntryTests.rebuild

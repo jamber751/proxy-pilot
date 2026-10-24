@@ -17,6 +17,9 @@ ROOT, HELPER = identity.ROOT, identity.HELPER
 class VPNRescuePreparationStagingRootTests(identity.RescueBuild, unittest.TestCase):
     root_vm_fixture = True
     make_app = staged.VPNStagedApplicationTests.make_app
+    # make_app passes entitlements positionally; RescueBuild.sign's third
+    # argument is hardened, so inheriting it silently omitted hard/kill flags.
+    sign = staged.VPNStagedApplicationTests.sign
     @classmethod
     def setUpClass(cls):
         staged.VPNStagedApplicationTests.setUpClass.__func__(cls)
@@ -59,6 +62,12 @@ class VPNRescuePreparationStagingRootTests(identity.RescueBuild, unittest.TestCa
             info.write_bytes(plistlib.dumps(metadata))
             staged.VPNStagedApplicationTests.sign(self, self.app, staged.APP_ID)
         self.b = staged.VPNStagedApplicationTests.pins(self)
+        # Fail fixture setup if either app is invalid. Otherwise a negative
+        # authorization test could pass because the app was signed incorrectly.
+        for folder, pins, version in ((self.source, self.a, '1.6.0'),
+                                      (self.candidate, self.b, '1.7.0')):
+            self.command([str(self.checker), 'inspect', str(folder),
+                          pins['arm64'], pins['x86_64'], version])
         self.source_before = self.source_snapshot()
 
     def source_snapshot(self):
