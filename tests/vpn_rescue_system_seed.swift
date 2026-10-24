@@ -47,9 +47,23 @@ import Foundation
                 Data("format=1\nproduct=kz.documentolog.proxypilot\nfrom-sequence=\(from)\nfrom-sha256=\(hex(Data(SHA256.hash(data: source))))\nto-sequence=\(to)\nto-sha256=\(hex(Data(SHA256.hash(data: target))))\n".utf8)
             }
             let sourceSequence = Int(input["sourceSequence"] ?? "137")!
-            let a = try manifest(sourceSequence, "1.6.0", "appA", helperB, "helperB")
+            let a = try manifest(sourceSequence, "1.6.0", "appA", helperB, "helperB", engine: true)
             let b = try manifest(139, "1.7.0", "appB", helperB, "helperB", engine: true)
-            let c = try manifest(141, "1.8.0", "appC", helperC, "helperC")
+            let c = try manifest(141, "1.8.0", "appC", helperC, "helperC", engine: true)
+            // Fail before writing material if production monotonic-component or
+            // exact-edge policy rejects any synthetic release in this chain.
+            func releaseSignature(_ bytes: Data) throws -> Data {
+                try key.signature(for: VPNReleaseAuthority.signatureDomain + bytes)
+            }
+            let verifiedA = try authority.verify(payload: a, signature: releaseSignature(a), previous: nil)
+            let verifiedB = try authority.verify(payload: b, signature: releaseSignature(b), previous: verifiedA)
+            _ = try authority.verify(payload: c, signature: releaseSignature(c), previous: verifiedB)
+            for (source, target, from, to, previous) in [(a, b, sourceSequence, 139, verifiedA), (b, c, 139, 141, verifiedB)] {
+                let transition = edge(source, target, from, to)
+                _ = try authority.verifyUpdateTransition(payload: transition,
+                    signature: key.signature(for: VPNReleaseAuthority.updateTransitionDomain + transition),
+                    previous: previous, candidatePayload: target, candidateSignature: releaseSignature(target))
+            }
             let candidate = base.appendingPathComponent("CandidateStage/Payload")
             try signed(base, "source-release.manifest", "source-release.sig", a, VPNReleaseAuthority.signatureDomain)
             try signed(base, "first-transition", "first-transition.sig", edge(a, b, sourceSequence, 139), VPNReleaseAuthority.updateTransitionDomain)
@@ -78,7 +92,7 @@ import Foundation
         let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
         defer { lease.release() }
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
-        _ = try store.bootstrapDeployment(payload: a, signature: aSig, helper: helper, trustedOwnerUserID: owner)
+        _ = try store.bootstrapDeployment(payload: a, signature: aSig, helper: helper, engine: engine, trustedOwnerUserID: owner)
         let journal = try store.prepareUpdateJournal(payload: b, signature: bSig, helper: helper, engine: engine,
             transitionPayload: first, transitionSignature: firstSig, expectedSequence: 137)
         _ = try store.markUpdateReplacementPending(transactionID: journal.transactionID, expectedRevision: 0)

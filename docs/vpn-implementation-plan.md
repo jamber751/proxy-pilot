@@ -4863,3 +4863,27 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Source contract и offscreen render не доказывают реальный жест Finder или
   пользовательскую приёмку. Finder/OpenPanel, настоящие профили, Keychain,
   root-службы и сеть локально не запускались.
+
+### Продолжение 1.5dr — исправление полного system fixture до Installer
+
+- [x] Run40089145131: ARM production graphs собраны, но package prepare отклонил
+  B→C: fixture пытался перейти с format2/engine на format1 без engine. Это
+  корректный отказ production monotonic-component policy, не сбой Installer.
+  Intel отменён после подтверждения общей ошибки; оба system/Installer steps
+  skipped. Run terminal cancelled, ARM job failure. Host не изменялся.
+- [x] A137/B139/C141 fixture теперь все format2 с настоящим Universal OpenVPN.
+  CI собирает его из reviewed HTTPS archives с точными SHA256 и исходниками;
+  production source_material переносит только8 разрешённых GPL/provenance files.
+  Synthetic trust используется для test release statements, не реальный Keychain.
+- [x] Быстрая semantic preflight проверяет production parser/signatures и оба
+  exact edge до дорогой сборки. Новый suite:5 passed; в том числе даже заново
+  подписанные engine removal, crypto downgrade и wrong-source edge отвергнуты.
+- [x] Universal seed собран; local real artifact2.7.7/3.5.8 прошёл source_material,
+  binary SHA/provenance и rescue.verify_engine_material. Никаких новых root,
+  network, Installer или корпоративных профилей на host не использовано.
+- [x] Workflow выводит фиксированные этапы сборки; budget75min учитывает реальную
+  Universal crypto/engine сборку. Это предел задания, не заявленное время успеха.
+- [ ] Повторный полный system run после исправления fixtures; затем проверка
+  реального Script extraction/preflight ownership и пяти Installer сценариев.
+  Риск Scripts UID из pkgbuild пока не подтверждён actual PackageKit execution;
+  ownership checks не ослаблялись.

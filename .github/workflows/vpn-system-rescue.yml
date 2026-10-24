@@ -6,10 +6,17 @@ on:
     paths:
       - '.github/workflows/vpn-system-rescue.yml'
       - 'tests/test_vpn_rescue_system_vm.py'
+      - 'tests/test_vpn_rescue_system_materials.py'
       - 'tests/vpn_rescue_system_*.swift'
+      - 'tests/vpn_rescue_package_signer.swift'
       - 'tests/fixtures/vpn-frozen139-production-sources.sha256'
       - 'app/vpn-helper/**'
       - 'app/vpn-rescue/**'
+      - 'app/vpn-engine/**'
+      - 'app/vpn-package/**'
+      - 'app/VPNConfiguration.swift'
+      - 'app/VPNProfileImporter.swift'
+      - 'app/vpn-release-key.swift'
   workflow_dispatch:
 
 permissions:
@@ -19,7 +26,7 @@ jobs:
   system-rescue:
     name: Real Installer (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +36,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Fast signed fixture and engine continuity checks
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials -v
       - name: Build production artifacts with synthetic trust as ordinary user
         env:
           PROXYPILOT_VM_SYSTEM_RESCUE_BUILD: '1'

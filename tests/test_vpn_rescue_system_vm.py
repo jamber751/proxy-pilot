@@ -89,7 +89,8 @@ def snapshot_current(output):
         shutil.copyfile(source, app / 'vpn-helper' / source.name)
     shutil.copyfile(HELPER / 'build.sh', app / 'vpn-helper/build.sh')
     for folder, names in (('vpn-rescue', ('build.sh', 'package.py', 'preinstall', 'postinstall')),
-                          ('vpn-package', ('package.py',))):
+                          ('vpn-package', ('package.py',)),
+                          ('vpn-engine', ('build.py', 'sources.json'))):
         destination = app / folder; destination.mkdir(mode=0o700)
         for name in names: shutil.copyfile(ROOT / 'app' / folder / name, destination / name)
     return app
@@ -136,6 +137,61 @@ def make_app(path, binary, version, sequence, *, capable=False):
     sign(path, 'kz.documentolog.proxypilot')
 
 
+def phase(name):
+    print('System rescue build: ' + name, flush=True)
+
+
+def semantic_preflight(seed, output):
+    """Production signature/parser/edge checks before expensive compilation.
+
+    Bounded synthetic bytes are used only for pure record validation here;
+    they are never packaged or described as actual engine source provenance.
+    """
+    base = output / 'SemanticPreflight'; base.mkdir(mode=0o700)
+    (base / 'CandidateStage/Payload').mkdir(parents=True, mode=0o700)
+    blob = base / 'bounded-input'; blob.write_bytes(b'synthetic semantic input')
+    inputs = {name: str(blob) for name in ('helperB', 'helperC', 'engineB')}
+    for name in ('appA', 'appB', 'appC', 'helperB', 'helperC', 'engineB'):
+        for arch in ('arm64', 'x86_64'): inputs[name + '-' + arch] = 'a' * 40
+    (base / 'input.json').write_text(json.dumps(inputs))
+    command([seed, 'materials', base])
+
+
+def build_real_engine(app, output):
+    """Fetch reviewed archives, verify their exact hashes, then build offline."""
+    source = output / 'EngineArchives'; source.mkdir(mode=0o700)
+    lock = json.loads((app / 'vpn-engine/sources.json').read_text())
+    for name, item in lock.items():
+        phase('download reviewed ' + name + ' source')
+        archive = source / (name + '-' + item['version'] + '.tar.gz')
+        command(['/usr/bin/curl', '--disable', '--fail', '--location', '--proto', '=https',
+                 '--proto-redir', '=https', '--connect-timeout', '30', '--max-time', '300',
+                 '--max-filesize', str(100 * 1024 * 1024), '--output', archive, item['url']], timeout=320)
+        if (not archive.is_file() or archive.is_symlink()
+                or not 0 < archive.stat().st_size <= 100 * 1024 * 1024
+                or hashlib.sha256(archive.read_bytes()).hexdigest() != item['sha256']):
+            raise AssertionError('Reviewed engine source checksum mismatch')
+    phase('build Universal OpenSSL/OpenVPN and run nonnetwork crypto checks')
+    command(['/usr/bin/python3', app / 'vpn-engine/build.py', '--sources', source,
+             '--output', output / 'EngineBuild', '--jobs', '4'], timeout=2400)
+    return output / 'EngineBuild/artifact'
+
+
+def copy_engine_material(app, artifact, candidate_stage):
+    # Use the production reader's exact allowlist rather than copying unrelated
+    # build logs/binaries into the corresponding GPL source material.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('system_vm_joint_package', app / 'vpn-package/package.py')
+    joint = importlib.util.module_from_spec(spec); spec.loader.exec_module(joint)
+    _, provenance, files = joint.source_material(artifact)
+    if provenance['binarySHA256'] != hashlib.sha256((artifact / 'openvpn').read_bytes()).hexdigest():
+        raise AssertionError('Real engine binary/provenance mismatch')
+    for name, data in files.items():
+        destination = candidate_stage / 'EngineSources' / name
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination.write_bytes(data); destination.chmod(0o600)
+
+
 def build_fixtures(output, *, compile_only=False):
     if sys.platform != 'darwin' or os.geteuid() == 0: raise AssertionError('Build only as an ordinary macOS user')
     if not compile_only and (os.environ.get('GITHUB_ACTIONS') != 'true'
@@ -149,24 +205,34 @@ def build_fixtures(output, *, compile_only=False):
         'VPNPeerAuthentication', 'VPNReleaseAuthorization', 'VPNHelperArtifact', 'VPNReleaseStore',
         'VPNLifecycleOwnership', 'VPNActivationBudget', 'VPNDirectoryProvisioner',
         'VPNEndpointDirectory', 'VPNHelperProtocol')]
+    phase('compile small release seed and semantic verifier')
     compile_universal([*seed_sources, ROOT / 'tests/vpn_rescue_system_seed.swift'], seed)
+    phase('verify synthetic A/B/C releases and both exact transitions')
+    semantic_preflight(seed, output)
     public = command([seed, 'public']).stdout.strip()
     if len(base64.b64decode(public, validate=True)) != 32: raise AssertionError('Invalid synthetic public key')
     inject_trust(helper / 'VPNReleaseTrust.swift', public)
     frozen = snapshot_frozen(output, public)
+    engine_artifact = None if compile_only else build_real_engine(app, output)
+    phase('compile frozen139 helper')
     command(['/bin/zsh', frozen / 'vpn-helper/build.sh', output / 'frozen-helper'], timeout=900)
+    phase('compile current helper')
     command(['/bin/zsh', helper / 'build.sh', output / 'current-helper'], timeout=900)
+    phase('compile production rescue entry')
     command(['/bin/zsh', app / 'vpn-rescue/build.sh', output / 'rescue'], timeout=900)
+    phase('compile signed installed-C read-only probe')
     probe = output / 'probe'
     probe_sources = [app / 'VPNConfiguration.swift', app / 'VPNProfileImporter.swift']
     probe_sources += [path for path in sorted(helper.glob('*.swift')) if path.name != 'ServiceMain.swift']
     compile_universal([*probe_sources, ROOT / 'tests/vpn_rescue_system_probe_main.swift'], probe)
     inert_source = output / 'inert.c'; inert_source.write_text('int main(void) { return 86; }\n')
     inert = output / 'inert'; compile_universal([inert_source], inert, compiler='/usr/bin/clang', optimize=False)
-    # Opaque signed B engine for its strict broker inbox; never executed. These
-    # cases exercise idle service repair, not OpenVPN/crypto/network behavior.
-    engine_b = output / 'engine-b'; shutil.copyfile(inert, engine_b); engine_b.chmod(0o700)
-    sign(engine_b, 'kz.documentolog.proxypilot.openvpn')
+    # Compile-only mode exercises code generation without downloads or engine
+    # packaging. Its inert bytes never receive GPL provenance or enter a pkg.
+    engine_b = (engine_artifact / 'openvpn') if engine_artifact else output / 'compile-only-engine'
+    if engine_artifact is None:
+        shutil.copyfile(inert, engine_b); engine_b.chmod(0o700)
+        sign(engine_b, 'kz.documentolog.proxypilot.openvpn')
     materials = output / 'Input'; materials.mkdir(mode=0o700)
     apps = materials / 'Apps'; apps.mkdir(mode=0o700)
     make_app(apps / 'A/ProxyPilot.app', inert, '1.6.0', 137)
@@ -183,7 +249,10 @@ def build_fixtures(output, *, compile_only=False):
     if compile_only:
         print('Compiled production graph artifacts only; no native entry, Installer or root operation executed.')
         return
+    phase('verify actual signed fixture releases and transitions')
     command([seed, 'materials', materials])
+    shutil.copyfile(engine_b, candidate / 'vpn-engine'); (candidate / 'vpn-engine').chmod(0o700)
+    copy_engine_material(app, engine_artifact, materials / 'CandidateStage')
     first_payload = materials / 'FirstPayload'; first_payload.mkdir(mode=0o700)
     shutil.copytree(apps / 'B/ProxyPilot.app', first_payload / 'ProxyPilot.app')
     for source, name in ((helper_b, 'vpn-helper'), (engine_b, 'vpn-engine'),
@@ -195,6 +264,7 @@ def build_fixtures(output, *, compile_only=False):
                          (candidate / 'vpn-previous-release.sig', 'vpn-release.sig')):
         shutil.copyfile(source, first_payload / name)
         (first_payload / name).chmod(0o700 if name in ('vpn-helper', 'vpn-engine') else 0o600)
+    phase('compile synthetic package signing tool')
     key_tool = output / 'synthetic-key-tool'
     key_sources = [helper / (name + '.swift') for name in (
         'VPNPeerAuthentication', 'VPNReleaseAuthorization', 'VPNReleaseTrust', 'VPNCompanionMetadata',
@@ -202,6 +272,7 @@ def build_fixtures(output, *, compile_only=False):
     compile_universal([*key_sources, app / 'vpn-release-key.swift', ROOT / 'tests/vpn_rescue_package_signer.swift'],
                       key_tool, flags=['-D', 'VPN_RELEASE_KEY_TESTING'])
     public_file = output / 'public-key'; public_file.write_text(public + '\n')
+    phase('prepare and sign exact rescue capsule')
     assembler = app / 'vpn-rescue/package.py'; stage = output / 'PackageStage'
     command(['/usr/bin/python3', assembler, 'prepare', '--rescue', output / 'rescue/vpn-rescue',
              '--source-manifest', materials / 'source-release.manifest', '--source-signature', materials / 'source-release.sig',
@@ -209,6 +280,7 @@ def build_fixtures(output, *, compile_only=False):
              '--candidate-stage', materials / 'CandidateStage', '--key-tool', key_tool,
              '--public-key', public_file, '--output', stage], timeout=300)
     command(['/usr/bin/python3', assembler, 'sign', '--stage', stage, '--key-tool', key_tool, '--public-key', public_file])
+    phase('build real Installer package')
     package = output / 'repair.pkg'
     command(['/usr/bin/python3', assembler, 'build', '--stage', stage, '--key-tool', key_tool,
              '--public-key', public_file, '--output', package], timeout=300)
