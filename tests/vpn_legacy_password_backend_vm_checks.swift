@@ -97,7 +97,7 @@ struct VPNPrivateKeychainPathProof {
         case createdPrivateMode, fixtureAdd, fixtureAddResult, itemDictionary
         case itemOwner, ownerIsPrivate, ownerFileOpen, ownerFileIdentity
         case privateLock, cleanupKeychain, preferencesUnchanged
-        case workerAddAdded, workerAddNoIO
+        case workerAddAdded, workerAddNoIO, workerAcknowledgmentBegin, workerAcknowledgmentBusy
         case actualFileExists, intendedFileExists, pathRegularOwned, pathSameFile
         case pathSameParent, pathCanonicalEqual, pathNamesStable, actualRegularOwned
         case baseFileExists, dbFileExists, baseMissingPositive, dbMissingPositive, uniqueKnownLeaf, expectedLeafMatches
@@ -108,6 +108,66 @@ struct VPNPrivateKeychainPathProof {
         let statusText = status.map { String($0) } ?? "none"
         let valueText = value.map { $0 ? "true" : "false" } ?? "none"
         FileHandle.standardError.write(Data("private-backend:\(phase.rawValue):status=\(statusText):ok=\(valueText)\n".utf8))
+    }
+    private enum Boundary: String { case prepare, initialAdd }
+    private enum BoundaryError: String {
+        case invalid, denied, unavailable, transport, timeout
+        case storageUnavailable, staleRevision, invalidConfiguration, receiptBusy, other
+    }
+    private static func boundaryError(_ error: Error) -> BoundaryError {
+        if let error = error as? VPNPasswordWorkerError {
+            switch error {
+            case .invalid: return .invalid
+            case .denied: return .denied
+            case .unavailable: return .unavailable
+            case .transport: return .transport
+            case .timeout: return .timeout
+            }
+        }
+        if let error = error as? VPNValidationError {
+            switch error {
+            case .storageUnavailable: return .storageUnavailable
+            case .staleRevision: return .staleRevision
+            case .invalidConfiguration: return .invalidConfiguration
+            default: return .other
+            }
+        }
+        if let error = error as? VPNPasswordReceiptAcknowledgmentError {
+            switch error { case .lockBusy: return .receiptBusy }
+        }
+        return .other
+    }
+    private static func trace<T>(_ boundary: Boundary, _ operation: () throws -> T) throws -> T {
+        let prefix = "private-backend-boundary:stage=" + boundary.rawValue
+        FileHandle.standardError.write(Data((prefix + ":event=begin\n").utf8))
+        do {
+            let result = try operation()
+            FileHandle.standardError.write(Data((prefix + ":event=ok\n").utf8))
+            return result
+        } catch {
+            FileHandle.standardError.write(Data((prefix + ":event=fail:category=" + boundaryError(error).rawValue + "\n").utf8))
+            throw error
+        }
+    }
+    /// Diagnostic callbacks on the EXISTING test-only seams. They observe only
+    /// receipt acknowledgment, never request another GO or alter the clock.
+    private static func observingInitialAcknowledgment<T>(_ body: () throws -> T) rethrows -> T {
+        let previousBegin = VPNPasswordWorker.Prepared.testBeforeAcknowledgment
+        let previousBusy = VPNPasswordWorker.Prepared.testAfterBusyAcknowledgment
+        var began = false, busyCount = 0
+        VPNPasswordWorker.Prepared.testBeforeAcknowledgment = {
+            guard !began else { return }; began = true
+            evidence(.workerAcknowledgmentBegin, value: true)
+        }
+        VPNPasswordWorker.Prepared.testAfterBusyAcknowledgment = {
+            guard busyCount < 3 else { return }; busyCount += 1
+            evidence(.workerAcknowledgmentBusy, value: true)
+        }
+        defer {
+            VPNPasswordWorker.Prepared.testBeforeAcknowledgment = previousBegin
+            VPNPasswordWorker.Prepared.testAfterBusyAcknowledgment = previousBusy
+        }
+        return try body()
     }
     static func check(_ condition: @autoclosure () throws -> Bool) throws {
         guard try condition() else { throw Failure.check }
@@ -365,9 +425,13 @@ struct VPNPrivateKeychainPathProof {
             }
             guard case .added(let captured) = result else { throw Failure.check }; locator = captured
         } else {
-            let worker = try VPNPasswordWorker.prepare(store: store)
+            let worker = try trace(.prepare) { try VPNPasswordWorker.prepare(store: store) }
             try begin("initial-add")
-            let result = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            let result = try trace(.initialAdd) {
+                try observingInitialAcknowledgment {
+                    try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+                }
+            }
             if case .added = result { evidence(.workerAddAdded, value: true); try definite() }
             else {
                 evidence(.workerAddAdded, value: false)

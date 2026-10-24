@@ -6,6 +6,7 @@ No local defaults/search lists, user keychains, VPN, root, or settings mutation.
 from pathlib import Path
 import os
 import platform
+import re
 import shutil
 import signal
 import stat
@@ -17,6 +18,25 @@ import time
 import unittest
 
 from test_vpn_legacy_password_backend import ROOT, SOURCES
+
+
+
+BOUNDARY_ERRORS = {'invalid', 'denied', 'unavailable', 'transport', 'timeout',
+                   'storageUnavailable', 'staleRevision', 'invalidConfiguration', 'receiptBusy', 'other'}
+
+
+def boundary_diagnostics(text):
+    """Closed bounded observations; never an API/ledger completion receipt."""
+    result = []
+    for line in text.splitlines():
+        match = re.fullmatch(r'private-backend-boundary:stage=(prepare|initialAdd):event=(begin|ok|fail:category=([A-Za-z]+))', line)
+        acknowledgment = line in (
+            'private-backend:workerAcknowledgmentBegin:status=none:ok=true',
+            'private-backend:workerAcknowledgmentBusy:status=none:ok=true')
+        if acknowledgment or (match and (match[3] is None or match[3] in BOUNDARY_ERRORS)):
+            result.append(line)
+            if len(result) == 32: break
+    return result
 
 
 def delete_diagnostic(folder):
@@ -78,9 +98,46 @@ class VMFixtureDiagnosticsTests(unittest.TestCase):
             record.unlink(); record.symlink_to(store / 'absent')
             self.assertEqual(delete_diagnostic(folder), 'private-delete:unavailable')
 
+    def test_boundary_parser_rejects_unknown_or_sensitive_fields_and_bounds_output(self):
+        accepted = []
+        for stage in ('prepare', 'initialAdd'):
+            prefix = 'private-backend-boundary:stage=' + stage + ':event='
+            accepted += [prefix + 'begin', prefix + 'ok']
+            accepted += [prefix + 'fail:category=' + value for value in BOUNDARY_ERRORS]
+        accepted += ['private-backend:workerAcknowledgmentBegin:status=none:ok=true',
+                     'private-backend:workerAcknowledgmentBusy:status=none:ok=true']
+        for line in accepted: self.assertEqual(boundary_diagnostics(line), [line])
+        for line in accepted:
+            self.assertEqual(boundary_diagnostics(line + ':path=/private/value'), [])
+        for line in ('private-backend-boundary:stage=PRIVATE:event=begin',
+                     'private-backend-boundary:stage=initialAdd:event=fail:category=PRIVATE',
+                     'private-backend:workerAcknowledgmentBusy:status=none:ok=false'):
+            self.assertEqual(boundary_diagnostics(line), [])
+        self.assertEqual(len(boundary_diagnostics('\n'.join([accepted[0]] * 1000))), 32)
+
+    def test_ack_observations_do_not_change_worker_timing_or_unknown_markers(self):
+        source = (ROOT / 'tests/vpn_legacy_password_backend_vm_checks.swift').read_text()
+        body = source.split('private static func observingInitialAcknowledgment<T>', 1)[1].split('    static func check(', 1)[0]
+        for token in ('testBeforeAcknowledgment', 'testAfterBusyAcknowledgment', 'guard busyCount < 3',
+                      'guard !began', 'defer {', '= previousBegin', '= previousBusy'):
+            self.assertIn(token, body)
+        for forbidden in ('SecKeychain', 'SecItem', '.addOnce(', '.deletePending', '.load(',
+                          'testAcknowledgmentNow', 'usleep', 'deadline', 'root.definite'):
+            self.assertNotIn(forbidden, body)
+        call = source.split('let worker = try trace(.prepare)', 1)[1].split('try check(unchangedPreferences(baseline))', 1)[0]
+        self.assertEqual(call.count('worker.addOnce('), 1)
+        self.assertLess(call.index('try begin("initial-add")'), call.index('trace(.initialAdd)'))
+        self.assertLess(call.index('observingInitialAcknowledgment'), call.index('worker.addOnce('))
+        self.assertIn('if case .added = result', call)
+        self.assertIn('if result == .definitelyNoIO { try definite() }', call)
+        boundary = source.split('private static func trace<T>', 1)[1].split('    /// Diagnostic', 1)[0]
+        self.assertIn('throw error', boundary)
+        for forbidden in ('String(describing:', '.localizedDescription', '.path', 'SecKeychain', 'SecItem'):
+            self.assertNotIn(forbidden, boundary)
+
     def test_diagnostics_only_emit_closed_stage_numeric_status_and_boolean(self):
         source = (ROOT / 'tests/vpn_legacy_password_backend_vm_checks.swift').read_text()
-        body = source.split('private static func evidence(', 1)[1].split('    static func check(', 1)[0]
+        body = source.split('private static func evidence(', 1)[1].split('    private enum Boundary:', 1)[0]
         self.assertIn('phase: Evidence', body)
         self.assertIn('status: OSStatus?', body)
         self.assertIn('value: Bool?', body)
@@ -227,6 +284,7 @@ class VPNLegacyPasswordBackendVMTests(unittest.TestCase):
             out, err = process.communicate(timeout=40)
             if process.returncode:
                 print(delete_diagnostic(folder), flush=True)
+                print("Private backend boundaries:", boundary_diagnostics(err), flush=True)
             self.assertEqual(process.returncode, 0, out + err)
             self.assertIn('private backend checks passed', out)
             self.assertFalse((Path(folder) / 'Store/private-unknown-api').exists(),
