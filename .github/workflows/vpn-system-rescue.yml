@@ -50,7 +50,9 @@ jobs:
   system-rescue:
     name: Real Installer (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    # Intel production builds took 36m; eight unchanged live cases need ~37m
+    # in addition to setup/fast checks. Keep the entire matrix inside one job.
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
