@@ -25,7 +25,8 @@ class VPNApplicationDestinationExchangeTests(unittest.TestCase):
     def setUpClass(cls):
         staged.VPNStagedApplicationTests.setUpClass.__func__(cls)
         cls.checker = cls.build / 'destination-exchange'
-        cls.command(['swiftc', '-D', 'VPN_APPLICATION_DESTINATION_TESTING',
+        root_flags = ['-D', 'VPN_APPLICATION_DESTINATION_ROOT_TESTING'] if getattr(cls, 'root_vm_fixture', False) else []
+        cls.command(['swiftc', '-D', 'VPN_APPLICATION_DESTINATION_TESTING', *root_flags,
                      *[str(HELPER / name) for name in (
                          'VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift',
                          'VPNLifecycleOwnership.swift', 'VPNStagedApplication.swift',

@@ -42,7 +42,12 @@ enum VPNApplicationDestinationExchange {
                              requireExecutor: Bool = false,
                              authorizeMutation: () throws -> Void = {},
                              checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
+        #if VPN_APPLICATION_DESTINATION_ROOT_TESTING
+        // Dedicated VM fixture build only. Production never includes this entry.
+        guard getuid() == 0, geteuid() == 0 else { throw VPNPeerAuthenticationError.denied }
+        #else
         guard getuid() != 0, geteuid() == getuid() else { throw VPNPeerAuthenticationError.denied }
+        #endif
         return try perform(base: base, destination: destination, previous: previous,
                            previousOwnerUserID: previousOwnerUserID,
                            candidate: candidate, transition: transition,

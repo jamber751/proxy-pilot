@@ -4414,3 +4414,21 @@ Update package и clean package явно помечены TEST ONLY. Пока э
 - [ ] Проверка предотвращает новую неудачную транзакцию, но не чинит уже pending
   137→139. Исправление старого executor не подменяется новым marker, подпись A
   не меняется. Installed recovery и root-owned positive integration остаются открыты.
+
+### Продолжение 1.5da — отдельные ownership-тесты для macOS VM
+
+- [x] Добавлен `tests/test_vpn_destination_root_vm.py`: 11 opt-in сценариев
+  destination exchange с root-owned A, user-owned A (UID 501), смешанными
+  владельцами до/после exchange, прерыванием, повтором и ошибками authorization.
+  Все деревья — новые TemporaryDirectory; настоящие Applications, службы,
+  сетевые настройки и Keychain не изменяются.
+- [x] Специальный Swift test-only flag позволяет root fixture entry. Production
+  build не содержит этот entry; обычные тесты по-прежнему запрещены под root.
+  В root fixture driver операция production отвергается до вызова host API.
+- [x] Root-вариант скомпилирован обычным пользователем, но не исполнен.
+  На основном Mac все 11 root-сценариев пропущены; обычные destination tests 8/8.
+- [ ] Запустить в disposable macOS VM с Xcode CLI tools от root:
+  `PROXYPILOT_VM_ROOT_TESTS=1 python3 -m unittest discover -s tests -p test_vpn_destination_root_vm.py`.
+  Это проверка filesystem primitive с настоящими владельцами, не полный
+  Installer/journal/service lifecycle и не доказательство восстановления 137→139.
+  VM пока отсутствует; root-прогон не засчитан. Пароль на основном Mac не запрашивался.

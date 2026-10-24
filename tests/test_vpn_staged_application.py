@@ -27,7 +27,8 @@ class VPNStagedApplicationTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if os.geteuid() == 0:
+        if os.geteuid() == 0 and not (getattr(cls, 'root_vm_fixture', False)
+                                     and os.environ.get('PROXYPILOT_VM_ROOT_TESTS') == '1'):
             raise unittest.SkipTest('ownership fixture must not run as root')
         cls.temporary = tempfile.TemporaryDirectory(prefix='pp-staged-build-', dir='/tmp')
         cls.addClassCleanup(cls.temporary.cleanup)

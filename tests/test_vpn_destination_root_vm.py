@@ -1,0 +1,61 @@
+"""Opt-in root ownership integration for a disposable macOS VM, never the host.
+
+Runs the destination primitive against temporary signed fixture bundles only.
+No Installer, launchd, network, Keychain, or real Applications mutation.
+This is not full installed update acceptance.
+"""
+import os
+import shutil
+import sys
+import unittest
+
+import test_vpn_application_destination_exchange as destination
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and os.geteuid() == 0
+                     and os.environ.get('PROXYPILOT_VM_ROOT_TESTS') == '1'
+                     and shutil.which('swiftc'),
+                     'requires explicit opt-in inside disposable macOS VM as root')
+class VPNDestinationRootVMTests(destination.VPNApplicationDestinationExchangeTests):
+    root_vm_fixture = True
+
+    def set_owner(self, bundle, owner):
+        # Only the generated fixture subtree can be changed, never a supplied path.
+        self.assertTrue(bundle.is_relative_to(self.work))
+        self.assertFalse(bundle.is_symlink())
+        for item in [bundle, *bundle.rglob('*')]:
+            os.chown(item, owner, -1, follow_symlinks=False)
+
+    def test_legacy_user_owned_source_exchange_and_retry(self):
+        self.set_owner(self.destination / 'ProxyPilot.app', 501)
+        self.test_exchange_and_idempotent_retry()
+        self.assertEqual((self.destination / 'ProxyPilot.app').stat().st_uid, 0)
+        self.assertEqual((self.stage / 'ProxyPilot.app').stat().st_uid, 501)
+
+    def test_unrelated_owner_cannot_exchange_or_resume(self):
+        self.set_owner(self.destination / 'ProxyPilot.app', 501)
+        super().test_unrelated_owner_cannot_exchange_or_resume()
+
+    def test_mixed_source_owner_rejected_without_exchange(self):
+        resource = self.destination / 'ProxyPilot.app/Contents/Resources/data.txt'
+        os.chown(resource, 501, -1)
+        self.assert_rejected('exchange', 'invalidLayout')
+        self.assertEqual(self.identities(), self.initial)
+
+    def test_mixed_retained_owner_rejected_on_resume(self):
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        os.chown(self.stage / 'ProxyPilot.app/Contents/Resources/data.txt', 501, -1)
+        self.assert_rejected('exchange', 'invalidLayout')
+        self.assertEqual(self.identities(), self.initial[::-1])
+
+    def test_lock_root_and_layout_guards(self):
+        self.assert_rejected('busy', 'busy')
+        # Even when run as root, this test binary cannot call the host entry.
+        self.assertEqual(self.invoke('production').returncode, 64)
+        shutil.rmtree(self.stage)
+        self.assert_rejected('exchange', 'unsafeStorage')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -10,6 +10,13 @@ import Foundation
         let a = CommandLine.arguments
         guard a.count == 8 else { exit(64) }
         let operation = a[1], basePath = a[2], destinationPath = a[3]
+        #if VPN_APPLICATION_DESTINATION_ROOT_TESTING
+        // Never permit the real fixed-destination entry in the VM fixture build.
+        guard operation != "production" else { exit(64) }
+        let serviceOwner: uid_t = 501
+        #else
+        let serviceOwner = geteuid()
+        #endif
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x42, count: 32))
         let authority = try VPNReleaseAuthority(trustedPublicKey: key.publicKey.rawRepresentation,
                                                 minimumSequence: 1, supportedProtocol: 1)
@@ -58,7 +65,7 @@ import Foundation
             } else {
                 outcome = try VPNApplicationDestinationExchange.testExchange(
                     inTrustedDirectory: base, destination: destination,
-                    previous: av, previousOwnerUserID: operation == "wrong-owner" ? geteuid() + 1 : geteuid(), candidate: bv,
+                    previous: av, previousOwnerUserID: operation == "wrong-owner" ? serviceOwner + 1 : serviceOwner, candidate: bv,
                     transition: transition,
                     authorizeMutation: {
                         if operation == "authorization-failure" { throw Injected.failure }
