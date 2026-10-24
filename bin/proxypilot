@@ -37,7 +37,19 @@ readonly CFG_DIR="$_cfg_home/proxypilot"
 readonly CFG="$CFG_DIR/config"
 readonly MODE_FILE="$CFG_DIR/mode"
 readonly ENABLED_FILE="$CFG_DIR/enabled"
-readonly LOG="$HOME/Library/Logs/proxypilot.log"
+# Runtime capability is stable while VPN is off, absent, or asking for a code.
+# Keep user settings and the cross-generation writer lock in CFG_DIR.
+select_bridge_runtime() {
+  typeset -g PP_MANAGED_BRIDGE=0 BRIDGE_DIR="$CFG_DIR"
+  typeset -g LOG="$HOME/Library/Logs/proxypilot.log"
+  local resources="${PP_SELF:h:h}"
+  if [[ -f "$resources/vpn-bridge-v2" || -f "/Applications/ProxyPilot.app/Contents/Resources/vpn-bridge-v2" ]]; then
+    PP_MANAGED_BRIDGE=1
+    BRIDGE_DIR="$CFG_DIR/managed-bridge-v2"
+    LOG="$HOME/Library/Logs/proxypilot-managed-v2.log"
+  fi
+}
+select_bridge_runtime
 
 # ── дефолты (перекрываются конфигом) ─────────────────────────────────────────
 BRIDGE_PORT=3129
@@ -318,7 +330,111 @@ effective_mode() {
 # Ищем и наш конфиг, и старую форму запуска (-L ...): при обновлении с
 # версии до 1.1.3 мост уже крутится по-старому, и без этого новый процесс
 # подрался бы с ним за порт.
+# Managed discovery uses literal, complete commands, never a user-path regex.
+# Legacy discovery is used only for the first same-port migration/explicit stop.
+# A pre-YAML -L process has no config namespace: do not adopt or kill it.
+bridge_process_text_matches() {  # PID, device, inode; no argv0 authority
+  local pid="$1" device="$2" inode="$3" field actual_device="" actual_inode="" is_text=0 matches=0 text
+  [[ "$device" == <-> && "$inode" == <-> ]] || return 1
+  text=$(/usr/sbin/lsof -nP -a -p "$pid" -d txt -F Di 2>/dev/null) || return 1
+  for field in ${(f)text}; do
+    case "$field" in
+      (f*) is_text=0; actual_device=""; actual_inode=""; [[ "$field" == ftxt ]] && is_text=1 ;;
+      (D*) actual_device="${field#D}" ;;
+      (i*) actual_inode="${field#i}"
+        if (( is_text )) && [[ "$actual_device" =~ '^0x[0-9a-fA-F]+$' && "$actual_inode" == "$inode" ]] && (( actual_device == device )); then
+          (( matches += 1 ))
+        fi ;;
+    esac
+  done
+  (( matches == 1 ))
+}
+
+bridge_process_image_matches() {  # PID, expected executable
+  local expected device inode
+  expected=$(/usr/bin/stat -L -f '%d %i' "$2" 2>/dev/null) || return 1
+  read -r device inode <<< "$expected"
+  bridge_process_text_matches "$1" "$device" "$inode" &&
+    [[ "$(/usr/bin/stat -L -f '%d %i' "$2" 2>/dev/null)" == "$expected" ]]
+}
+
+bridge_ledger_metadata() {
+  local file="${BRIDGE_DIR:-$CFG_DIR}/process" metadata owner mode links size metadata_tail
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  metadata=$(/usr/bin/stat -f '%u %Lp %l %z %d %i %m %c' "$file" 2>/dev/null) || return 1
+  read -r owner mode links size metadata_tail <<< "$metadata"
+  [[ "$owner" == "$EUID" && "$mode" == 600 && "$links" == 1 && "$size" == <-> ]] &&
+    (( size <= 16384 )) || return 1
+  print -r -- "$metadata"
+}
+
+bridge_process_ledger_matches() {  # managed generation only, never legacy
+  local pid="$1" file="${BRIDGE_DIR:-$CFG_DIR}/process" before identity device inode
+  local -a lines
+  before=$(bridge_ledger_metadata) || return 1
+  lines=("${(@f)$(< "$file")}")
+  (( ${#lines} == 5 )) && [[ "$lines[1]" == v1 && "$lines[2]" == "$pid" && "$lines[5]" == end ]] || return 1
+  identity=$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)
+  [[ -n "$identity" && "$identity" == "$lines[3]" ]] || return 1
+  read -r device inode <<< "$lines[4]"
+  bridge_process_text_matches "$pid" "$device" "$inode" || return 1
+  [[ "$(bridge_ledger_metadata)" == "$before" && "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]]
+}
+
+record_managed_bridge() {  # Called only after exact process/listener readiness.
+  local pid="$1" file="$BRIDGE_DIR/process" identity material temporary device inode
+  [[ ! -L "$BRIDGE_DIR" ]] || return 1
+  if [[ -e "$file" || -L "$file" ]]; then bridge_ledger_metadata >/dev/null || return 1; fi
+  identity=$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)
+  [[ -n "$identity" && "$identity" != *$'\n'* ]] || return 1
+  material=$(/usr/bin/stat -L -f '%d %i' "$GOST" 2>/dev/null) || return 1
+  read -r device inode <<< "$material"
+  bridge_process_text_matches "$pid" "$device" "$inode" || return 1
+  [[ "$(/usr/bin/stat -L -f '%d %i' "$GOST" 2>/dev/null)" == "$material" ]] || return 1
+  [[ "$(bridge_pid)" == "$pid" && "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]] || return 1
+  temporary=$(umask 077; /usr/bin/mktemp "$BRIDGE_DIR/.process.XXXXXXXX") || return 1
+  if ! print -rl -- v1 "$pid" "$identity" "$material" end > "$temporary"; then
+    rm -f "$temporary"; return 1
+  fi
+  # A ledger is local lifecycle continuity, never root/helper authorization.
+  if [[ -e "$file" || -L "$file" ]]; then
+    bridge_ledger_metadata >/dev/null || { rm -f "$temporary"; return 1; }
+  fi
+  /bin/mv -f "$temporary" "$file" || { rm -f "$temporary"; return 1; }
+}
+
+managed_bridge_processes() {  # managed | legacy -> same-UID PID(s)
+  local namespace="$1" owner pid cmd mode executable expected
+  local -a executables
+  executables=("${GOST:-}" "${PP_SELF:h}/gost" /Applications/ProxyPilot.app/Contents/Resources/bin/gost /opt/homebrew/bin/gost /usr/local/bin/gost)
+  [[ -n "${GOST:-}" ]] && executables+=("${GOST:A}")
+  while read -r owner pid cmd; do
+    [[ "$owner" == "$EUID" && "$pid" == <-> ]] || continue
+    for mode in socks http direct; do
+      if [[ "$namespace" == managed ]]; then
+        expected="${BRIDGE_DIR:-$CFG_DIR}/route-$mode.yaml"
+      else
+        expected="$CFG_DIR/gost-$mode.yaml"
+      fi
+      for executable in ${(u)executables}; do
+        [[ -n "$executable" && "$executable" == /* && "$cmd" == "$executable -C $expected" ]] || continue
+        if ! bridge_process_image_matches "$pid" "$executable"; then
+          [[ "$namespace" == managed ]] && bridge_process_ledger_matches "$pid" || continue
+        fi
+        print -- "$pid"
+        break 2
+      done
+    done
+  done < <(ps -ww -axo uid=,pid=,command= 2>/dev/null)
+}
+
 bridge_pid() {
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]]; then
+    local -a pids
+    pids=(${(f)"$(managed_bridge_processes managed)"})
+    (( ${#pids} == 1 )) && print -- "$pids[1]"
+    return 0
+  fi
   local pid=$(pgrep -f "gost -C $CFG_DIR/gost-" 2>/dev/null | head -1)
   [[ -z "$pid" ]] && pid=$(pgrep -f "gost -L http://127.0.0.1:$BRIDGE_PORT" 2>/dev/null | head -1)
   print -- "$pid"
@@ -326,8 +442,16 @@ bridge_pid() {
 
 running_mode() {
   local cmd
-  cmd=$(ps -o command= -p "$(bridge_pid)" 2>/dev/null)
+  cmd=$(ps -ww -o command= -p "$(bridge_pid)" 2>/dev/null)
   [[ -z "$cmd" ]] && { print -- none; return }
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]]; then
+    local mode
+    for mode in socks http direct; do
+      [[ "$cmd" == *" -C ${BRIDGE_DIR:-$CFG_DIR}/route-$mode.yaml" ]] && { print -- "$mode"; return; }
+    done
+    print -- none
+    return
+  fi
   case "$cmd" in
     (*gost-socks.yaml*)  print -- socks  ;;
     (*gost-http.yaml*)   print -- http   ;;
@@ -336,8 +460,49 @@ running_mode() {
   esac
 }
 
+# Reject ambiguity before touching settings or a bridge. Unknown port owners
+# are never killed; startup below refuses an already occupied endpoint.
+validate_managed_bridge_processes() {
+  [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]] || return 0
+  local -a pids
+  pids=(${(f)"$(managed_bridge_processes managed)"} ${(f)"$(managed_bridge_processes legacy)"})
+  (( ${#pids} <= 1 )) || { warn "Найдено несколько мостов; остановите старую копию ProxyPilot."; return 1; }
+}
+
 stop_bridge() {
   local pid=$(bridge_pid)
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]]; then
+    validate_managed_bridge_processes || return 1
+    [[ -n "$pid" ]] || pid=$(managed_bridge_processes legacy)
+    if [[ -z "$pid" ]]; then
+      if tcp_open 127.0.0.1 $BRIDGE_PORT; then
+        warn "Локальный порт занят неизвестным процессом; остановите его вручную."
+        return 1
+      fi
+      return 0
+    fi
+    # Recheck owner, birth time and complete command before each signal. A
+    # vanished/reused PID is not permission to signal its replacement.
+    local identity=$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)
+    [[ -n "$identity" ]] || return 0
+    [[ "$(bridge_pid)" == "$pid" || "$(managed_bridge_processes legacy)" == "$pid" ]] || return 1
+    [[ "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]] || return 1
+    kill "$pid" 2>/dev/null || return 1
+    local i
+    for i in {1..20}; do
+      [[ "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]] || return 0
+      sleep 0.1
+    done
+    [[ "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]] || return 0
+    [[ "$(bridge_pid)" == "$pid" || "$(managed_bridge_processes legacy)" == "$pid" ]] || return 1
+    [[ "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]] || return 1
+    kill -9 "$pid" 2>/dev/null || return 1
+    for i in {1..10}; do
+      [[ "$(ps -ww -o uid=,lstart=,command= -p "$pid" 2>/dev/null)" == "$identity" ]] || return 0
+      sleep 0.1
+    done
+    return 1
+  fi
   [[ -z "$pid" ]] && return 0
   kill "$pid" 2>/dev/null
   local i
@@ -375,7 +540,7 @@ load_bridge_vpn() {
     if [[ ! -f "$resources/vpn-bridge-v1" ]]; then
       # A previous managed writer is not permission to replay its IP list.
       # Refuse to erase it when the matching frontend is unavailable.
-      [[ ! -s "$CFG_DIR/bridge-vpn" || -z "$(< "$CFG_DIR/bridge-vpn")" ]] || return 1
+      [[ ! -s "${BRIDGE_DIR:-$CFG_DIR}/bridge-vpn" || -z "$(< "${BRIDGE_DIR:-$CFG_DIR}/bridge-vpn")" ]] || return 1
       return 0
     fi
   fi
@@ -409,11 +574,14 @@ prepare_bridge_writer() {
   zmodload zsh/system || return 1
   zsystem flock -t 10 -f _pp_bridge_lock "$CFG_DIR/bridge.lock" || return 1
   load_config || return 1
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]]; then validate_managed_bridge_processes || return 1; fi
   [[ "$1" == (stop|disable|set) ]] && return 0
   # Pure preference changes and an off, absent bridge do not need live VPN
   # evidence. In particular, keep route selection usable during an OTP prompt.
   if [[ "$1" == route && "${3:-}" != enable ]] && ! is_enabled; then return 0; fi
-  if [[ "$1" == (ensure|shellenv) ]] && ! is_enabled && [[ "$(running_mode)" == none ]]; then return 0; fi
+  if [[ "$1" == (ensure|shellenv) ]] && ! is_enabled && [[ "$(running_mode)" == none ]]; then
+    if [[ "${PP_MANAGED_BRIDGE:-0}" != 1 || -z "$(managed_bridge_processes legacy)" ]]; then return 0; fi
+  fi
   load_bridge_vpn || { warn "Не удалось подтвердить ресурсы VPN; мост не изменён."; return 1; }
 }
 
@@ -435,6 +603,12 @@ gost_nameservers() {
 write_gost_config() {  # mode -> путь к конфигу
   local mode="$1"
   local cfg="$CFG_DIR/gost-$mode.yaml"
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]]; then
+    [[ ! -L "$BRIDGE_DIR" ]] || return 1
+    mkdir -p "$BRIDGE_DIR" || return 1
+    cfg="$BRIDGE_DIR/route-$mode.yaml"
+    [[ ! -L "$cfg" ]] || return 1
+  fi
   local NO_PROXY_LIST=$(effective_bridge_bypass)
   local upstream="" connector="" ns e
   case "$mode" in
@@ -482,7 +656,7 @@ write_gost_config() {  # mode -> путь к конфигу
     print -- "  - name: r0"
     print -- "    nameservers:"
     for ns in $(gost_nameservers); do print -- "      - addr: $ns"; done
-  } > "$cfg"
+  } > "$cfg" || return 1
   print -- "$cfg"
 }
 
@@ -495,28 +669,39 @@ start_bridge() {  # mode
     (direct) ;;
     (*)     die "неизвестный режим: $mode" ;;
   esac
-  local cfg=$(write_gost_config "$mode")
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]] && tcp_open 127.0.0.1 $BRIDGE_PORT; then
+    warn "Локальный порт занят; остановите другой прокси и повторите."
+    return 1
+  fi
+  local cfg
+  cfg=$(write_gost_config "$mode") || return 1
   mkdir -p "${LOG:h}"
   # env -u ...: иначе gost попробует ходить наружу через свой же прокси
   env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy \
     nohup "$GOST" -C "$cfg" >>"$LOG" 2>&1 &!
-  local i
+  local launched_pid=$! i
   for i in {1..30}; do
-    if tcp_open 127.0.0.1 $BRIDGE_PORT; then
+    if tcp_open 127.0.0.1 $BRIDGE_PORT && { [[ "${PP_MANAGED_BRIDGE:-0}" != 1 ]] || {
+      [[ "$(running_mode)" == "$mode" ]] && /usr/sbin/lsof -nP -a -p "$(bridge_pid)" -iTCP@127.0.0.1:$BRIDGE_PORT -sTCP:LISTEN >/dev/null 2>&1
+    }; }; then
+      if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 ]]; then record_managed_bridge "$launched_pid" || break; fi
       # запоминаем сеть, на которой мост поднят: пережив смену сети, gost
       # остаётся с DNS-состоянием от старой. Ловится сравнением шлюза И списка
       # DNS: Tailscale/VPN подменяют резолверы, не трогая шлюз, и после их
       # выключения gost упирался в мёртвый 100.100.100.100 — по 10 с
       # (A+AAAA × 5 с таймаут) на каждый новый домен, пока не дойдёт до живого.
-      mkdir -p "$CFG_DIR"; print -- "$(gateway)" > "$CFG_DIR/bridge-gateway"
-      gost_nameservers > "$CFG_DIR/bridge-dns"
-      print -- "auto-v1:$BRIDGE_PORT" > "$CFG_DIR/bridge-format"
-      print -- "$PP_VERSION" > "$CFG_DIR/bridge-version"
-      print -r -- "${PP_VPN_STATE:-}" > "$CFG_DIR/bridge-vpn"
+      mkdir -p "$CFG_DIR"; print -- "$(gateway)" > "${BRIDGE_DIR:-$CFG_DIR}/bridge-gateway"
+      gost_nameservers > "${BRIDGE_DIR:-$CFG_DIR}/bridge-dns"
+      print -- "auto-v1:$BRIDGE_PORT" > "${BRIDGE_DIR:-$CFG_DIR}/bridge-format"
+      print -- "$PP_VERSION" > "${BRIDGE_DIR:-$CFG_DIR}/bridge-version"
+      print -r -- "${PP_VPN_STATE:-}" > "${BRIDGE_DIR:-$CFG_DIR}/bridge-vpn"
       return 0
     fi
     sleep 0.1
   done
+  if [[ "${PP_MANAGED_BRIDGE:-0}" == 1 && "$(bridge_pid)" == "$launched_pid" ]]; then
+    stop_bridge >/dev/null 2>&1
+  fi
   return 1
 }
 
@@ -527,23 +712,25 @@ cmd_ensure() {
   # Existing terminal processes retain their proxy variables. When off, keep
   # an already-running listener in direct mode; never resurrect a stopped one.
   if ! is_enabled; then
-    [[ "$run" == none ]] && return 0
+    if [[ "$run" == none ]]; then
+      [[ "${PP_MANAGED_BRIDGE:-0}" == 1 && -n "$(managed_bridge_processes legacy)" ]] || return 0
+    fi
     want=direct
   else
     want=$(effective_mode)
   fi
   local gw_now=$(gateway) gw_boot="" dns_now=$(gost_nameservers) dns_boot=""
-  [[ -r "$CFG_DIR/bridge-gateway" ]] && gw_boot=$(< "$CFG_DIR/bridge-gateway")
-  [[ -r "$CFG_DIR/bridge-dns" ]] && dns_boot=$(< "$CFG_DIR/bridge-dns")
+  [[ -r "${BRIDGE_DIR:-$CFG_DIR}/bridge-gateway" ]] && gw_boot=$(< "${BRIDGE_DIR:-$CFG_DIR}/bridge-gateway")
+  [[ -r "${BRIDGE_DIR:-$CFG_DIR}/bridge-dns" ]] && dns_boot=$(< "${BRIDGE_DIR:-$CFG_DIR}/bridge-dns")
 
   # режим совпал И сеть та же (шлюз и DNS) — всё в порядке
   # Upgrade an existing HTTP-only bridge once, even if the network is unchanged.
   local format=""
-  [[ -r "$CFG_DIR/bridge-format" ]] && format=$(< "$CFG_DIR/bridge-format")
+  [[ -r "${BRIDGE_DIR:-$CFG_DIR}/bridge-format" ]] && format=$(< "${BRIDGE_DIR:-$CFG_DIR}/bridge-format")
   local bridge_version=""
-  [[ -r "$CFG_DIR/bridge-version" ]] && bridge_version=$(< "$CFG_DIR/bridge-version")
+  [[ -r "${BRIDGE_DIR:-$CFG_DIR}/bridge-version" ]] && bridge_version=$(< "${BRIDGE_DIR:-$CFG_DIR}/bridge-version")
   local vpn_boot=""
-  [[ -r "$CFG_DIR/bridge-vpn" ]] && vpn_boot=$(< "$CFG_DIR/bridge-vpn")
+  [[ -r "${BRIDGE_DIR:-$CFG_DIR}/bridge-vpn" ]] && vpn_boot=$(< "${BRIDGE_DIR:-$CFG_DIR}/bridge-vpn")
   # Keep the old engine alive during app replacement; restart it once on the
   # first launch of the new release without changing enabled/selected settings.
   [[ "$run" == "$want" && "$gw_now" == "$gw_boot" && "$dns_now" == "$dns_boot" && "$format" == "auto-v1:$BRIDGE_PORT" && "$bridge_version" == "$PP_VERSION" && "$vpn_boot" == "${PP_VPN_STATE:-}" ]] && return 0
@@ -551,7 +738,9 @@ cmd_ensure() {
   # Останавливаем по наличию процесса, а не по running_mode: у старого
   # формата запуска режим читается как none, и мост-предшественник остался
   # бы держать порт — новый упал бы с "address already in use".
-  [[ -n "$(bridge_pid)" ]] && stop_bridge
+  if [[ -n "$(bridge_pid)" || ( "${PP_MANAGED_BRIDGE:-0}" == 1 && -n "$(managed_bridge_processes legacy)" ) ]]; then
+    stop_bridge || return 1
+  fi
   start_bridge "$want" || { warn "мост не поднялся, см. $LOG"; return 1 }
   return 0
 }
@@ -560,11 +749,11 @@ cmd_switch() {  # mode
   need_config
   need_gost
   local want="$1" eff
-  mkdir -p "$CFG_DIR"; print -- "$want" > "$MODE_FILE"; print -- on > "$ENABLED_FILE"
   # явное действие пользователя — решаем заново, а не отдаём кэш
   rm -f "$CFG_DIR/auto-cache" "$CFG_DIR"/probe-*(N)
   eff="$want"; [[ "$want" == auto ]] && eff=$(resolve_auto)
-  stop_bridge
+  stop_bridge || return 1
+  mkdir -p "$CFG_DIR"; print -- "$want" > "$MODE_FILE"; print -- on > "$ENABLED_FILE"
   start_bridge "$eff" || { print -- off > "$ENABLED_FILE"; warn "мост не поднялся, см. $LOG"; return 1 }
   local suffix=""; [[ "$want" == auto ]] && suffix=" → $eff"
   ok "режим: $want$suffix   (127.0.0.1:$BRIDGE_PORT, клиенты перезапускать не нужно)"
@@ -1754,7 +1943,7 @@ case "${1:-status}" in
   (system)   cmd_system "${2:-status}" ;;
   (net)      cmd_net "${2:-status}" ;;
   (vpn)      cmd_vpn "${2:-status}" "${3:-}" ;;
-  (stop)     stop_bridge; ok "мост остановлен" ;;
+  (stop)     stop_bridge || exit 1; ok "мост остановлен" ;;
   (version|--version|-v) print -- "proxypilot $PP_VERSION" ;;
   (help|--help|-h) usage ;;
   (*) print -u2 -- "неизвестная команда: $1"; print -u2 --; usage; exit 1 ;;

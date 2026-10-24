@@ -49,7 +49,7 @@ SOURCES=("$HERE/main.swift" "$HERE/Updates.swift" "$HERE/Controls.swift"
 if [[ "$VPN_INSTALLER" == 1 ]]; then
   SOURCES+=("$HERE/VPNModel.swift" "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift"
     "$HERE/VPNBridgeBypass.swift" "$HERE/VPNBridgeBypassEntry.swift")
-  touch "$APP/Contents/Resources/vpn-bridge-v1"
+  touch "$APP/Contents/Resources/vpn-bridge-v1" "$APP/Contents/Resources/vpn-bridge-v2"
 fi
 LINK_FLAGS=()
 SIGN_FLAGS=()

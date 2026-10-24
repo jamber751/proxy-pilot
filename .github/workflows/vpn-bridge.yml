@@ -1,0 +1,49 @@
+name: VPN isolated managed bridge acceptance
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-bridge.yml'
+      - 'bin/proxypilot'
+      - 'app/build.sh'
+      - 'app/build-joint-release.sh'
+      - 'app/main.swift'
+      - 'app/VPNConfiguration.swift'
+      - 'app/VPNBridge*.swift'
+      - 'app/vpn-helper/VPNApplicationSpec.swift'
+      - 'app/vpn-helper/VPNTunnelStateStore.swift'
+      - 'tests/test_managed_bridge_namespace.py'
+      - 'tests/test_power.py'
+      - 'tests/test_vpn_bridge*.py'
+      - 'tests/vpn_bridge_bypass_checks.swift'
+      - 'tests/test_cli_selection.py'
+      - 'tests/test_vpn_joint_release_builder.py'
+      - 'tests/test_update_quiescence.py'
+      - 'tests/update_quiescence_checks.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: Isolated managed bridge (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Ordinary user and shell syntax
+        run: |
+          test "$(id -u)" -ne 0
+          /bin/zsh -n bin/proxypilot
+          /bin/zsh -n app/build.sh
+      - name: Private bridge processes, handoff, CLI selection and update retention
+        run: PYTHONPATH=tests python3 -m unittest test_managed_bridge_namespace test_power test_vpn_bridge_handoff test_cli_selection test_vpn_joint_release_builder test_vpn_bridge_bypass test_update_quiescence -v
