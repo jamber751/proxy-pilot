@@ -31,8 +31,8 @@ enum VPNApplicationTransactionStager {
         let applications = open("/Applications", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard applications >= 0 else { throw VPNApplicationTransactionStagingError.unsafeStorage }
         defer { close(applications) }
-        let old = try VPNStagedApplication.inspectInstalled(
-            inApplicationsDirectory: applications, ownerUserID: previousOwnerUserID,
+        let old = try VPNStagedApplication.inspectInstalledForUpdate(
+            inApplicationsDirectory: applications, previousOwnerUserID: previousOwnerUserID,
             productionParent: true, release: previous)
         let next = try VPNStagedApplication.inspect(
             inTrustedDirectory: candidateDirectory, release: candidate)

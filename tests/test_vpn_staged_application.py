@@ -115,6 +115,12 @@ class VPNStagedApplicationTests(unittest.TestCase):
         self.stage.mkdir(mode=0o700)
         self.make_app()
 
+    def test_update_accepts_only_root_or_authorized_user_owner(self):
+        self.check('update-owner-policy')
+
+    def test_update_inspection_preserves_owner_installed_legacy_support(self):
+        self.check('inspect-installed-update')
+
     def test_valid_match_and_revalidation(self):
         self.check(); self.check('revalidate')
 

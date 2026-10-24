@@ -4298,11 +4298,34 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   installed 137 receipt/signature и CDHash обеих архитектур по signed baseline.
 - [x] Собран `Acceptance/candidate-138-20261024/TEST ONLY - Update VPN 137 to 138.pkg`.
   Exact staged executable вернул `VPN joint update package verified.`, GOST 0755.
-- [ ] Installer открыт, нажата Install, ожидается системная авторизация.
-  138 ещё не считать установленной до проверки результата/pins/receipt.
+- [ ] Владелец авторизовал Installer; update 137→138 завершился ошибкой
+  `sourcePreparation` после успешного package verify. App/receipt остаются 137.
+  Причина и исправление — 1.5cv; повтор исходного пакета 138 не является fix.
 - [ ] После обновления проверить конфигурацию, обычный proxy off/on, HTTP/SOCKS5
   и закрытую диагностику новой сборки. VPN OTP и connected overlay не выполнены.
 
 Ограниченный прогон 1.5ct плюс release builder: **88 passed, 1 live-target skipped**.
 Это разные виды доказательств (модели, Swift/CLI, loopback, per-user launchd),
 не полная финальная матрица и не проверка production reboot/WARP.
+
+### Продолжение 1.5cv — root-owned app после clean install (24 октября)
+
+- [x] Installer log: preinstall verified, postinstall отказал на sourcePreparation.
+  Installed app и public receipt sequence=137; authenticated VPN wire off,
+  proxy enabled/direct/system_proxy=true. Замена приложения не состоялась.
+- [x] Обнаружен конфликт владельцев: first-install создаёт root-owned app,
+  но transaction stager передаёт service owner UID в inspectInstalled.
+  Read-only probe с настоящим signed manifest 137 и `/Applications` воспроизвёл
+  отказ прежнего алгоритма и успешную проверку/повторную валидацию исправленного.
+  Probe не писал системные файлы и не выполнял root-код.
+- [x] Update-source inspection допускает ровно root либо авторизованного owner
+  пользователя, затем проверяет весь bundle с одним конкретным UID. Чужой UID,
+  смешанные владельцы, ACL, подписи, ссылки и все прежние ограничения остаются
+  проверяемыми. Никакого chown установленного приложения или снятия pins.
+- [x] Staged application tests: 17 passed, 1 optional real-candidate skipped;
+  transaction staging: 7/7 passed. Дополнительно настоящий installed root-owned
+  app принят read-only probe, отдельно от disposable fixtures.
+- [ ] Исправление пока только в исходниках. Перед новым пакетом нужно обработать
+  возможную сохранённую preparation 138: новый signed manifest не должен молча
+  подменять незавершённую транзакцию. Журнал root не читался/не удалялся вручную.
+- [ ] Новая signed поставка, installed update/recovery и дальнейшая приёмка.

@@ -48,6 +48,19 @@ import Foundation
         let fd = directory(path); defer { close(fd) }
         let action = {
             switch operation {
+            case "update-owner-policy":
+                let rootOwner = try VPNStagedApplication.updateSourceOwner(observed: 0, authorizedUser: 501)
+                let userOwner = try VPNStagedApplication.updateSourceOwner(observed: 501, authorizedUser: 501)
+                precondition(rootOwner == 0 && userOwner == 501)
+                expect("unsafeStorage") { _ = try VPNStagedApplication.updateSourceOwner(observed: 502, authorizedUser: 501) }
+                expect("unsafeStorage") { _ = try VPNStagedApplication.updateSourceOwner(observed: 0, authorizedUser: 0) }
+                expect("unsafeStorage") { _ = try VPNStagedApplication.updateSourceOwner(observed: 0, authorizedUser: uid_t.max) }
+            case "inspect-installed-update":
+                let receipt = try VPNStagedApplication.inspectInstalledForUpdate(
+                    inApplicationsDirectory: fd, previousOwnerUserID: geteuid(),
+                    productionParent: false, release: candidate)
+                precondition(receipt.matchesRelease(candidate))
+                try VPNStagedApplication.revalidate(receipt, inTrustedDirectory: fd)
             case "inspect":
                 let receipt = try VPNStagedApplication.inspect(inTrustedDirectory: fd, release: candidate)
                 precondition(receipt.matchesRelease(candidate))

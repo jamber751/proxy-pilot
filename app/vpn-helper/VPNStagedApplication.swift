@@ -89,6 +89,34 @@ enum VPNStagedApplication {
                                        productionParent: productionParent))
     }
 
+    /// Installer-owned bundles and owner-installed legacy bundles are both valid
+    /// update sources. The service owner is not necessarily the bundle owner.
+    /// Select one exact owner for the entire inspection; never allow mixed owners.
+    static func inspectInstalledForUpdate(inApplicationsDirectory parent: Int32,
+                                          previousOwnerUserID: uid_t,
+                                          productionParent: Bool,
+                                          release: VerifiedVPNRelease) throws
+        -> VPNStagedApplicationInspection {
+        var observed = stat()
+        guard fstatat(parent, bundleName, &observed, AT_SYMLINK_NOFOLLOW) == 0,
+              observed.st_mode & S_IFMT == S_IFDIR else {
+            throw VPNStagedApplicationError.unsafeStorage
+        }
+        let owner = try updateSourceOwner(observed: observed.st_uid,
+                                          authorizedUser: previousOwnerUserID)
+        return try inspectInstalled(inApplicationsDirectory: parent,
+                                    ownerUserID: owner,
+                                    productionParent: productionParent, release: release)
+    }
+
+    static func updateSourceOwner(observed: uid_t, authorizedUser: uid_t) throws -> uid_t {
+        guard authorizedUser >= 500, authorizedUser != uid_t.max,
+              observed == 0 || observed == authorizedUser else {
+            throw VPNStagedApplicationError.unsafeStorage
+        }
+        return observed
+    }
+
     private static func inspect(parent: Int32, release: VerifiedVPNRelease,
                                 policy: StoragePolicy) throws -> VPNStagedApplicationInspection {
         try checkParent(parent, policy: policy)
