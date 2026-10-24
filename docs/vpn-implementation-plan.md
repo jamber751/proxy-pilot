@@ -4346,7 +4346,15 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   partial app staging, прерывание после retirement, запрет older candidate,
   запрет supersession при journal и сохранение unknown content.
 - [x] Коммит `e80b8be`; системное preparation состояние вручную не изменялось.
-- [ ] Universal frontend и helper 139 собираются. Новый helper нужен, поскольку
+- [x] Universal frontend и helper 139 собраны. Новый helper нужен, поскольку
   update preparation вызывается также broker-ролевым entry. Комплект 138 не
   перезаписывается и повторно не устанавливается.
-- [ ] Подписанный переход 137→139, installed recovery и проверка приложения.
+- [x] Подписан переход 137→139 существующим release key. Собран локальный пакет
+  `Acceptance/candidate-139-20261024/TEST ONLY - Update VPN 137 to 139.pkg`.
+  Exact staged executable: `VPN joint update package verified.` Public GOST
+  Universal и 0755; полный app прошёл deep/strict codesign verification.
+- [x] Перед установкой public receipt совпадает с подписанным baseline 137;
+  установленное приложение 137 прошло deep/strict verification.
+- [ ] Installer 139 открыт, нажата Install; ожидается системная авторизация.
+  Установленная sequence по-прежнему 137. Installed recovery и последующие
+  проверки не засчитываются до реального завершения установки.
