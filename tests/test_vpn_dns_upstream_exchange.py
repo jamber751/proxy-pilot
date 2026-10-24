@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from test_vpn_dns_answer_release import ROOT, SOURCES as BASE
+from test_vpn_dns_answer_release import ROOT, SOURCES as BASE, snapshot_inputs
 
 SOURCES = BASE + [ROOT/'app/vpn-helper/VPNDNSUpstreamExchange.swift']
 CASES = ('udp4', 'udp6', 'tc4', 'tc6', 'oversize', 'init-pure', 'binding-uuid', 'binding-generation',
@@ -20,7 +20,10 @@ CASES = ('udp4', 'udp6', 'tc4', 'tc6', 'oversize', 'init-pure', 'binding-uuid', 
          'udp-aaaa', 'tc-aaaa', 'tcp-client',
          'halfclose-tcp', 'halfclose-header-eof', 'halfclose-body-eof', 'halfclose-bare', 'halfclose-err',
          'halfclose-nval', 'halfclose-write', 'halfclose-connect', 'halfclose-revoked', 'halfclose-dead',
-         'halfclose-cancel', 'halfclose-postproof', 'halfclose-udp')
+         'halfclose-cancel', 'halfclose-postproof', 'halfclose-udp',
+         'distinct-epochs', 'pair-conservative', 'sleep-before-authority', 'sleep-after-receive', 'sleep-between-legs',
+         'sleep-udp-poll', 'sleep-tcp-poll', 'sleep-tcp-connect', 'clock-fail-initial', 'clock-fail-poll',
+         'clock-backwards-poll', 'clock-uptime-backwards', 'clock-fail-allocation', 'clock-pair-backwards', 'clock-pair-sleep', 'sleep-original-deadline', 'clock-backwards-in-window')
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS SDK required')
 class DNSUpstreamExchangeTests(unittest.TestCase):
@@ -30,8 +33,9 @@ class DNSUpstreamExchangeTests(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.binary = Path(cls.temp.name)/'checks'
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
+        inputs = snapshot_inputs(Path(cls.temp.name), [*SOURCES, ROOT/'tests/vpn_dns_upstream_exchange_checks.swift'])
         result = subprocess.run(['/usr/bin/swiftc', '-parse-as-library', '-target',arch+'-apple-macosx11.0',
-            *map(str,SOURCES),str(ROOT/'tests/vpn_dns_upstream_exchange_checks.swift'),'-o',str(cls.binary)],
+            *inputs,'-o',str(cls.binary)],
             capture_output=True,text=True,timeout=120)
         if result.returncode: raise AssertionError(result.stderr)
     def case(self, mode):

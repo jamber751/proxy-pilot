@@ -65,23 +65,30 @@ final class VPNDNSAnswerRelease {
     private let answer: VPNDNSValidatedAnswer
     private let authority: VPNDNSAnswerReleaseAuthority
     private let sink: VPNDNSAnswerCheckpointSink
-    private let now: () throws -> UInt64
+    private let now: () throws -> VPNDNSContinuousInstant
     private let stateLock = NSLock()
     private var attempted = false
+    private var lastClock: VPNDNSContinuousInstant?
     private var storedStage: VPNDNSAnswerCheckpoint?
     var stage: VPNDNSAnswerCheckpoint? {
         stateLock.lock(); defer { stateLock.unlock() }; return storedStage
     }
 
     init(answer: VPNDNSValidatedAnswer, authority: VPNDNSAnswerReleaseAuthority,
-         sink: VPNDNSAnswerCheckpointSink, now: @escaping () throws -> UInt64) {
+         sink: VPNDNSAnswerCheckpointSink, now: @escaping () throws -> VPNDNSContinuousInstant) {
         self.answer = answer; self.authority = authority; self.sink = sink; self.now = now
     }
 
+    private func currentTime() throws -> VPNDNSContinuousInstant {
+        let value = try now()
+        stateLock.lock(); defer { stateLock.unlock() }
+        if let previous = lastClock, value < previous { throw VPNDNSContinuousClockError.backwards }
+        lastClock = value; return value
+    }
     private func current() throws {
-        try answer.checkTime(now()); try authority.checkCurrent(answer)
+        try answer.checkTime(currentTime()); try authority.checkCurrent(answer)
         // A checker may consume the remaining budget; never reset it.
-        try answer.checkTime(now())
+        try answer.checkTime(currentTime())
     }
     private func checkpoint(_ value: VPNDNSAnswerCheckpoint) throws {
         try sink.record(value, answer: answer)
@@ -122,7 +129,7 @@ final class VPNDNSAnswerRelease {
                 // Recheck AFTER potentially slow durable write, under the same
                 // required lease that protects the actual output.
                 try current()
-                let bytes = try answer.encoded(at: now())
+                let bytes = try answer.encoded(at: currentTime())
                 try current()
                 try output(bytes)
                 try checkpoint(.released)

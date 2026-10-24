@@ -7,6 +7,7 @@ func exchangeInterface(_ index: UInt32, _ output: UnsafeMutablePointer<CChar>?) 
     guard let output, let name = [7:"en7",42:"utun42"][index] else { return nil }
     for (index,byte) in name.utf8CString.enumerated() { output[index] = byte }; return output
 }
+private func dnsTime(_ value: UInt64) -> VPNDNSContinuousInstant { VPNDNSContinuousInstant(nanoseconds: value) }
 private enum Failure: Error { case check }
 private func check(_ value: @autoclosure () throws -> Bool) throws { if try !value() { throw Failure.check } }
 private func rejects(_ body: () throws -> Void) throws {
@@ -32,10 +33,21 @@ private final class Authority: VPNDNSUpstreamAuthority {
         let result = try body(); after?(); return result
     }
 }
+private struct ContinuousClock: VPNDNSContinuousClock {
+    let calls: Calls
+    func now() throws -> VPNDNSContinuousInstant {
+        calls.continuousReads += 1
+        if calls.continuousFailure { throw VPNDNSContinuousClockError.unavailable }
+        return dnsTime(calls.continuousSamples.isEmpty ? calls.continuous ?? calls.clock : calls.continuousSamples.removeFirst())
+    }
+}
 private final class Calls: VPNDNSUpstreamSyscalls {
     struct State { let transport: VPNDNSUpstreamTransport; var input: Data; var output = Data(); var bound: UInt32 = 0 }
     weak var authority: Authority?
     var clock: UInt64 = 1_000_000_000, timeReads = 0
+    var continuous: UInt64?
+    var continuousReads = 0, continuousFailure = false
+    var continuousSamples = [UInt64]()
     var snapshot: VPNKernelInterfaceSnapshot
     var state: State?, created = [VPNDNSUpstreamTransport](), closed = [VPNDNSUpstreamTransport]()
     var outgoing = [Data](), endpoints = [VPNDNSUpstreamBinding](), events = [String]()
@@ -124,7 +136,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         query += name(resource.address)+word(questionType.rawValue)+word(1)
         if let version { query += [0,0,41,4,208,0,version,0,0,0,0] }
         return try VPNDNSAnswerRequest(clientQuestion:VPNDNSAnswerCodec.clientQuestion(Data(query),resource:resource,ingress:ingress),
-            generation:generation,revision:revision,upstreamTransactionID:0x1234,deadline:end)
+            generation:generation,revision:revision,upstreamTransactionID:0x1234,deadline:dnsTime(end))
     }
     static func reply(_ request: VPNDNSAnswerRequest, truncated: Bool = false, negative: Bool = false,
                       ttl: UInt32 = 30, count: Int = 1) -> Data {
@@ -154,12 +166,12 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         if mode == "binding-generation" { req = try request(bound,generation:8) }
         if mode == "binding-revision" { req = try request(bound,revision:12) }
         if mode == "unsupported-version" { req = try request(bound,version:1) }
-        if mode == "original-deadline" { req = try request(bound,end:1_500_000_000) }
+        if mode == "original-deadline" || mode == "sleep-original-deadline" { req = try request(bound,end:1_500_000_000) }
         let authority = Authority(bound), calls = try Calls(snapshot()), token = VPNDNSUpstreamCancellation()
         calls.authority = authority; authority.calls = calls
         calls.udp = reply(req); calls.tcp = reply(req)
         if mode.hasPrefix("binding-") || mode == "unsupported-version" {
-            try rejects { _ = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls) }
+            try rejects { _ = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls,clock:ContinuousClock(calls:calls)) }
             try check(calls.events.isEmpty && calls.timeReads == 0); return
         }
         if mode == "server-error" {
@@ -172,14 +184,20 @@ private final class Calls: VPNDNSUpstreamSyscalls {
                 response += name(req.resource.address)+word(1)+word(1)
                 if code == 16 { response += [0,0,41,4,208,1,0,0,0,0,0] }
                 calls.udp = Data(response)
-                let exchange = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls)
+                let exchange = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls,clock:ContinuousClock(calls:calls))
                 let answer = try exchange.exchange()
                 try check(answer.outcome == .upstreamError(code) && answer.addresses.isEmpty && calls.created.count == 1 && calls.closed.count == 1)
             }
             return
         }
-        let exchange = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls)
-        if mode == "init-pure" { try check(calls.events.isEmpty && calls.timeReads == 0); return }
+        let dual = mode.hasPrefix("sleep-") || mode.hasPrefix("clock-") || ["distinct-epochs","pair-conservative"].contains(mode)
+        if dual { calls.clock = 500_000_000_000; calls.continuous = 1_000_000_000; calls.pollAdvance = 0 }
+        if mode == "clock-fail-initial" { calls.continuousFailure = true }
+        if mode == "clock-pair-backwards" { calls.continuousSamples = [2_000_000_000, 1_000_000_000] }
+        if mode == "clock-pair-sleep" { calls.continuousSamples = [1_000_000_000, 121_000_000_000] }
+        if mode == "pair-conservative" { calls.continuousSamples = [1_000_000_000, 3_000_000_000]; calls.continuous = 3_000_000_000 }
+        let exchange = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,cancellation:token,syscalls:calls,clock:ContinuousClock(calls:calls))
+        if mode == "init-pure" { try check(calls.events.isEmpty && calls.timeReads == 0 && calls.continuousReads == 0); return }
         let fallback = ["tc4","tc6","tc-aaaa","tcp-client","tcp-tc","tcp-malformed","cancel-tcp-poll","revoked","interface-dead","partial","cancel-partial","cancel-tcp-read-poll","cancel-tcp-allocation","single-budget","original-deadline","oversize"].contains(mode)
         if fallback || mode.hasPrefix("halfclose-") && mode != "halfclose-udp" {
             calls.udp = reply(req,truncated:mode != "oversize",count:mode == "oversize" ? 100:1)
@@ -215,12 +233,32 @@ private final class Calls: VPNDNSUpstreamSyscalls {
                 }
             }
         }
+        let dualFailure = dual && !["distinct-epochs","pair-conservative"].contains(mode)
+        if ["sleep-tcp-poll","sleep-tcp-connect","sleep-between-legs"].contains(mode) { calls.udp = reply(req,truncated:true) }
+        if mode == "sleep-before-authority" { authority.before = { calls.continuous! += 120_000_000_000 } }
+        if mode == "sleep-after-receive" { authority.after = { if calls.lastEvent == "receive" { calls.continuous! += 120_000_000_000 } } }
+        if mode == "sleep-between-legs" { calls.onClose = { if calls.closed.count == 1 { calls.continuous! += 120_000_000_000 } } }
+        if ["sleep-udp-poll","sleep-tcp-poll","sleep-tcp-connect","clock-fail-poll","clock-backwards-poll","clock-uptime-backwards","sleep-original-deadline"].contains(mode) {
+            calls.readAgain = [mode.hasPrefix("sleep-tcp") ? "tcp":"udp"]
+            if mode == "sleep-tcp-connect" { calls.connectAgain = ["tcp"] }
+            calls.onPoll = {
+                if mode == "clock-fail-poll" { calls.continuousFailure = true }
+                else if mode == "clock-backwards-poll" { calls.continuous = 999_999_999 }
+                else if mode == "clock-uptime-backwards" { calls.clock -= 1 }
+                else { calls.continuous! += mode == "sleep-original-deadline" ? 1_000_000_000:120_000_000_000 }
+            }
+        }
+        if mode == "clock-fail-allocation" { calls.onSocket = { calls.continuousFailure = true } }
+        if mode == "clock-backwards-in-window" {
+            authority.after = { if calls.lastEvent == "receive" { calls.continuous = 3_000_000_000 } }
+            calls.onClose = { calls.continuous = 2_000_000_000 }
+        }
         if mode == "tcp-tc" { calls.tcp = reply(req,truncated:true) }
         if mode == "tcp-malformed" { calls.tcp = Data([0x12,0x34,0x81,0]) }
         if mode == "malformed" { calls.udp[0] ^= 1 }
         if mode == "malformed-tc" { calls.udp = reply(req,truncated:true); calls.udp[5] = 2 }
         if mode == "transport" { calls.sendSteps = [-Int(EIO)] }
-        if mode == "expired" { calls.clock = req.deadline }
+        if mode == "expired" { calls.clock = req.deadline.nanoseconds }
         if mode == "pre-cancel" { token.cancel() }
         if mode == "cancel-allocation" || mode == "cancel-tcp-allocation" {
             calls.onSocket = { if mode == "cancel-allocation" || calls.created.count == 2 { token.cancel() } }
@@ -247,7 +285,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
             if mode == "poll-cancel-retry" { calls.onPoll = { token.cancel() } }
         }
         if mode == "single-budget" || mode == "original-deadline" {
-            calls.onClose = { if calls.closed.count == 1 { calls.clock = mode == "single-budget" ? 21_000_000_000:req.deadline } }
+            calls.onClose = { if calls.closed.count == 1 { calls.clock = mode == "single-budget" ? 21_000_000_000:req.deadline.nanoseconds } }
         }
         if mode.hasPrefix("slow-") || mode.hasPrefix("expired-") && mode != "expired" {
             let expired = mode.hasPrefix("expired-")
@@ -257,9 +295,9 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         if mode == "reentrant" { calls.onSend = { try rejects { _ = try exchange.exchange() } } }
         if mode == "close-busy" {
             var socket: VPNBoundDNSUpstreamSocket? = try VPNBoundDNSUpstreamSocket.prepare(binding:bound,transport:.udp,
-                authority:authority,deadline:DispatchTime(uptimeNanoseconds:req.deadline),syscalls:calls)
+                authority:authority,deadline:DispatchTime(uptimeNanoseconds:req.deadline.nanoseconds),syscalls:calls)
             calls.onSend = { do { try socket!.close(); throw Failure.check } catch VPNBoundDNSUpstreamError.busy {} }
-            _ = try socket!.exchange(question:req.upstreamQuery(),deadline:DispatchTime(uptimeNanoseconds:req.deadline))
+            _ = try socket!.exchange(question:req.upstreamQuery(),deadline:DispatchTime(uptimeNanoseconds:req.deadline.nanoseconds))
             try check(calls.closed.isEmpty); try socket!.close(); socket = nil
             try check(calls.closed.count == 1); return
         }
@@ -272,7 +310,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
             }
             try check(successes == 1 && used == 1 && calls.created.count == 1 && calls.closed.count == 1); return
         }
-        let failure = (mode.hasPrefix("halfclose-") && mode != "halfclose-tcp") || ["malformed","malformed-tc","transport","tcp-tc","tcp-malformed","single-budget","original-deadline","expired","pre-cancel","cancel-allocation","cancel-tcp-allocation","authority-overrun","cancel-udp-poll","cancel-tcp-poll","cancel-tcp-read-poll","cancel-partial","revoked","interface-dead","poll-cancel-retry","poll-timeout","expired-positive","expired-negative"].contains(mode)
+        let failure = dualFailure || (mode.hasPrefix("halfclose-") && mode != "halfclose-tcp") || ["malformed","malformed-tc","transport","tcp-tc","tcp-malformed","single-budget","original-deadline","expired","pre-cancel","cancel-allocation","cancel-tcp-allocation","authority-overrun","cancel-udp-poll","cancel-tcp-poll","cancel-tcp-read-poll","cancel-partial","revoked","interface-dead","poll-cancel-retry","poll-timeout","expired-positive","expired-negative"].contains(mode)
         var answer: VPNDNSValidatedAnswer?
         if failure { try rejects { _ = try exchange.exchange() } }
         else { answer = try exchange.exchange() }
@@ -280,9 +318,21 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         try check(calls.state == nil && calls.created.count == calls.closed.count)
         try check(calls.endpoints.allSatisfy{$0 == bound})
         try check(Set(authority.deadlines).count <= 1)
-        let expectedEnd = min(req.deadline,21_000_000_000)
+        let expectedEnd = dual ? (mode == "pair-conservative" ? 518_000_000_000:(mode == "sleep-original-deadline" ? 500_500_000_000:520_000_000_000)) : min(req.deadline.nanoseconds,21_000_000_000)
         try check(authority.deadlines.allSatisfy{$0 == expectedEnd})
         if ["expired","pre-cancel","authority-overrun"].contains(mode) { try check(calls.created.isEmpty) }
+        if dual {
+            if ["sleep-before-authority","clock-fail-initial","clock-pair-backwards","clock-pair-sleep"].contains(mode) { try check(calls.created.isEmpty) }
+            if ["sleep-udp-poll","sleep-after-receive","sleep-between-legs","clock-fail-poll","clock-backwards-poll","clock-uptime-backwards","clock-fail-allocation","sleep-original-deadline","clock-backwards-in-window"].contains(mode) { try check(calls.created.count == 1) }
+            if ["sleep-tcp-poll","sleep-tcp-connect"].contains(mode) { try check(calls.created.count == 2) }
+            if mode == "clock-fail-allocation" { try check(!calls.events.contains("configure")) }
+            if mode.contains("poll") || ["sleep-tcp-connect","sleep-original-deadline"].contains(mode) {
+                try check(calls.polls.count == 1)
+                let expectedReceives = mode == "sleep-tcp-connect" ? 1 : (mode == "sleep-tcp-poll" ? 2:1)
+                try check(calls.events.filter { $0 == "receive" }.count == expectedReceives)
+            }
+            if !dualFailure { try check(answer?.receivedAt == dnsTime(mode == "pair-conservative" ? 3_000_000_000:1_000_000_000)) }
+        }
         if ["cancel-allocation","malformed","malformed-tc","transport","cancel-udp-poll","revoked","interface-dead","poll-cancel-retry","poll-timeout","single-budget","original-deadline"].contains(mode) { try check(calls.created.count == 1) }
         if ["cancel-udp-poll","cancel-tcp-poll","cancel-tcp-read-poll","poll-cancel-retry"].contains(mode) { try check(calls.polls == [100]) }
         if ["udp4","udp6","one-shot","reentrant","poll-retry","slow-positive","slow-negative"].contains(mode) { try check(calls.created.count == 1) }
@@ -317,7 +367,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
                 // Independent wire checks, beyond comparing the shared encoder.
                 try check(Array(calls.outgoing[0].suffix(4)) == [0,28,0,1])
                 if fallback { try check(Array(calls.outgoing[1].suffix(4)) == [0,28,0,1]) }
-                let encoded = Array(try answer!.encoded(at:calls.clock)), questionStart = 12 + name(req.resource.address).count
+                let encoded = Array(try answer!.encoded(at:dnsTime(calls.clock))), questionStart = 12 + name(req.resource.address).count
                 try check(Array(encoded.prefix(2)) == [0xab,0xcd])
                 try check(Array(encoded[questionStart..<questionStart+4]) == [0,28,0,1])
                 try check(calls.created.count == (fallback ? 2:1))
@@ -326,12 +376,12 @@ private final class Calls: VPNDNSUpstreamSyscalls {
             if calls.outgoing.count == 2 { try check(calls.outgoing[1] == Data(word(UInt16(query.count))) + query) }
         }
         if mode == "slow-positive" || mode == "slow-negative" {
-            try check(answer?.receivedAt == 1_000_000_000)
+            try check(answer?.receivedAt == dnsTime(1_000_000_000))
             if mode == "slow-negative" {
-                let cache = try answer!.negativeCacheDirective(at:calls.clock)
-                try check(cache?.remainingTTL == 20 && cache?.expiresAt == 31_000_000_000)
+                let cache = try answer!.negativeCacheDirective(at:dnsTime(calls.clock))
+                try check(cache?.remainingTTL == 20 && cache?.expiresAt == dnsTime(31_000_000_000))
             } else {
-                let bytes = Array(try answer!.encoded(at:calls.clock)), offset = bytes.count - 10
+                let bytes = Array(try answer!.encoded(at:dnsTime(calls.clock))), offset = bytes.count - 10
                 let ttl = UInt32(bytes[offset]) << 24 | UInt32(bytes[offset+1]) << 16 | UInt32(bytes[offset+2]) << 8 | UInt32(bytes[offset+3])
                 try check(ttl == 20)
             }

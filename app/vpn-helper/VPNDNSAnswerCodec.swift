@@ -59,12 +59,12 @@ struct VPNDNSAnswerRequest: Equatable {
     var resource: VPNResource { clientQuestion.resource }
     var transactionID: UInt16 { clientQuestion.transactionID }
     var type: VPNDNSQuestionType { clientQuestion.type }
-    /// Absolute monotonic nanoseconds; caller's original budget, never reset.
-    let deadline: UInt64
+    /// Absolute continuous-clock time (including sleep); caller's original budget, never reset.
+    let deadline: VPNDNSContinuousInstant
 
     init(clientQuestion: VPNDNSClientQuestion, generation: UInt64, revision: UInt64,
-         upstreamTransactionID: UInt16, deadline: UInt64) throws {
-        guard generation > 0, revision > 0, deadline > 0 else { throw VPNDNSAnswerError.provenance }
+         upstreamTransactionID: UInt16, deadline: VPNDNSContinuousInstant) throws {
+        guard generation > 0, revision > 0, deadline.nanoseconds > 0 else { throw VPNDNSAnswerError.provenance }
         identifier = UUID(); self.clientQuestion = clientQuestion; self.generation = generation
         self.revision = revision; self.upstreamTransactionID = upstreamTransactionID; self.deadline = deadline
     }
@@ -117,9 +117,9 @@ enum VPNDNSClientProtocolError: Equatable { case badVersion }
 struct VPNDNSNeedsTCP: Equatable {
     enum Reason: Equatable { case truncated, oversizedUDP }
     let request: VPNDNSAnswerRequest
-    let receivedAt: UInt64
+    let receivedAt: VPNDNSContinuousInstant
     let reason: Reason
-    fileprivate init(request: VPNDNSAnswerRequest, receivedAt: UInt64, reason: Reason) {
+    fileprivate init(request: VPNDNSAnswerRequest, receivedAt: VPNDNSContinuousInstant, reason: Reason) {
         self.request = request; self.receivedAt = receivedAt; self.reason = reason
     }
 }
@@ -140,8 +140,8 @@ struct VPNDNSNegativeCacheDirective: Equatable {
     let request: VPNDNSAnswerRequest
     let key: VPNDNSNegativeCacheKey
     let remainingTTL: UInt32
-    /// Original monotonic SOA/chain expiry, never access-time + fresh TTL.
-    let expiresAt: UInt64
+    /// Original continuous-clock SOA/chain expiry, never access-time + fresh TTL.
+    let expiresAt: VPNDNSContinuousInstant
 }
 
 struct VPNDNSValidatedAnswer: Equatable {
@@ -171,12 +171,12 @@ struct VPNDNSValidatedAnswer: Equatable {
     // Caller must source wire from the mandatory bound corporate transport.
     // Parsing alone authenticates neither upstream endpoint nor OS DNS selection.
     let request: VPNDNSAnswerRequest
-    let receivedAt: UInt64
+    let receivedAt: VPNDNSContinuousInstant
     let records: [Record]
     let canonicalChain: [String]
     let addresses: [VPNRoutePrefix]
     let minimumTTL: UInt32
-    fileprivate init(identifier: UUID, request: VPNDNSAnswerRequest, receivedAt: UInt64,
+    fileprivate init(identifier: UUID, request: VPNDNSAnswerRequest, receivedAt: VPNDNSContinuousInstant,
                      records: [Record], canonicalChain: [String], addresses: [VPNRoutePrefix],
                      minimumTTL: UInt32, outcome: VPNDNSAnswerOutcome = .positive, soa: SOA? = nil) {
         self.identifier = identifier; self.request = request; self.receivedAt = receivedAt
@@ -186,7 +186,7 @@ struct VPNDNSValidatedAnswer: Equatable {
 
     /// No actual cache exists here. TTL0/error yields no caching directive. The
     /// lifetime is never restarted by re-encoding or obtaining this metadata.
-    func negativeCacheDirective(at now: UInt64) throws -> VPNDNSNegativeCacheDirective? {
+    func negativeCacheDirective(at now: VPNDNSContinuousInstant) throws -> VPNDNSNegativeCacheDirective? {
         let ttl = try remainingTTL(at: now)
         guard ttl > 0 else { return nil }
         let key: VPNDNSNegativeCacheKey
@@ -195,33 +195,34 @@ struct VPNDNSValidatedAnswer: Equatable {
         case .noData: key = .noData(terminal: canonicalChain.last!, type: request.type)
         default: return nil
         }
-        let (expiry, overflow) = receivedAt.addingReportingOverflow(UInt64(minimumTTL) * 1_000_000_000)
-        guard !overflow else { throw VPNDNSAnswerError.stale }
+        let expiry: VPNDNSContinuousInstant
+        do { expiry = try receivedAt.addingChecked(UInt64(minimumTTL) * 1_000_000_000) }
+        catch { throw VPNDNSAnswerError.stale }
         return VPNDNSNegativeCacheDirective(request: request, key: key, remainingTTL: ttl, expiresAt: expiry)
     }
 
-    private func remainingTTL(at now: UInt64) throws -> UInt32 {
+    private func remainingTTL(at now: VPNDNSContinuousInstant) throws -> UInt32 {
         try checkTime(now)
-        let elapsed = now - receivedAt
+        let elapsed = try now.elapsed(since: receivedAt)
         let age = elapsed / 1_000_000_000 + (elapsed % 1_000_000_000 == 0 ? 0 : 1)
         return UInt32(UInt64(minimumTTL) > age ? UInt64(minimumTTL) - age : 0)
     }
 
-    func checkTime(_ now: UInt64) throws {
+    func checkTime(_ now: VPNDNSContinuousInstant) throws {
         guard now >= receivedAt, now < request.deadline else { throw VPNDNSAnswerError.stale }
         // TTL 0 permits this bounded one-shot response but authorizes no cache.
         // A TTL0 prerequisite permits no caching, but must not hide expiry of
         // OTHER nonzero-lived records needed by this same one-shot answer.
         var requiredLifetimes = records.map(\.ttl).filter { $0 > 0 }
         if let soa = soa, soa.negativeTTL > 0 { requiredLifetimes.append(soa.negativeTTL) }
-        if let lifetime = requiredLifetimes.min(), (now - receivedAt) / 1_000_000_000 >= UInt64(lifetime) {
+        if let lifetime = requiredLifetimes.min(), (try now.elapsed(since: receivedAt)) / 1_000_000_000 >= UInt64(lifetime) {
             throw VPNDNSAnswerError.stale
         }
     }
 
     /// Fresh canonical bytes, never unchecked upstream bytes. No AD/RA/AA claim.
     /// TTL age is rounded UP to avoid extending upstream lifetime by fractions.
-    func encoded(at now: UInt64) throws -> Data {
+    func encoded(at now: VPNDNSContinuousInstant) throws -> Data {
         let ttl = try remainingTTL(at: now)
         var bytes = [UInt8]()
         func word(_ value: UInt16) { bytes += [UInt8(value >> 8), UInt8(value & 255)] }
@@ -316,7 +317,7 @@ enum VPNDNSAnswerCodec {
     /// An unsupported client EDNS version can produce ONLY an origin-bound
     /// BADVERS token, still requiring the normal authority/permits/leased output.
     /// Malformed queries and unsupported DNSSEC flags do not acquire this token.
-    static func clientProtocolError(request: VPNDNSAnswerRequest, receivedAt: UInt64) throws -> VPNDNSValidatedAnswer {
+    static func clientProtocolError(request: VPNDNSAnswerRequest, receivedAt: VPNDNSContinuousInstant) throws -> VPNDNSValidatedAnswer {
         guard receivedAt < request.deadline else { throw VPNDNSAnswerError.stale }
         guard let edns = request.clientQuestion.edns, edns.version != 0 else { throw VPNDNSAnswerError.provenance }
         return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
@@ -326,7 +327,7 @@ enum VPNDNSAnswerCodec {
 
     /// TC/oversize never validates the RR body or yields addresses/negative
     /// evidence. The bounded original question/header alone can request TCP.
-    static func inspectUpstream(_ wire: Data, request: VPNDNSAnswerRequest, receivedAt: UInt64,
+    static func inspectUpstream(_ wire: Data, request: VPNDNSAnswerRequest, receivedAt: VPNDNSContinuousInstant,
                                 transport: VPNDNSUpstreamTransport) throws -> VPNDNSUpstreamInspection {
         let preamble = try responsePreamble(wire, request: request, receivedAt: receivedAt)
         if preamble.flags & 0x0200 != 0 || (transport == .udp && wire.count > request.upstreamUDPLimit) {
@@ -343,7 +344,7 @@ enum VPNDNSAnswerCodec {
     }
 
     private static func responsePreamble(_ wire: Data, request: VPNDNSAnswerRequest,
-                                         receivedAt: UInt64) throws -> (reader: Reader, flags: UInt16, count: Int, authority: UInt16, additional: UInt16) {
+                                         receivedAt: VPNDNSContinuousInstant) throws -> (reader: Reader, flags: UInt16, count: Int, authority: UInt16, additional: UInt16) {
         guard wire.count >= 12, wire.count <= 65535 else { throw VPNDNSAnswerError.capacity }
         guard receivedAt < request.deadline else { throw VPNDNSAnswerError.stale }
         if let edns = request.clientQuestion.edns, edns.version != 0 { throw VPNDNSAnswerError.unsupportedVersion(edns.version) }
@@ -362,7 +363,7 @@ enum VPNDNSAnswerCodec {
 
     /// Full answer entry requires trusted received-transport metadata as well.
     /// UDP TC/over-cap is not accepted here: use inspectUpstream for its receipt.
-    static func decode(_ wire: Data, request: VPNDNSAnswerRequest, receivedAt: UInt64,
+    static func decode(_ wire: Data, request: VPNDNSAnswerRequest, receivedAt: VPNDNSContinuousInstant,
                        transport: VPNDNSUpstreamTransport) throws -> VPNDNSValidatedAnswer {
         let preamble = try responsePreamble(wire, request: request, receivedAt: receivedAt)
         guard preamble.flags & 0x0200 == 0,

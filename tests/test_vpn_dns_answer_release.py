@@ -12,7 +12,7 @@ SOURCES = [ROOT / 'app/VPNConfiguration.swift'] + [ROOT / 'app/vpn-helper' / nam
     'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift', 'VPNKernelInterfaceSnapshot.swift',
     'VPNTunnelInterfaceResolver.swift', 'VPNRoutePlan.swift', 'VPNRouteJournal.swift',
     'VPNDarwinRouteSocket.swift', 'VPNRouteTransaction.swift', 'VPNDNSPlan.swift',
-    'VPNDomainNetworkPlan.swift', 'VPNLifecycleOwnership.swift', 'VPNBoundDNSUpstreamSocket.swift', 'VPNDNSAnswerCodec.swift', 'VPNDNSAnswerRelease.swift')]
+    'VPNDomainNetworkPlan.swift', 'VPNLifecycleOwnership.swift', 'VPNBoundDNSUpstreamSocket.swift', 'VPNDNSContinuousClock.swift', 'VPNDNSAnswerCodec.swift', 'VPNDNSAnswerRelease.swift')]
 CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bounds',
          'question', 'headers', 'pointer-loop', 'pointer-foreign', 'malformed',
          'alias-cycle', 'alias-conflict', 'alias-depth', 'unrelated', 'family',
@@ -45,6 +45,22 @@ CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bound
          'edns-small-payload', 'edns-large-negative', 'edns-query-ad',
          'edns-response-do-positive', 'edns-response-do-error',
          'edns-response-do-negative', 'edns-response-do-lease')
+CASES += ('sleep-ttl','sleep-negative-ttl','sleep-current','sleep-deny','sleep-routes','sleep-verify',
+          'sleep-outputIssued','sleep-verified','sleep-zero-query','clock-release-failed','clock-release-backwards','clock-release-checkpoint-failed')
+
+
+def snapshot_inputs(folder, inputs):
+    folder = Path(folder) / 'Sources'
+    captured = [(Path(path), Path(path).read_bytes()) for path in inputs]
+    if any(path.read_bytes() != data for path, data in captured):
+        raise AssertionError('DNS source changed during capture')
+    result = []
+    for path, data in captured:
+        target = folder / path.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data); result.append(str(target))
+    return result
+
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
 class VPNDNSAnswerTests(unittest.TestCase):
@@ -54,9 +70,9 @@ class VPNDNSAnswerTests(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.binary = Path(cls.temp.name) / 'checks'
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
+        inputs = snapshot_inputs(Path(cls.temp.name), [*SOURCES, ROOT / 'tests/vpn_dns_answer_release_checks.swift'])
         result = subprocess.run(['/usr/bin/swiftc', '-parse-as-library', '-target',
-            arch + '-apple-macosx11.0', *map(str, SOURCES),
-            str(ROOT / 'tests/vpn_dns_answer_release_checks.swift'), '-o', str(cls.binary)],
+            arch + '-apple-macosx11.0', *inputs, '-o', str(cls.binary)],
             capture_output=True, text=True, timeout=120)
         if result.returncode:
             raise AssertionError(result.stderr)

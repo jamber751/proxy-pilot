@@ -18,7 +18,7 @@ enum VPNDNSUpstreamExchangeError: Error, Equatable { case invalidBinding, alread
 /// permit; VPNDNSAnswerRelease still requires its separate current leased proof.
 /// No resolver/default/unbound/alternate-server/EDNS-downgrade retry exists.
 ///
-/// One original absolute deadline (capped once by the existing 20s IO ceiling)
+/// One original continuous-time deadline (capped once by the existing 20s ceiling)
 /// covers both legs. Arbitrary authority-checker execution is NOT hard-bounded;
 /// clock checks after it prevent expired traffic, not slow verifier execution.
 final class VPNDNSUpstreamExchange {
@@ -26,6 +26,7 @@ final class VPNDNSUpstreamExchange {
     private let binding: VPNDNSUpstreamBinding
     private let authority: VPNDNSUpstreamAuthority
     private let cancellation: VPNDNSUpstreamCancellation
+    private let clock: VPNDNSContinuousClock
     private let calls: VPNDNSUpstreamSyscalls
     private let question: Data
     private let lock = NSLock()
@@ -36,18 +37,19 @@ final class VPNDNSUpstreamExchange {
     /// REQUIRED authority must freshly verify it before each actual IO below.
     init(request: VPNDNSAnswerRequest, binding: VPNDNSUpstreamBinding,
          authority: VPNDNSUpstreamAuthority, cancellation: VPNDNSUpstreamCancellation,
-         syscalls: VPNDNSUpstreamSyscalls = VPNDarwinDNSUpstreamSyscalls()) throws {
+         syscalls: VPNDNSUpstreamSyscalls = VPNDarwinDNSUpstreamSyscalls(),
+         clock: VPNDNSContinuousClock = VPNDarwinDNSContinuousClock()) throws {
         guard request.generation == binding.generation, request.revision == binding.revision,
               binding.networkPlan.domainResources.contains(request.resource) else {
             throw VPNDNSUpstreamExchangeError.invalidBinding
         }
         question = try request.upstreamQuery() // Unsupported client version fails before any FD.
         self.request = request; self.binding = binding; self.authority = authority
-        self.cancellation = cancellation; calls = syscalls
+        self.cancellation = cancellation; calls = syscalls; self.clock = clock
     }
 
     private func leg(_ transport: VPNDNSUpstreamTransport, _ io: InterruptibleCalls,
-                     _ deadline: DispatchTime) throws -> (Data, UInt64) {
+                     _ deadline: DispatchTime) throws -> (Data, VPNDNSContinuousInstant) {
         io.lastReceiveAt = nil
         let socket = try VPNBoundDNSUpstreamSocket.prepare(binding: binding, transport: transport,
             authority: authority, deadline: deadline, syscalls: io)
@@ -68,11 +70,23 @@ final class VPNDNSUpstreamExchange {
         guard !attempted else { lock.unlock(); throw VPNDNSUpstreamExchangeError.alreadyUsed }
         attempted = true; lock.unlock() // Permanently consumed, including cancellation/failure.
         try cancellation.check()
-        let start = calls.now(), ceiling = VPNBoundDNSUpstreamSocket.maximumIOBudget
-        let end = min(request.deadline, start > UInt64.max - ceiling ? UInt64.max : start + ceiling)
-        let io = InterruptibleCalls(calls, cancellation: cancellation, start: start, deadline: end)
+        let continuousStart = try clock.now()
+        let uptimeStart = calls.now()
+        let continuousSample = try clock.now()
+        guard continuousSample >= continuousStart else { throw VPNDNSContinuousClockError.backwards }
+        let continuousEnd = min(request.deadline, continuousStart.addingClamped(VPNBoundDNSUpstreamSocket.maximumIOBudget))
+        guard continuousSample < continuousEnd else { throw VPNBoundDNSUpstreamError.timeout }
+        // Translate a REMAINING DURATION, never a continuous timestamp. Uptime
+        // was sampled BEFORE the fresh continuous sample: this is conservative.
+        // Both sealed ends survive UDP→TCP unchanged, including across sleep.
+        let remaining = try continuousEnd.elapsed(since: continuousSample)
+        let (proposed, overflow) = uptimeStart.addingReportingOverflow(remaining)
+        let uptimeEnd = overflow ? UInt64.max : proposed
+        let io = InterruptibleCalls(calls, clock: clock, cancellation: cancellation,
+            uptimeStart: uptimeStart, uptimeEnd: uptimeEnd,
+            continuousSample: continuousSample, continuousEnd: continuousEnd)
         try io.check()
-        let deadline = DispatchTime(uptimeNanoseconds: end)
+        let deadline = DispatchTime(uptimeNanoseconds: uptimeEnd)
         let udp = try leg(.udp, io, deadline)
         try io.check()
         let answer: VPNDNSValidatedAnswer
@@ -90,7 +104,7 @@ final class VPNDNSUpstreamExchange {
         }
         try io.check()
         guard answer.request == request else { throw VPNDNSUpstreamExchangeError.invalidBinding }
-        try answer.checkTime(calls.now()) // Do not restart TTL after a slow post-read proof check.
+        try answer.checkTime(io.continuousNow()) // Do not restart TTL after a slow post-read proof check.
         try io.check()
         return answer
     }
@@ -101,18 +115,31 @@ final class VPNDNSUpstreamExchange {
     private final class InterruptibleCalls: VPNDNSUpstreamSyscalls {
         private let real: VPNDNSUpstreamSyscalls
         private let cancellation: VPNDNSUpstreamCancellation
-        private let start: UInt64
+        private let clock: VPNDNSContinuousClock
         private let deadline: UInt64
-        var lastReceiveAt: UInt64?
-        init(_ real: VPNDNSUpstreamSyscalls, cancellation: VPNDNSUpstreamCancellation,
-             start: UInt64, deadline: UInt64) {
-            self.real = real; self.cancellation = cancellation; self.start = start; self.deadline = deadline
+        private let continuousEnd: VPNDNSContinuousInstant
+        private var lastUptime: UInt64
+        private var lastContinuous: VPNDNSContinuousInstant
+        var lastReceiveAt: VPNDNSContinuousInstant?
+        init(_ real: VPNDNSUpstreamSyscalls, clock: VPNDNSContinuousClock,
+             cancellation: VPNDNSUpstreamCancellation, uptimeStart: UInt64, uptimeEnd: UInt64,
+             continuousSample: VPNDNSContinuousInstant, continuousEnd: VPNDNSContinuousInstant) {
+            self.real = real; self.clock = clock; self.cancellation = cancellation
+            deadline = uptimeEnd; self.continuousEnd = continuousEnd
+            lastUptime = uptimeStart; lastContinuous = continuousSample
         }
-        func now() -> UInt64 { real.now() }
+        func now() -> UInt64 { real.now() } // BoundSocket IO domain only.
+        func continuousNow() throws -> VPNDNSContinuousInstant {
+            let value = try clock.now()
+            guard value >= lastContinuous else { throw VPNDNSContinuousClockError.backwards }
+            lastContinuous = value; return value
+        }
         func check() throws {
             try cancellation.check()
-            let time = real.now()
-            guard time >= start, time < deadline else { throw VPNBoundDNSUpstreamError.timeout }
+            let time = real.now(), continuous = try continuousNow()
+            guard time >= lastUptime else { throw VPNDNSContinuousClockError.backwards }
+            lastUptime = time
+            guard time < deadline, continuous < continuousEnd else { throw VPNBoundDNSUpstreamError.timeout }
         }
         func interfaces() throws -> VPNKernelInterfaceSnapshot { try check(); return try real.interfaces() }
         func socket(family: Int32, transport: VPNDNSUpstreamTransport) throws -> Int32 {
@@ -137,7 +164,7 @@ final class VPNDNSUpstreamExchange {
         func receive(_ descriptor: Int32, maximum: Int, datagram: Bool) throws -> (Data, Bool) {
             try check()
             let value = try real.receive(descriptor, maximum: maximum, datagram: datagram)
-            lastReceiveAt = real.now() // BEFORE potentially costly post-read authority checks.
+            lastReceiveAt = try continuousNow() // BEFORE potentially costly post-read authority checks.
             return value
         }
         func poll(_ descriptor: Int32, events: Int16, milliseconds: Int32) throws -> Int16 {
@@ -150,7 +177,10 @@ final class VPNDNSUpstreamExchange {
                 try check()
                 let time = real.now()
                 if time >= end { return 0 }
-                let slice = Int32(min(100, (end - time + 999_999) / 1_000_000))
+                let continuous = try continuousNow()
+                guard continuous < continuousEnd else { throw VPNBoundDNSUpstreamError.timeout }
+                let remaining = min(end - time, try continuousEnd.elapsed(since: continuous))
+                let slice = Int32(min(100, (remaining + 999_999) / 1_000_000))
                 let result = try real.poll(descriptor, events: events, milliseconds: slice)
                 try check()
                 if result != 0 { return result }

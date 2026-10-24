@@ -1,6 +1,7 @@
 import Foundation
 import Dispatch
 
+private func dnsTime(_ value: UInt64) -> VPNDNSContinuousInstant { VPNDNSContinuousInstant(nanoseconds: value) }
 private enum Failure: Error { case check }
 private func require(_ value: @autoclosure () -> Bool) throws { if !value() { throw Failure.check } }
 private func rejects(_ operation: () throws -> Void) throws {
@@ -38,7 +39,7 @@ private func request(type: VPNDNSQuestionType = .a, resource: VPNResource? = nil
     let original = query(originalName ?? resource.address, type:type.rawValue,flags:clientRD ? 0x0100 : 0)
     let client = try VPNDNSAnswerCodec.clientQuestion(original,resource:resource, ingress: .udp)
     return try VPNDNSAnswerRequest(clientQuestion:client,generation:7,revision:9,
-                                   upstreamTransactionID:upstreamID,deadline:deadline)
+                                   upstreamTransactionID:upstreamID,deadline:dnsTime(deadline))
 }
 
 private func wire(_ request: VPNDNSAnswerRequest, _ records: [RR] = [RR()], flags: UInt16 = 0x8180,
@@ -52,7 +53,7 @@ private func wire(_ request: VPNDNSAnswerRequest, _ records: [RR] = [RR()], flag
 }
 private func answer(_ request: VPNDNSAnswerRequest? = nil) throws -> VPNDNSValidatedAnswer {
     let req = try request ?? selfRequest()
-    return try VPNDNSAnswerCodec.decode(wire(req), request: req, receivedAt: 1_000_000_000, transport: .tcp)
+    return try VPNDNSAnswerCodec.decode(wire(req), request: req, receivedAt:dnsTime(1_000_000_000), transport: .tcp)
 }
 private func selfRequest() throws -> VPNDNSAnswerRequest { try request() }
 
@@ -61,6 +62,8 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
     let foreign = VPNDNSAnswerPermitIssuer()
     var events = [String](), stages = [VPNDNSAnswerCheckpoint]()
     var now: UInt64 = 1_000_000_000
+    var sleepAt: String?, clockFailure = false, backwards = false
+    var failClockAt: VPNDNSAnswerCheckpoint?
     var active = true, leased = false, foreignPermit = false, skipLease = false, repeatLease = false
     var concurrentLease = false, swallowLeaseErrors = false
     var failStage: VPNDNSAnswerCheckpoint?, failAfterStage: VPNDNSAnswerCheckpoint?, revokeStage: VPNDNSAnswerCheckpoint?
@@ -71,23 +74,29 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
     func checkCurrent(_ answer: VPNDNSValidatedAnswer) throws {
         events.append("current")
         guard active, expected == nil || expected == answer.request else { throw VPNDNSAnswerError.provenance }
-        if expireDuringCheck { now = answer.request.deadline }
+        if expireDuringCheck { now = answer.request.deadline.nanoseconds }
+        if backwards { now = 999_999_999 }
+        if sleepAt == "current" { now += 120_000_000_000; sleepAt = nil }
     }
     func record(_ stage: VPNDNSAnswerCheckpoint, answer: VPNDNSValidatedAnswer) throws {
         events.append(stage.rawValue)
         if failStage == stage { throw VPNDNSAnswerError.checkpoint }
         stages.append(stage)
+        if failClockAt == stage { clockFailure = true }
+        if sleepAt == stage.rawValue { now += 120_000_000_000; sleepAt = nil }
         if failAfterStage == stage { throw VPNDNSAnswerError.checkpoint }
         if revokeStage == stage { active = false }
     }
     func establishDeny(_ answer: VPNDNSValidatedAnswer) throws -> VPNDNSBarrierPermit {
         events.append("deny"); denyObligation = true
         cachedFences.formUnion(answer.addresses.map(\.canonical))
+        if sleepAt == "deny" { now += 120_000_000_000; sleepAt = nil }
         if denyUnknown { throw VPNDNSAnswerError.checkpoint }
         return (foreignPermit ? foreign : permitIssuer).barrier(for: other ?? answer)
     }
     func establishRoutes(_ answer: VPNDNSValidatedAnswer, barrier: VPNDNSBarrierPermit) throws -> VPNDNSAnswerRoutePermit {
         events.append("routes"); routeObligation = true
+        if sleepAt == "routes" { now += 120_000_000_000; sleepAt = nil }
         if routeUnknown { throw VPNDNSAnswerError.checkpoint }
         return (wrongRoutePermit ? foreign : permitIssuer).routes(for: other ?? answer)
     }
@@ -97,6 +106,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         guard active else { throw VPNDNSAnswerError.provenance }
         if skipLease { return }
         leased = true; defer { leased = false }
+        if sleepAt == "verify" { now += 120_000_000_000; sleepAt = nil }
         if concurrentLease {
             withoutActuallyEscaping(body) { callback in
                 DispatchQueue.concurrentPerform(iterations: 2) { _ in do { try callback() } catch {} }
@@ -109,7 +119,10 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         }
     }
     func transaction(_ answer: VPNDNSValidatedAnswer) -> VPNDNSAnswerRelease {
-        VPNDNSAnswerRelease(answer: answer, authority: self, sink: self, now: { self.now })
+        VPNDNSAnswerRelease(answer: answer, authority: self, sink: self, now: {
+            if self.clockFailure { throw VPNDNSContinuousClockError.unavailable }
+            return dnsTime(self.now)
+        })
     }
 }
 
@@ -128,29 +141,29 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
                 + Data(proof?.wire() ?? [])
         }
         func parse(_ packet: Data, request: VPNDNSAnswerRequest? = nil) throws -> VPNDNSValidatedAnswer {
-            try VPNDNSAnswerCodec.decode(packet,request:request ?? req,receivedAt:1_000_000_000, transport: .tcp)
+            try VPNDNSAnswerCodec.decode(packet,request:request ?? req,receivedAt:dnsTime(1_000_000_000), transport: .tcp)
         }
         let proof = soa()
         let nx = try parse(packet(proof:proof))
         switch which {
         case "negative-nxdomain":
             try require(nx.outcome == .nxDomain && nx.addresses.isEmpty && nx.records.isEmpty)
-            let directive = try nx.negativeCacheDirective(at:1_000_000_000)
-            try require(directive?.key == .nxDomain(terminal:req.resource.address) && directive?.remainingTTL == 30 && directive?.request == req && directive?.expiresAt == 31_000_000_000)
+            let directive = try nx.negativeCacheDirective(at:dnsTime(1_000_000_000))
+            try require(directive?.key == .nxDomain(terminal:req.resource.address) && directive?.remainingTTL == 30 && directive?.request == req && directive?.expiresAt == dnsTime(31_000_000_000))
         case "negative-nodata":
             for type in [VPNDNSQuestionType.a,.aaaa] {
                 let request = try request(type:type)
                 let result = try parse(packet(proof:proof,code:0,request:request),request:request)
-                let directive = try result.negativeCacheDirective(at:1_000_000_000)
+                let directive = try result.negativeCacheDirective(at:dnsTime(1_000_000_000))
                 try require(result.outcome == .noData && directive?.key == .noData(terminal:req.resource.address,type:type))
             }
         case "negative-cname":
             let aliases = [RR(type:5,ttl:20,data:name("edge.other.test"))]
             let result = try parse(packet(aliases,proof:soa(owner:"other.test")))
-            let directive = try result.negativeCacheDirective(at:1_000_000_000)
+            let directive = try result.negativeCacheDirective(at:dnsTime(1_000_000_000))
             try require(result.canonicalChain == [req.resource.address,"edge.other.test"])
             try require(directive?.key == .nxDomain(terminal:"edge.other.test") && directive?.remainingTTL == 20)
-            let response = try result.encoded(at:1_000_000_000)
+            let response = try result.encoded(at:dnsTime(1_000_000_000))
             let round = try parse(response)
             try require(round.canonicalChain == result.canonicalChain && round.soa?.owner == "other.test")
         case "negative-wrong-zone":
@@ -175,7 +188,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             names += [0xc0,16,10]; names += Array("hostmaster".utf8); names += [0xc0,16]
             let result = try parse(packet(proof:soa(names:names)))
             try require(result.soa?.nameserver.labels == [Data("ns".utf8),Data("corp".utf8),Data("test".utf8)])
-            let round = try parse(result.encoded(at:1_000_000_000))
+            let round = try parse(result.encoded(at:dnsTime(1_000_000_000)))
             try require(round.soa?.nameserver == result.soa?.nameserver && round.soa?.mailbox == result.soa?.mailbox)
         case "negative-root-binary":
             // Root MNAME; binary RNAME includes a literal dot and non-UTF8 byte
@@ -184,7 +197,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             let result = try parse(packet(proof:soa(owner:"",names:names)))
             try require(result.soa?.owner == "" && result.soa?.nameserver.labels == [])
             try require(result.soa?.mailbox.labels == [Data([0xff,46,0])])
-            let round = try parse(result.encoded(at:1_000_000_000))
+            let round = try parse(result.encoded(at:dnsTime(1_000_000_000)))
             try require(round.soa?.mailbox == result.soa?.mailbox)
         case "negative-rdata-short":
             let bytes = packet(proof:proof)
@@ -210,28 +223,28 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         case "negative-ttl-zero":
             let result = try parse(packet(proof:soa(minimum:0)))
             try require(result.minimumTTL == 0)
-            let directive = try result.negativeCacheDirective(at:2_000_000_000)
+            let directive = try result.negativeCacheDirective(at:dnsTime(2_000_000_000))
             try require(directive == nil)
-            _ = try result.encoded(at:2_000_000_000)
+            _ = try result.encoded(at:dnsTime(2_000_000_000))
         case "negative-aging":
-            let directive = try nx.negativeCacheDirective(at:11_000_000_001)
+            let directive = try nx.negativeCacheDirective(at:dnsTime(11_000_000_001))
             try require(directive?.remainingTTL == 19)
-            let response = try nx.encoded(at:11_000_000_001)
-            let round = try VPNDNSAnswerCodec.decode(response,request:req,receivedAt:11_000_000_001, transport: .tcp)
+            let response = try nx.encoded(at:dnsTime(11_000_000_001))
+            let round = try VPNDNSAnswerCodec.decode(response,request:req,receivedAt:dnsTime(11_000_000_001), transport: .tcp)
             try require(round.soa?.ttl == 19 && round.soa?.minimum == 30)
-            let later = try round.negativeCacheDirective(at:21_000_000_001)
-            let original = try nx.negativeCacheDirective(at:21_000_000_001)
+            let later = try round.negativeCacheDirective(at:dnsTime(21_000_000_001))
+            let original = try nx.negativeCacheDirective(at:dnsTime(21_000_000_001))
             try require(later?.remainingTTL == 9 && later?.remainingTTL == original?.remainingTTL)
             try require(later?.key == original?.key && later?.request == original?.request)
             try require(later!.expiresAt <= original!.expiresAt)
-            try rejects { _ = try nx.encoded(at:31_000_000_000) }
+            try rejects { _ = try nx.encoded(at:dnsTime(31_000_000_000)) }
         case "negative-upstream-errors":
             for code: UInt16 in [1,2,4,5] {
                 let result = try parse(packet(code:code))
                 try require(result.outcome == .upstreamError(UInt16(code)) && result.soa == nil && result.addresses.isEmpty)
-                let directive = try result.negativeCacheDirective(at:1_000_000_000)
+                let directive = try result.negativeCacheDirective(at:dnsTime(1_000_000_000))
                 try require(directive == nil)
-                let encoded = try result.encoded(at:1_000_000_000)
+                let encoded = try result.encoded(at:dnsTime(1_000_000_000))
                 try require(encoded[3] & 15 == code)
             }
         case "negative-error-tail": try rejects { _ = try parse(packet(code:2) + Data([0])) }
@@ -283,13 +296,13 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             }
         case "negative-mixed-zero-ttl":
             let result = try parse(packet([RR(type:5,ttl:5,data:name("edge.corp.test"))],proof:soa(minimum:0)))
-            try rejects { _ = try result.encoded(at:6_000_000_000) }
-            let positive = try VPNDNSAnswerCodec.decode(wire(req,[RR(type:5,ttl:0,data:name("edge.corp.test")),RR(owner:"edge.corp.test",ttl:5)]),request:req,receivedAt:1_000_000_000, transport: .tcp)
-            try rejects { _ = try positive.encoded(at:6_000_000_000) }
+            try rejects { _ = try result.encoded(at:dnsTime(6_000_000_000)) }
+            let positive = try VPNDNSAnswerCodec.decode(wire(req,[RR(type:5,ttl:0,data:name("edge.corp.test")),RR(owner:"edge.corp.test",ttl:5)]),request:req,receivedAt:dnsTime(1_000_000_000), transport: .tcp)
+            try rejects { _ = try positive.encoded(at:dnsTime(6_000_000_000)) }
         case "negative-expiry-overflow":
             let far = try request(deadline:UInt64.max)
-            let result = try VPNDNSAnswerCodec.decode(packet(proof:proof,request:far),request:far,receivedAt:UInt64.max - 100, transport: .tcp)
-            try rejects { _ = try result.negativeCacheDirective(at:UInt64.max - 100) }
+            let result = try VPNDNSAnswerCodec.decode(packet(proof:proof,request:far),request:far,receivedAt:dnsTime(UInt64.max - 100), transport: .tcp)
+            try rejects { _ = try result.negativeCacheDirective(at:dnsTime(UInt64.max - 100)) }
         case "negative-late":
             let fake = Fake(); fake.now = 31_000_000_000
             try rejects { try fake.transaction(nx).release { _ in throw Failure.check } }
@@ -314,7 +327,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         }
         func request(_ data: Data? = nil, ingress: VPNDNSClientIngress = .udp) throws -> VPNDNSAnswerRequest {
             let client = try VPNDNSAnswerCodec.clientQuestion(data ?? original(),resource:resource,ingress:ingress)
-            return try VPNDNSAnswerRequest(clientQuestion:client,generation:7,revision:9,upstreamTransactionID:0x1234,deadline:100_000_000_000)
+            return try VPNDNSAnswerRequest(clientQuestion:client,generation:7,revision:9,upstreamTransactionID:0x1234,deadline:dnsTime(100_000_000_000))
         }
         func response(_ request: VPNDNSAnswerRequest, records: [RR] = [RR()], rcode: UInt16 = 0,
                       version: UInt8 = 0, flags: UInt16 = 0, options: [UInt8] = []) -> Data {
@@ -323,7 +336,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             return Data(bytes)
         }
         func decode(_ wire: Data, _ request: VPNDNSAnswerRequest, transport: VPNDNSUpstreamTransport = .tcp) throws -> VPNDNSValidatedAnswer {
-            try VPNDNSAnswerCodec.decode(wire,request:request,receivedAt:1_000_000_000,transport:transport)
+            try VPNDNSAnswerCodec.decode(wire,request:request,receivedAt:dnsTime(1_000_000_000),transport:transport)
         }
         func host(encodedLength: Int, character: Character) -> String {
             var remaining = encodedLength - 2, labels = [String]()
@@ -365,7 +378,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             try require(upstream.count == query("ApP.CoRp.TeSt").count + 11 && upstream[11] == 1)
             try require(Array(upstream.dropFirst(12).prefix(name("ApP.CoRp.TeSt").count + 4)) == name("ApP.CoRp.TeSt") + word(1) + word(1))
             let parsed = try decode(response(req),req)
-            let encoded = try parsed.encoded(at:1_000_000_000)
+            let encoded = try parsed.encoded(at:dnsTime(1_000_000_000))
             try require(encoded[11] == 1 && Array(encoded.suffix(11)) == opt())
         case "edns-privacy":
             let opaque = option(8,[203,0,113,77]) + option(10,[0xde,0xad,0xbe,0xef]) + option(65001,[])
@@ -373,14 +386,14 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             let upstream = try req.upstreamQuery()
             try require(upstream.count == query("ApP.CoRp.TeSt").count + 11 && Array(upstream.suffix(11)) == opt())
             let parsed = try decode(response(req,options:opaque),req)
-            let encoded = try parsed.encoded(at:1_000_000_000)
+            let encoded = try parsed.encoded(at:dnsTime(1_000_000_000))
             try require(Array(encoded.suffix(11)) == opt())
         case "edns-z-bits":
             let req = try request(original(flags:0x7fff))
             let upstream = try req.upstreamQuery()
             try require(Array(upstream.suffix(11)) == opt())
             let answer = try decode(response(req,flags:0x7fff),req)
-            let encoded = try answer.encoded(at:1_000_000_000)
+            let encoded = try answer.encoded(at:dnsTime(1_000_000_000))
             try require(Array(encoded.suffix(11)) == opt())
         case "edns-payload":
             for payload: UInt16 in [0,1,511,512,1232,4096,65535] {
@@ -393,17 +406,17 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             for version: UInt8 in [1,255] {
                 let req = try request(original(version:version))
                 try rejects { _ = try req.upstreamQuery() }
-                let error = try VPNDNSAnswerCodec.clientProtocolError(request:req,receivedAt:1_000_000_000)
+                let error = try VPNDNSAnswerCodec.clientProtocolError(request:req,receivedAt:dnsTime(1_000_000_000))
                 try require(error.outcome == .protocolError(.badVersion) && error.addresses.isEmpty)
-                let encoded = try error.encoded(at:1_000_000_000)
+                let encoded = try error.encoded(at:dnsTime(1_000_000_000))
                 try require(encoded[3] & 15 == 0 && Array(encoded.suffix(11)) == opt(extended:1))
-                let directive = try error.negativeCacheDirective(at:1_000_000_000)
+                let directive = try error.negativeCacheDirective(at:dnsTime(1_000_000_000))
                 try require(directive == nil)
             }
-            try rejects { _ = try VPNDNSAnswerCodec.clientProtocolError(request:req,receivedAt:1) }
+            try rejects { _ = try VPNDNSAnswerCodec.clientProtocolError(request:req,receivedAt:dnsTime(1)) }
         case "edns-badvers-lease":
             let req = try request(original(version:3))
-            let answer = try VPNDNSAnswerCodec.clientProtocolError(request:req,receivedAt:1_000_000_000)
+            let answer = try VPNDNSAnswerCodec.clientProtocolError(request:req,receivedAt:dnsTime(1_000_000_000))
             let fake = Fake(); fake.cachedFences = ["192.0.2.9"]
             var outputs = 0
             let transaction = fake.transaction(answer)
@@ -419,7 +432,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         case "edns-extended-rcode":
             let error = try decode(response(req,records:[],rcode:16),req)
             try require(error.outcome == .upstreamError(16) && error.soa == nil && error.addresses.isEmpty)
-            let encoded = try error.encoded(at:1_000_000_000)
+            let encoded = try error.encoded(at:dnsTime(1_000_000_000))
             try require(encoded[3] & 15 == 0 && Array(encoded.suffix(11)) == opt(extended:1))
             try rejects { _ = try decode(response(req,records:[],rcode:19),req) }
             try rejects { _ = try decode(response(req,records:[RR()],rcode:16),req) }
@@ -427,13 +440,13 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             let legacy = try request(query())
             try rejects { _ = try decode(response(legacy,records:[],rcode:16),legacy) }
             let answer = try decode(wire(legacy),legacy)
-            let encoded = try answer.encoded(at:1_000_000_000)
+            let encoded = try answer.encoded(at:dnsTime(1_000_000_000))
             try require(encoded[11] == 0)
         case "edns-legacy-upstream":
             // Explicit compatibility: no OPT from an old upstream has extRCODE0;
             // still synthesize a NEW OPT for our independent EDNS client hop.
             let answer = try decode(wire(req),req)
-            let encoded = try answer.encoded(at:1_000_000_000)
+            let encoded = try answer.encoded(at:dnsTime(1_000_000_000))
             try require(encoded[11] == 1 && Array(encoded.suffix(11)) == opt())
         case "edns-dnssec":
             try rejects { _ = try request(original(flags:0x8000)) }
@@ -444,16 +457,16 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             var reply = Array(response(req,flags:0x8000)); reply[3] |= 0x20
             let answer = try decode(Data(reply),req)
             try require(answer.outcome == .positive && answer.addresses.map(\.canonical) == ["192.0.2.9"])
-            let encoded = try answer.encoded(at:1_000_000_000)
+            let encoded = try answer.encoded(at:dnsTime(1_000_000_000))
             try require(Array(encoded.suffix(11)) == opt() && encoded[3] & 0x20 == 0)
             try rejects { _ = try request(original(flags:0x8000)) }
         case "edns-response-do-error":
             for code: UInt16 in [2,5,16] {
                 let answer = try decode(response(req,records:[],rcode:code,flags:0x8000),req)
                 try require(answer.outcome == .upstreamError(code) && answer.addresses.isEmpty)
-                let encoded = try answer.encoded(at:1_000_000_000)
+                let encoded = try answer.encoded(at:dnsTime(1_000_000_000))
                 try require(Array(encoded.suffix(11)) == opt(extended:UInt8(code >> 4)) && encoded[3] & 0x20 == 0)
-                let cache = try answer.negativeCacheDirective(at:1_000_000_000)
+                let cache = try answer.negativeCacheDirective(at:dnsTime(1_000_000_000))
                 try require(cache == nil)
             }
         case "edns-response-do-negative":
@@ -463,9 +476,9 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
                 packet += soa.wire(); packet += opt(flags:0x8000)
                 let answer = try decode(Data(packet),req)
                 try require(answer.outcome == (code == 0 ? .noData : .nxDomain))
-                let cache = try answer.negativeCacheDirective(at:11_000_000_000)
-                try require(cache?.remainingTTL == 20 && cache?.expiresAt == 31_000_000_000)
-                let encoded = try answer.encoded(at:11_000_000_000)
+                let cache = try answer.negativeCacheDirective(at:dnsTime(11_000_000_000))
+                try require(cache?.remainingTTL == 20 && cache?.expiresAt == dnsTime(31_000_000_000))
+                let encoded = try answer.encoded(at:dnsTime(11_000_000_000))
                 try require(Array(encoded.suffix(11)) == opt() && encoded[3] & 0x20 == 0)
             }
         case "edns-response-do-lease":
@@ -541,11 +554,11 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
                 let udp = try request(originalQuery,ingress:.udp)
                 let records = withOPT ? records(first:232 - delta,terminal:221 + delta) : records(first:56 - delta,terminal:102 + delta)
                 let full = try decode(withOPT ? response(tcp,records:records) : wire(tcp,records),tcp)
-                let fullBytes = try full.encoded(at:1_000_000_000)
+                let fullBytes = try full.encoded(at:dnsTime(1_000_000_000))
                 let limit = withOPT ? 1232 : 512
                 try require(fullBytes.count == limit + delta)
                 let outgoing = try decode(fullBytes,udp)
-                let encoded = try outgoing.encoded(at:1_000_000_000)
+                let encoded = try outgoing.encoded(at:dnsTime(1_000_000_000))
                 try require(encoded.count <= limit && (encoded[2] & 2 != 0) == (delta > 0))
                 if delta > 0 { try require(encoded[6] == 0 && encoded[7] == 0 && encoded[8] == 0 && encoded[9] == 0) }
             }
@@ -553,7 +566,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             for payload: UInt16 in [511,512,1232,65535] {
                 let request = try request(original(payload:payload))
                 let answer = try decode(response(request,records:records(first:56,terminal:102)),request)
-                let bytes = try answer.encoded(at:1_000_000_000)
+                let bytes = try answer.encoded(at:dnsTime(1_000_000_000))
                 try require((bytes[2] & 2 != 0) == (payload <= 512))
                 try require(bytes.count <= request.clientQuestion.udpResponseLimit)
             }
@@ -570,7 +583,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             var packet = Array(wire(tcp,aliases,flags:0x8183,authority:1,additional:1))
             packet += soa.wire(); packet += opt()
             let full = try decode(Data(packet),tcp)
-            let fullBytes = try full.encoded(at:1_000_000_000)
+            let fullBytes = try full.encoded(at:dnsTime(1_000_000_000))
             try require(fullBytes.count > 8000 && fullBytes[2] & 2 == 0 && fullBytes[7] == 16 && fullBytes[9] == 1)
             let answer = try decode(Data(packet),udp)
             let fake = Fake(); fake.cachedFences = ["192.0.2.9"]
@@ -585,7 +598,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             let req = try request(original(payload:512),ingress:.tcp)
             let many = (0..<80).map { RR(data:[192,0,2,UInt8($0)]) }
             let answer = try decode(response(req,records:many),req)
-            let bytes = try answer.encoded(at:1_000_000_000)
+            let bytes = try answer.encoded(at:dnsTime(1_000_000_000))
             try require(bytes.count > 1232 && bytes[2] & 2 == 0 && bytes[7] == 80)
         case "edns-upstream-tc", "edns-upstream-oversize":
             var packet = response(req)
@@ -597,18 +610,18 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
                 let many = (0..<50).map { RR(data:[192,0,2,UInt8($0)]) }
                 packet = response(req,records:many); expected = .oversizedUDP
             }
-            switch try VPNDNSAnswerCodec.inspectUpstream(packet,request:req,receivedAt:1_000_000_000,transport:.udp) {
-            case .needsTCP(let receipt): try require(receipt.request == req && receipt.request.deadline == 100_000_000_000 && receipt.reason == expected)
+            switch try VPNDNSAnswerCodec.inspectUpstream(packet,request:req,receivedAt:dnsTime(1_000_000_000),transport:.udp) {
+            case .needsTCP(let receipt): try require(receipt.request == req && receipt.request.deadline == dnsTime(100_000_000_000) && receipt.reason == expected)
             case .answer: throw Failure.check
             }
             try rejects { _ = try decode(packet,req,transport:.udp) }
-            if which == "edns-upstream-tc" { try rejects { _ = try VPNDNSAnswerCodec.inspectUpstream(packet,request:req,receivedAt:1,transport:.tcp) } }
+            if which == "edns-upstream-tc" { try rejects { _ = try VPNDNSAnswerCodec.inspectUpstream(packet,request:req,receivedAt:dnsTime(1),transport:.tcp) } }
         case "edns-tc-provenance":
             var valid = Array(response(req)); valid[2] |= 2
             for offset in [0,2,4,12,29,30] {
                 var invalid = valid
                 if offset == 2 { invalid[2] &= 0x7f } else { invalid[offset] ^= 1 }
-                try rejects { _ = try VPNDNSAnswerCodec.inspectUpstream(Data(invalid),request:req,receivedAt:1,transport:.udp) }
+                try rejects { _ = try VPNDNSAnswerCodec.inspectUpstream(Data(invalid),request:req,receivedAt:dnsTime(1),transport:.udp) }
             }
             try rejects { _ = try VPNDNSAnswerCodec.inspectUpstream(Data(valid),request:req,receivedAt:req.deadline,transport:.udp) }
         case "edns-leased-tc":
@@ -632,15 +645,15 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             packet += soa.wire(); packet += opt(options:option(8,[1,2,3]))
             let answer = try decode(Data(packet),req)
             try require(answer.outcome == .nxDomain)
-            let directive = try answer.negativeCacheDirective(at:11_000_000_000)
-            try require(directive?.remainingTTL == 20 && directive?.expiresAt == 31_000_000_000)
-            let bytes = try answer.encoded(at:11_000_000_000)
+            let directive = try answer.negativeCacheDirective(at:dnsTime(11_000_000_000))
+            try require(directive?.remainingTTL == 20 && directive?.expiresAt == dnsTime(31_000_000_000))
+            let bytes = try answer.encoded(at:dnsTime(11_000_000_000))
             try require(Array(bytes.suffix(11)) == opt())
             let fake = Fake(); fake.cachedFences = ["192.0.2.9"]
             try fake.transaction(answer).release { _ in try require(fake.leased) }
             try require(fake.cachedFences == ["192.0.2.9"])
         case "edns-inspect-complete":
-            switch try VPNDNSAnswerCodec.inspectUpstream(response(req),request:req,receivedAt:1_000_000_000,transport:.udp) {
+            switch try VPNDNSAnswerCodec.inspectUpstream(response(req),request:req,receivedAt:dnsTime(1_000_000_000),transport:.udp) {
             case .answer(let answer): try require(answer.outcome == .positive)
             case .needsTCP: throw Failure.check
             }
@@ -651,7 +664,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
     static func main() throws {
         let which = CommandLine.arguments[1], req = try request()
         func parse(_ records: [RR], flags: UInt16 = 0x8180) throws -> VPNDNSValidatedAnswer {
-            try VPNDNSAnswerCodec.decode(wire(req, records, flags: flags), request: req, receivedAt: 1_000_000_000, transport: .tcp)
+            try VPNDNSAnswerCodec.decode(wire(req, records, flags: flags), request: req, receivedAt:dnsTime(1_000_000_000), transport: .tcp)
         }
         if which.hasPrefix("edns-") {
             try edns(which,resource:req.resource)
@@ -661,30 +674,55 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             try negative(which, req: req)
             print("pure DNS answer checks passed"); return
         }
+        if which.hasPrefix("sleep-") || which.hasPrefix("clock-release-") {
+            let long = try request(deadline: which == "sleep-zero-query" ? 20_000_000_000:1_000_000_000_000)
+            let positive = try VPNDNSAnswerCodec.decode(wire(long,[RR(ttl:which == "sleep-zero-query" ? 0:30)]),request:long,receivedAt:dnsTime(1_000_000_000),transport:.tcp)
+            if which == "sleep-ttl" {
+                try rejects { _ = try positive.encoded(at:dnsTime(121_000_000_000)) }
+            } else if which == "sleep-negative-ttl" {
+                let proof = RR(owner:"corp.test",type:6,ttl:30,data:[0,0] + [UInt32(1),2,3,4,30].flatMap(dword))
+                let negative = try VPNDNSAnswerCodec.decode(wire(long,[],flags:0x8183,authority:1)+Data(proof.wire()),request:long,receivedAt:dnsTime(1_000_000_000),transport:.tcp)
+                try rejects { _ = try negative.negativeCacheDirective(at:dnsTime(121_000_000_000)) }
+            } else {
+                let fake = Fake(); fake.cachedFences = ["192.0.2.200/32"]
+                if which == "sleep-zero-query" { fake.now = 121_000_000_000 }
+                else if which == "clock-release-failed" { fake.clockFailure = true }
+                else if which == "clock-release-checkpoint-failed" { fake.failClockAt = .outputIssued }
+                else if which == "clock-release-backwards" { fake.backwards = true }
+                else { fake.sleepAt = String(which.dropFirst(6)) }
+                let transaction = fake.transaction(positive)
+                var outputs = 0
+                try rejects { try transaction.release { _ in outputs += 1 } }
+                try require(outputs == 0 && fake.cachedFences.contains("192.0.2.200/32"))
+                try rejects { try transaction.release { _ in outputs += 1 } }
+                try require(outputs == 0)
+            }
+            print("pure DNS answer checks passed"); return
+        }
         switch which {
         case "client-remap":
             let remapped = try request(upstreamID:0x9876)
             let upstream = Array(try remapped.upstreamQuery())
             try require(Array(upstream.prefix(2)) == [0x98,0x76])
-            let parsed = try VPNDNSAnswerCodec.decode(wire(remapped),request:remapped,receivedAt:1, transport: .tcp)
-            let response = Array(try parsed.encoded(at:1))
+            let parsed = try VPNDNSAnswerCodec.decode(wire(remapped),request:remapped,receivedAt:dnsTime(1), transport: .tcp)
+            let response = Array(try parsed.encoded(at:dnsTime(1)))
             try require(Array(response.prefix(2)) == [0x12,0x34])
             var wrong = Array(wire(remapped)); wrong[0] = 0x12; wrong[1] = 0x34
-            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(wrong),request:remapped,receivedAt:1, transport: .tcp) }
+            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(wrong),request:remapped,receivedAt:dnsTime(1), transport: .tcp) }
         case "client-rd":
             for desired in [false,true] {
                 let request = try request(clientRD:desired)
                 let upstream = try request.upstreamQuery()
                 try require(upstream[2] & 1 == (desired ? 1 : 0))
                 // Intentionally DIFFERENT upstream RD cannot change client RD.
-                let parsed = try VPNDNSAnswerCodec.decode(wire(request,flags:desired ? 0x8080 : 0x8180),request:request,receivedAt:1, transport: .tcp)
-                let response = try parsed.encoded(at:1)
+                let parsed = try VPNDNSAnswerCodec.decode(wire(request,flags:desired ? 0x8080 : 0x8180),request:request,receivedAt:dnsTime(1), transport: .tcp)
+                let response = try parsed.encoded(at:dnsTime(1))
                 try require(response[2] & 1 == (desired ? 1 : 0))
             }
         case "client-case":
             let request = try request(originalName:"ApP.CoRp.TeSt")
-            let parsed = try VPNDNSAnswerCodec.decode(wire(request),request:request,receivedAt:1, transport: .tcp)
-            let response = try parsed.encoded(at:1)
+            let parsed = try VPNDNSAnswerCodec.decode(wire(request),request:request,receivedAt:dnsTime(1), transport: .tcp)
+            let response = try parsed.encoded(at:dnsTime(1))
             let question = name("ApP.CoRp.TeSt") + word(1) + word(1)
             try require(Array(response.dropFirst(12).prefix(question.count)) == question)
             let upstream = try request.upstreamQuery()
@@ -723,7 +761,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(Data(bytes),resource:req.resource, ingress: .udp) }
         case "client-release":
             let request = try request(clientRD:false,originalName:"App.Corp.Test",upstreamID:0xabcd)
-            let parsed = try VPNDNSAnswerCodec.decode(wire(request),request:request,receivedAt:1_000_000_000, transport: .tcp)
+            let parsed = try VPNDNSAnswerCodec.decode(wire(request),request:request,receivedAt:dnsTime(1_000_000_000), transport: .tcp)
             let fake = Fake(), transaction = fake.transaction(parsed)
             var calls = 0
             try transaction.release { bytes in
@@ -740,7 +778,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             try require(result.request == req && result.canonicalChain == [req.resource.address])
         case "aaaa":
             let req6 = try request(type: .aaaa), rr = RR(type: 28, data: [0x20,1,0x0d,0xb8] + [UInt8](repeating: 0, count: 11) + [9])
-            let result = try VPNDNSAnswerCodec.decode(wire(req6, [rr]), request: req6, receivedAt: 1, transport: .tcp)
+            let result = try VPNDNSAnswerCodec.decode(wire(req6, [rr]), request: req6, receivedAt:dnsTime(1), transport: .tcp)
             try require(result.addresses[0].canonical == "2001:db8::9")
         case "multi":
             let result = try parse([RR(), RR(data: [192,0,2,10])]); try require(result.addresses.count == 2)
@@ -749,7 +787,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             let result = try parse([RR(owner: "edge.other.test", ttl: 50),
                                     RR(type: 5, ttl: 17, data: name("edge.other.test"))])
             try require(result.canonicalChain == [req.resource.address,"edge.other.test"] && result.minimumTTL == 17)
-            let round = try VPNDNSAnswerCodec.decode(result.encoded(at: 1_000_000_000), request: req, receivedAt: 1_000_000_000, transport: .tcp)
+            let round = try VPNDNSAnswerCodec.decode(result.encoded(at:dnsTime(1_000_000_000)), request: req, receivedAt:dnsTime(1_000_000_000), transport: .tcp)
             try require(round.addresses == result.addresses && round.canonicalChain == result.canonicalChain)
         case "compressed-cname":
             let result = try parse([RR(type:5,data:[4] + Array("edge".utf8) + [0xc0,16]),
@@ -761,29 +799,29 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         case "ttl":
             let result = try parse([RR(ttl: 0x7fff_ffff)])
             try require(result.minimumTTL == 86400)
-            let encoded = try result.encoded(at: 2_000_000_001)
-            let aged = try VPNDNSAnswerCodec.decode(encoded, request: req, receivedAt: 2_000_000_001, transport: .tcp)
+            let encoded = try result.encoded(at:dnsTime(2_000_000_001))
+            let aged = try VPNDNSAnswerCodec.decode(encoded, request: req, receivedAt:dnsTime(2_000_000_001), transport: .tcp)
             try require(aged.minimumTTL == 86398)
-            try rejects { _ = try answer(req).encoded(at: 61_000_000_000) }
+            try rejects { _ = try answer(req).encoded(at:dnsTime(61_000_000_000)) }
         case "ttl-high-bit":
             let result = try parse([RR(ttl: UInt32.max)])
             try require(result.minimumTTL == 0)
         case "rrset-ttl":
             let result = try parse([RR(ttl: 80),RR(ttl: 15,data:[192,0,2,10])])
-            let rebuilt = try VPNDNSAnswerCodec.decode(result.encoded(at:1_000_000_000),request:req,receivedAt:1_000_000_000, transport: .tcp)
+            let rebuilt = try VPNDNSAnswerCodec.decode(result.encoded(at:dnsTime(1_000_000_000)),request:req,receivedAt:dnsTime(1_000_000_000), transport: .tcp)
             try require(rebuilt.records.map(\.ttl) == [15,15])
         case "zero-ttl":
             let result = try parse([RR(ttl: 0)])
-            _ = try result.encoded(at: 2_000_000_000)
+            _ = try result.encoded(at:dnsTime(2_000_000_000))
             try require(result.minimumTTL == 0)
         case "bounds":
-            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(repeating: 0, count: 65536), request: req, receivedAt: 1, transport: .tcp) }
+            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(repeating: 0, count: 65536), request: req, receivedAt:dnsTime(1), transport: .tcp) }
             try rejects { _ = try parse([RR](repeating: RR(), count: 129)) }
         case "question":
             var bytes = Array(wire(req)); bytes[0] ^= 1
-            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(bytes), request: req, receivedAt: 1, transport: .tcp) }
+            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(bytes), request: req, receivedAt:dnsTime(1), transport: .tcp) }
             let other = try request(resource: VPNResource(address: "child.app.corp.test"))
-            try rejects { _ = try VPNDNSAnswerCodec.decode(wire(other), request: req, receivedAt: 1, transport: .tcp) }
+            try rejects { _ = try VPNDNSAnswerCodec.decode(wire(other), request: req, receivedAt:dnsTime(1), transport: .tcp) }
         case "mutated-corpus":
             var random: UInt64 = 0x12345678
             let seed = Array(wire(req))
@@ -793,8 +831,8 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
                 let position = Int(random % UInt64(bytes.count))
                 bytes[position] ^= UInt8((random >> 32) & 255)
                 do {
-                    let parsed = try VPNDNSAnswerCodec.decode(Data(bytes),request:req,receivedAt:1, transport: .tcp)
-                    let rebuilt = try VPNDNSAnswerCodec.decode(parsed.encoded(at:1),request:req,receivedAt:1, transport: .tcp)
+                    let parsed = try VPNDNSAnswerCodec.decode(Data(bytes),request:req,receivedAt:dnsTime(1), transport: .tcp)
+                    let rebuilt = try VPNDNSAnswerCodec.decode(parsed.encoded(at:dnsTime(1)),request:req,receivedAt:dnsTime(1), transport: .tcp)
                     try require(parsed.addresses == rebuilt.addresses && parsed.canonicalChain == rebuilt.canonicalChain)
                 } catch is Failure { throw Failure.check } catch {}
             }
@@ -804,11 +842,11 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             var bytes = Array(wire(req, [RR(compressed: true)]))
             let start = 12 + name(req.resource.address).count + 4
             bytes[start + 1] = which == "pointer-loop" ? UInt8(start) : 4
-            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(bytes), request: req, receivedAt: 1, transport: .tcp) }
+            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(bytes), request: req, receivedAt:dnsTime(1), transport: .tcp) }
         case "malformed":
             let valid = wire(req)
-            for n in valid.indices { try rejects { _ = try VPNDNSAnswerCodec.decode(Data(valid.prefix(n)), request: req, receivedAt: 1, transport: .tcp) } }
-            try rejects { _ = try VPNDNSAnswerCodec.decode(valid + Data([0]), request: req, receivedAt: 1, transport: .tcp) }
+            for n in valid.indices { try rejects { _ = try VPNDNSAnswerCodec.decode(Data(valid.prefix(n)), request: req, receivedAt:dnsTime(1), transport: .tcp) } }
+            try rejects { _ = try VPNDNSAnswerCodec.decode(valid + Data([0]), request: req, receivedAt:dnsTime(1), transport: .tcp) }
             try rejects { _ = try parse([RR(data: [1,2,3])]) }
         case "alias-cycle":
             try rejects { _ = try parse([RR(type: 5, data: name("edge.test")), RR(owner: "edge.test",type: 5,data: name(req.resource.address))]) }
@@ -831,7 +869,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             catch VPNDNSAnswerError.unsupportedNegative {}
         case "sections":
             for (ns, ar): (UInt16,UInt16) in [(1,0),(0,1)] {
-                try rejects { _ = try VPNDNSAnswerCodec.decode(wire(req,authority:ns,additional:ar),request:req,receivedAt:1, transport: .tcp) }
+                try rejects { _ = try VPNDNSAnswerCodec.decode(wire(req,authority:ns,additional:ar),request:req,receivedAt:dnsTime(1), transport: .tcp) }
             }
         default:
             let result = try answer(req), fake = Fake(), transaction = fake.transaction(result)
@@ -839,7 +877,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             func output(_ bytes: Data) throws {
                 try require(fake.leased && transaction.stage == .outputIssued)
                 outputs += 1
-                _ = try VPNDNSAnswerCodec.decode(bytes,request:req,receivedAt:fake.now, transport: .tcp)
+                _ = try VPNDNSAnswerCodec.decode(bytes,request:req,receivedAt:dnsTime(fake.now), transport: .tcp)
                 if which == "output-failure" || which == "lease-suppressed-output-error" { throw VPNDNSAnswerError.checkpoint }
             }
             switch which {
@@ -852,7 +890,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             case "foreign-permit": fake.foreignPermit = true
             case "other-answer": fake.other = try answer(req)
             case "revoked": fake.revokeStage = .routesEstablished
-            case "late": fake.now = req.deadline
+            case "late": fake.now = req.deadline.nanoseconds
             case "deny-unknown": fake.denyUnknown = true
             case "route-unknown": fake.routeUnknown = true
             case "wrong-route-permit": fake.wrongRoutePermit = true
