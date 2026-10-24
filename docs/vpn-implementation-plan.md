@@ -4329,3 +4329,24 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   возможную сохранённую preparation 138: новый signed manifest не должен молча
   подменять незавершённую транзакцию. Журнал root не читался/не удалялся вручную.
 - [ ] Новая signed поставка, installed update/recovery и дальнейшая приёмка.
+
+### Продолжение 1.5cw — supersession только до journal authority (24 октября)
+
+- [x] После проверки подписанного source/candidate и selected source, под общей
+  service lease новый строго более высокий candidate может заменить только
+  pre-journal preparation. Очистка использует существующий quarantine/GC protocol,
+  включая повтор после прерывания. Selected source проверяется повторно.
+  Committed/prepared/pending journal не заменяется; одинаковый candidate в staging
+  сохраняет прежний resume, gcAuthorized завершается до повторной подготовки.
+- [x] Нельзя заменить подготовку более старым sequence или другими signed bytes
+  того же sequence. Чужой service owner/source и неизвестное staging content
+  отвергаются. Неизвестные файлы не удаляются; signed pins не ослаблялись.
+- [x] Joint preparation 14/14, joint cleanup 13/13, cancelled cleanup 13/13:
+  **40 passed**. Новые сценарии: смена candidate после раннего отказа и после
+  partial app staging, прерывание после retirement, запрет older candidate,
+  запрет supersession при journal и сохранение unknown content.
+- [x] Коммит `e80b8be`; системное preparation состояние вручную не изменялось.
+- [ ] Universal frontend и helper 139 собираются. Новый helper нужен, поскольку
+  update preparation вызывается также broker-ролевым entry. Комплект 138 не
+  перезаписывается и повторно не устанавливается.
+- [ ] Подписанный переход 137→139, installed recovery и проверка приложения.
