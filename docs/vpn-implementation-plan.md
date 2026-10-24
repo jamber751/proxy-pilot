@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;796 isolated checks ARM/Intel; исходные5 Installer cases прошли ARM | Повторный rescue выявил новый отказ; текущий lock-order fix, полный7-case gate/обычный update, macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;800 isolated checks ARM/Intel с новым lock-order fix; исходные5 Installer cases прошли ARM | Полный7-case Installer gate/обычный update с исправлением ещё выполняется; macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение 137 с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay | Connected overlay 137, legacy CLI, domain/split-DNS backend |
@@ -5460,3 +5460,23 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   результаты full system/ordinary owner update ещё отсутствуют. Подписи C,
   second edge и3statements, assembled capsule/verify и один host installer
   остаются последующими шагами после достаточной изолированной приёмки.
+
+### Продолжение 1.5eu — lock-order gate800 подтверждён
+
+- [x] Run40103531275 (`ba2802f`) завершился success на ARM/Intel:800 tests,
+  44 test summaries, без skipped/failed/error summaries. Полный лог сохранён
+  локально как `/tmp/pp-ownership-40103531275.log`. Включены оба новых
+  direct-daemon Service-before-metadata случая на каждой архитектуре.
+- [ ] Run40103531276 остаётся in_progress: быстрый gate прошёл на обеих
+  архитектурах, production artifacts ещё собираются. Эти800 проверок не
+  заменяют семь настоящих Installer/owner-update сценариев.
+- [ ] Параллельно выявлены конкретные UX-пробелы: credential prompt мог
+  скрываться за settings/editor; отсутствует управление фокусом нового запроса,
+  Return/Escape, а frame credential buttons расположен снаружи label. Исправление
+  и целевые проверки выполняются отдельно от root gate.
+- [ ] Новая schema3 write-once ledger в разработке; реального Keychain adapter
+  пока нет. Frozen unsigned C-v2 содержит прежний frontend/schema2. Он не
+  доказывает приёмку новых изменений: перед итоговой поставкой frontend нужно
+  собрать/проверить заново, затем заново получить manifest/edge/rescue drafts.
+  В реальном пользовательском хранилище schema3 не записывалась: текущие
+  проверки используют только отдельные синтетические каталоги.
