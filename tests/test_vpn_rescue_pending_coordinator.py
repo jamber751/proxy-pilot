@@ -111,6 +111,23 @@ class VPNRescuePendingCoordinatorRootTests(unittest.TestCase):
         self.assertEqual(self.identities(), self.before[::-1])
         self.assertEqual(self.state(), self.state_before)
 
+    def test_missing_destination_stage_is_prepared_then_exchanged(self):
+        shutil.rmtree(self.stage)
+        installed = (self.destination / 'ProxyPilot.app').stat().st_ino
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'exchanged:trace=arm,drain,exchange')
+        self.assertEqual((self.stage / 'ProxyPilot.app').stat().st_ino, installed)
+        self.assertEqual(self.state(), self.state_before)
+        self.command([str(self.checker), 'inspect', str(self.destination),
+                      self.b['arm64'], self.b['x86_64'], '1.7.0'])
+        before = self.identities()
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'alreadyExchanged:trace=arm,drain')
+        self.assertEqual(self.identities(), before)
+        self.assertEqual(self.state(), self.state_before)
+
     def refused(self, operation, trace, changed=False):
         result = self.invoke(operation)
         self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
@@ -137,6 +154,39 @@ class VPNRescuePendingCoordinatorRootTests(unittest.TestCase):
     def test_invalid_layout_has_no_callbacks(self):
         (self.stage / 'ProxyPilot.app/Contents/Resources/data.txt').write_text('changed')
         self.refused('run', '')
+
+    def refused_without_stage(self):
+        shutil.rmtree(self.stage)
+        before = (self.destination / 'ProxyPilot.app').stat().st_ino
+        result = self.invoke()
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.strip().endswith(':trace='), result.stdout)
+        self.assertFalse(self.stage.exists())
+        self.assertEqual((self.destination / 'ProxyPilot.app').stat().st_ino, before)
+        self.assertEqual(self.state(), self.state_before)
+
+    def test_unknown_installed_app_does_not_create_stage_or_drain(self):
+        (self.destination / 'ProxyPilot.app/Contents/Resources/data.txt').write_text('changed')
+        self.refused_without_stage()
+
+    def test_unknown_protected_candidate_does_not_create_stage_or_drain(self):
+        (self.base / 'current/ProxyPilot.app/Contents/Resources/data.txt').write_text('changed')
+        self.refused_without_stage()
+
+    def test_unknown_protected_previous_does_not_create_stage_or_drain(self):
+        (self.base / 'candidate/ProxyPilot.app/Contents/Resources/data.txt').write_text('changed')
+        self.refused_without_stage()
+
+    def test_unknown_retained_executor_does_not_create_stage_or_drain(self):
+        (self.base / 'executor/ProxyPilot.app/Contents/Resources/data.txt').write_text('changed')
+        self.refused_without_stage()
+
+    def test_finish_role_refuses_unexchanged_protected_layout(self):
+        current = self.base / 'current'
+        candidate = self.base / 'candidate'
+        temporary = self.base / 'moving'
+        current.rename(temporary); candidate.rename(current); temporary.rename(candidate)
+        self.refused_without_stage()
 
     def test_interrupted_exchange_retries_forward_without_journal_mutation(self):
         result = self.invoke('after-exchange-failure')
