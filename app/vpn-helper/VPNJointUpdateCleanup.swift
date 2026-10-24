@@ -144,11 +144,7 @@ enum VPNJointUpdateCleanup {
                                authority: VPNReleaseAuthority) throws {
         try lease.check()
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
-        // update.json is committed first. If a crash left both canonical
-        // records, equality and artifact validation are sufficient to finish
-        // the conversion before any later mutation is considered.
-        _ = try store.finishUpdatePreparationConversion()
-        guard try store.loadUpdateCleanupReceipt() != nil else { return }
+        guard try prepareCompletion(store: store) else { return }
         let update = try VPNDirectoryProvisioner.openSystemUpdateDirectory(create: false)
         defer { close(update) }
         let retired = try VPNDirectoryProvisioner.openSystemRetirementDirectory(create: true)
@@ -159,6 +155,25 @@ enum VPNJointUpdateCleanup {
         try perform(service: service, update: update, retirement: retired,
                     applications: applications, authority: authority,
                     productionApplications: true, existingServiceLease: lease)
+    }
+
+    /// A cleanup receipt is already the durable successor of preparation and
+    /// journal authority. Do not ask the conversion API (which forbids cleanup)
+    /// to perform a no-op on this later state. Still validate any preparation,
+    /// and let the store reject its coexistence with a cleanup receipt.
+    private static func prepareCompletion(store: VPNReleaseStore) throws -> Bool {
+        if try store.loadUpdatePreparation() != nil {
+            _ = try store.finishUpdatePreparationConversion()
+        }
+        guard let receipt = try store.loadUpdateCleanupReceipt() else { return false }
+        if try store.loadUpdateJournal() != nil {
+            // A crash can leave the exact completed journal beside its receipt.
+            // The store compares the full canonical records before unlinking;
+            // foreign, nonterminal or differently phased records remain intact.
+            try store.retireUpdateJournal(transactionID: receipt.transactionID,
+                                          expectedRevision: 3)
+        }
+        return true
     }
 
     /// Cancellation keeps the signed journal as authority until every staged
@@ -213,9 +228,13 @@ enum VPNJointUpdateCleanup {
         guard getuid() != 0, geteuid() == getuid() else {
             throw VPNPeerAuthenticationError.denied
         }
+        let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+        defer { lease.release() }
+        let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
+        guard try prepareCompletion(store: store) else { return }
         try perform(service: service, update: update, retirement: retirement,
                     applications: applications, authority: authority,
-                    productionApplications: false, existingServiceLease: nil)
+                    productionApplications: false, existingServiceLease: lease)
     }
 
     static func testCompleteCancelled(service: Int32, update: Int32,
@@ -248,11 +267,13 @@ enum VPNJointUpdateCleanup {
                                 applications: Int32,
                                 authority: VPNReleaseAuthority,
                                 lease: VPNLifecycleLease) throws {
-        try perform(service: service, update: update, retirement: retirement,
-                    applications: applications, authority: authority,
-                    productionApplications: false, existingServiceLease: lease)
         let store = try VPNReleaseStore(trustedDirectoryDescriptor: service,
                                         authority: authority)
+        if try prepareCompletion(store: store) {
+            try perform(service: service, update: update, retirement: retirement,
+                        applications: applications, authority: authority,
+                        productionApplications: false, existingServiceLease: lease)
+        }
         _ = try store.finishUpdatePreparationConversion()
         if try store.loadUpdatePreparation() != nil {
             try performPreparation(service: service, update: update,

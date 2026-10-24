@@ -29,7 +29,7 @@ import Foundation
                 "to-sequence=\(bv.sequence)\nto-sha256=\(hex(Data(SHA256.hash(data: bp))))\n").utf8)
             let edgeSignature = try key.signature(for: VPNReleaseAuthority.updateTransitionDomain + edge)
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: service, authority: authority)
-            if a[1] == "setup-preparation" {
+            if a[1] == "setup-preparation" || a[1] == "setup-preparation-conversion" {
                 _ = try store.bootstrapDeployment(payload: ap, signature: asig,
                                                   helper: helper,
                                                   trustedOwnerUserID: geteuid())
@@ -37,6 +37,14 @@ import Foundation
                     payload: bp, signature: bsig, helper: helper,
                     transitionPayload: edge, transitionSignature: edgeSignature,
                     expectedSequence: av.sequence)
+                if a[1] == "setup-preparation-conversion" {
+                    VPNReleaseStore.checkpoint = {
+                        if $0 == "preparation.json:after-journal" { _exit(86) }
+                    }
+                    _ = try store.commitUpdatePreparation(
+                        transactionID: preparation.transactionID, helper: helper)
+                    exit(78)
+                }
                 print(preparation.transactionID.uuidString.lowercased())
                 return
             }
@@ -83,6 +91,30 @@ import Foundation
                 try store.retireUpdateJournal(transactionID: journal.transactionID,
                                               expectedRevision: journal.revision)
                 print(journal.transactionID.uuidString.lowercased())
+                return
+            }
+            if a[1] == "publish-receipt-journal" || a[1] == "publish-foreign-journal" {
+                let receiptData = try Data(contentsOf: URL(fileURLWithPath: a[2]).appendingPathComponent("cleanup.json"))
+                let receipt = try JSONSerialization.jsonObject(with: receiptData) as! [String: Any]
+                var journal = receipt["journal"] as! [String: Any]
+                if a[1] == "publish-foreign-journal" { journal["transactionID"] = UUID().uuidString }
+                let data = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+                let fd = openat(service, "update.json", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                guard fd >= 0 else { exit(77) }
+                defer { close(fd) }
+                try data.withUnsafeBytes { raw in
+                    guard write(fd, raw.baseAddress, raw.count) == raw.count, fsync(fd) == 0 else { throw VPNJointUpdateCleanupError.unsafeStorage }
+                }
+                print("journal-published")
+                return
+            }
+            if a[1] == "cleanup-all" {
+                let lease = try VPNLifecycleOwnership.acquire(inTrustedDirectory: service)
+                defer { lease.release() }
+                try VPNJointUpdateCleanup.testCompleteAll(
+                    service: service, update: update, retirement: retired,
+                    applications: applications, authority: authority, lease: lease)
+                print("all-clean")
                 return
             }
             if a[1].hasPrefix("crash:") {

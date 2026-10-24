@@ -88,8 +88,8 @@ class VPNJointUpdateCleanupTests(unittest.TestCase):
         self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
         self.transaction = setup.stdout.strip()
 
-    def invoke(self, operation='cleanup'):
-        return subprocess.run([str(self.cleanup), operation, str(self.service),
+    def invoke(self, operation='cleanup', service=None):
+        return subprocess.run([str(self.cleanup), operation, str(service or self.service),
                                str(self.update), str(self.retired), str(self.applications),
                                *map(str, self.manifests), str(self.helper), 'unused'],
                               env=ENV, capture_output=True, text=True, timeout=180)
@@ -101,6 +101,68 @@ class VPNJointUpdateCleanupTests(unittest.TestCase):
         self.assertEqual(list(self.retired.iterdir()), [])
         self.assertEqual([p.name for p in self.applications.iterdir()], ['ProxyPilot.app'])
         self.assertEqual([p.name for p in self.update.iterdir()], ['lifecycle.lock'])
+
+    def test_uninstall_shared_prelude_cleans_completed_receipt(self):
+        result = self.invoke('cleanup-all')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / 'cleanup.json').exists())
+        self.assertFalse((self.applications / '.ProxyPilot.vpn-update').exists())
+
+    def test_exact_completed_journal_receipt_coexistence_finishes_before_cleanup(self):
+        published = self.invoke('publish-receipt-journal')
+        self.assertEqual(published.returncode, 0, published.stdout + published.stderr)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / 'cleanup.json').exists())
+        self.assertFalse((self.service / 'update.json').exists())
+
+    def test_foreign_journal_receipt_coexistence_preserves_all_inputs(self):
+        published = self.invoke('publish-foreign-journal')
+        self.assertEqual(published.returncode, 0, published.stdout + published.stderr)
+        before = {p.name: p.read_bytes() for p in self.service.iterdir() if p.suffix == '.json'}
+        result = self.invoke()
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.service.iterdir() if p.suffix == '.json'})
+        self.assertTrue((self.applications / '.ProxyPilot.vpn-update/ProxyPilot.app').is_dir())
+        self.assertEqual(list(self.retired.iterdir()), [])
+
+    def test_foreign_preparation_with_receipt_is_refused_before_retirement(self):
+        other = self.work / 'other-service'; other.mkdir(mode=0o700)
+        setup = self.invoke('setup-preparation', service=other)
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        shutil.copyfile(other / 'preparation.json', self.service / 'preparation.json')
+        (self.service / 'preparation.json').chmod(0o600)
+        before = {p.name: p.read_bytes() for p in self.service.iterdir() if p.suffix == '.json'}
+        result = self.invoke()
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.service.iterdir() if p.suffix == '.json'})
+        self.assertTrue((self.applications / '.ProxyPilot.vpn-update/ProxyPilot.app').is_dir())
+        self.assertEqual(list(self.retired.iterdir()), [])
+
+    def test_corrupt_preparation_with_receipt_is_not_ignored(self):
+        receipt = (self.service / 'cleanup.json').read_bytes()
+        preparation = self.service / 'preparation.json'
+        preparation.write_bytes(b'{"schema":1}')
+        preparation.chmod(0o600)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+        self.assertEqual((self.service / 'cleanup.json').read_bytes(), receipt)
+        self.assertEqual(preparation.read_bytes(), b'{"schema":1}')
+        self.assertTrue((self.applications / '.ProxyPilot.vpn-update/ProxyPilot.app').is_dir())
+        self.assertEqual(list(self.retired.iterdir()), [])
+
+    def test_shared_prelude_finishes_existing_preparation_conversion(self):
+        other = self.work / 'conversion-service'; other.mkdir(mode=0o700)
+        setup = self.invoke('setup-preparation-conversion', service=other)
+        self.assertEqual(setup.returncode, 86, setup.stdout + setup.stderr)
+        journal = (other / 'update.json').read_bytes()
+        self.assertTrue((other / 'preparation.json').exists())
+        result = self.invoke(service=other)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((other / 'preparation.json').exists())
+        self.assertEqual((other / 'update.json').read_bytes(), journal)
+        self.assertFalse((other / 'cleanup.json').exists())
+        self.assertEqual(list(self.retired.iterdir()), [])
 
     def assert_crash_recovers(self, point):
         result = self.invoke('crash:' + point)
