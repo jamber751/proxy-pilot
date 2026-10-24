@@ -3415,9 +3415,11 @@ DNS по-прежнему можно безопасно сохранить и о
 поздний отказ уже после появления `utun`.
 
 Ограничение временное и не меняет формат сохранённых настроек. Поддержка доменов
-будет разблокирована только документированным Apple split-DNS backend через
-Network Extension (`NEDNSSettings.matchDomains`) с требуемым entitlement,
-provisioning и installed acceptance. Пройдены 66 capability/coordinator/
+требует подтверждённого resolver backend и installed acceptance. Уточнение
+24 октября: Network Extension — один из вариантов; бесплатный session-scoped
+SystemConfiguration backend также допускается после проверки lifetime,
+ownership, маршрутизации и отказных сценариев (см. 1.5eh ниже).
+Пройдены 66 capability/coordinator/
 listener/state проверок. Публичный Connected и release/tag ещё не включены.
 
 ### Продолжение 1.5bp — route-proven Connected для IP/CIDR (30 сентября)
@@ -5187,3 +5189,22 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   opt-in UI, retry pending deletion и отказные installed UX cases ещё нужны.
 - [x] Предыдущий interface run40097002062 (`886c0a6`) прошёл80 tests без skips,
   40 на каждой архитектуре; он предшествует этому Store/schema изменению.
+
+### Продолжение 1.5eh — бесплатный split-DNS путь требует приёмки
+
+- [x] Уточнён прежний слишком строгий вывод о единственном NE-пути:
+  [Apple temporary dynamic-store values](https://developer.apple.com/documentation/systemconfiguration/scdynamicstoreaddtemporaryvalue(_:_:_:))
+  имеют session lifetime; [публичный supplemental-domain key](https://developer.apple.com/documentation/systemconfiguration/kscpropnetdnssupplementalmatchdomains-swift.var)
+  и [upstream OpenVPN2.7.7 script](https://github.com/OpenVPN/openvpn/blob/v2.7.7/distro/dns-scripts/macos-dns-updown.sh#L209-L221)
+  подтверждают техническую возможность бесплатного SC resolver backend.
+- [ ] Temporary key удаляется при закрытии session, кроме случая обновления
+  другой session. Equal dictionary не является доказательством ownership;
+  нельзя удалять чужую запись по одному совпадению значений. InterfaceName сам
+  по себе не доказывает utun pin, а DNS selection не устанавливает IP routes
+  для A/AAAA/CNAME/TTL. Текущий inert adapter не стал production backend.
+- [ ] Crash/configd restart могут вернуть обычный resolver и утечку corporate
+  queries: free SC API не доказывает fail-closed. Нужна системная приёмка через
+  getaddrinfo/DNSService + capture на собственных canaries, UDP/TCP/IPv6,
+  route loss, sleep/network switch, WARP, foreign overwrite и uninstall,
+  на macOS11 и текущих Intel/ARM. До неё domain/DNS capability gate сохранён.
+  Платные регистрации/entitlements не выполнялись; поддержка доменов не заявлена.
