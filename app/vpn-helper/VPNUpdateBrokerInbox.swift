@@ -61,7 +61,7 @@ final class VPNUpdateBrokerInbox {
         -> VPNUpdateBrokerInboxReceipt {
         try Self.checkPrivateDirectory(parent)
         try Self.checkSourceDirectory(sourceDirectory)
-        let source = try Self.snapshot(sourceDirectory, requireFixedLayout: true)
+        let source = try Self.snapshot(sourceDirectory, requireFixedLayout: true, untrustedSource: true)
         let suffix = source.identity.map { String(format: "%02x", $0) }.joined()
         let publishedName = "inbox-\(suffix)"
         let pendingName = ".\(publishedName).preparing"
@@ -118,7 +118,7 @@ final class VPNUpdateBrokerInbox {
             }
             try checkpoint("afterCopy:\(name)")
         }
-        let after = try Self.snapshot(sourceDirectory, requireFixedLayout: true)
+        let after = try Self.snapshot(sourceDirectory, requireFixedLayout: true, untrustedSource: true)
         guard after == source else { throw VPNUpdateBrokerInboxError.sourceChanged }
         let copied = try Self.snapshot(pending, requireFixedLayout: true)
         guard copied == source else { throw VPNUpdateBrokerInboxError.invalidLayout }
@@ -324,9 +324,10 @@ final class VPNUpdateBrokerInbox {
         }
     }
 
-    private static func snapshot(_ root: Int32, requireFixedLayout: Bool) throws -> Snapshot {
+    private static func snapshot(_ root: Int32, requireFixedLayout: Bool,
+                                 untrustedSource: Bool = false) throws -> Snapshot {
         var nodes: [String: Node] = [:], bytes: Int64 = 0
-        try walk(root, prefix: "", depth: 0, nodes: &nodes, bytes: &bytes)
+        try walk(root, prefix: "", depth: 0, untrustedSource: untrustedSource, nodes: &nodes, bytes: &bytes)
         try validateLinks(nodes)
         let topNames = Set(nodes.keys.compactMap { $0.split(separator: "/").first.map(String.init) })
         if requireFixedLayout {
@@ -347,7 +348,7 @@ final class VPNUpdateBrokerInbox {
         return Snapshot(nodes: nodes, identity: identity, top: top)
     }
 
-    private static func walk(_ directory: Int32, prefix: String, depth: Int,
+    private static func walk(_ directory: Int32, prefix: String, depth: Int, untrustedSource: Bool,
                              nodes: inout [String: Node], bytes: inout Int64) throws {
         guard depth <= maximumDepth else { throw VPNUpdateBrokerInboxError.limitExceeded }
         for name in try names(directory) {
@@ -366,18 +367,27 @@ final class VPNUpdateBrokerInbox {
             guard type == S_IFLNK || info.st_mode & 0o0022 == 0 else {
                 throw VPNUpdateBrokerInboxError.invalidLayout
             }
+            // The input belongs to an untrusted ordinary caller. Ownership is
+            // not source authority. Every private copy, publication and retry
+            // remains owned by this broker, including files and links.
+            guard untrustedSource || info.st_uid == geteuid() else {
+                throw VPNUpdateBrokerInboxError.unsafeStorage
+            }
             guard nodes.count < maximumEntries else {
                 throw VPNUpdateBrokerInboxError.limitExceeded
             }
             if type == S_IFDIR {
-                guard let child = try openDirectory(directory, name, privateMode: false) else {
+                let opened = untrustedSource
+                    ? try openSourceDirectory(directory, name, expected: info)
+                    : try openDirectory(directory, name, privateMode: false)
+                guard let child = opened else {
                     throw VPNUpdateBrokerInboxError.sourceChanged
                 }
+                defer { close(child) }
                 nodes[path] = Node(kind: .directory, mode: info.st_mode & 0o7777,
                                    size: 0, digest: Data(), target: nil)
                 try walk(child, prefix: path, depth: depth + 1,
-                         nodes: &nodes, bytes: &bytes)
-                close(child)
+                         untrustedSource: untrustedSource, nodes: &nodes, bytes: &bytes)
             } else if type == S_IFREG {
                 guard info.st_size >= 0, info.st_size <= maximumBytes - bytes else {
                     throw VPNUpdateBrokerInboxError.limitExceeded
@@ -664,6 +674,27 @@ final class VPNUpdateBrokerInbox {
         }
         let result = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard result >= 0 else { throw VPNUpdateBrokerInboxError.unsafeStorage }
+        var held = stat()
+        guard fstat(result, &held) == 0, held.st_dev == info.st_dev, held.st_ino == info.st_ino,
+              held.st_mode & S_IFMT == S_IFDIR, held.st_uid == geteuid(), held.st_nlink > 0,
+              held.st_mode & 0o7777 == info.st_mode & 0o7777 else {
+            close(result); throw VPNUpdateBrokerInboxError.unsafeStorage
+        }
+        return result
+    }
+
+    /// Only the two caller-source snapshots use this. No source UID is adopted
+    /// by the private copy: clone uses NOOWNERCOPY and its snapshot rechecks the
+    /// broker owner independently before any publication/signature authority.
+    private static func openSourceDirectory(_ parent: Int32, _ name: String, expected: stat) throws -> Int32? {
+        let result = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard result >= 0 else { throw VPNUpdateBrokerInboxError.sourceChanged }
+        var held = stat()
+        guard fstat(result, &held) == 0, held.st_dev == expected.st_dev, held.st_ino == expected.st_ino,
+              held.st_mode & S_IFMT == S_IFDIR, held.st_nlink > 0,
+              held.st_mode & 0o0022 == 0, held.st_mode & 0o7777 == expected.st_mode & 0o7777 else {
+            close(result); throw VPNUpdateBrokerInboxError.sourceChanged
+        }
         return result
     }
 
