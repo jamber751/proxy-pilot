@@ -12,25 +12,49 @@ enum VPNDNSAnswerError: Error, Equatable {
 
 enum VPNDNSQuestionType: UInt16 { case a = 1, aaaa = 28 }
 
-struct VPNDNSAnswerRequest: Equatable {
-    let identifier: UUID
+/// Sealed proof of an actual original client query, not reconstructed metadata.
+/// Only the bounded query decoder below can construct this value. Exact original
+/// question bytes retain DNS case-randomization challenges as well as QTYPE/QCLASS.
+struct VPNDNSClientQuestion: Equatable {
     let resource: VPNResource
-    let generation: UInt64
-    let revision: UInt64
     let transactionID: UInt16
     let type: VPNDNSQuestionType
+    let recursionDesired: Bool
+    fileprivate let questionBytes: Data
+
+    fileprivate init(resource: VPNResource, transactionID: UInt16, type: VPNDNSQuestionType,
+                     recursionDesired: Bool, questionBytes: Data) {
+        self.resource = resource; self.transactionID = transactionID; self.type = type
+        self.recursionDesired = recursionDesired; self.questionBytes = questionBytes
+    }
+}
+
+struct VPNDNSAnswerRequest: Equatable {
+    let identifier: UUID
+    let clientQuestion: VPNDNSClientQuestion
+    let generation: UInt64
+    let revision: UInt64
+    let upstreamTransactionID: UInt16
+    var resource: VPNResource { clientQuestion.resource }
+    var transactionID: UInt16 { clientQuestion.transactionID }
+    var type: VPNDNSQuestionType { clientQuestion.type }
     /// Absolute monotonic nanoseconds; caller's original budget, never reset.
     let deadline: UInt64
 
-    init(resource: VPNResource, generation: UInt64, revision: UInt64,
-         transactionID: UInt16, type: VPNDNSQuestionType, deadline: UInt64) throws {
-        try resource.validate()
-        guard resource.kind == .domain, generation > 0, revision > 0, deadline > 0 else {
-            throw VPNDNSAnswerError.provenance
-        }
-        identifier = UUID(); self.resource = resource; self.generation = generation
-        self.revision = revision; self.transactionID = transactionID
-        self.type = type; self.deadline = deadline
+    init(clientQuestion: VPNDNSClientQuestion, generation: UInt64, revision: UInt64,
+         upstreamTransactionID: UInt16, deadline: UInt64) throws {
+        guard generation > 0, revision > 0, deadline > 0 else { throw VPNDNSAnswerError.provenance }
+        identifier = UUID(); self.clientQuestion = clientQuestion; self.generation = generation
+        self.revision = revision; self.upstreamTransactionID = upstreamTransactionID; self.deadline = deadline
+    }
+
+    /// A standard one-question query only; no unvalidated client flag/section is
+    /// copied upstream. Endpoint binding and unique live ID allocation are the
+    /// future transport owner's responsibility, not proven by this pure encoder.
+    func upstreamQuery() -> Data {
+        var bytes = [UInt8(upstreamTransactionID >> 8), UInt8(upstreamTransactionID & 255)]
+        bytes += [clientQuestion.recursionDesired ? 1 : 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+        return Data(bytes) + clientQuestion.questionBytes
     }
 }
 
@@ -51,14 +75,12 @@ struct VPNDNSValidatedAnswer: Equatable {
     let canonicalChain: [String]
     let addresses: [VPNRoutePrefix]
     let minimumTTL: UInt32
-    fileprivate let recursionDesired: Bool
-
     fileprivate init(identifier: UUID, request: VPNDNSAnswerRequest, receivedAt: UInt64,
                      records: [Record], canonicalChain: [String], addresses: [VPNRoutePrefix],
-                     minimumTTL: UInt32, recursionDesired: Bool) {
+                     minimumTTL: UInt32) {
         self.identifier = identifier; self.request = request; self.receivedAt = receivedAt
         self.records = records; self.canonicalChain = canonicalChain; self.addresses = addresses
-        self.minimumTTL = minimumTTL; self.recursionDesired = recursionDesired
+        self.minimumTTL = minimumTTL
     }
 
     func checkTime(_ now: UInt64) throws {
@@ -81,9 +103,9 @@ struct VPNDNSValidatedAnswer: Equatable {
             for label in value.split(separator: ".") { bytes.append(UInt8(label.utf8.count)); bytes += label.utf8 }
             bytes.append(0)
         }
-        word(request.transactionID); word(0x8000 | (recursionDesired ? 0x0100 : 0))
+        word(request.transactionID); word(0x8000 | (request.clientQuestion.recursionDesired ? 0x0100 : 0))
         word(1); word(UInt16(records.count)); word(0); word(0)
-        name(request.resource.address); word(request.type.rawValue); word(1)
+        bytes += request.clientQuestion.questionBytes
         for record in records {
             name(record.owner); word(record.type); word(1)
             let ttl = UInt32(UInt64(minimumTTL) > age ? UInt64(minimumTTL) - age : 0)
@@ -104,12 +126,36 @@ enum VPNDNSAnswerCodec {
     static let maximumAliases = 16
     static let maximumTTL: UInt32 = 86400
 
+    /// Initial supported client grammar: standard uncompressed single IN A/AAAA
+    /// question, RD only, no answer/authority/additional data. EDNS, CD/DNSSEC and
+    /// other query operations are explicitly unsupported, not converted to errors
+    /// on the wire. A resolver suffix/descendant is never an exact host grant.
+    static func clientQuestion(_ wire: Data, resource: VPNResource) throws -> VPNDNSClientQuestion {
+        try resource.validate()
+        guard resource.kind == .domain else { throw VPNDNSAnswerError.provenance }
+        guard wire.count >= 12, wire.count <= 271 else { throw VPNDNSAnswerError.capacity }
+        var reader = Reader(bytes: Array(wire))
+        let identifier = try reader.word(), flags = try reader.word()
+        guard flags & 0xfeff == 0 else { throw VPNDNSAnswerError.unsupported }
+        guard try reader.word() == 1 else { throw VPNDNSAnswerError.questionMismatch }
+        guard try reader.word() == 0, try reader.word() == 0, try reader.word() == 0 else {
+            throw VPNDNSAnswerError.unsupported
+        }
+        guard try reader.name() == resource.address else { throw VPNDNSAnswerError.questionMismatch }
+        guard let type = VPNDNSQuestionType(rawValue: try reader.word()), try reader.word() == 1 else {
+            throw VPNDNSAnswerError.unsupported
+        }
+        guard !reader.usedCompression, reader.offset == reader.bytes.count else { throw VPNDNSAnswerError.malformed }
+        return VPNDNSClientQuestion(resource: resource, transactionID: identifier, type: type,
+                                    recursionDesired: flags & 0x0100 != 0, questionBytes: Data(wire.dropFirst(12)))
+    }
+
     static func decode(_ wire: Data, request: VPNDNSAnswerRequest,
                        receivedAt: UInt64) throws -> VPNDNSValidatedAnswer {
         guard wire.count >= 12, wire.count <= 65535 else { throw VPNDNSAnswerError.capacity }
         guard receivedAt < request.deadline else { throw VPNDNSAnswerError.stale }
         var reader = Reader(bytes: Array(wire))
-        guard try reader.word() == request.transactionID else { throw VPNDNSAnswerError.questionMismatch }
+        guard try reader.word() == request.upstreamTransactionID else { throw VPNDNSAnswerError.questionMismatch }
         let flags = try reader.word()
         guard flags & 0x8000 != 0, flags & 0x7800 == 0, flags & 0x0200 == 0,
               flags & 0x0040 == 0 else { throw VPNDNSAnswerError.unsupported }
@@ -173,12 +219,13 @@ enum VPNDNSAnswerCodec {
         }
         return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
                                      records: canonical, canonicalChain: chain, addresses: addresses,
-                                     minimumTTL: canonical.map(\.ttl).min()!, recursionDesired: flags & 0x0100 != 0)
+                                     minimumTTL: canonical.map(\.ttl).min()!)
     }
 
     private struct Reader {
         let bytes: [UInt8]
         var offset = 0
+        var usedCompression = false
         // Compression targets must be earlier recognized label boundaries, not
         // arbitrary header/address bytes that happen to resemble a name.
         var boundaries = Set<Int>()
@@ -193,6 +240,7 @@ enum VPNDNSAnswerCodec {
                 guard cursor < bytes.count, visited.insert(cursor).inserted else { throw VPNDNSAnswerError.malformed }
                 let byte = bytes[cursor]
                 if byte & 0xC0 == 0xC0 {
+                    usedCompression = true
                     guard cursor + 1 < bytes.count else { throw VPNDNSAnswerError.malformed }
                     let target = Int(byte & 63) << 8 | Int(bytes[cursor + 1])
                     guard target < cursor, boundaries.contains(target), jumps < 16 else { throw VPNDNSAnswerError.malformed }

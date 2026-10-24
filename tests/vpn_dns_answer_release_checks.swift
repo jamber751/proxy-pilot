@@ -21,14 +21,26 @@ private struct RR {
             + word(UInt16(data.count)) + data
     }
 }
-private func request(type: VPNDNSQuestionType = .a, resource: VPNResource? = nil,
-                     deadline: UInt64 = 100_000_000_000) throws -> VPNDNSAnswerRequest {
-    try VPNDNSAnswerRequest(resource: resource ?? VPNResource(address: "app.corp.test"),
-                            generation: 7, revision: 9, transactionID: 0x1234, type: type, deadline: deadline)
+private func query(_ domain: String = "app.corp.test", id: UInt16 = 0x1234,
+                   type: UInt16 = 1, flags: UInt16 = 0x0100) -> Data {
+    var bytes = word(id) + word(flags)
+    bytes += word(1) + word(0) + word(0) + word(0)
+    bytes += name(domain) + word(type) + word(1)
+    return Data(bytes)
 }
+private func request(type: VPNDNSQuestionType = .a, resource: VPNResource? = nil,
+                     deadline: UInt64 = 100_000_000_000, clientRD: Bool = true,
+                     originalName: String? = nil, upstreamID: UInt16 = 0x1234) throws -> VPNDNSAnswerRequest {
+    let resource = try resource ?? VPNResource(address: "app.corp.test")
+    let original = query(originalName ?? resource.address, type:type.rawValue,flags:clientRD ? 0x0100 : 0)
+    let client = try VPNDNSAnswerCodec.clientQuestion(original,resource:resource)
+    return try VPNDNSAnswerRequest(clientQuestion:client,generation:7,revision:9,
+                                   upstreamTransactionID:upstreamID,deadline:deadline)
+}
+
 private func wire(_ request: VPNDNSAnswerRequest, _ records: [RR] = [RR()], flags: UInt16 = 0x8180,
                   authority: UInt16 = 0, additional: UInt16 = 0) -> Data {
-    var bytes = word(request.transactionID) + word(flags)
+    var bytes = word(request.upstreamTransactionID) + word(flags)
     bytes += word(1) + word(UInt16(records.count))
     bytes += word(authority) + word(additional)
     bytes += name(request.resource.address) + word(request.type.rawValue) + word(1)
@@ -103,6 +115,77 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             try VPNDNSAnswerCodec.decode(wire(req, records, flags: flags), request: req, receivedAt: 1_000_000_000)
         }
         switch which {
+        case "client-remap":
+            let remapped = try request(upstreamID:0x9876)
+            let upstream = Array(remapped.upstreamQuery())
+            try require(Array(upstream.prefix(2)) == [0x98,0x76])
+            let parsed = try VPNDNSAnswerCodec.decode(wire(remapped),request:remapped,receivedAt:1)
+            let response = Array(try parsed.encoded(at:1))
+            try require(Array(response.prefix(2)) == [0x12,0x34])
+            var wrong = Array(wire(remapped)); wrong[0] = 0x12; wrong[1] = 0x34
+            try rejects { _ = try VPNDNSAnswerCodec.decode(Data(wrong),request:remapped,receivedAt:1) }
+        case "client-rd":
+            for desired in [false,true] {
+                let request = try request(clientRD:desired)
+                let upstream = request.upstreamQuery()
+                try require(upstream[2] & 1 == (desired ? 1 : 0))
+                // Intentionally DIFFERENT upstream RD cannot change client RD.
+                let parsed = try VPNDNSAnswerCodec.decode(wire(request,flags:desired ? 0x8080 : 0x8180),request:request,receivedAt:1)
+                let response = try parsed.encoded(at:1)
+                try require(response[2] & 1 == (desired ? 1 : 0))
+            }
+        case "client-case":
+            let request = try request(originalName:"ApP.CoRp.TeSt")
+            let parsed = try VPNDNSAnswerCodec.decode(wire(request),request:request,receivedAt:1)
+            let response = try parsed.encoded(at:1)
+            let question = name("ApP.CoRp.TeSt") + word(1) + word(1)
+            try require(Array(response.dropFirst(12).prefix(question.count)) == question)
+            try require(Array(request.upstreamQuery().dropFirst(12)) == question)
+        case "client-exact":
+            for candidate in ["child.app.corp.test","other.corp.test","corp.test"] {
+                try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(candidate),resource:req.resource) }
+            }
+            let nonDomain = try VPNResource(address:"192.0.2.9")
+            try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(),resource:nonDomain) }
+        case "client-flags":
+            for flag: UInt16 in [0x8000,0x0800,0x0400,0x0200,0x0080,0x0040,0x0020,0x0010,0x0001] {
+                try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(flags:flag),resource:req.resource) }
+            }
+        case "client-sections":
+            for offset in [4,6,8,10] {
+                var bytes = Array(query()); bytes[offset + 1] = offset == 4 ? 2 : 1
+                try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(Data(bytes),resource:req.resource) }
+            }
+            try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(wire(req),resource:req.resource) }
+        case "client-types":
+            for type: UInt16 in [0,5,15,255] {
+                try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(type:type),resource:req.resource) }
+            }
+            var bytes = Array(query()); bytes[bytes.count - 1] = 3
+            try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(Data(bytes),resource:req.resource) }
+        case "client-bounds":
+            let valid = query()
+            for size in valid.indices {
+                try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(Data(valid.prefix(size)),resource:req.resource) }
+            }
+            try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(valid + Data([0]),resource:req.resource) }
+            try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(Data(repeating:0,count:272),resource:req.resource) }
+            // Forged compression into header is not a client question proof.
+            var bytes = Array(valid); bytes[12] = 0xc0; bytes[13] = 4
+            try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(Data(bytes),resource:req.resource) }
+        case "client-release":
+            let request = try request(clientRD:false,originalName:"App.Corp.Test",upstreamID:0xabcd)
+            let parsed = try VPNDNSAnswerCodec.decode(wire(request),request:request,receivedAt:1_000_000_000)
+            let fake = Fake(), transaction = fake.transaction(parsed)
+            var calls = 0
+            try transaction.release { bytes in
+                try require(fake.leased && transaction.stage == .outputIssued)
+                calls += 1
+                try require(Array(bytes.prefix(4)) == [0x12,0x34,0x80,0])
+                let question = name("App.Corp.Test") + word(1) + word(1)
+                try require(Array(bytes.dropFirst(12).prefix(question.count)) == question)
+            }
+            try require(calls == 1)
         case "a":
             let result = try answer(req)
             try require(result.addresses.map(\.canonical) == ["192.0.2.9"])
@@ -250,9 +333,9 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             case "deadline-during-check": fake.expireDuringCheck = true
             case "changed-resource": fake.expected = try request(resource: VPNResource(address:"app.corp.test"))
             case "generation", "revision":
-                fake.expected = try VPNDNSAnswerRequest(resource:req.resource,
+                fake.expected = try VPNDNSAnswerRequest(clientQuestion:req.clientQuestion,
                     generation:which == "generation" ? 8 : 7, revision:which == "revision" ? 10 : 9,
-                    transactionID:req.transactionID,type:req.type,deadline:req.deadline)
+                    upstreamTransactionID:req.upstreamTransactionID,deadline:req.deadline)
             default: throw Failure.check
             }
             if which != "release" {

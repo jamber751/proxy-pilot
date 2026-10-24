@@ -22,7 +22,9 @@ CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bound
          'crash-after-checkpoint', 'deny-unknown', 'route-unknown', 'revoke-before-output',
          'wrong-route-permit', 'ttl-high-bit', 'rrset-ttl', 'compressed-cname',
          'generation', 'revision', 'mutated-corpus', 'lease-concurrent',
-         'lease-suppressed-output-error', 'lease-suppressed-check-error')
+         'lease-suppressed-output-error', 'lease-suppressed-check-error',
+         'client-remap', 'client-rd', 'client-case', 'client-exact', 'client-flags',
+         'client-sections', 'client-types', 'client-bounds', 'client-release')
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
 class VPNDNSAnswerTests(unittest.TestCase):
