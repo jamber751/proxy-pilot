@@ -1,0 +1,29 @@
+name: VPN isolated ownership acceptance
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ownership:
+    name: Root ownership (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Ordinary destination regressions
+        run: python3 -m unittest discover -s tests -p test_vpn_application_destination_exchange.py -v
+      - name: Root ownership in disposable fixture directories
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 /usr/bin/python3 -m unittest discover -s tests -p test_vpn_destination_root_vm.py -v
