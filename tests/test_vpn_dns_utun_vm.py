@@ -61,6 +61,17 @@ PASS_MARKERS = {
      for family in ('4', '6') for transport in ('udp', 'tcp') for scope in ('n', 'b', 'a')}
 
 
+SOCKET_ROLES = {'childControl', 'baseline', 'protected', 'operation'}
+SOCKET_STAGES = {'configureBegin', 'configureOK', 'configureError', 'sendBegin', 'sendOK', 'sendError',
+                 'getFL', 'getFD', 'getNoSigpipe', 'signalState', 'childLaunch'}
+
+
+def socket_diagnostic(line):
+    match = re.fullmatch(r'API socket role=([A-Za-z]+) stage=([A-Za-z]+) value=(-?[0-9]{1,10})', line)
+    return bool(match and match[1] in SOCKET_ROLES and match[2] in SOCKET_STAGES
+                and -(2**31) <= int(match[3]) < 2**31)
+
+
 def live(binary):
     if not allowed(os.getuid(), os.geteuid(), os.environ):
         raise RuntimeError('guardDenied')
@@ -87,9 +98,15 @@ def live(binary):
     lines = output.splitlines()
     # Never print raw child stderr, packets, nonce names, interface names, paths
     # or any host state. Numeric diagnostics are only exact owned fixture keys.
+    diagnostics = 0
+    proofs = []
     for line in lines:
-        if line.startswith('PASS ') and line[5:] in PASS_MARKERS:
+        if socket_diagnostic(line):
+            diagnostics += 1
+            if diagnostics > 256: raise RuntimeError('outputProtocol')
             print(line)
+        elif line.startswith('PASS ') and line[5:] in PASS_MARKERS:
+            print(line); proofs.append(line)
         elif re.fullmatch(r'API ownRoute expectedFlags=\d+ observedFlags=\d+ expectedIndex=\d+ observedIndex=\d+', line):
             print(line)
         elif re.fullmatch(r'API utun errno=\d+', line):
@@ -102,8 +119,38 @@ def live(binary):
         raise RuntimeError('ownerTimeout')
     if process.returncode:
         raise RuntimeError('ownerFailure')
-    if set(lines) != {'PASS ' + marker for marker in PASS_MARKERS} or len(lines) != len(PASS_MARKERS):
+    if set(proofs) != {'PASS ' + marker for marker in PASS_MARKERS} or len(proofs) != len(PASS_MARKERS):
         raise RuntimeError('missingProof')
+
+
+class DiagnosticProtocolTests(unittest.TestCase):
+    def test_closed_socket_fields_and_int32_bounds_only(self):
+        for value in ('0', '-1', '22', '-2147483648', '2147483647'):
+            self.assertTrue(socket_diagnostic('API socket role=protected stage=sendError value=' + value))
+        for line in ('API socket role=private stage=sendError value=22',
+                     'API socket role=protected stage=/private/path value=22',
+                     'API socket role=protected stage=sendError value=22 password',
+                     'API socket role=protected stage=sendError value=2147483648',
+                     'API socket role=protected stage=sendError value=-2147483649',
+                     'API socket role=protected stage=sendError value=22\nPRIVATE'):
+            self.assertFalse(socket_diagnostic(line))
+
+    def test_observations_cannot_replace_any_required_proof(self):
+        from unittest.mock import MagicMock
+        process = MagicMock()
+        process.poll.return_value = process.returncode = 0
+        observation = 'API socket role=protected stage=sendError value=32'
+        def run(output):
+            process.communicate.return_value = (output, '')
+            with patch(__name__ + '.allowed', return_value=True), patch('subprocess.Popen', return_value=process), patch('builtins.print'):
+                live('unused-mocked-binary')
+        run(observation + '\n' + '\n'.join('PASS ' + marker for marker in sorted(PASS_MARKERS)))
+        with self.assertRaisesRegex(RuntimeError, '^missingProof$'):
+            run(observation)
+        with self.assertRaisesRegex(RuntimeError, '^outputProtocol$'):
+            run(observation + ' PRIVATE')
+        with self.assertRaisesRegex(RuntimeError, '^outputProtocol$'):
+            run('\n'.join([observation] * 257))
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc') and shutil.which('clang'), 'macOS SDK required')

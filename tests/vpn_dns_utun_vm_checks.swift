@@ -34,6 +34,43 @@ private func remaining(_ end: UInt64, maximum: Int32 = 100) throws -> Int32 {
     try check(now < end, .timeout)
     return Int32(min(UInt64(maximum), (end - now + 999_999) / 1_000_000))
 }
+// Closed, bounded VM-only diagnostics. Never include descriptors, paths or bytes.
+private enum SocketDiagnostic {
+    enum Role: String { case childControl, baseline, protected, operation }
+    enum Stage: String {
+        case configureBegin, configureOK, configureError, sendBegin, sendOK, sendError
+        case getFL, getFD, getNoSigpipe, signalState, childLaunch
+    }
+    static var emitted = 0
+    static func emit(_ role: Role, _ stage: Stage, _ value: Int32 = 0) {
+        guard emitted < 64 else { return }; emitted += 1
+        print("API socket role=\(role.rawValue) stage=\(stage.rawValue) value=\(value)"); fflush(stdout)
+    }
+    static func number(_ error: Error) -> Int32 {
+        if case VPNBoundDNSUpstreamError.posix(let value) = error { return value }
+        return -1
+    }
+    static func configure(_ calls: VPNDarwinDNSUpstreamSyscalls, _ fd: Int32, _ role: Role) throws {
+        emit(role, .configureBegin)
+        do { try calls.configure(fd); emit(role, .configureOK) }
+        catch {
+            emit(role, .configureError, number(error))
+            // Read-only postconditions; no replay or repair of a failed syscall.
+            let fl = fcntl(fd, F_GETFL), flags = fcntl(fd, F_GETFD)
+            emit(role, .getFL, fl); emit(role, .getFD, flags)
+            var option: Int32 = -1, size = socklen_t(MemoryLayout<Int32>.size)
+            let status = getsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &option, &size)
+            let captured = errno
+            emit(role, .getNoSigpipe, status == 0 && size == 4 ? option : -max(1,captured))
+            throw error
+        }
+    }
+    static func accepts(_ line: String) -> Bool {
+        line.range(of: #"^API socket role=(childControl|baseline|protected|operation) stage=(configureBegin|configureOK|configureError|sendBegin|sendOK|sendError|getFL|getFD|getNoSigpipe|signalState|childLaunch) value=-?[0-9]{1,10}$"#, options: .regularExpression) != nil
+        && line.split(separator: " ").last.flatMap { Int32($0.dropFirst(6)) } != nil
+    }
+}
+
 private func canonicalData<T: Encodable>(_ value: T) throws -> Data {
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
     return try encoder.encode(value)
@@ -307,7 +344,7 @@ private final class RecordingCalls: VPNDNSUpstreamSyscalls {
     func socket(family: Int32, transport: VPNDNSUpstreamTransport) throws -> Int32 {
         tcp = transport == .tcp; return try real.socket(family: family, transport: transport)
     }
-    func configure(_ fd: Int32) throws { try real.configure(fd) }
+    func configure(_ fd: Int32) throws { try SocketDiagnostic.configure(real, fd, .operation) }
     func bindInterface(_ fd: Int32, family: Int32, index: UInt32) throws { try real.bindInterface(fd, family: family, index: index) }
     func boundInterface(_ fd: Int32, family: Int32) throws -> (UInt32,Int) { try real.boundInterface(fd, family: family) }
     static func port(_ fd: Int32, _ family: Int32) throws -> Int {
@@ -523,9 +560,15 @@ private func childSIGPIPE(_ protected: Bool) throws {
     defer { if pair[0] >= 0 { close(pair[0]) }; if pair[1] >= 0 { close(pair[1]) } }
     close(pair[1]); pair[1] = -1
     let calls = VPNDarwinDNSUpstreamSyscalls()
-    if protected { try calls.configure(pair[0]) }
-    do { _ = try calls.send(pair[0], bytes: Data([1]), offset: 0); throw Failure.sigpipe }
-    catch VPNBoundDNSUpstreamError.posix(let code) where protected && code == EPIPE {
+    let role: SocketDiagnostic.Role = protected ? .protected : .baseline
+    SocketDiagnostic.emit(role, .signalState, 0) // Default/unblocked established above.
+    if protected { try SocketDiagnostic.configure(calls, pair[0], role) }
+    SocketDiagnostic.emit(role, .sendBegin)
+    do {
+        do { _ = try calls.send(pair[0], bytes: Data([1]), offset: 0) }
+        catch { SocketDiagnostic.emit(role, .sendError, SocketDiagnostic.number(error)); throw error }
+        SocketDiagnostic.emit(role, .sendOK); throw Failure.sigpipe
+    } catch VPNBoundDNSUpstreamError.posix(let code) where protected && code == EPIPE {
         print("PASS protected-EPIPE"); fflush(stdout)
     }
 }
@@ -534,6 +577,7 @@ private final class Child {
     let process = Process(), output = Pipe()
     private var control: Int32 = -1
     private var buffer = Data()
+    private var diagnosticCount = 0
     var markers = Set<String>(), ports: [Int32:Int] = [:]
     init(_ arguments: [String]) throws {
         var pair: [Int32] = [-1,-1]
@@ -542,12 +586,13 @@ private final class Child {
         var inputFD = pair[1]
         defer { if inputFD >= 0 { close(inputFD) } }
         do {
-            try VPNDarwinDNSUpstreamSyscalls().configure(control)
+            try SocketDiagnostic.configure(VPNDarwinDNSUpstreamSyscalls(), control, .childControl)
             try check(fcntl(inputFD, F_SETFD, FD_CLOEXEC) == 0, .child)
             let input = FileHandle(fileDescriptor: inputFD, closeOnDealloc: false)
             process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
             process.arguments = arguments; process.standardInput = input
             process.standardOutput = output; process.standardError = FileHandle.nullDevice
+            SocketDiagnostic.emit(.childControl, .childLaunch)
             try process.run(); try input.close(); inputFD = -1
             let fd = output.fileHandleForReading.fileDescriptor, flags = fcntl(fd, F_GETFL)
             try check(flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0, .child)
@@ -585,6 +630,10 @@ private final class Child {
                     try check(ports[family] == nil, .child); ports[family] = port
                 } else if ["PASS exchange","PASS rejected4","PASS rejected6","PASS protected-EPIPE","READY mutation","READY bound","READY polling","READY control"].contains(line) {
                     try check(!markers.contains(line), .child); markers.insert(line)
+                } else if SocketDiagnostic.accepts(line) {
+                    // Diagnostics are observations, never readiness/proof markers.
+                    try check(diagnosticCount < 64, .child); diagnosticCount += 1
+                    print(line); fflush(stdout)
                 } else {
                     // Only a closed numeric diagnostic protocol is forwarded.
                     let allowedFailures = Failure.allCases.map(\.rawValue) + ["upstream","routeAPI","unexpected"]
@@ -874,6 +923,11 @@ private func pure() throws {
     try check(allowed(0,0,environment), .arguments)
     for ids: (uid_t,uid_t) in [(501,501),(0,501),(501,0)] { try check(!allowed(ids.0,ids.1,environment), .arguments) }
     for missing in [[:],["GITHUB_ACTIONS":"true"],[flag:"1"]] { try check(!allowed(0,0,missing), .arguments) }
+    try check(SocketDiagnostic.accepts("API socket role=protected stage=sendError value=32"), .arguments)
+    for invalid in ["API socket role=secret stage=sendError value=32", "API socket role=protected stage=path value=32",
+                    "API socket role=protected stage=sendError value=2147483648", "API socket role=protected stage=sendError value=32 secret"] {
+        try check(!SocketDiagnostic.accepts(invalid), .arguments)
+    }
     let id = "12345678-1234-1234-1234-123456789abc"
     try check(validID(id) && !validID(id.uppercased()) && !validID("../route"), .arguments)
     // Independent known RFC1071 checksum vector, not just roundtripping encoder.
