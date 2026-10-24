@@ -5364,6 +5364,13 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   проверил signature/binary hash и полное совпадение shipped build.py/sources.json
   с текущим repository после сборки. Никаких Keychain/profile/TUN/network/root
   действий при сборке не было; воспроизводимость двух сборок не заявлена.
-- [ ] Genuine helper с текущим production trust собирается в отдельном immutable
- 109-input snapshot; нет synthetic trust/publisher signing. Это ещё не полный
-  подписанный app/helper/engine/rescue комплект и не разрешение на host install.
+- [x] Genuine helper с текущим production trust собран: отдельный immutable
+  109-input snapshot, только VPN_RECOVERY_DAEMON_ENTRY, без TESTING/synthetic
+  trust. `/private/tmp/pp-helper-140-20261024-production-v1/output/vpn-helper`;
+  Universal minOS11, strict runtime/hard/kill, no entitlements, system-only deps
+  и Swift RPATH. Все109 inputs сверены с repo после сборки. Ordinary noarg
+  guard77 проверен после audit до system reads. Parent проверил signature/hash:
+  450c2246a024ea9d0dea49b3f4d53bcd8d72c5101e92b3d590917f7cd03888b2.
+- [ ] Это ещё не полный подписанный app/helper/engine/rescue комплект и не
+  разрешение на host install. GOST/final bundle inputs, publisher statements и
+  real Installer/ordinary update acceptance остаются необходимыми.
