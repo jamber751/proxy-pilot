@@ -4444,5 +4444,14 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   https://github.com/jamber751/proxy-pilot/actions/runs/40079896431
   Commit `005dc01`; теги и release workflow не запускались. Репозиторий публичный,
   использованы стандартные бесплатные hosted runners, без платных larger runners.
-- [ ] Дождаться результата root/user suites на обеих архитектурах. Эта проверка
-  не заменяет полного first-install/update/recovery и настоящего VPN с OTP.
+- [x] Run 40079896431 завершился success на обеих архитектурах. Проверены logs:
+  macOS 14 arm64 — 8 ordinary + 11 root passed; macOS 15 Intel — 8 ordinary +
+  11 root passed; **38 passed, без skips**. Это настоящие root/user filesystem
+  fixtures в отдельных VM, а не только проверка компиляции.
+- [x] Run 40080015488 (`935224f`) завершился success на обеих архитектурах:
+  **40 passed, без skips** (8 ordinary + 12 root на каждой VM). Двенадцатый
+  root-тест проверяет sealed source capability: отсутствие/неверный тип отвергаются,
+  строка 1 принимается. Эти проверки не заменяют full install/update/recovery и OTP.
+- [ ] Следующий обязательный этап — восстановление старой signed пары 137→139.
+  Обычный uninstall не является обходным путём: completeAllSystem отвергает
+  replacementPending. Нужна отдельная проверка forward recovery со старым A.
