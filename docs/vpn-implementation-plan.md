@@ -4918,3 +4918,30 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   он не заменяет живую пользовательскую приёмку. Восстановление позиции здесь
   row-level, не pixel-exact для частично видимой строки. macOS11 runtime не
   проверялся. Реальные профили, службы, сеть и настройки host не затрагивались.
+
+### Продолжение 1.5dt — обновлённый frontend и диагностика engine build
+
+- [x] После последнего guard от устаревшего scroll retry runtime case повторно
+  прошёл:1/3/18/100,3→2 и wrapped address. Production frontend из `12c9ca6`
+  собран Universal: `/tmp/pp-frontend-140-20261024-ui-lists-v1`.
+  Deep/strict signature, sealed sequence140/capability и два ordinary-user
+  result-entry guard проверены; `verification.json` фиксирует SHA256 исходника
+  Panel и executable. Это compile/static artifact, не установленный release.
+- [x] Изолированные реальные SwiftUI previews3/18 отрисованы и визуально
+  проверены: `/tmp/pp-vpn-list-preview-20261024/resources-{3,18}.png`.
+  Все данные synthetic, это не снимок установленного/подключённого VPN.
+- [x] Run40090631261: быстрые5 material tests прошли на обеих архитектурах.
+  ARM остановился при x86_64 make реального engine, до helper graphs/Installer;
+  исходная причина в потерянном build.log пока не установлена. Intel на момент
+  записи продолжал build. Ошибка не объявляется исправленной без compiler evidence.
+- [x] Добавлены bounded8KiB compiler tails каждой архитектуры и failure-only
+  artifact upload собственных build.log (3days). Recipe/policy не менялись.
+- [ ] Диагностический полный run40091074257 (`d9c72e6`) in_progress на ARM/Intel.
+  Actual compiler reason, затем пять настоящих Installer сценариев остаются gate.
+- [x] Изолированный UI workflow выделен отдельно для31 relevant tests на ARM/Intel.
+  Pure UI commits больше не требуют повторять неизменённые root suites.
+- [ ] После успешного rescue→C дополнительно проверить обычный authenticated
+  owner-driven C→D update без Installer/admin. Наличие работающего broker C и
+  idempotent repair само по себе не доказывает весь этот пользовательский путь.
+- [ ] Один реальный подписанный итоговый host package, installed acceptance и
+  остальные исходные этапы VPN-плана ещё не завершены.
