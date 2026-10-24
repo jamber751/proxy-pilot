@@ -5437,8 +5437,26 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [x] Четыре existing no-launchd recovery/cleanup/refusal cases также прошли.
   Frozen B139 не изменён; peer/signature checks не ослаблены. Текущий C-daemon
   теперь вовсе не открывает Store до Service ownership.
-- [ ] Genuine helper-v2/native-v2 пересобираются из immutable snapshots;
-  обновлённые full grouped и System7 gates нужны вновь. Добавлены только fixed
+- [x] Genuine helper-v2/native-v2 пересобраны из immutable snapshots; strict
+  signatures, source hashes и guards прошли. Helper SHA7fab99f6568278bc057c3e17c8de993677a2905b3e5a737a163059479b3dd31b;
+  native SHA6c2674c72a932723b2752d8d137441550cd94b1facc68aa8ae5e5ecc1b8a6855.
+- [ ] Обновлённые full grouped и System7 gates нужны вновь. Добавлены только fixed
   protected error subtypes/progress checkpoints и fixed protected slot identity
   diagnostics, чтобы следующий отказ не терял своё место. Нет blind retry или
   повышения deadline. Новый regression включён в ordinary CI до дорогой сборки.
+
+### Продолжение 1.5et — unsigned C-v2 после исправления recovery
+
+- [x] `/private/tmp/pp-release-140-offline-review-v2`: frozen complete app
+  побайтно сохранён, GOST/license/app pins не изменились; новые helper7fab и
+  native6c сверены с current sources, engine d0e/corresponding sources проверены.
+  Cmanifest seq140/version1.5.1/format2 SHA283b4df73660277beb137a7e9b8bc6c1cbf657cce380b96602cff9ae78004b57.
+  Parent независимо проверил manifest/helper/engine hashes и EMPTY signature.
+- [x] Новые139→140/three-rescue statement drafts с одинаковым actual native6c
+  лежат только в UnsignedReviewDrafts, вне Payload. Прежний v1 не изменён.
+  Никаких publisher/private-key/Keychain/install/GUI/network/root операций.
+- [ ] Run40103531275 grouped gate и run40103531276 System7 (`ba2802f`) идут
+  с новым C-helper lock order. Fast gate ARM прошёл до production builds;
+  результаты full system/ordinary owner update ещё отсутствуют. Подписи C,
+  second edge и3statements, assembled capsule/verify и один host installer
+  остаются последующими шагами после достаточной изолированной приёмки.
