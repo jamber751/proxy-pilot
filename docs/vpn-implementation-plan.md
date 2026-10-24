@@ -33,7 +33,7 @@
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение 137 с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay | Connected overlay 137, legacy CLI, domain/split-DNS backend |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137;124 isolated core/model/ledger/UI checks на ARM/Intel, OTP/drop и список1/3/18/100 | Реальный Keychain adapter и opt-in UI, диагностика, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;140 isolated core/model/ledger/UI checks суммарно на ARM/Intel, OTP/drop, credential focus и список1/3/18/100 | Реальный Keychain adapter и opt-in UI, диагностика, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -5536,3 +5536,34 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Изолированный password worker разрабатывается отдельно. Настоящий backend
   требует привязки к конкретному хранилищу: NotFound в новом default Keychain не
   подтверждает удаление из прежнего. Никаких host Keychain/системных действий.
+
+### Продолжение 1.5ex — UI140 и реальные SC session результаты
+
+- [x] Run40105397920 (`e0e71e0`) success:140 checks без skips,70 на каждой
+  архитектуре. Включены schema3 ledger и исправленный credential UX. Лог
+  `/tmp/pp-ui-40105397920.log` содержит два успешных summary, не только compile.
+- [x] Run40105163106 (`08e2928`) success ARM/Intel: на каждой3 guard checks и
+  четыре фиксированных native категории. Настоящие SC API подтверждают
+  same-session add/copy/close, очистку после SIGKILL, сохранение equal foreign
+  update и cleanup exact fixture. Логи сохранены как
+  `/tmp/pp-dns-session-{arm,intel}-40105163106.log`. Network/DNS keys и resolver
+  в этом эксперименте не менялись: namespace только ProxyPilotAcceptance.
+- [ ] Добавлен следующий отдельный VM gate: настоящий system getaddrinfo,
+  A/AAAA, UDP и TCP fallback после truncated response собственного loopback
+  DNS responder. Только random .test suffix и exact synthetic service DNS key,
+  без default/global DNS, routes, interface aliases или restart mDNSResponder.
+  Локально прошли4 compile/pure/guard checks; live path локально не выполнялся.
+  Это будущая проверка выбора resolver, не utun/no-leak/fail-closed acceptance.
+- [x] Read-only исследование Keychain выявило обязательную привязку к actual
+  backend после Add. Persistent reference — opaque locator, не доказательство
+  отсутствия старого item после reset/rename/default change. SDK macOS
+  рекомендует kSecMatchItemList для lookup/delete; SecKeychainGetPath и
+  SecKeychainItemCopyKeychain позволяют проверить фактического владельца.
+  NotFound без доказанной continuity не подтверждает удаление. См.
+  [Apple item reference implementation](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/Item.cpp#L1703-L1763).
+- [ ] В inspected legacy implementation supplied-keychain failure может дать
+  fallback к default; kSecUseKeychain сам не является postcondition.
+  [Apple creation implementation](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/SecKeychainItem.cpp#L97-L110).
+  Будущий backend должен захватывать actual returned item/owner locator и
+  подтверждать positive deletion exact item. Настоящий adapter остаётся unwired;
+  schema3 reference ещё не содержит locator. На host Keychain API не вызывались.
