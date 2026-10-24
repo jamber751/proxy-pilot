@@ -24,7 +24,7 @@ class VPNLiveControllerTests(unittest.TestCase):
             ROOT / 'app/vpn-helper/VPNTunnelStateStore.swift',
             ROOT / 'app/VPNPasswordPersistenceCoordinator.swift', ROOT / 'app/VPNLiveController.swift', ROOT / 'tests/vpn_live_controller_checks.swift']
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
-        result = subprocess.run(['swiftc', '-D', 'VPN_LIVE_CONTROLLER_TESTING',
+        result = subprocess.run(['swiftc', '-D', 'VPN_LIVE_CONTROLLER_TESTING', '-D', 'VPN_PASSWORD_LEDGER_TESTING',
             '-target', f'{arch}-apple-macosx11.0', *map(str, sources), '-o', str(cls.binary)],
             capture_output=True, text=True, timeout=90)
         if result.returncode:
@@ -75,6 +75,29 @@ class VPNLiveControllerTests(unittest.TestCase):
     def test_queued_save_revalidates_fresh_store(self):
         for change in ('revoke', 'login', 'mode', 'profile', 'grant'):
             with self.subTest(change=change): self.run_case('cache-stale-' + change)
+
+    def test_feedback_saved_requires_positive_add_and_store_ack(self): self.run_case('feedback-saved')
+    def test_feedback_positive_ack_tolerates_brief_late_store_lock(self): self.run_case('feedback-saved-busy')
+    def test_feedback_prepare_nil_is_confirmation_without_vpn_failure(self): self.run_case('feedback-prepare-nil')
+    def test_feedback_superseded_during_prepare_invalidates_old_saving_event(self): self.run_case('feedback-prepare-superseded')
+    def test_feedback_prepare_throw_is_confirmation_without_vpn_failure(self): self.run_case('feedback-prepare-throw')
+    def test_feedback_unknown_add_is_confirmation_without_vpn_failure(self): self.run_case('feedback-unknown')
+    def test_feedback_known_no_io_needs_confirmation(self): self.run_case('feedback-no-io')
+    def test_feedback_postrename_ack_failure_is_not_inferred_saved(self): self.run_case('feedback-ack-failed')
+    def test_feedback_capture_failure_keeps_no_secret_and_waits_for_connected(self): self.run_case('feedback-capture-failed')
+    def test_feedback_empty_marker_survives_private_key_without_saving_key(self): self.run_case('feedback-capture-private')
+    def test_feedback_empty_marker_is_quiet_after_user_revokes_consent(self): self.run_case('feedback-capture-revoked')
+    def test_feedback_unproven_capture_failure_emits_nothing(self): self.run_case('feedback-capture-unproven')
+    def test_feedback_cache_read_failure_offers_manual_confirmation(self): self.run_case('feedback-read-failed')
+    def test_feedback_cache_read_success_never_adds_or_invents_saved_event(self): self.run_case('feedback-read-success')
+    def test_feedback_revoked_cache_read_is_quiet(self): self.run_case('feedback-read-revoked')
+    def test_feedback_revoked_queued_save_is_quiet(self): self.run_case('feedback-stale-revoke')
+    def test_feedback_changed_revision_queued_save_is_quiet(self): self.run_case('feedback-stale-revision')
+    def test_feedback_new_input_supersedes_older_queued_events(self): self.run_case('feedback-stale-input')
+    def test_feedback_ui_guard_rejects_old_phase_old_intent_and_revoked_consent(self): self.run_case('feedback-stale-delivery')
+    def test_feedback_ineligible_or_inert_credential_has_zero_events(self):
+        for mode in ('feedback-inert', 'feedback-otp', 'feedback-private-key'):
+            with self.subTest(mode=mode): self.run_case(mode)
 
 
 if __name__ == '__main__':

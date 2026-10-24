@@ -81,6 +81,16 @@ final class VPNLiveController: ObservableObject {
     private var passwordCandidate: VPNPasswordSaveCandidate?
 
     var passwordPersistenceAvailable: Bool { passwordPersistence.available }
+    var passwordPersistenceEvent: VPNPasswordPersistenceEvent? { passwordPersistence.currentEvent }
+    /// Delivery may originate on the persistence queue. UI consumers dispatch
+    /// to their queue and recheck isCurrentPasswordPersistenceEvent there.
+    func setPasswordPersistenceEventHandler(_ handler: @escaping (VPNPasswordPersistenceEvent) -> Void) {
+        passwordPersistence.setEventHandler(handler)
+    }
+    func isCurrentPasswordPersistenceEvent(_ event: VPNPasswordPersistenceEvent,
+                                           configuration: VPNConfiguration) -> Bool {
+        passwordPersistence.isCurrentEvent(event, configuration: configuration)
+    }
     #if VPN_LIVE_CONTROLLER_TESTING
     var testPasswordCandidate: VPNPasswordSaveCandidate? { passwordCandidate }
     #endif

@@ -56,6 +56,7 @@ final class FakeLiveSession: VPNLiveSession {
     var requests = 0, statusRequests = 0
     var requestLimit: Int?
     var onSubmission: (() -> Void)?
+    var onClose: (() -> Void)?
 
     init(requiresCredential: Bool, requiresSecondCredential: Bool = false) {
         self.requiresCredential = requiresCredential
@@ -120,7 +121,7 @@ final class FakeLiveSession: VPNLiveSession {
         guard challenge == self.challenge else { return .invalidRequest }
         cancelled = true; return .ok
     }
-    func close() { closed = true }
+    func close() { closed = true; onClose?() }
 }
 
 final class FakePasswordSession: VPNPasswordPersistenceSession {
@@ -128,6 +129,7 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
     var secrets: [UUID: Data] = [:]
     var addedReferences: [VPNPasswordReference] = []
     var addUnknown = false, readFails = false
+    var addNoIO = false, failStoreAcknowledgment = false
     var afterRead: (() throws -> Void)?
     var beforeAdd: ((VPNPasswordReference) throws -> Void)?
     var afterAdd: ((VPNPasswordReference) throws -> Void)?
@@ -151,6 +153,10 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
         let outcome = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { reference in
             adds += 1; addedReferences.append(reference)
             if addUnknown { return .indeterminate }
+            if addNoIO { return .definitelyNoIO }
+            #if VPN_PASSWORD_LEDGER_TESTING
+            if failStoreAcknowledgment { store.testRejectNextWriteAfterRename = true }
+            #endif
             secrets[reference.itemID] = secret.withUnsafeBytes { Data($0) }
             return .added(locator(reference))
         }
@@ -236,6 +242,10 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
             actual.secondCredentialKind = .vpnPassword
         } else { actual = live }
         let controller = VPNLiveController(store: store, passwordPersistence: persistence, openSession: { actual })
+        var claimEvents: [VPNPasswordPersistenceEvent] = []
+        if mode.hasPrefix("cache-claim-") {
+            controller.setPasswordPersistenceEventHandler { claimEvents.append($0) }
+        }
         var observedCandidate: VPNPasswordSaveCandidate?
         if mode == "cache-private-attempt-changed" {
             actual.onSubmission = { [weak controller] in observedCandidate = controller?.testPasswordCandidate }
@@ -361,6 +371,14 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
             try require(newest.reference != oldClaim && newest.writeState == .settled
                 && driver.secrets[newest.reference.itemID] == Data("newest-claimed-manual".utf8),
                 "old claim overwrote or blocked the newer confirmed password")
+            guard let oldEvent = claimEvents.first, let finalEvent = claimEvents.last else {
+                throw NSError(domain: "claim-feedback-missing", code: 10)
+            }
+            try require(finalEvent.phase == .saved && finalEvent.intentIdentifier != oldEvent.intentIdentifier
+                && claimEvents.filter { $0.intentIdentifier == oldEvent.intentIdentifier }.map(\.phase) == [.saving]
+                && !controller.isCurrentPasswordPersistenceEvent(oldEvent, configuration: final.saved.configuration)
+                && controller.isCurrentPasswordPersistenceEvent(finalEvent, configuration: final.saved.configuration),
+                "late claimed save overwrote newer feedback")
             if mode == "cache-claim-new-first" {
                 try require(driver.adds == 1 && driver.secrets[oldClaim.itemID] == nil
                     && final.passwordLedger.pendingDeletion.isEmpty,
@@ -446,6 +464,204 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
         }
     }
 
+    static func feedbackFlow(_ mode: String, path: String) throws {
+        let otp = mode == "feedback-otp"
+        let store = try configuredStore(path, password: true, staticPassword: !otp, savePassword: !otp)
+        let driver = FakePasswordSession()
+        let deferred = mode.hasPrefix("feedback-stale-") && mode != "feedback-stale-delivery"
+        var queued: [() -> Void] = []
+        let persistence = VPNPasswordPersistenceCoordinator(store: store, available: mode != "feedback-inert",
+            prepare: { store in
+                _ = try store.load()
+                if mode == "feedback-prepare-nil" { return nil }
+                if mode == "feedback-prepare-throw" { throw NSError(domain: "synthetic-unavailable", code: 30) }
+                if mode == "feedback-prepare-superseded" {
+                    let state = try store.load()!
+                    _ = try store.createPasswordSaveGrant(expectedRevision: state.saved.configuration.revision,
+                                                         expectedActive: state.passwordLedger.active?.reference)
+                }
+                return driver
+            }, schedule: { work in if deferred { queued.append(work) } else { work() } })
+        let live = FakeLiveSession(requiresCredential: true, requiresSecondCredential: mode == "feedback-capture-private")
+        if mode == "feedback-private-key" { live.challenge = VPNCredentialChallenge(generation: 1, kind: .privateKeyPassword) }
+        if mode == "feedback-unknown" { driver.addUnknown = true }
+        if mode == "feedback-no-io" { driver.addNoIO = true }
+        if mode == "feedback-ack-failed" { driver.failStoreAcknowledgment = true }
+        if mode.hasPrefix("feedback-read-") {
+            let state = try store.load()!
+            let reference = try store.grantPasswordPersistence(expectedRevision: state.saved.configuration.revision)
+            var initial = Data("cached-static".utf8)
+            _ = try driver.addOnce(store: store, reference: reference, revision: state.saved.configuration.revision, secret: &initial)
+            driver.adds = 0; driver.addedReferences = []
+            if mode != "feedback-read-success" { driver.readFails = true }
+            if mode == "feedback-read-revoked" {
+                driver.afterRead = {
+                    let state = try store.load()!; var config = state.saved.configuration
+                    try config.setAuthentication(VPNAuthentication(mode: .password, login: "employee"))
+                    _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
+                }
+            }
+        }
+        let controller = VPNLiveController(store: store, passwordPersistence: persistence, openSession: { live })
+        var events: [VPNPasswordPersistenceEvent] = []
+        var callbackWasOutsideLocks = true
+        var saveFeedbackBeforeConnected = false
+        controller.setPasswordPersistenceEventHandler { [weak controller] event in
+            guard let controller else { return }
+            events.append(event)
+            // Both Store reads and cheap intent queries must be reentrant here.
+            guard let state = try? store.load() else { callbackWasOutsideLocks = false; return }
+            _ = controller.isCurrentPasswordPersistenceEvent(event, configuration: state.saved.configuration)
+            _ = controller.passwordPersistenceEvent
+            if !mode.hasPrefix("feedback-read-"), controller.state != .connected { saveFeedbackBeforeConnected = true }
+        }
+        controller.connect()
+        if mode.hasPrefix("feedback-read-") {
+            try require(driver.adds == 0 && callbackWasOutsideLocks, "cache read feedback wrote an item or held a lock")
+            if mode == "feedback-read-success" {
+                try require(controller.state == .connected && events.isEmpty, "cached success invented an Add/saved event")
+            } else if mode == "feedback-read-revoked" {
+                try require(events.isEmpty && live.submissions == 0, "revoked read produced stale feedback or submission")
+            } else {
+                try require(controller.state == .needsCredential(.vpnPassword) && events.map(\.phase) == [.needsConfirmation],
+                            "failed cache read did not offer manual confirmation")
+            }
+            return
+        }
+        try require(events.isEmpty, "save feedback emitted before a manual attempt connected")
+        var heldFD: Int32 = -1
+        var emptyCapture: VPNPasswordSaveCandidate?
+        if ["feedback-capture-failed", "feedback-capture-unproven", "feedback-capture-private", "feedback-capture-revoked"].contains(mode) {
+            heldFD = open(store.directory.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            guard heldFD >= 0, flock(heldFD, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "capture-lock", code: 31) }
+            live.onSubmission = {
+                emptyCapture = controller.testPasswordCandidate
+                if heldFD >= 0 { flock(heldFD, LOCK_UN); close(heldFD); heldFD = -1 }
+            }
+            if mode == "feedback-capture-revoked" {
+                live.onClose = {
+                    live.onClose = nil
+                    guard let state = try? store.load() else { return }
+                    var config = state.saved.configuration
+                    try? config.setAuthentication(VPNAuthentication(mode: .password, login: "employee"))
+                    _ = try? store.save(config, expectedRevision: state.saved.configuration.revision)
+                }
+            }
+            if mode == "feedback-capture-unproven" { live.rejectSubmission = true }
+        }
+        if mode == "feedback-saved-busy" {
+            driver.afterAdd = { _ in
+                heldFD = open(store.directory.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                guard heldFD >= 0, flock(heldFD, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "saved-lock", code: 32) }
+            }
+            VPNPasswordPersistenceCoordinator.testAfterBusySavedObservation = {
+                flock(heldFD, LOCK_UN); close(heldFD); heldFD = -1
+            }
+        }
+        defer {
+            VPNPasswordPersistenceCoordinator.testAfterBusySavedObservation = nil
+            if heldFD >= 0 { flock(heldFD, LOCK_UN); close(heldFD) }
+        }
+        var manual = Data("manual-static".utf8)
+        controller.submitCredential(&manual, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+        try require(manual.isEmpty, "manual input retained")
+        if mode == "feedback-capture-private" {
+            try require(events.isEmpty && controller.state == .needsCredential(.privateKeyPassword)
+                && emptyCapture?.isCleared == true, "empty intent marker emitted before private-key continuation")
+            var key = Data("private-key-secret".utf8)
+            controller.submitCredential(&key, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+            try require(key.isEmpty, "private-key input retained")
+        }
+        if mode == "feedback-capture-unproven" {
+            try require(events.isEmpty && driver.adds == 0 && emptyCapture?.isCleared == true,
+                        "unproven capture failure leaked feedback or retained a secret")
+            return
+        }
+        try require(controller.state == .connected && !saveFeedbackBeforeConnected && callbackWasOutsideLocks,
+                    "cache feedback broke confirmed VPN or ran under a lock")
+        if mode == "feedback-capture-revoked" {
+            try require(events.isEmpty && driver.adds == 0 && emptyCapture?.isCleared == true
+                && store.load()!.saved.configuration.authentication?.credentialPersistence == VPNCredentialPersistence.none,
+                "failed capture warned after the user revoked consent")
+            return
+        }
+        if mode == "feedback-prepare-superseded" {
+            try require(events.map(\.phase) == [.saving] && driver.adds == 0 && controller.passwordPersistenceEvent == nil,
+                        "superseded grant left an authoritative saving event")
+            let config = try store.load()!.saved.configuration
+            try require(!controller.isCurrentPasswordPersistenceEvent(events[0], configuration: config),
+                        "queued old saving event survived a newer same-revision grant")
+            return
+        }
+        if mode == "feedback-inert" || mode == "feedback-otp" || mode == "feedback-private-key" {
+            try require(events.isEmpty && driver.adds == 0 && controller.passwordPersistenceEvent == nil,
+                        "ineligible/unavailable input emitted persistence feedback")
+            return
+        }
+        if mode == "feedback-stale-revoke" || mode == "feedback-stale-revision" {
+            try require(queued.count == 1 && events.isEmpty, "save not deferred")
+            let state = try store.load()!; var config = state.saved.configuration
+            if mode == "feedback-stale-revoke" { try config.setAuthentication(VPNAuthentication(mode: .password, login: "employee")) }
+            else { try config.saveResource(VPNResource(address: "10.30.0.0/16")) }
+            _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
+            queued.removeFirst()()
+            try require(events.isEmpty && driver.adds == 0 && controller.state == .connected,
+                        "obsolete queued save warned for newer settings")
+            return
+        }
+        if mode == "feedback-stale-input" {
+            live.connected = false; live.challenge = VPNCredentialChallenge(generation: 2, kind: .vpnPassword)
+            controller.connect()
+            var newest = Data("newest-static".utf8)
+            controller.submitCredential(&newest, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+            try require(queued.count == 2, "new confirmed intent not queued")
+            while !queued.isEmpty { queued.removeFirst()() }
+            try require(driver.adds == 1 && events.map(\.phase) == [.saving, .saved], "old queued intent emitted feedback")
+        }
+        if mode == "feedback-capture-failed" || mode == "feedback-capture-private" {
+            try require(events.map(\.phase) == [.needsConfirmation] && driver.adds == 0
+                && emptyCapture?.isCleared == true && store.load()!.passwordLedger.active == nil,
+                "empty capture marker created a grant or skipped confirmation")
+        } else if ["feedback-prepare-nil", "feedback-prepare-throw", "feedback-unknown", "feedback-no-io", "feedback-ack-failed"].contains(mode) {
+            try require(events.map(\.phase) == [.saving, .needsConfirmation], "failed save falsely reported success")
+            if mode == "feedback-ack-failed" {
+                try require(try store.load()!.passwordLedger.active?.writeState == .settled,
+                            "post-rename acknowledgment failure was not exercised")
+            }
+        } else {
+            try require(events.map(\.phase) == [.saving, .saved], "positive Add/Store acknowledgment missing feedback")
+        }
+        guard let latest = events.last else { throw NSError(domain: "missing-feedback", code: 33) }
+        let config = try store.load()!.saved.configuration
+        try require(controller.isCurrentPasswordPersistenceEvent(latest, configuration: config), "latest scoped event rejected")
+        if let first = events.first, first != latest {
+            try require(!controller.isCurrentPasswordPersistenceEvent(first, configuration: config), "old phase could overwrite newer result")
+        }
+        if mode == "feedback-stale-delivery" {
+            let old = latest
+            live.connected = false; live.challenge = VPNCredentialChallenge(generation: 2, kind: .vpnPassword)
+            driver.readFails = true; controller.connect()
+            var newer = Data("newest-static".utf8)
+            controller.submitCredential(&newer, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+            guard let fresh = events.last else { throw NSError(domain: "new-event-missing", code: 34) }
+            try require(fresh.phase == .saved && fresh.intentIdentifier != old.intentIdentifier
+                && fresh.configurationRevision == old.configurationRevision
+                && !controller.isCurrentPasswordPersistenceEvent(old, configuration: config)
+                && controller.isCurrentPasswordPersistenceEvent(fresh, configuration: config),
+                "delayed old event survived a same-revision newer input")
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as! [String: Any]
+            var auth = object["authentication"] as! [String: Any]; auth["credentialPersistence"] = "none"; object["authentication"] = auth
+            let revoked = try JSONDecoder().decode(VPNConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+            try require(!controller.isCurrentPasswordPersistenceEvent(fresh, configuration: revoked),
+                        "cheap UI guard ignored revoked consent at same revision")
+        }
+        for event in events {
+            let debug = String(reflecting: event)
+            try require(debug == "VPNPasswordPersistenceEvent(redacted)" && !debug.contains(event.intentIdentifier.uuidString)
+                && !debug.contains("employee") && !debug.contains("manual-static"), "feedback debug leaked private metadata")
+        }
+    }
+
     static func heldPromptRefresh(_ path: String) throws {
         let store = try configuredStore(path, password: true, staticPassword: true, savePassword: true)
         let driver = FakePasswordSession()
@@ -495,6 +711,9 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
 
     static func main() throws {
         let mode = CommandLine.arguments[1], path = CommandLine.arguments[2]
+        if mode.hasPrefix("feedback-") {
+            try feedbackFlow(mode, path: path); print("feedback flow passed"); return
+        }
         if mode == "held-refresh" {
             try heldPromptRefresh(path); print("refresh flow passed"); return
         }
