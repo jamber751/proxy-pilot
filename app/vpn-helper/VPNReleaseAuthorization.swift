@@ -164,6 +164,8 @@ struct VPNReleaseAuthority {
     static let updateTransitionDomain = Data("kz.documentolog.proxypilot/vpn-update-transition/v1\0".utf8)
     static let rescueAuthorizationDomain = Data("kz.documentolog.proxypilot/vpn-rescue-authorization/v1\0".utf8)
     static let maximumRescueAuthorizationBytes = 2048
+    static let rescuePreparationAuthorizationDomain = Data("kz.documentolog.proxypilot/vpn-rescue-preparation-authorization/v1\0".utf8)
+    static let maximumRescuePreparationAuthorizationBytes = 2048
     static let maximumUpdateTransitionBytes = 512
     static let maximumPayloadBytes = 4096
     static let maximumHelperBytes = 32 * 1024 * 1024
@@ -192,6 +194,14 @@ struct VPNReleaseAuthority {
         !payload.isEmpty && payload.count <= Self.maximumRescueAuthorizationBytes
             && signature.count == 64
             && publicKey.isValidSignature(signature, for: Self.rescueAuthorizationDomain + payload)
+    }
+
+    /// Fixed start-role domain only; never accepts a caller-selected operation
+    /// or domain and cannot verify the existing pending finish authorization.
+    func verifyRescuePreparationSignature(payload: Data, signature: Data) -> Bool {
+        !payload.isEmpty && payload.count <= Self.maximumRescuePreparationAuthorizationBytes
+            && signature.count == 64
+            && publicKey.isValidSignature(signature, for: Self.rescuePreparationAuthorizationDomain + payload)
     }
 
     #if VPN_ENGINE_DELIVERY_TESTING
