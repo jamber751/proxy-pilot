@@ -1,0 +1,9 @@
+#!/bin/zsh -f
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[[ $EUID == 0 && $UID == 0 && ${3:-} == / ]] || exit 77
+PACKAGE_ROOT="${0:A:h}/Rescue"
+# Verify all package material and safe fixed ancestors before Installer writes
+# the payload. An existing different rescue is preserved and rejected.
+exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  "$PACKAGE_ROOT/Executable/vpn-rescue" preflight-install "$PACKAGE_ROOT"

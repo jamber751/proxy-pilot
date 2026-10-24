@@ -1,0 +1,11 @@
+#!/bin/zsh -f
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[[ $EUID == 0 && $UID == 0 && ${3:-} == / ]] || exit 77
+RESCUE_ROOT='/Library/Application Support/ProxyPilot/Rescue'
+# A failed repair retains the exact executable, signed inputs and recovery job.
+/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  "$RESCUE_ROOT/Executable/vpn-rescue" repair
+# The repair succeeded and independently verified final installed/selected C.
+# Retire only this fixed temporary component, never sibling VPN state.
+/bin/rm -rf -- "$RESCUE_ROOT"
