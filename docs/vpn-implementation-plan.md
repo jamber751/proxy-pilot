@@ -4279,8 +4279,30 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   skipped. Использован установленный bundled GOST 137, без изменения live config.
   Всего в этом ограниченном прогоне: 84 passed, 1 skipped.
 - [x] Исправления закоммичены отдельно: `d7b9f02` (filename), `c2b1a61` (CLI).
-- [ ] Universal frontend 138 собирается с диагностикой и исправлениями.
-  Helper/importer/engine graph совпадает с 137; повторная сборка helper не нужна.
+- [x] Universal frontend 138 собран с диагностикой и исправлениями.
+  Helper/importer/engine graph совпадает с 137; использован exact helper 137.
 - [ ] Произвольно запущенные старые внешние CLI всё ещё способны перезаписать
   bridge config. Защита выбора CLI в приложении не является блокировкой всех
   legacy writers; общий delivery/migration gate остаётся открытым.
+
+### Продолжение 1.5cu — подписанный переход 137 → 138 (24 октября)
+
+- [x] Дополнительно исправлен `build-joint-release.sh`: public prebuilt GOST
+  теперь 0755 до подписи и ZIP/DMG, не только в копии first-install payload.
+  Release builder contracts 4/4 passed, включая исполнение chmod с fixture.
+- [x] Frontend 138 оптимизирован для arm64/x86_64, дополнен exact Universal GOST
+  с 0755, подписан runtime/hard/kill и проверен deep/strict. Stage нормализован
+  новым packager; complete pinned engine artifact прошёл source/provenance checks.
+- [x] Existing Keychain release key подписал manifest 138 и exact transition
+  137→138. Ключ не менялся и не экспортировался. Перед обновлением проверены
+  installed 137 receipt/signature и CDHash обеих архитектур по signed baseline.
+- [x] Собран `Acceptance/candidate-138-20261024/TEST ONLY - Update VPN 137 to 138.pkg`.
+  Exact staged executable вернул `VPN joint update package verified.`, GOST 0755.
+- [ ] Installer открыт, нажата Install, ожидается системная авторизация.
+  138 ещё не считать установленной до проверки результата/pins/receipt.
+- [ ] После обновления проверить конфигурацию, обычный proxy off/on, HTTP/SOCKS5
+  и закрытую диагностику новой сборки. VPN OTP и connected overlay не выполнены.
+
+Ограниченный прогон 1.5ct плюс release builder: **88 passed, 1 live-target skipped**.
+Это разные виды доказательств (модели, Swift/CLI, loopback, per-user launchd),
+не полная финальная матрица и не проверка production reboot/WARP.
