@@ -106,6 +106,9 @@ enum VPNPasswordAddOutcome: Equatable, CustomStringConvertible, CustomDebugStrin
 /// Only positive deletion of the exact verified item can acknowledge removal.
 enum VPNPasswordDeleteOutcome: Equatable { case deleted, notFound, unavailable, indeterminate }
 
+/// Distinguishes short receipt-lock contention from failed acknowledgment I/O.
+enum VPNPasswordReceiptAcknowledgmentError: Error { case lockBusy }
+
 struct VPNPasswordLedger: Codable, Equatable {
     static let maximumPendingDeletions = 64
     var active: VPNPasswordSlot?
@@ -389,8 +392,9 @@ final class VPNStore {
     /// settled from an item lookup, a delay, or an item-not-found result.
     /// No credential bytes enter this store or its serialized state.
     func readPassword<T>(reference: VPNPasswordReference, expectedRevision: UInt64,
-                         silently read: (VPNPasswordReference, VPNPasswordItemLocator) throws -> T) throws -> T {
+                         expectedDirectoryDescriptor: Int32? = nil, silently read: (VPNPasswordReference, VPNPasswordItemLocator) throws -> T) throws -> T {
         try withLock(create: false) { descriptor in
+            try requireDirectoryIdentity(expectedDirectoryDescriptor, actual: descriptor)
             let current = try requireActivePassword(reference: reference, expectedRevision: expectedRevision, directory: descriptor)
             guard let slot = current.passwordLedger.active, slot.writeState == .settled,
                   let locator = slot.locator else { throw VPNValidationError.staleRevision }
@@ -403,8 +407,9 @@ final class VPNStore {
     /// callback must never issue Add twice, Update, or delete-and-reinsert.
     @discardableResult
     func addPasswordOnce(reference: VPNPasswordReference, expectedRevision: UInt64,
-                         silently add: (VPNPasswordReference) throws -> VPNPasswordAddOutcome) throws -> VPNPasswordAddOutcome {
+                         expectedDirectoryDescriptor: Int32? = nil, silently add: (VPNPasswordReference) throws -> VPNPasswordAddOutcome) throws -> VPNPasswordAddOutcome {
         try withLock(create: false) { descriptor in
+            try requireDirectoryIdentity(expectedDirectoryDescriptor, actual: descriptor)
             let current = try requireActivePassword(reference: reference, expectedRevision: expectedRevision, directory: descriptor)
             guard current.passwordLedger.active?.writeState == .notIssued else { throw VPNValidationError.staleRevision }
             var ledger = current.passwordLedger
@@ -452,12 +457,67 @@ final class VPNStore {
         }
     }
 
+    /// Authenticated definite receipt only. Parent and the exact worker may
+    /// race to acknowledge the same result; an identical terminal result is
+    /// idempotent, while a missing reference is never recreated.
+    func acknowledgePasswordAddReceipt(reference: VPNPasswordReference, outcome: VPNPasswordAddOutcome,
+                                       expectedDirectoryDescriptor: Int32? = nil) throws {
+        guard outcome != .indeterminate else { throw VPNValidationError.staleRevision }
+        try withLock(create: false, receiptLock: true) { descriptor in
+            try requireDirectoryIdentity(expectedDirectoryDescriptor, actual: descriptor)
+            guard let current = try readState(directory: descriptor) else { throw VPNValidationError.staleRevision }
+            var ledger = current.passwordLedger
+            let active = ledger.active?.reference == reference
+            let index = ledger.pendingDeletion.firstIndex { $0.reference == reference }
+            guard var slot = active ? ledger.active : index.map({ ledger.pendingDeletion[$0] }) else {
+                throw VPNValidationError.staleRevision
+            }
+            if slot.writeState != .pending {
+                switch outcome {
+                case .added(let locator):
+                    guard slot.writeState == .settled, slot.locator == locator else { throw VPNValidationError.staleRevision }
+                case .definitelyNoIO:
+                    guard slot.writeState == .noItem, slot.locator == nil else { throw VPNValidationError.staleRevision }
+                case .indeterminate: throw VPNValidationError.staleRevision
+                }
+                return
+            }
+            try slot.complete(outcome)
+            if active { ledger.active = slot } else { ledger.pendingDeletion[index!] = slot }
+            let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
+            try next.validate(); try writeState(next, directory: descriptor)
+        }
+    }
+
+    /// Call only after this authenticated operation's POSITIVE exact deletion.
+    /// Absence is idempotent only in that receipt context; NotFound cannot call
+    /// this method. A remaining changed locator or non-settled row is refused.
+    func acknowledgePasswordDeletionReceipt(reference: VPNPasswordReference, locator: VPNPasswordItemLocator,
+                                            expectedDirectoryDescriptor: Int32? = nil) throws {
+        try reference.validate(); try locator.validate()
+        try withLock(create: false, receiptLock: true) { descriptor in
+            try requireDirectoryIdentity(expectedDirectoryDescriptor, actual: descriptor)
+            guard let current = try readState(directory: descriptor) else { throw VPNValidationError.staleRevision }
+            guard current.passwordLedger.active?.reference.itemID != reference.itemID else { throw VPNValidationError.staleRevision }
+            guard !current.passwordLedger.pendingDeletion.contains(where: {
+                $0.reference.itemID == reference.itemID && $0.reference != reference
+            }) else { throw VPNValidationError.staleRevision }
+            guard let index = current.passwordLedger.pendingDeletion.firstIndex(where: { $0.reference == reference }) else { return }
+            let slot = current.passwordLedger.pendingDeletion[index]
+            guard slot.writeState == .settled, slot.locator == locator else { throw VPNValidationError.staleRevision }
+            var ledger = current.passwordLedger; ledger.pendingDeletion.remove(at: index)
+            let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
+            try next.validate(); try writeState(next, directory: descriptor)
+        }
+    }
+
     /// NotFound is not deletion proof. Only a positive exact-item deletion may
     /// acknowledge this locator. A crash after deletion but before acknowledgment
     /// can leave a pending obligation even if later lookup returns NotFound.
-    func deletePendingPassword(reference: VPNPasswordReference,
+    func deletePendingPassword(reference: VPNPasswordReference, expectedDirectoryDescriptor: Int32? = nil,
                                silently delete: (VPNPasswordReference, VPNPasswordItemLocator) throws -> VPNPasswordDeleteOutcome) throws {
         try withLock(create: false) { descriptor in
+            try requireDirectoryIdentity(expectedDirectoryDescriptor, actual: descriptor)
             guard let current = try readState(directory: descriptor),
                   let slot = current.passwordLedger.pendingDeletion.first(where: { $0.reference == reference }),
                   slot.writeState != .pending else { throw VPNValidationError.staleRevision }
@@ -472,7 +532,21 @@ final class VPNStore {
         }
     }
 
-    private func withLock<T>(create: Bool, _ operation: (Int32) throws -> T) throws -> T {
+    /// A private inherited authority may outlive a path rename/replacement.
+    /// Compare the actual locked directory, not a separate path observation.
+    private func requireDirectoryIdentity(_ expected: Int32?, actual: Int32) throws {
+        guard let expected else { return }
+        var held = stat(), opened = stat()
+        guard fstat(expected, &held) == 0, fstat(actual, &opened) == 0,
+              held.st_dev == opened.st_dev, held.st_ino == opened.st_ino,
+              held.st_uid == opened.st_uid, held.st_mode & S_IFMT == S_IFDIR,
+              held.st_nlink > 0, opened.st_nlink > 0,
+              held.st_mode & 0o7777 == 0o700, opened.st_mode & 0o7777 == 0o700 else {
+            throw VPNValidationError.staleRevision
+        }
+    }
+
+    private func withLock<T>(create: Bool, receiptLock: Bool = false, _ operation: (Int32) throws -> T) throws -> T {
         let path = directory.standardizedFileURL.path
         guard directory.isFileURL, path != "/", path != NSHomeDirectory() else { throw VPNValidationError.storageUnavailable }
         if create {
@@ -489,7 +563,12 @@ final class VPNStore {
         guard lock >= 0 else { throw VPNValidationError.storageUnavailable }
         defer { close(lock) }
         try checkPrivateFile(lock)
-        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw VPNValidationError.storageUnavailable }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            if receiptLock && (errno == EWOULDBLOCK || errno == EAGAIN) {
+                throw VPNPasswordReceiptAcknowledgmentError.lockBusy
+            }
+            throw VPNValidationError.storageUnavailable
+        }
         defer { flock(lock, LOCK_UN) }
         return try operation(descriptor)
     }

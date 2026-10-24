@@ -26,17 +26,23 @@ class VPNPasswordWorkerTests(unittest.TestCase):
         names = ['VPNConfiguration.swift', 'VPNProfileImporter.swift', 'VPNStore.swift',
                  'VPNPasswordWorkerWire.swift', 'VPNPasswordWorkerIdentity.swift', 'VPNPasswordWorker.swift',
                  'VPNPasswordWorkerSession.swift', 'VPNPasswordPersistenceCoordinator.swift',
+                 'VPNModel.swift', 'VPNLiveController.swift', 'VPNPasswordRuntime.swift',
                  'VPNPasswordCleanupCoordinator.swift', 'vpn-helper/VPNHelperProtocol.swift',
                  'vpn-helper/VPNPeerAuthentication.swift', 'vpn-helper/VPNApplicationSpec.swift',
                  'vpn-helper/VPNTunnelStateStore.swift', 'vpn-helper/OpenVPNManagementEvent.swift',
                  'vpn-helper/OpenVPNStateEvidence.swift',
                  'vpn-helper/OpenVPNTransientCredential.swift']
-        sources = [ROOT / 'app' / name for name in names] + [ROOT / 'tests/vpn_password_worker_checks.swift']
+        # Reuse the existing in-memory helper; the credential child itself is
+        # independently spawned, hardened and authenticated below.
+        live = (ROOT / 'tests/vpn_live_controller_checks.swift').read_text()
+        helper = folder / 'FakeLiveSession.swift'
+        helper.write_text('import Foundation\n' + 'final class FakeLiveSession:' + live.split('final class FakeLiveSession:',1)[1].split('final class FakePasswordSession:',1)[0])
+        sources = [ROOT / 'app' / name for name in names] + [helper, ROOT / 'tests/vpn_password_worker_checks.swift']
         cls.binary = folder / 'checks'
         cls.different = folder / 'different'
         for output, extra in ((cls.binary, []), (cls.different, ['-D', 'DIFFERENT_WORKER_BUILD'])):
             result = subprocess.run(['/usr/bin/swiftc', '-parse-as-library', '-D', 'VPN_PASSWORD_WORKER_TESTING',
-                                     '-D', 'VPN_PASSWORD_LEDGER_TESTING',
+                                     '-D', 'VPN_PASSWORD_LEDGER_TESTING', '-D', 'VPN_LIVE_CONTROLLER_TESTING',
                                      *extra, '-target', arch + '-apple-macosx11.0', *map(str, sources), '-o', str(output)],
                                     capture_output=True, text=True, timeout=120)
             if result.returncode: raise AssertionError(result.stderr)
@@ -113,7 +119,26 @@ class VPNPasswordWorkerTests(unittest.TestCase):
             if not preserve_child:
                 self.finish_own_group(process.pid)
 
+    def test_cleanup_child_remains_paused_while_otp_submit_and_settings_save_finish(self): self.run_case('cleanup-user-otp')
+    def test_cleanup_child_remains_paused_while_manual_submit_and_settings_save_finish(self): self.run_case('cleanup-user-password')
+    def test_concurrent_prepared_reuse_cannot_issue_go_or_steal_first_response(self): self.run_case('concurrent-reuse-wait')
+    def test_read_receipt_cannot_escape_after_consent_revocation(self): self.run_case('read-revoke-wait')
+    def test_read_receipt_cannot_escape_after_locator_change(self): self.run_case('read-locator-wait')
+    def test_read_receipt_cannot_escape_after_application_revision_change(self): self.run_case('read-revision-wait')
+    def test_read_secret_rejected_after_identical_store_directory_replacement(self): self.run_case('read-directory-wait')
+    def test_add_receipt_cannot_settle_identical_replacement_store(self): self.run_case('add-directory-wait')
+    def test_positive_delete_receipt_cannot_ack_identical_replacement_store(self): self.run_case('delete-directory-wait')
+    def test_definite_receipt_ack_survives_logically_brief_contention_despite_descheduling(self): self.run_case('ack-busy-release')
+    def test_receipt_ack_expired_before_retry_never_reissues_go(self): self.run_case('ack-expire')
+    def test_receipt_ack_oversleep_does_not_reset_budget_or_reissue_go(self): self.run_case('ack-oversleep')
+    def test_read_secret_rejected_after_directory_special_mode_change(self): self.run_case('read-mode-wait')
+    def test_add_receipt_rejects_directory_special_mode_change(self): self.run_case('add-mode-wait')
+    def test_positive_delete_receipt_rejects_directory_special_mode_change(self): self.run_case('delete-mode-wait')
     def test_real_child_add_read_delete_and_no_second_add(self): self.run_case('roundtrip')
+    def test_unlocked_add_receipt_settles_only_old_uuid_after_revoke_and_new_save(self): self.run_case('add-revoke-wait')
+    def test_unlocked_positive_delete_cannot_ack_changed_locator(self): self.run_case('delete-locator-wait')
+    def test_unlocked_positive_delete_preserves_new_active_grant(self): self.run_case('delete-new-grant-wait')
+    def test_nonblocking_partial_go_is_never_retried_and_cannot_reach_backend(self): self.run_case('immediate-partial')
     def test_eof_before_go_has_no_backend_call(self): self.run_case('before-go')
     def test_truncated_go_has_no_backend_call(self): self.run_case('truncated')
     def test_wrong_nonce_has_no_backend_call(self): self.run_case('wrong-nonce')

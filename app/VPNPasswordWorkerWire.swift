@@ -158,6 +158,28 @@ enum VPNPasswordWorkerWire {
         try write(data, socket: socket, deadline: deadline)
     }
 
+    /// One nonblocking GO attempt while the short Store authority gate is
+    /// held. A partial/error send is uncertain; never wait, poll or retry it.
+    #if VPN_PASSWORD_WORKER_TESTING
+    static var testImmediateLimit: Int?
+    static var testImmediateSendCalls = 0
+    #endif
+    static func sendImmediate(_ data: Data, socket: Int32) throws {
+        guard !data.isEmpty, data.count <= maximumFrameBytes else { throw VPNPasswordWorkerError.invalid }
+        var frame = Data(number32(data.count)); frame.append(data)
+        defer { clear(&frame) }
+        var limit = frame.count
+        #if VPN_PASSWORD_WORKER_TESTING
+        testImmediateSendCalls += 1
+        if let requested = testImmediateLimit { limit = max(0, min(limit, requested)) }
+        #endif
+        let sent = frame.withUnsafeBytes { Darwin.send(socket, $0.baseAddress, limit, MSG_DONTWAIT | MSG_NOSIGNAL) }
+        guard sent == frame.count else {
+            shutdown(socket, SHUT_WR) // An incomplete GO can never be completed later.
+            throw VPNPasswordWorkerError.transport
+        }
+    }
+
     static func receive(socket: Int32, deadline: UInt64) throws -> Data {
         let length = try read(4, socket: socket, deadline: deadline)
         let count = length.reduce(0) { $0 << 8 | Int($1) }

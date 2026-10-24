@@ -48,6 +48,7 @@ enum VPNPasswordWorker {
         private let identity: VPNPasswordWorkerIdentity
         private let directory: VPNPasswordWorkerDirectory
         private let nonce: Data
+        private let operationLock = NSLock()
         private var used = false
         private var dispatchAttempted = false
 
@@ -69,104 +70,168 @@ enum VPNPasswordWorker {
         func addOnce(store: VPNStore, reference: VPNPasswordReference, revision: UInt64,
                      secret: inout Data) throws -> VPNPasswordAddOutcome {
             defer { VPNPasswordWorkerWire.clear(&secret) }
-            try directory.requireSameDirectory(as: store.directory)
-            return try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in
-                let result = try perform(operation: .add, reference: reference, revision: revision,
-                                         secret: &secret, timeout: VPNPasswordWorker.softTimeout)
-                return result.addOutcome
+            try claim(store: store)
+            var ticket: Ticket?
+            _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision, expectedDirectoryDescriptor: directory.descriptor) { _ in
+                try directory.requireSameDirectory(as: store.directory)
+                ticket = try dispatch(operation: .add, reference: reference, revision: revision, secret: &secret)
+                return .indeterminate // The durable pending record survives the unlocked wait.
             }
+            guard let ticket else { throw VPNPasswordWorkerError.invalid }
+            let result = awaitReceipt(ticket).addOutcome
+            if result != .indeterminate {
+                try acknowledge { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: result, expectedDirectoryDescriptor: directory.descriptor) }
+            }
+            return result
         }
 
         func read(store: VPNStore, reference: VPNPasswordReference, revision: UInt64) throws -> VPNPasswordWorkerWire.Response {
-            try directory.requireSameDirectory(as: store.directory)
-            return try store.readPassword(reference: reference, expectedRevision: revision) { _, locator in
+            try claim(store: store)
+            var captured: VPNPasswordItemLocator?
+            let ticket = try store.readPassword(reference: reference, expectedRevision: revision, expectedDirectoryDescriptor: directory.descriptor) { _, locator in
+                try directory.requireSameDirectory(as: store.directory)
+                captured = locator
                 var empty = Data()
-                return try perform(operation: .read, reference: reference, revision: revision,
-                                   secret: &empty, timeout: VPNPasswordWorker.softTimeout, locator: locator)
+                return try dispatch(operation: .read, reference: reference, revision: revision, secret: &empty, locator: locator)
             }
+            var response = awaitReceipt(ticket)
+            do {
+                try store.readPassword(reference: reference, expectedRevision: revision, expectedDirectoryDescriptor: directory.descriptor) { _, locator in
+                    try directory.requireSameDirectory(as: store.directory)
+                    guard locator == captured else { throw VPNValidationError.staleRevision }
+                }
+            } catch { VPNPasswordWorkerWire.clear(&response.secret); throw error }
+            return response
         }
 
         func deletePending(store: VPNStore, reference: VPNPasswordReference) throws {
             guard try deletePendingOutcome(store: store, reference: reference) == .deleted else {
-                // Preserve the original throwing wrapper: a negative lookup or
-                // uncertain response must never act like acknowledged deletion.
                 throw VPNValidationError.storageUnavailable
             }
         }
 
-        /// The typed result distinguishes a verified negative worker response
-        /// from acknowledged deletion. Store preflight failures still throw
-        /// before GO; a positive backend result is insufficient if Store cannot
-        /// finish its acknowledgment (including uncertain post-rename errors).
+        private enum DispatchBoundary: Error { case awaitingReceipt }
+        /// No response wait occurs under Store.lock. Only this call's private
+        /// dispatch sentinel may cross the gate; ordinary storage failures do not.
         func deletePendingOutcome(store: VPNStore, reference: VPNPasswordReference) throws -> VPNPasswordDeleteOutcome {
-            try directory.requireSameDirectory(as: store.directory)
+            try claim(store: store)
             let revision = try store.load()?.saved.configuration.revision ?? 0
-            var observed: VPNPasswordDeleteOutcome?
+            var ticket: Ticket?, captured: VPNPasswordItemLocator?
             do {
-                try store.deletePendingPassword(reference: reference) { _, locator in
+                try store.deletePendingPassword(reference: reference, expectedDirectoryDescriptor: directory.descriptor) { _, locator in
+                    try directory.requireSameDirectory(as: store.directory)
+                    captured = locator
                     var empty = Data()
-                    let result = try perform(operation: .delete, reference: reference, revision: revision,
-                                             secret: &empty, timeout: VPNPasswordWorker.softTimeout, locator: locator)
-                    let outcome: VPNPasswordDeleteOutcome
-                    switch result.status {
-                    case .success: outcome = .deleted
-                    case .notFound: outcome = .notFound
-                    case .unavailable: outcome = .unavailable
-                    default: outcome = .indeterminate
-                    }
-                    observed = outcome
-                    return outcome
+                    ticket = try dispatch(operation: .delete, reference: reference, revision: revision, secret: &empty, locator: locator)
+                    throw DispatchBoundary.awaitingReceipt
                 }
-            } catch VPNValidationError.storageUnavailable {
-                // Store intentionally refuses acknowledgment of nonpositive
-                // responses before any metadata write. Preserve that response
-                // for callers without dropping its exact cleanup obligation.
-                if let observed, observed != .deleted { return observed }
-                throw VPNValidationError.storageUnavailable
+                return .deleted // Proven never-issued/no-item metadata retirement.
+            } catch DispatchBoundary.awaitingReceipt { /* Only our own GO authorizes the wait. */ }
+            guard let ticket, let captured else { throw VPNPasswordWorkerError.invalid }
+            let response = awaitReceipt(ticket)
+            switch response.status {
+            case .success:
+                try acknowledge { try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: captured, expectedDirectoryDescriptor: directory.descriptor) }
+                return .deleted
+            case .notFound: return .notFound
+            case .unavailable: return .unavailable
+            default: return .indeterminate
             }
-            // Also covers Store's proven never-issued/no-item retirement path,
-            // which acknowledges metadata without issuing worker GO at all.
-            return .deleted
         }
 
-        private func perform(operation: VPNPasswordWorkerOperation, reference: VPNPasswordReference,
-                             revision: UInt64, secret: inout Data, timeout: UInt64,
-                             locator: VPNPasswordItemLocator? = nil) throws -> VPNPasswordWorkerWire.Response {
-            defer { VPNPasswordWorkerWire.clear(&secret) }
+        /// Retry only positively identified receipt-lock contention, outside
+        /// Store. Failed writes (even post-rename) are never retried or hidden.
+        private static func acknowledgmentNow() -> UInt64 {
+            #if VPN_PASSWORD_WORKER_TESTING
+            if let clock = testAcknowledgmentNow { return clock() }
+            #endif
+            return DispatchTime.now().uptimeNanoseconds
+        }
+        private func acknowledge(_ action: () throws -> Void) throws {
+            #if VPN_PASSWORD_WORKER_TESTING
+            Self.testBeforeAcknowledgment?()
+            #endif
+            let deadline = Self.acknowledgmentNow() + 50_000_000
+            for attempt in 0..<3 {
+                if attempt > 0, Self.acknowledgmentNow() >= deadline { throw VPNValidationError.storageUnavailable }
+                do { try action(); return }
+                catch VPNPasswordReceiptAcknowledgmentError.lockBusy {
+                    #if VPN_PASSWORD_WORKER_TESTING
+                    Self.testAfterBusyAcknowledgment?()
+                    #endif
+                    let now = Self.acknowledgmentNow()
+                    guard attempt < 2, now < deadline, deadline - now >= 10_000_000 else { throw VPNValidationError.storageUnavailable }
+                    usleep(10_000)
+                }
+            }
+        }
+
+        /// A consumed operation owns its one response. Concurrent callers cannot
+        /// issue a second GO or steal that response, even while Store is unlocked.
+        private func consume() throws {
+            operationLock.lock(); defer { operationLock.unlock() }
             guard !used else { throw VPNPasswordWorkerError.invalid }
             used = true
+        }
+        private func claim(store: VPNStore) throws {
+            try consume()
+            try directory.requireSameDirectory(as: store.directory)
             try identity.requireSameProcess(child, expected: stamp, parent: getpid())
+        }
+        private struct Ticket {
+            let operation: VPNPasswordWorkerOperation
+            let deadline: UInt64
+            let sent: Bool
+        }
+        private func dispatch(operation: VPNPasswordWorkerOperation, reference: VPNPasswordReference,
+                              revision: UInt64, secret: inout Data, locator: VPNPasswordItemLocator? = nil,
+                              timeout: UInt64 = VPNPasswordWorker.softTimeout) throws -> Ticket {
+            defer { VPNPasswordWorkerWire.clear(&secret) }
             var bytes = try VPNPasswordWorkerWire.request(.init(metadata: .init(operation: operation,
                 reference: reference, revision: revision, locator: locator), secret: secret), nonce: nonce)
             defer { VPNPasswordWorkerWire.clear(&bytes) }
             let deadline = DispatchTime.now().uptimeNanoseconds + timeout
             dispatchAttempted = true
             do {
-                try VPNPasswordWorkerWire.send(bytes, socket: socket, deadline: deadline)
-                var response = try VPNPasswordWorkerWire.receive(socket: socket, deadline: deadline)
+                try VPNPasswordWorkerWire.sendImmediate(bytes, socket: socket)
+                return Ticket(operation: operation, deadline: deadline, sent: true)
+            } catch { return Ticket(operation: operation, deadline: deadline, sent: false) }
+        }
+        private func awaitReceipt(_ ticket: Ticket) -> VPNPasswordWorkerWire.Response {
+            guard ticket.sent else { return .init(status: .indeterminate, secret: Data()) }
+            do {
+                var response = try VPNPasswordWorkerWire.receive(socket: socket, deadline: ticket.deadline)
                 defer { VPNPasswordWorkerWire.clear(&response) }
-                return try VPNPasswordWorkerWire.decodeResponse(response, nonce: nonce, operation: operation)
-            } catch {
-                return .init(status: .indeterminate, secret: Data())
-            }
+                return try VPNPasswordWorkerWire.decodeResponse(response, nonce: nonce, operation: ticket.operation)
+            } catch { return .init(status: .indeterminate, secret: Data()) }
+        }
+        #if VPN_PASSWORD_WORKER_TESTING
+        static var testAcknowledgmentNow: (() -> UInt64)?
+        static var testBeforeAcknowledgment: (() -> Void)?
+        static var testAfterBusyAcknowledgment: (() -> Void)?
+        private func perform(operation: VPNPasswordWorkerOperation, reference: VPNPasswordReference,
+                             revision: UInt64, secret: inout Data, timeout: UInt64,
+                             locator: VPNPasswordItemLocator? = nil) throws -> VPNPasswordWorkerWire.Response {
+            defer { VPNPasswordWorkerWire.clear(&secret) }
+            try consume()
+            try identity.requireSameProcess(child, expected: stamp, parent: getpid())
+            return awaitReceipt(try dispatch(operation: operation, reference: reference, revision: revision,
+                                             secret: &secret, locator: locator, timeout: timeout))
         }
 
-        #if VPN_PASSWORD_WORKER_TESTING
         func testPerform(operation: VPNPasswordWorkerOperation, reference: VPNPasswordReference,
                          revision: UInt64, secret: inout Data, timeout: UInt64,
                          locator: VPNPasswordItemLocator? = nil) throws -> VPNPasswordWorkerWire.Response {
             try perform(operation: operation, reference: reference, revision: revision, secret: &secret, timeout: timeout, locator: locator)
         }
         func testTruncatedGO() throws {
-            guard !used else { throw VPNPasswordWorkerError.invalid }
-            used = true; dispatchAttempted = true
+            try consume(); dispatchAttempted = true
             var bytes: [UInt8] = [0, 0, 0, 100, 1, 2, 3]
             _ = bytes.withUnsafeMutableBytes { Darwin.send(socket, $0.baseAddress, $0.count, MSG_NOSIGNAL) }
             shutdown(socket, SHUT_WR)
         }
         func testWrongNonceGO(reference: VPNPasswordReference, revision: UInt64) throws {
-            guard !used else { throw VPNPasswordWorkerError.invalid }
-            used = true; dispatchAttempted = true
+            try consume(); dispatchAttempted = true
             var wrong = nonce; wrong[0] ^= 1
             var bytes = try VPNPasswordWorkerWire.request(.init(metadata: .init(operation: .add,
                 reference: reference, revision: revision), secret: Data("synthetic".utf8)), nonce: wrong)
@@ -177,8 +242,7 @@ enum VPNPasswordWorker {
         func testReplayGO(reference: VPNPasswordReference, revision: UInt64,
                           secret: inout Data) throws -> VPNPasswordWorkerWire.Response {
             defer { VPNPasswordWorkerWire.clear(&secret) }
-            guard !used else { throw VPNPasswordWorkerError.invalid }
-            used = true; dispatchAttempted = true
+            try consume(); dispatchAttempted = true
             var bytes = try VPNPasswordWorkerWire.request(.init(metadata: .init(operation: .add,
                 reference: reference, revision: revision), secret: secret), nonce: nonce)
             defer { VPNPasswordWorkerWire.clear(&bytes) }
@@ -202,6 +266,16 @@ enum VPNPasswordWorker {
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else { throw VPNPasswordWorkerError.transport }
         guard fcntl(pair[0], F_SETFD, FD_CLOEXEC) == 0,
               fcntl(pair[1], F_SETFD, FD_CLOEXEC) == 0 else {
+            close(pair[0]); close(pair[1]); throw VPNPasswordWorkerError.transport
+        }
+        var capacity = Int32((VPNPasswordWorkerWire.maximumFrameBytes + 4) * 2)
+        var actual: Int32 = 0, capacitySize = socklen_t(MemoryLayout<Int32>.size)
+        guard setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &capacity, capacitySize) == 0,
+              setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &capacity, capacitySize) == 0,
+              getsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &actual, &capacitySize) == 0,
+              actual >= VPNPasswordWorkerWire.maximumFrameBytes + 4,
+              getsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &actual, &capacitySize) == 0,
+              actual >= VPNPasswordWorkerWire.maximumFrameBytes + 4 else {
             close(pair[0]); close(pair[1]); throw VPNPasswordWorkerError.transport
         }
         var socket = pair[0]
@@ -262,12 +336,18 @@ enum VPNPasswordWorker {
             // Full private GO accepted. Do not re-authenticate a now-dead or
             // reparented parent; finish exactly this one captured operation.
             var response = try backend.execute(&request)
+            #if VPN_PASSWORD_WORKER_TESTING
+            testBeforeResponse?(captured.operation)
+            #endif
             defer { VPNPasswordWorkerWire.clear(&response.secret) }
             var result = try VPNPasswordWorkerWire.response(response, nonce: nonce, operation: captured.operation)
             defer { VPNPasswordWorkerWire.clear(&result) }
-            // Send BEFORE taking Store lock: the parent can be awaiting this
-            // result while still holding the lock inside its bounded callback.
+            // Send BEFORE taking Store lock. Parent awaits unlocked; both
+            // actors may then acknowledge only this exact definite receipt.
             try? VPNPasswordWorkerWire.send(result, socket: childSocket, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000)
+            #if VPN_PASSWORD_WORKER_TESTING
+            testBeforeSettlement?(captured.operation)
+            #endif
             if captured.operation == .add, response.addOutcome != .indeterminate {
                 settleAdd(captured.reference, outcome: response.addOutcome, directory: directory)
             } else if captured.operation == .delete, response.status == .success,
@@ -281,26 +361,14 @@ enum VPNPasswordWorker {
     private static func settleAdd(_ reference: VPNPasswordReference, outcome: VPNPasswordAddOutcome,
                                   directory: VPNPasswordWorkerDirectory) {
         retrySettlement(directory) { store in
-            let ledger = try store.load()?.passwordLedger
-            if ledger?.active?.reference == reference, ledger?.active?.writeState != .pending { return }
-            if ledger?.pendingDeletion.contains(where: { $0.reference == reference && $0.writeState != .pending }) == true { return }
-            // Already retired exact UUID is also terminal, never recreated.
-            if ledger?.active?.reference != reference,
-               ledger?.pendingDeletion.contains(where: { $0.reference == reference }) != true { return }
-            try store.completePasswordAdd(reference: reference, outcome: outcome)
+            try store.acknowledgePasswordAddReceipt(reference: reference, outcome: outcome, expectedDirectoryDescriptor: directory.descriptor)
         }
     }
 
     private static func settleDeletion(_ reference: VPNPasswordReference, captured: VPNPasswordItemLocator,
                                        directory: VPNPasswordWorkerDirectory) {
         retrySettlement(directory) { store in
-            guard try store.load()?.passwordLedger.pendingDeletion.contains(where: { $0.reference == reference }) == true else { return }
-            // Trusted result of this child's own exact delete, not a wire
-            // command that can authorize settlement of an arbitrary reference.
-            try store.deletePendingPassword(reference: reference) { _, locator in
-                guard locator == captured else { throw VPNPasswordWorkerError.denied }
-                return .deleted
-            }
+            try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: captured, expectedDirectoryDescriptor: directory.descriptor)
         }
     }
 
@@ -309,6 +377,7 @@ enum VPNPasswordWorker {
         repeat {
             do { try directory.revalidate(); try action(VPNStore(directory: directory.url)); return }
             catch VPNValidationError.storageUnavailable { usleep(20_000) }
+            catch VPNPasswordReceiptAcknowledgmentError.lockBusy { usleep(20_000) }
             catch { return }
         } while DispatchTime.now().uptimeNanoseconds < deadline
         // Honest pending state if access never becomes available; no invented
@@ -355,6 +424,8 @@ enum VPNPasswordWorker {
     }
 
     #if VPN_PASSWORD_WORKER_TESTING
+    static var testBeforeResponse: ((VPNPasswordWorkerOperation) -> Void)?
+    static var testBeforeSettlement: ((VPNPasswordWorkerOperation) -> Void)?
     static func testRunIfRequested(arguments: [String], backend: (Int32) throws -> VPNPasswordWorkerBackend) -> Int32? {
         runIfRequested(arguments: arguments, backend: backend)
     }

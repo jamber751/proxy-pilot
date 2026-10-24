@@ -13,6 +13,23 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let count = read(fd, &bytes, bytes.count)
         return count > 0 ? String(decoding: bytes.prefix(count), as: UTF8.self) : "normal"
     }
+    fileprivate func beforeResponse(_ operation: VPNPasswordWorkerOperation) {
+        guard (operation == .read && behavior() == "read-after-api")
+            || (operation == .delete && behavior() == "delete-after-api") else { return }
+        let fd = openat(directory, "response-ready", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }; close(fd)
+        let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+        var info = stat()
+        while fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) != 0,
+              DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
+    }
+    fileprivate func beforeSettlement(_ operation: VPNPasswordWorkerOperation) {
+        guard operation == .delete, behavior() == "parent-ack-first" else { return }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+        var info = stat()
+        while fstatat(directory, "settlement-release", &info, AT_SYMLINK_NOFOLLOW) != 0,
+              DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
+    }
     fileprivate func locator(_ reference: VPNPasswordReference, descriptor: Int32) throws -> VPNPasswordItemLocator {
         var info = stat()
         guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
@@ -43,6 +60,8 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
                 + (behavior() == "delete-wait-release" ? 7_000_000_000 : 3_000_000_000)
             var info = stat()
             while fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) != 0, DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
+            let finished = openat(directory, "backend-wait-finished", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard finished >= 0 else { throw VPNPasswordWorkerError.unavailable }; close(finished)
             guard fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) == 0 else {
                 return .init(status: .failed, secret: Data())
             }
@@ -164,8 +183,14 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
     }
     static func main() throws {
         if let status = VPNPasswordWorker.testRunIfRequested(arguments: CommandLine.arguments,
-                backend: { FakePasswordBackend(directory: $0) }) { exit(status) }
+                backend: {
+                    let backend = FakePasswordBackend(directory: $0)
+                    VPNPasswordWorker.testBeforeSettlement = { backend.beforeSettlement($0) }
+                    VPNPasswordWorker.testBeforeResponse = { backend.beforeResponse($0) }
+                    return backend
+                }) { exit(status) }
         guard getuid() == geteuid(), getuid() >= 500 else { exit(77) }
+        VPNPasswordWorker.Prepared.testAcknowledgmentNow = { 1_000_000_000 }
         let args = CommandLine.arguments; guard args.count >= 3 else { exit(64) }
         #if DIFFERENT_WORKER_BUILD
         if args[1] == "marker" { print("different-code"); return }
@@ -175,6 +200,234 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let folder = URL(fileURLWithPath: args[2], isDirectory: true)
         let (store, reference, revision) = try seed(folder)
         switch args[1] {
+        case "cleanup-user-otp", "cleanup-user-password":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren(); try revoke(store)
+            let mode: VPNAuthenticationMode = args[1] == "cleanup-user-otp" ? .oneTimePassword : .password
+            let state = try store.load()!; var config = state.saved.configuration
+            try config.setAuthentication(VPNAuthentication(mode: mode, login: "synthetic"))
+            if config != state.saved.configuration { _ = try store.save(config, expectedRevision: state.saved.configuration.revision) }
+            let helper = FakeLiveSession(requiresCredential: true)
+            let runtime = VPNPasswordRuntime(store: store, available: true,
+                cleanupPrepare: { try VPNPasswordWorkerSession.prepare(store: $0) }, openSession: { helper })
+            runtime.controller.connect(); try runtime.configuration.load()
+            try check(runtime.controller.credentialPromptIdentifier != nil)
+            try Data("delete-wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
+            runtime.start()
+            try wait { events(folder) == ["add", "delete"] }
+            // The actual authenticated child has accepted GO and stays paused.
+            // These must all finish BEFORE releasing the simulated Security API.
+            var input = Data("synthetic-input".utf8)
+            runtime.controller.submitCredential(&input, expectedPromptIdentifier: runtime.controller.credentialPromptIdentifier)
+            try runtime.configuration.setAuthentication(mode: mode, login: "changed")
+            try check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("release").path)
+                && !FileManager.default.fileExists(atPath: folder.appendingPathComponent("backend-wait-finished").path)
+                && runtime.cleanupDetail == nil
+                && input.isEmpty && helper.submissions == 1 && runtime.controller.state == .connected
+                && runtime.configuration.configuration.authentication?.login == "changed"
+                && store.load()!.passwordLedger.pendingDeletion.count == 1)
+            try Data().write(to: folder.appendingPathComponent("release"))
+            try wait { try store.load()!.passwordLedger.pendingDeletion.isEmpty }
+            try joinOwnChildren()
+            try check(events(folder) == ["add", "delete"])
+        case "read-revoke-wait", "read-locator-wait", "read-revision-wait", "concurrent-reuse-wait":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren()
+            try Data("wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
+            let worker = try VPNPasswordWorker.prepare(store: store)
+            let finished = DispatchSemaphore(value: 0)
+            var rejected = false, escaped = false
+            DispatchQueue(label: "synthetic.read-receipt").async {
+                defer { finished.signal() }
+                do { var result = try worker.read(store: store, reference: reference, revision: revision)
+                    escaped = !result.secret.isEmpty; VPNPasswordWorkerWire.clear(&result.secret)
+                } catch { rejected = error as? VPNValidationError == .staleRevision }
+            }
+            try wait { events(folder) == ["add", "read"] }
+            if args[1] == "concurrent-reuse-wait" {
+                do { _ = try worker.deletePendingOutcome(store: store, reference: reference); throw Failure.check }
+                catch VPNPasswordWorkerError.invalid {}
+            } else if args[1] == "read-revoke-wait" { try revoke(store) }
+            else if args[1] == "read-revision-wait" {
+                let state = try store.load()!; var config = state.saved.configuration
+                try config.saveResource(VPNResource(address: "10.99.0.0/16"))
+                _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
+            } else {
+                let state = try store.load()!; var ledger = state.passwordLedger
+                let old = ledger.active!.locator!, origin = old.origin
+                ledger.active!.locator = .init(persistentReference: old.persistentReference,
+                    origin: .init(kind: origin.kind, path: origin.path, device: origin.device, inode: origin.inode + 1,
+                        ownerUID: origin.ownerUID, birthSeconds: origin.birthSeconds, birthNanoseconds: origin.birthNanoseconds))
+                let changed = VPNStoredState(saved: state.saved, applied: state.applied, passwordLedger: ledger)
+                try JSONEncoder().encode(changed).write(to: folder.appendingPathComponent("state.json"), options: .atomic)
+                guard chmod(folder.appendingPathComponent("state.json").path, 0o600) == 0 else { throw Failure.check }
+            }
+            try Data().write(to: folder.appendingPathComponent("release"))
+            try check(finished.wait(timeout: .now() + 2) == .success
+                && (args[1] == "concurrent-reuse-wait" ? (!rejected && escaped) : (rejected && !escaped)))
+            try joinOwnChildren(); try check(events(folder) == ["add", "read"])
+        case "add-revoke-wait":
+            try Data("wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
+            let worker = try VPNPasswordWorker.prepare(store: store), finished = DispatchSemaphore(value: 0)
+            var oldSucceeded = false
+            DispatchQueue(label: "synthetic.old-add").async {
+                defer { finished.signal() }
+                var old = Data("old-synthetic".utf8)
+                oldSucceeded = (try? worker.addOnce(store: store, reference: reference, revision: revision, secret: &old)) != nil
+            }
+            try wait { events(folder) == ["add"] }
+            try revoke(store)
+            let state = try store.load()!; var config = state.saved.configuration
+            try config.setAuthentication(VPNAuthentication(mode: .password, login: "synthetic", credentialPersistence: .keychain))
+            _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
+            let newest = try store.createPasswordSaveGrant(expectedRevision: config.revision, expectedActive: nil)
+            try Data("normal".utf8).write(to: folder.appendingPathComponent("behavior"))
+            var fresh = Data("new-synthetic".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: newest, revision: config.revision, secret: &fresh)
+            try check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("release").path))
+            try Data().write(to: folder.appendingPathComponent("release"))
+            try check(finished.wait(timeout: .now() + 2) == .success && oldSucceeded)
+            try joinOwnChildren()
+            try check(store.load()!.passwordLedger.active?.reference == newest
+                && store.load()!.passwordLedger.pendingDeletion.first?.reference == reference
+                && store.load()!.passwordLedger.pendingDeletion.first?.writeState == .settled
+                && Data(contentsOf: folder.appendingPathComponent("item-" + newest.itemID.uuidString)) == Data("new-synthetic".utf8)
+                && events(folder) == ["add", "add"])
+        case "delete-locator-wait", "delete-new-grant-wait":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren(); try revoke(store)
+            try Data("wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
+            let worker = try VPNPasswordWorker.prepare(store: store), finished = DispatchSemaphore(value: 0)
+            var positive = false, stale = false
+            DispatchQueue(label: "synthetic.delete-receipt").async {
+                defer { finished.signal() }
+                do { positive = try worker.deletePendingOutcome(store: store, reference: reference) == .deleted }
+                catch { stale = error as? VPNValidationError == .staleRevision }
+            }
+            try wait { events(folder) == ["add", "delete"] }
+            var newest: VPNPasswordReference?, changed: VPNPasswordItemLocator?
+            if args[1] == "delete-new-grant-wait" {
+                let state = try store.load()!; var config = state.saved.configuration
+                try config.setAuthentication(VPNAuthentication(mode: .password, login: "synthetic", credentialPersistence: .keychain))
+                _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
+                newest = try store.createPasswordSaveGrant(expectedRevision: config.revision, expectedActive: nil)
+            } else {
+                let state = try store.load()!; var ledger = state.passwordLedger
+                let old = ledger.pendingDeletion[0].locator!
+                changed = .init(persistentReference: Data("changed-locator".utf8), origin: old.origin)
+                ledger.pendingDeletion[0].locator = changed
+                try JSONEncoder().encode(VPNStoredState(saved: state.saved, applied: state.applied, passwordLedger: ledger))
+                    .write(to: folder.appendingPathComponent("state.json"), options: .atomic)
+                guard chmod(folder.appendingPathComponent("state.json").path, 0o600) == 0 else { throw Failure.check }
+            }
+            try Data().write(to: folder.appendingPathComponent("release"))
+            try check(finished.wait(timeout: .now() + 2) == .success)
+            try joinOwnChildren()
+            if let newest { try check(positive && !stale && store.load()!.passwordLedger.active?.reference == newest && store.load()!.passwordLedger.pendingDeletion.isEmpty) }
+            else { try check(!positive && stale && store.load()!.passwordLedger.pendingDeletion.first?.locator == changed) }
+            try check(events(folder) == ["add", "delete"])
+        case "immediate-partial":
+            let worker = try VPNPasswordWorker.prepare(store: store)
+            VPNPasswordWorkerWire.testImmediateLimit = 7
+            defer { VPNPasswordWorkerWire.testImmediateLimit = nil }
+            var secret = Data("synthetic-password".utf8)
+            let result = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren()
+            try check(result == .indeterminate && secret.isEmpty && events(folder).isEmpty
+                && store.load()!.passwordLedger.active?.writeState == .pending
+                && VPNPasswordWorkerWire.testImmediateSendCalls == 1)
+            try rejects {
+                var retry = Data("synthetic-retry".utf8)
+                _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &retry)
+            }
+            try joinOwnChildren()
+            try check(events(folder).isEmpty && VPNPasswordWorkerWire.testImmediateSendCalls == 1)
+        case "read-directory-wait", "add-directory-wait", "delete-directory-wait",
+             "read-mode-wait", "add-mode-wait", "delete-mode-wait":
+            let operation: VPNPasswordWorkerOperation = args[1].hasPrefix("read-") ? .read
+                : args[1].hasPrefix("add-") ? .add : .delete
+            if operation != .add {
+                var secret = Data("synthetic-password".utf8)
+                _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+                try joinOwnChildren()
+                if operation == .delete { try revoke(store) }
+            }
+            let behavior = operation == .read ? "read-after-api" : operation == .delete ? "delete-after-api" : "wait-release"
+            try Data(behavior.utf8).write(to: folder.appendingPathComponent("behavior"))
+            let worker = try VPNPasswordWorker.prepare(store: store), finished = DispatchSemaphore(value: 0)
+            var rejected = false, escaped = false
+            DispatchQueue(label: "synthetic.directory-replacement").async {
+                defer { finished.signal() }
+                do {
+                    if operation == .add {
+                        var secret = Data("synthetic".utf8)
+                        _ = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+                    } else if operation == .delete { _ = try worker.deletePendingOutcome(store: store, reference: reference) }
+                    else { var result = try worker.read(store: store, reference: reference, revision: revision)
+                        escaped = !result.secret.isEmpty; VPNPasswordWorkerWire.clear(&result.secret) }
+                } catch { rejected = error as? VPNValidationError == .staleRevision }
+            }
+            try wait { operation == .add ? events(folder) == ["add"] : FileManager.default.fileExists(atPath: folder.appendingPathComponent("response-ready").path) }
+            if args[1].contains("mode-wait") {
+                let before = try Data(contentsOf: folder.appendingPathComponent("state.json"))
+                guard chmod(folder.path, 0o2700) == 0 else { throw Failure.check }
+                defer { chmod(folder.path, 0o700) }
+                try Data().write(to: folder.appendingPathComponent("release"))
+                try check(finished.wait(timeout: .now() + 2) == .success && rejected && !escaped)
+                try joinOwnChildren()
+                try check(before == Data(contentsOf: folder.appendingPathComponent("state.json")))
+                break
+            }
+            let held = folder.deletingLastPathComponent().appendingPathComponent(folder.lastPathComponent + "-held-" + UUID().uuidString)
+            try FileManager.default.moveItem(at: folder, to: held)
+            defer { try? FileManager.default.removeItem(at: held) }
+            try FileManager.default.copyItem(at: held, to: folder)
+            let oldState = try Data(contentsOf: held.appendingPathComponent("state.json"))
+            let newState = try Data(contentsOf: folder.appendingPathComponent("state.json"))
+            try check(oldState == newState) // Same UUID/config/locator, different directory inode.
+            try Data().write(to: held.appendingPathComponent("release"))
+            try check(finished.wait(timeout: .now() + 2) == .success && rejected && !escaped)
+            try joinOwnChildren()
+            try check(oldState == Data(contentsOf: held.appendingPathComponent("state.json"))
+                && newState == Data(contentsOf: folder.appendingPathComponent("state.json")))
+        case "ack-busy-release", "ack-expire", "ack-oversleep":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren(); try revoke(store)
+            try Data("parent-ack-first".utf8).write(to: folder.appendingPathComponent("behavior"))
+            let worker = try VPNPasswordWorker.prepare(store: store)
+            var held: Int32 = -1, busyReads = 0, clockReads = 0
+            var logicalNow: UInt64 = 1_000_000_000
+            VPNPasswordWorker.Prepared.testAcknowledgmentNow = {
+                clockReads += 1
+                return args[1] == "ack-oversleep" && clockReads >= 3 ? 1_060_000_000 : logicalNow
+            }
+            VPNPasswordWorker.Prepared.testBeforeAcknowledgment = {
+                held = open(folder.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                precondition(held >= 0 && flock(held, LOCK_EX | LOCK_NB) == 0)
+            }
+            VPNPasswordWorker.Prepared.testAfterBusyAcknowledgment = {
+                busyReads += 1; flock(held, LOCK_UN); close(held); held = -1
+                if args[1] == "ack-expire" { logicalNow = 1_060_000_000 }
+                if args[1] == "ack-busy-release" { usleep(60_000) }
+            }
+            defer {
+                VPNPasswordWorker.Prepared.testBeforeAcknowledgment = nil
+                VPNPasswordWorker.Prepared.testAfterBusyAcknowledgment = nil
+                VPNPasswordWorker.Prepared.testAcknowledgmentNow = nil
+                if held >= 0 { flock(held, LOCK_UN); close(held) }
+            }
+            if args[1] == "ack-busy-release" { try check(worker.deletePendingOutcome(store: store, reference: reference) == .deleted) }
+            else { try rejects { _ = try worker.deletePendingOutcome(store: store, reference: reference) } }
+            try check(busyReads == 1 && events(folder) == ["add", "delete"])
+            if args[1] != "ack-busy-release" {
+                try check(clockReads == (args[1] == "ack-expire" ? 2 : 3) && store.load()!.passwordLedger.pendingDeletion.count == 1)
+            }
+            try Data().write(to: folder.appendingPathComponent("settlement-release"))
+            try joinOwnChildren()
         case "wire-invalid":
             let locator = VPNPasswordItemLocator(persistentReference: Data([1]), origin: .init(kind: .legacyKeychain,
                 path: "/synthetic/item", device: 1, inode: 1, ownerUID: getuid(), birthSeconds: 0, birthNanoseconds: 0))
@@ -462,6 +715,7 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             case "typed-delete-not-found": try FileManager.default.removeItem(at: item)
             case "typed-delete-unavailable": try Data("delete-unavailable".utf8).write(to: folder.appendingPathComponent("behavior"))
             case "typed-delete-unknown": try Data("crash".utf8).write(to: folder.appendingPathComponent("behavior"))
+            case "typed-delete-write-error": try Data("parent-ack-first".utf8).write(to: folder.appendingPathComponent("behavior"))
             case "typed-delete-late": try Data("delete-wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
             default: break
             }
@@ -470,6 +724,7 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             if args[1] == "typed-delete-write-error" {
                 store.testRejectNextWriteAfterRename = true
                 try rejects { _ = try worker.deletePendingOutcome(store: store, reference: reference) }
+                try Data().write(to: folder.appendingPathComponent("settlement-release"))
                 try joinOwnChildren()
                 // Positive API result is not returned as .deleted when Store
                 // reports uncertainty. Atomic rename may still have committed.

@@ -3,7 +3,8 @@ import Foundation
 /// Explicit application owner. Construction never opens a worker or reads the
 /// Store. Previews and normal dependency-injection callers remain unavailable.
 final class VPNPasswordRuntime {
-    // Enable only after the genuine default-Keychain authenticated VM gate.
+    // Enable only after the genuine default-Keychain authenticated VM gate
+    // AND the unlocked-Worker contention regression gate.
     static let liveIntegrationEnabled = false
     let available: Bool
     private let store: VPNStore

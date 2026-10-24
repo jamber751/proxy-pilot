@@ -91,7 +91,7 @@ QUJDRA==
         let reference = try grant(store)
         let revision = initial.saved.configuration.revision
         if !["grant", "errors", "lock", "schema", "once", "unknown", "late-active", "unissued", "pending-sync", "prepare-add-crash",
-             "locator", "invalid-completion", "schema3", "no-item", "late-no-io", "malformed-slot", "rename-error"].contains(args[1]) {
+             "locator", "invalid-completion", "receipt-add", "receipt-noio", "receipt-lock", "schema3", "no-item", "late-no-io", "malformed-slot", "rename-error"].contains(args[1]) {
             try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in .added(locator) }
         }
         switch args[1] {
@@ -357,6 +357,62 @@ QUJDRA==
                              String(describing: VPNPasswordAddOutcome.added(locator)),
                              String(reflecting: VPNPasswordSlot(reference: reference, writeState: .settled, locator: locator))]
             try check(sensitive.allSatisfy { $0.contains("redacted") && !$0.contains("synthetic") && !$0.contains("employee") })
+        case "receipt-add", "receipt-noio", "receipt-lock":
+            try rejects { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .definitelyNoIO) }
+            _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in .indeterminate }
+            if args[1] == "receipt-lock" {
+                let fd = open(folder.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw Failure.assertion }
+                var busy = false
+                do { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator)) }
+                catch VPNPasswordReceiptAcknowledgmentError.lockBusy { busy = true }
+                flock(fd, LOCK_UN); close(fd); try check(busy)
+                store.testRejectNextWriteAfterRename = true
+                try rejects { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator)) }
+                try check(store.load()!.passwordLedger.active?.writeState == .settled)
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator))
+            } else if args[1] == "receipt-noio" {
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .definitelyNoIO)
+                let before = try Data(contentsOf: file)
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .definitelyNoIO)
+                try rejects { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator)) }
+                try check(before == Data(contentsOf: file))
+            } else {
+                _ = try auth(store)
+                _ = try auth(store, consent: .keychain)
+                let newest = try grant(store)
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator))
+                let before = try Data(contentsOf: file)
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator))
+                try rejects { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .definitelyNoIO) }
+                try rejects { try store.completePasswordAdd(reference: reference, outcome: .added(locator)) }
+                try check(before == Data(contentsOf: file) && store.load()!.passwordLedger.active?.reference == newest)
+                try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: locator)
+                try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: locator)
+                try rejects { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator)) }
+                try check(store.load()!.passwordLedger.active?.reference == newest && store.load()!.passwordLedger.pendingDeletion.isEmpty)
+            }
+        case "receipt-delete-scope":
+            _ = try auth(store)
+            let state = try store.load()!; var ledger = state.passwordLedger
+            let foreign = VPNPasswordReference(itemID: reference.itemID, profileSHA256: String(repeating: "0", count: 64), login: "other-scope")
+            ledger.pendingDeletion[0] = VPNPasswordSlot(reference: foreign, writeState: .settled, locator: locator)
+            try JSONEncoder().encode(VPNStoredState(saved: state.saved, applied: state.applied, passwordLedger: ledger)).write(to: file, options: .atomic)
+            guard chmod(file.path, 0o600) == 0 else { throw Failure.assertion }
+            let before = try Data(contentsOf: file)
+            try rejects { try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: locator) }
+            try check(before == Data(contentsOf: file) && store.load()!.passwordLedger.pendingDeletion[0].reference == foreign)
+        case "receipt-delete-changed":
+            _ = try auth(store)
+            let changed = VPNPasswordItemLocator(persistentReference: Data("different".utf8), origin: locator.origin)
+            let state = try store.load()!; var ledger = state.passwordLedger
+            ledger.pendingDeletion[0].locator = changed
+            try JSONEncoder().encode(VPNStoredState(saved: state.saved, applied: state.applied, passwordLedger: ledger)).write(to: file, options: .atomic)
+            guard chmod(file.path, 0o600) == 0 else { throw Failure.assertion }
+            let before = try Data(contentsOf: file)
+            try rejects { try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: locator) }
+            try rejects { try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator)) }
+            try check(before == Data(contentsOf: file))
         case "invalid-completion":
             let invalid = VPNPasswordItemLocator(persistentReference: Data(), origin: locator.origin)
             try rejects { _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in .added(invalid) } }

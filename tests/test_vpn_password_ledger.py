@@ -36,6 +36,11 @@ class VPNPasswordLedgerTests(unittest.TestCase):
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         if expected == 0: self.assertIn('ledger checks passed', result.stdout)
 
+    def test_authenticated_add_receipt_is_exact_idempotent_and_never_recreates_missing_ref(self): self.run_case('receipt-add')
+    def test_authenticated_no_io_receipt_requires_pending_and_exact_terminal_match(self): self.run_case('receipt-noio')
+    def test_only_real_receipt_lock_busy_is_retryable_not_postrename_error(self): self.run_case('receipt-lock')
+    def test_positive_delete_receipt_cannot_drop_changed_locator(self): self.run_case('receipt-delete-changed')
+    def test_positive_delete_cannot_treat_same_uuid_different_scope_as_absence(self): self.run_case('receipt-delete-scope')
     def test_explicit_grant_and_exact_binding(self): self.run_case('grant')
     def test_revocation_survives_restart_and_denied_delete(self): self.run_case('revoke')
     def test_regrant_same_binding_cannot_be_deleted_by_old_reference(self): self.run_case('regrant')
