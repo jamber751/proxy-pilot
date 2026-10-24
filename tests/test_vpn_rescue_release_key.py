@@ -20,7 +20,7 @@ class VPNRescueReleaseKeyTests(unittest.TestCase):
         cls.fixture = Path(cls.build.name) / 'synthetic-signer'
         sources = [ROOT / 'app/vpn-helper' / name for name in (
             'VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNReleaseTrust.swift',
-            'VPNCompanionMetadata.swift', 'VPNRescueAuthorization.swift')]
+            'VPNCompanionMetadata.swift', 'VPNRescueAuthorization.swift', 'VPNRescuePreparationAuthorization.swift')]
         sources.append(ROOT / 'app/vpn-release-key.swift')
         for output, extra in ((cls.tool, []), (cls.fixture, ['-D', 'VPN_RELEASE_KEY_TESTING',
                 str(ROOT / 'tests/vpn_rescue_release_key_checks.swift')])):
@@ -99,6 +99,45 @@ class VPNRescueReleaseKeyTests(unittest.TestCase):
     def test_verifier_rejects_wrong_public_key(self):
         self.sign(); (self.base / 'public').write_text(base64.b64encode(b'x' * 32).decode() + '\n')
         self.verify(accepted=False)
+
+    def preparation_inputs(self):
+        inputs = self.inputs()
+        inputs[6] = self.base / 'preparation-description'
+        return inputs
+
+    def test_preparation_roundtrip_and_finish_role_rejection(self):
+        self.output.unlink()
+        signed = self.invoke(self.fixture, 'sign-preparation', *self.preparation_inputs(), self.output)
+        self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
+        checked = self.invoke(self.tool, 'verify-rescue-preparation', *self.preparation_inputs(),
+                              self.output, self.base / 'public')
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn('Verified rescue preparation 7 to 8 artifact bytes', checked.stdout)
+        refused = self.invoke(self.tool, 'verify-rescue', *self.preparation_inputs(),
+                              self.output, self.base / 'public')
+        self.assertEqual(refused.returncode, 1)
+
+    def test_finish_description_cannot_be_signed_as_preparation(self):
+        result = self.invoke(self.fixture, 'sign-preparation', *self.inputs(), self.output)
+        self.assertEqual(result.returncode, 77)
+        self.assertEqual(self.output.read_text(), 'keep prior signature')
+        self.sign()
+        checked = self.invoke(self.tool, 'verify-rescue-preparation', *self.inputs(),
+                              self.output, self.base / 'public')
+        self.assertEqual(checked.returncode, 1)
+
+    def test_preparation_mismatched_artifact_not_published(self):
+        (self.base / 'artifact').write_bytes(b'wrong artifact')
+        result = self.invoke(self.fixture, 'sign-preparation', *self.preparation_inputs(), self.output)
+        self.assertEqual(result.returncode, 77)
+        self.assertEqual(self.output.read_text(), 'keep prior signature')
+
+    def test_preparation_verifier_rejects_resigned_finish_operation(self):
+        signed = self.invoke(self.fixture, 'raw-sign', self.base / 'description', self.output, 'preparation')
+        self.assertEqual(signed.returncode, 0, signed.stderr)
+        checked = self.invoke(self.tool, 'verify-rescue-preparation', *self.inputs(),
+                              self.output, self.base / 'public')
+        self.assertEqual(checked.returncode, 1)
 
 
 if __name__ == '__main__': unittest.main()

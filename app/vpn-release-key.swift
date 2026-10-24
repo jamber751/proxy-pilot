@@ -30,6 +30,8 @@ enum VPNReleaseKeyTool {
           vpn-release-key verify-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature> <public-key-file>
           vpn-release-key sign-rescue <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <rescue-description> <rescue-artifact> <rescue-signature-file> [--keychain <path>]
           vpn-release-key verify-rescue <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <rescue-description> <rescue-artifact> <rescue-signature> <public-key-file>
+          vpn-release-key sign-rescue-preparation <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <preparation-description> <rescue-artifact> <signature-file> [--keychain <path>]
+          vpn-release-key verify-rescue-preparation <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <preparation-description> <rescue-artifact> <signature> <public-key-file>
           vpn-release-key sign-companion <metadata> <signature-file> [--keychain <path>]
           vpn-release-key verify-companion <metadata> <signature> <public-key-file>
           vpn-release-key verify-companion-artifact <metadata> <signature> <public-key-file> <artifact>
@@ -194,10 +196,32 @@ enum VPNReleaseKeyTool {
         return signed
     }
 
+    static func verifyRescuePreparation(_ inputs: RescueInputs, signature: Data,
+                                       publicKey: Data) throws -> VerifiedVPNRescuePreparationAuthorization {
+        let authority = try VPNReleaseAuthority(trustedPublicKey: publicKey,
+            minimumSequence: 1, supportedProtocol: 1)
+        let previous = try authority.verify(payload: inputs.previousPayload,
+            signature: inputs.previousSignature, previous: nil)
+        let verified = try VPNRescuePreparationAuthorization.verify(
+            payload: inputs.payload, signature: signature, authority: authority, previous: previous,
+            previousPayload: inputs.previousPayload, previousSignature: inputs.previousSignature,
+            candidatePayload: inputs.candidatePayload, candidateSignature: inputs.candidateSignature,
+            transitionPayload: inputs.transitionPayload, transitionSignature: inputs.transitionSignature)
+        try verified.validateArtifact(inputs.artifact)
+        return verified
+    }
+
+    static func validatedRescuePreparationSignature(_ inputs: RescueInputs,
+                                                    key: Curve25519.Signing.PrivateKey) throws -> Data {
+        let signed = try key.signature(for: VPNReleaseAuthority.rescuePreparationAuthorizationDomain + inputs.payload)
+        _ = try verifyRescuePreparation(inputs, signature: signed, publicKey: key.publicKey.rawRepresentation)
+        return signed
+    }
+
     static func main() {
         let arguments = CommandLine.arguments
         guard arguments.count >= 2 else { usage() }
-        let chain = arguments[1] == "verify-rescue" ? nil : keychain(arguments)
+        let chain = ["verify-rescue", "verify-rescue-preparation"].contains(arguments[1]) ? nil : keychain(arguments)
         switch arguments[1] {
         case "generate":
             guard arguments.count >= 3 else { usage() }
@@ -320,6 +344,23 @@ enum VPNReleaseKeyTool {
                 fail("Rescue description, signature, edge or artifact rejected.")
             }
             print("Verified rescue \(verified.fromSequence) to \(verified.toSequence) artifact bytes")
+        case "sign-rescue-preparation":
+            guard arguments.count == 11 || (arguments.count == 13 && arguments[11] == "--keychain"),
+                  let inputs = rescueInputs(arguments), let key = storedKey(chain),
+                  let signed = try? validatedRescuePreparationSignature(inputs, key: key) else {
+                fail("Rescue preparation, edge or artifact rejected; signature not written.")
+            }
+            write(signed.base64EncodedString() + "\n", to: arguments[10])
+            print("Signed exact-edge rescue preparation")
+        case "verify-rescue-preparation":
+            guard arguments.count == 12, let inputs = rescueInputs(arguments),
+                  let signed = signature(arguments[10]),
+                  let publicText = try? String(contentsOfFile: arguments[11], encoding: .utf8),
+                  let publicKey = Data(base64Encoded: publicText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let verified = try? verifyRescuePreparation(inputs, signature: signed, publicKey: publicKey) else {
+                fail("Rescue preparation, signature, edge or artifact rejected.")
+            }
+            print("Verified rescue preparation \(verified.fromSequence) to \(verified.toSequence) artifact bytes")
         case "sign-companion":
             guard arguments.count >= 4,
                   let key = storedKey(chain),

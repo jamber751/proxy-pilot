@@ -51,6 +51,7 @@ KEY_TOOL="$WORK/key/vpn-release-key"
   "$HERE/vpn-helper/VPNReleaseTrust.swift" \
   "$HERE/vpn-helper/VPNCompanionMetadata.swift" \
   "$HERE/vpn-helper/VPNRescueAuthorization.swift" \
+  "$HERE/vpn-helper/VPNRescuePreparationAuthorization.swift" \
   "$HERE/vpn-release-key.swift" -o "$KEY_TOOL"
 
 EXPECTED_KEY=$(< "$HERE/vpn-release-public-key.txt")
