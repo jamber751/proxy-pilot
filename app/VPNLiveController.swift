@@ -111,6 +111,12 @@ final class VPNLiveController: ObservableObject {
 
     func refresh() {
         guard !busy else { return }
+        // The listener serves this authenticated conversation serially while
+        // the user enters credentials. A second readiness conversation stalls;
+        // polling this one would consume its fixed eight-request budget.
+        // Submit/cancel still validate the exact challenge with the helper.
+        if session != nil, let challenge, promptIdentifier == challenge.identifier,
+           expectedAttempt != nil { return }
         do {
             let live = try openSession()
             defer { live.close() }

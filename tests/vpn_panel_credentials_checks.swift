@@ -46,7 +46,7 @@ private final class PromptSession: VPNLiveSession {
     }
     func submitCredentialExchange(_ response: inout VPNCredentialResponse) throws -> (VPNHelperStatus, VPNCredentialChallenge?) {
         submissions += 1
-        guard response.challenge == challenge, !response.secret.isEmpty else { return (.invalidRequest, nil) }
+        guard waiting, response.challenge == challenge, !response.secret.isEmpty else { return (.invalidRequest, nil) }
         response.secret.resetBytes(in: 0..<response.secret.count); response.secret.removeAll()
         waiting = false; connected = true; return (.ok, nil)
     }
@@ -201,30 +201,34 @@ private final class PromptSession: VPNLiveSession {
             try wait(panel)
             try require(panel.secret == "synthetic draft", "same prompt refresh discarded draft")
         case "stale-view-does-not-wipe-new-prompt":
-            session.challenge = VPNCredentialChallenge(generation: session.generation, kind: .vpnPassword)
-            panel.refresh(); try wait(panel)
+            panel.cancelCredential(expectedPromptIdentifier: firstID); try wait(panel)
+            panel.toggle(); try wait(panel)
+            try require(panel.credentialPromptIdentifier != firstID, "new attempt did not replace prompt")
             panel.secret = "new synthetic draft"
             panel.dismissCredentialPrompt(ifMatching: firstID)
             try require(panel.secret == "new synthetic draft", "old view erased a newer prompt draft")
             panel.dismissCredentialPrompt(ifMatching: panel.credentialPromptIdentifier)
             try require(panel.secret.isEmpty, "current disappearing prompt did not clear draft")
         case "same-kind-new-request":
-            session.challenge = VPNCredentialChallenge(generation: session.generation, kind: .vpnPassword)
-            panel.refresh(); try wait(panel)
+            panel.cancelCredential(expectedPromptIdentifier: firstID); try wait(panel)
+            panel.toggle(); try wait(panel)
             try require(panel.needsCredential && panel.secret.isEmpty && controller.credentialPromptIdentifier != firstID,
                         "new request of same kind inherited old input")
             try require(panel.credentialPromptIdentifier == controller.credentialPromptIdentifier,
                         "new prompt identity did not reach presentation")
-            // A refresh observes a new request, but does not transfer its held
-            // transport ownership. This proves presentation clearing only;
-            // submitting a newly entered secret may require reconnecting.
+            // The new authenticated request owns its transport. Empty old input
+            // still cannot be submitted merely because the prompt kind matches.
             panel.submitCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier)
             try require(session.submissions == 0, "old prompt draft was submitted to a new request")
         case "prompt-disappeared":
             session.waiting = false
-            panel.refresh(); try wait(panel)
-            try require(panel.liveState == .off && panel.secret.isEmpty, "disappeared prompt retained input")
+            panel.submitCredential(expectedPromptIdentifier: firstID); try wait(panel)
+            guard case .failed = panel.liveState else { throw NSError(domain: "expired prompt was accepted", code: 1) }
+            try require(panel.secret.isEmpty && panel.credentialPromptIdentifier == nil, "expired prompt retained input")
         case "status-failed":
+            panel.submitCredential(expectedPromptIdentifier: firstID); try wait(panel)
+            try require(panel.connected, "terminal refresh positive control did not connect")
+            panel.secret = "stale presentation draft"
             session.statusFailure = true
             panel.refresh(); try wait(panel)
             try require(panel.liveState == .unavailable && panel.secret.isEmpty, "failed prompt retained input")

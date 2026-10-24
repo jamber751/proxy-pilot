@@ -151,11 +151,11 @@ private func secureField(_ view: NSView) -> VPNSecretField.Field? {
     if let field = view as? VPNSecretField.Field { return field }
     return view.subviews.lazy.compactMap { secureField($0) }.first
 }
-for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource"] {
+for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource", "credential-save"] {
     let panel = VPNPanelModel(preview: true)
     if scenario != "import" {
-        try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : 0,
-                      credentials: scenario.hasPrefix("auth"))
+        try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : scenario == "credential-save" ? 1 : 0,
+                      credentials: scenario.hasPrefix("auth") || scenario == "credential-save")
         panel.settings = true
     }
     if scenario == "resource" {
@@ -166,6 +166,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
         if scenario == "auth-save" { panel.choosePasswordPersistence(true) }
         if scenario == "auth-otp" { panel.selectAuthentication(.oneTimePassword) }
     }
+    if scenario == "credential-save" { panel.choosePasswordPersistence(true); panel.saveAuthentication() }
 
     var bounds: [String: CGRect] = [:]
     let root = VPNPanelView(panel: panel, close: {})
@@ -202,7 +203,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     }
     var required = ["vpnBack"]
     switch scenario {
-    case "credential-settings", "credential-resource": required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel"]
+    case "credential-settings", "credential-resource", "credential-save": required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel"]
     case "import": required += ["vpnImport"]
     case "resource": required += ["vpnResourceSave"]
     case "auth", "auth-save": required += ["vpnAuthenticationSave", "vpnSavePassword"]
@@ -263,7 +264,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count(': vpnBack='), 10, result.stdout)
+            self.assertEqual(result.stdout.count(': vpnBack='), 11, result.stdout)
 
 
 if __name__ == '__main__':

@@ -125,7 +125,9 @@ final class VPNPanelModel: ObservableObject {
         case .needsCredential(.vpnPassword):
             return configuration.configuration.authentication?.mode == .oneTimePassword
                 ? "Введите текущий код или комбинацию, которую выдал администратор."
-                : "Введите пароль VPN. Он не сохраняется."
+                : passwordPersistenceAvailable && configuration.configuration.authentication?.credentialPersistence == .keychain
+                    ? "Пароль сохранится после успешного подключения."
+                    : "Введите пароль VPN. Он не сохраняется."
         case .unavailable: return "Компонент VPN недоступен. Проверьте установку и попробуйте ещё раз."
         default: return ready ? "Одно нажатие подключит выбранные ресурсы." : "Откройте настройки и завершите три шага."
         }

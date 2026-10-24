@@ -53,24 +53,35 @@ final class FakeLiveSession: VPNLiveSession {
     var unprovenConnected = false
     var rejectSubmission = false
     var changeAttemptOnSecondPrompt = false
-    var statusUnavailable = false
+    var requests = 0, statusRequests = 0
+    var requestLimit: Int?
     var onSubmission: (() -> Void)?
 
     init(requiresCredential: Bool, requiresSecondCredential: Bool = false) {
         self.requiresCredential = requiresCredential
         self.requiresSecondCredential = requiresSecondCredential
     }
-    func storeProfile(_ profile: Data) throws -> VPNHelperStatus { profile.isEmpty ? .invalidRequest : .ok }
+    private func request() throws {
+        requests += 1
+        if let requestLimit, requests > requestLimit { throw NSError(domain: "helper-request-budget", code: 20) }
+    }
+    func storeProfile(_ profile: Data) throws -> VPNHelperStatus {
+        try request(); return profile.isEmpty ? .invalidRequest : .ok
+    }
     func apply(_ specification: VPNApplicationSpec) throws -> VPNHelperStatus {
+        try request()
         application = specification; return .ok
     }
     func connect() throws -> (VPNHelperStatus, VPNCredentialChallenge?) {
+        try request()
         if requiresCredential { return (.needsCredential, challenge) }
         connected = true; return (.ok, nil)
     }
-    func disconnectTunnel() throws -> VPNHelperStatus { disconnected = true; connected = false; return .ok }
+    func disconnectTunnel() throws -> VPNHelperStatus {
+        try request(); disconnected = true; connected = false; return .ok
+    }
     func tunnelStatus() throws -> (VPNHelperStatus, VPNTunnelSnapshot?) {
-        if statusUnavailable { return (.invalidRequest, nil) }
+        try request(); statusRequests += 1
         guard let application, connected || requiresCredential && !cancelled && !disconnected else {
             return (.ok, VPNTunnelSnapshot(schemaVersion: 2, generation: 0,
                 desiredEnabled: false, phase: .off, active: nil, pending: nil,
@@ -89,6 +100,7 @@ final class FakeLiveSession: VPNLiveSession {
     }
     func submitCredentialExchange(_ response: inout VPNCredentialResponse) throws
         -> (VPNHelperStatus, VPNCredentialChallenge?) {
+        try request()
         guard response.challenge == challenge, !response.secret.isEmpty else { return (.invalidRequest, nil) }
         response.secret.resetBytes(in: 0..<response.secret.count)
         response.secret.removeAll(keepingCapacity: false)
@@ -104,6 +116,7 @@ final class FakeLiveSession: VPNLiveSession {
         return (.ok, nil)
     }
     func cancelCredential(_ challenge: VPNCredentialChallenge) throws -> VPNHelperStatus {
+        try request()
         guard challenge == self.challenge else { return .invalidRequest }
         cancelled = true; return .ok
     }
@@ -190,7 +203,7 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
                 } else if deferred { scheduled.append(work) } else { work() }
             })
         let twoPrompts = ["cache-private-sequence", "cache-new-vpn", "cache-cancel-candidate", "cache-reconnect",
-                          "cache-private-attempt-changed", "cache-refresh-failed", "cache-refresh-connected"].contains(mode)
+                          "cache-private-attempt-changed", "cache-private-expired"].contains(mode)
         let live = FakeLiveSession(requiresCredential: true, requiresSecondCredential: twoPrompts)
         if mode == "cache-new-vpn" { live.secondCredentialKind = .vpnPassword }
         if mode == "cache-private-attempt-changed" { live.changeAttemptOnSecondPrompt = true }
@@ -271,13 +284,13 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
         }
         if twoPrompts {
             let candidate = controller.testPasswordCandidate
-            if mode == "cache-refresh-failed" || mode == "cache-refresh-connected" {
-                try require(candidate != nil && candidate?.isCleared == false, "candidate missing before refresh")
-                if mode == "cache-refresh-failed" { actual.statusUnavailable = true }
-                else { actual.connected = true }
-                controller.refresh()
-                try require(candidate?.isCleared == true && driver.adds == 0,
-                            "status refresh retained or saved a candidate")
+            if mode == "cache-private-expired" {
+                try require(candidate != nil && candidate?.isCleared == false, "candidate missing before expiry")
+                actual.rejectSubmission = true
+                var key = Data("private-key-secret".utf8)
+                controller.submitCredential(&key, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+                try require(key.isEmpty && candidate?.isCleared == true && driver.adds == 0,
+                            "actual expired helper exchange retained or saved a candidate")
                 return
             }
             if mode == "cache-cancel-candidate" {
@@ -433,8 +446,58 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
         }
     }
 
+    static func heldPromptRefresh(_ path: String) throws {
+        let store = try configuredStore(path, password: true, staticPassword: true, savePassword: true)
+        let driver = FakePasswordSession()
+        let persistence = VPNPasswordPersistenceCoordinator(store: store, available: true,
+            prepare: { _ in driver }, schedule: { $0() })
+        let held = FakeLiveSession(requiresCredential: true, requiresSecondCredential: true)
+        held.requestLimit = VPNHelperProtocol.maximumRequestsPerConnection
+        let terminal = FakeLiveSession(requiresCredential: false)
+        terminal.requestLimit = VPNHelperProtocol.maximumRequestsPerConnection
+        var opened = 0
+        let controller = VPNLiveController(store: store, passwordPersistence: persistence, openSession: {
+            opened += 1
+            guard opened <= 2 else { throw NSError(domain: "unexpected-conversation", code: 21) }
+            return opened == 1 ? held : terminal
+        })
+        controller.connect()
+        let vpnPrompt = controller.credentialPromptIdentifier
+        try require(opened == 1 && held.requests == 4 && held.statusRequests == 1
+            && controller.state == .needsCredential(.vpnPassword), "initial owned prompt not proven")
+        for _ in 0..<5 { controller.refresh() }
+        try require(opened == 1 && held.requests == 4 && held.statusRequests == 1
+            && controller.credentialPromptIdentifier == vpnPrompt,
+            "popover reopening opened or polled a second credential conversation")
+        var password = Data("manual-static".utf8)
+        controller.submitCredential(&password, expectedPromptIdentifier: vpnPrompt)
+        let privatePrompt = controller.credentialPromptIdentifier
+        let candidate = controller.testPasswordCandidate
+        try require(password.isEmpty && held.requests == 6 && held.statusRequests == 2
+            && controller.state == .needsCredential(.privateKeyPassword) && candidate?.isCleared == false,
+            "private-key continuation missing")
+        for _ in 0..<5 { controller.refresh() }
+        try require(opened == 1 && held.requests == 6 && held.statusRequests == 2
+            && controller.credentialPromptIdentifier == privatePrompt && candidate?.isCleared == false,
+            "reopening spent the remaining helper budget or invalidated the held candidate")
+        var key = Data("private-key-secret".utf8)
+        controller.submitCredential(&key, expectedPromptIdentifier: privatePrompt)
+        try require(key.isEmpty && opened == 1 && held.requests == 8 && held.statusRequests == 3
+            && held.closed && controller.state == .connected && candidate?.isCleared == true
+            && driver.adds == 1 && driver.secrets[driver.addedReferences[0].itemID] == Data("manual-static".utf8),
+            "two-prompt flow exceeded eight requests or lost its verified static save")
+        terminal.application = held.application; terminal.connected = true
+        controller.refresh()
+        try require(opened == 2 && terminal.requests == 1 && terminal.statusRequests == 1
+            && terminal.closed && held.requests == 8 && controller.state == .connected,
+            "terminal refresh did not use a fresh status conversation")
+    }
+
     static func main() throws {
         let mode = CommandLine.arguments[1], path = CommandLine.arguments[2]
+        if mode == "held-refresh" {
+            try heldPromptRefresh(path); print("refresh flow passed"); return
+        }
         if mode.hasPrefix("cache-") {
             try cacheFlow(mode, path: path); print("cache flow passed"); return
         }
