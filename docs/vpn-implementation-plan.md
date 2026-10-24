@@ -4958,3 +4958,29 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Native keyboard/VoiceOver, Finder gesture и runtime macOS11 по-прежнему открыты.
 - [ ] Полная Installer/system VM приёмка идёт отдельно;62 UI tests не закрывают
   её, подключение корпоративного VPN, DNS backend или Keychain persistence.
+
+### Продолжение 1.5dv — возврат в настройки приложения после удаления VPN
+
+- [x] Успешное удаление публикует одно typed navigation request с UUID только
+  после подтверждённого stop и успешного `configuration.removeProfile()`.
+  ProductView потребляет только текущую identity и возвращает в app settings:
+  VPN destination закрыт, повторное presentation снято, proxy editing включён,
+  choosingRoute/addingProxy/manual сброшены. CLI не вызывается.
+- [x] Proxy runtime state, включение/маршрут/адреса, error и текстовые черновики
+  не изменяются. VPN-only сценарий не требует настроенного SOCKS5/HTTP.
+  После удаления `mainStatus` становится nil. Неудачный stop, ошибка store и
+  отмена подтверждения оставляют VPN destination; ошибка показана внутри окна.
+- [x] 7 новых local tests passed: реальные PanelModel/LiveController/Store и
+  offscreen ProductView, synthetic helper и минимальные proxy/updates/content
+  stubs. Проверены proxy configured true/false, stop/store failure, cancel,
+  duplicate/stale request и pending request при mount. Event observer проверяет
+  завершённый stop и persisted отсутствие профиля до получения navigation.
+  Failed deletion сохраняет профиль/ресурсы и подтверждённое выключение;
+  failed stop/cancel не меняют persisted VPN state.
+- [x] Общий local UI regression32 passed: removal7, resource runtime1,
+  layout1, contract4, credentials10, import9. Target остаётся macOS11.
+  Нативные view tests наблюдают ProductView destination, но proxy screen content
+  заменён stub; это не полная живая приёмка приложения с действующей сетью.
+- [ ] Выполнить новый UI ARM/Intel прогон с removal cases и затем живую
+  stop/delete/navigation приёмку после repair gate. Реальные CLI, VPN/helper,
+  сеть, Keychain, приватные профили и системная установка локально не запускались.

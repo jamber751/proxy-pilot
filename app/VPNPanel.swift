@@ -2,6 +2,10 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum VPNPanelNavigationRequest: Equatable {
+    case applicationSettingsAfterVPNRemoval(UUID)
+}
+
 /// Main-thread presentation adapter around the synchronous authenticated VPN
 /// controller. Helper work stays on one private queue so the menu never freezes.
 final class VPNPanelModel: ObservableObject {
@@ -20,6 +24,7 @@ final class VPNPanelModel: ObservableObject {
     @Published var confirmLastResourceRemoval = false
     @Published var confirmVPNRemoval = false
     @Published var requestsPresentation = false
+    @Published private(set) var navigationRequest: VPNPanelNavigationRequest?
     @Published private(set) var resourceRevealID: UUID?
     private(set) var topVisibleResourceID: UUID?
 
@@ -348,6 +353,13 @@ final class VPNPanelModel: ObservableObject {
 
     func requestVPNRemoval() { confirmVPNRemoval = true }
 
+    @discardableResult
+    func consumeNavigationRequest(_ request: VPNPanelNavigationRequest) -> Bool {
+        guard navigationRequest == request else { return false }
+        navigationRequest = nil
+        return true
+    }
+
     func confirmRemoveVPN() {
         guard !working, let controller else { return }
         working = true; confirmVPNRemoval = false; message = "Выключаем и удаляем VPN…"
@@ -367,6 +379,8 @@ final class VPNPanelModel: ObservableObject {
                     try self.configuration.load()
                     try self.configuration.removeProfile()
                     self.settings = false; self.login = ""; self.secret = ""; self.message = ""
+                    self.requestsPresentation = false
+                    self.navigationRequest = .applicationSettingsAfterVPNRemoval(UUID())
                 } catch { self.message = error.localizedDescription }
             }
         }
@@ -966,6 +980,20 @@ struct VPNProductView: View {
         }
         .onReceive(vpn.$requestsPresentation) { requested in
             if requested { showingVPN = true }
+        }
+        .onReceive(vpn.$navigationRequest.receive(on: DispatchQueue.main)) { request in
+            // @Published emits before storage changes. Receiving on the main
+            // queue lets consumption compare the fully committed request.
+            guard let request, vpn.consumeNavigationRequest(request) else { return }
+            switch request {
+            case .applicationSettingsAfterVPNRemoval:
+                vpn.requestsPresentation = false
+                proxy.addingProxy = false
+                proxy.choosingRoute = false
+                proxy.manual = false
+                proxy.editing = true
+                showingVPN = false
+            }
         }
     }
 }
