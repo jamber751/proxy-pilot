@@ -5650,7 +5650,7 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Новый восьмой System scenario должен доказать authenticated partial-frame
   descriptor barrier, закрытый reply socket, handoff тем же broker incarnation
   и настоящий установленный successor D. Исходные семь сценариев сохраняются.
-  Пока новый root gate не запускался, предыдущий полный run остаётся FAILED.
+  Результат нового gate пока не получен; предыдущий полный run остаётся FAILED.
 - [ ] Real legacy password adapter и private-only disposable CI fixture проходят
   отдельный review. Factory приложения по-прежнему unavailable: пользовательский
   Keychain и системная сеть на host не затрагиваются. Unknown Security mutation
@@ -5672,6 +5672,8 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   native C/D test fixtures compiled/signed/strict-verified без запуска Security API.
   Fixture сохраняет unknown Create/Add/Delete/Lock RPC до VM disposal, даже если
   child завершился. Late Store receipt разрешён только для exact initial Add.
-- [ ] Dedicated backend CI: шесть actual private-keychain cases на ARM/Intel
-  ещё не выполнены. Factory приложения всё ещё unavailable; app/build/UI wiring,
+- [ ] Dedicated backend CI40112286222 (`9e6ddd3`): шесть actual private-keychain
+  cases на ARM/Intel отправлены, результат ещё не получен. Дополнительный UI
+  run40112286162 проверяет current head; предыдущий UI40112217315 не считать
+  результатом нового backend. Factory приложения всё ещё unavailable; app/build/UI wiring,
   explicit per-mode consent и verified-connected save остаются открытыми.
