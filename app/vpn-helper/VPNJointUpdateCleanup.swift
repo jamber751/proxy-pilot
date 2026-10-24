@@ -671,8 +671,8 @@ enum VPNJointUpdateCleanup {
         let selected = sourceFD ?? archiveFD!
         defer { if let sourceFD { close(sourceFD) }; if let archiveFD { close(archiveFD) } }
         try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: selected)
-        _ = try VPNStagedApplication.inspectProtected(
-            inTrustedDirectory: selected, contentOwnerUserID: owner, release: release)
+        _ = try VPNStagedApplication.inspectRetainedUpdateSource(
+            inTrustedDirectory: selected, previousOwnerUserID: owner, release: release)
     }
 
     private static func validateUpdateLayout(update: Int32, archive: Int32,

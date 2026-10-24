@@ -99,12 +99,15 @@ enum VPNApplicationDestinationExchange {
         }
         try checkProtected()
 
-        let before = matchesInstalled(destination, owner: previousOwnerUserID,
-                                      production: productionDestination, release: previous)
+        let before = (try? VPNStagedApplication.inspectInstalledForUpdate(
+            inApplicationsDirectory: destination, previousOwnerUserID: previousOwnerUserID,
+            productionParent: productionDestination, release: previous)) != nil
             && matchesProtected(stage, owner: geteuid(), release: candidate)
         let after = matchesInstalled(destination, owner: geteuid(),
                                      production: productionDestination, release: candidate)
-            && matchesProtected(stage, owner: previousOwnerUserID, release: previous)
+            && (try? VPNStagedApplication.inspectRetainedUpdateSource(
+                inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
+                release: previous)) != nil
         guard before != after else { throw VPNApplicationDestinationExchangeError.invalidLayout }
 
         if after {
@@ -114,8 +117,8 @@ enum VPNApplicationDestinationExchange {
                 let installed = try VPNStagedApplication.inspectInstalled(
                     inApplicationsDirectory: destination, ownerUserID: geteuid(),
                     productionParent: productionDestination, release: candidate)
-                let retained = try VPNStagedApplication.inspectProtected(
-                    inTrustedDirectory: stage, contentOwnerUserID: previousOwnerUserID,
+                let retained = try VPNStagedApplication.inspectRetainedUpdateSource(
+                    inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
                     release: previous)
                 try sync(destination, stage)
                 try VPNStagedApplication.revalidate(installed, inTrustedDirectory: destination)
@@ -124,8 +127,8 @@ enum VPNApplicationDestinationExchange {
             } catch { throw VPNApplicationDestinationExchangeError.commitUncertain }
         }
 
-        let installedA = try VPNStagedApplication.inspectInstalled(
-            inApplicationsDirectory: destination, ownerUserID: previousOwnerUserID,
+        let installedA = try VPNStagedApplication.inspectInstalledForUpdate(
+            inApplicationsDirectory: destination, previousOwnerUserID: previousOwnerUserID,
             productionParent: productionDestination, release: previous)
         let stagedB = try VPNStagedApplication.inspect(inTrustedDirectory: stage,
                                                        release: candidate)
@@ -157,8 +160,8 @@ enum VPNApplicationDestinationExchange {
                 inApplicationsDirectory: destination, ownerUserID: geteuid(),
                 productionParent: productionDestination, release: candidate)
             try checkpoint("afterCandidateInspection")
-            let retainedA = try VPNStagedApplication.inspectProtected(
-                inTrustedDirectory: stage, contentOwnerUserID: previousOwnerUserID,
+            let retainedA = try VPNStagedApplication.inspectRetainedUpdateSource(
+                inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
                 release: previous)
             try checkpoint("afterPreviousInspection")
             try VPNStagedApplication.revalidate(installedB, inTrustedDirectory: destination)

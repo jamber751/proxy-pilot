@@ -58,7 +58,7 @@ import Foundation
             } else {
                 outcome = try VPNApplicationDestinationExchange.testExchange(
                     inTrustedDirectory: base, destination: destination,
-                    previous: av, previousOwnerUserID: geteuid(), candidate: bv,
+                    previous: av, previousOwnerUserID: operation == "wrong-owner" ? geteuid() + 1 : geteuid(), candidate: bv,
                     transition: transition,
                     authorizeMutation: {
                         if operation == "authorization-failure" { throw Injected.failure }

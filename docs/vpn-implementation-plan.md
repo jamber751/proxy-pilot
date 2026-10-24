@@ -4355,6 +4355,26 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   Universal и 0755; полный app прошёл deep/strict codesign verification.
 - [x] Перед установкой public receipt совпадает с подписанным baseline 137;
   установленное приложение 137 прошло deep/strict verification.
-- [ ] Installer 139 открыт, нажата Install; ожидается системная авторизация.
-  Установленная sequence по-прежнему 137. Installed recovery и последующие
-  проверки не засчитываются до реального завершения установки.
+- [ ] Авторизованный Installer 139 завершился ошибкой: executor сообщил
+  `applicationDestinationPreparation`, родитель — `executorHandoff`.
+  Установленная sequence по-прежнему 137. HTTP и SOCKS bridge smoke: 200/200;
+  authenticated VPN bridge probe завершился кодом 69. VPN recovery не выполнен.
+
+### Продолжение 1.5cx — полная цепочка владельца старого приложения
+
+- [x] Найден прежний exact service-owner assumption также в destination exchange
+  и cleanup retained A. Добавлена общая проверка root либо точного service owner
+  для одного целого подписанного bundle, включая retry после exchange. Candidate B
+  по-прежнему требует владельца executor. Чужой owner не допускается.
+- [x] До нового regression case: destination exchange 7/7, cleanup 13/13.
+- [x] Новый regression: чужой owner отвергается до exchange и при его resume.
+  Обновлённый destination suite: 8/8 passed; cleanup: 13/13 passed.
+- [ ] Важно: replacement executor берётся из подписанного A (137), а не B (139).
+  Исправление будущего B само по себе не обновляет уже сохранённый executor A.
+  Нужен отдельно проверенный путь восстановления текущей транзакции; нельзя
+  подменять executor, ослаблять pins или удалять journal ради прохода установки.
+- [ ] Расширить изолированную проверку first-install → update → interrupted recovery
+  с реальными root/user владельцами в отдельной macOS test environment.
+  Обычные per-user fixtures не доказывают этот сценарий. Пользователь запросил
+  тестирование без повторного ввода пароля; очередная установка на основной Mac
+  не заменяет такую проверку. Root/system интеграция всё равно требует авторизации.

@@ -91,6 +91,14 @@ class VPNApplicationDestinationExchangeTests(unittest.TestCase):
         self.assert_rejected('authorization-failure', 'failure')
         self.assertEqual(self.identities(), self.initial)
 
+    def test_unrelated_owner_cannot_exchange_or_resume(self):
+        self.assert_rejected('wrong-owner', 'invalidLayout')
+        self.assertEqual(self.identities(), self.initial)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_rejected('wrong-owner', 'invalidLayout')
+        self.assertEqual(self.identities(), self.initial[::-1])
+
     def test_stage_mutation_before_exchange_has_no_namespace_effect(self):
         result = self.invoke('mutate-stage')
         self.assertEqual(result.returncode, 77, result.stdout + result.stderr)

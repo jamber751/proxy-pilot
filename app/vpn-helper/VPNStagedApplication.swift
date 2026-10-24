@@ -97,16 +97,31 @@ enum VPNStagedApplication {
                                           productionParent: Bool,
                                           release: VerifiedVPNRelease) throws
         -> VPNStagedApplicationInspection {
+        let owner = try observedUpdateSourceOwner(parent: parent, authorizedUser: previousOwnerUserID)
+        return try inspectInstalled(inApplicationsDirectory: parent,
+                                    ownerUserID: owner,
+                                    productionParent: productionParent, release: release)
+    }
+
+    /// The same exact-owner rule applies to A retained after destination exchange.
+    /// The protected parent remains owned by the executor; only the signed bundle
+    /// may belong to root or the authorized service owner.
+    static func inspectRetainedUpdateSource(inTrustedDirectory parent: Int32,
+                                            previousOwnerUserID: uid_t,
+                                            release: VerifiedVPNRelease) throws
+        -> VPNStagedApplicationInspection {
+        let owner = try observedUpdateSourceOwner(parent: parent, authorizedUser: previousOwnerUserID)
+        return try inspectProtected(inTrustedDirectory: parent, contentOwnerUserID: owner,
+                                    release: release)
+    }
+
+    private static func observedUpdateSourceOwner(parent: Int32, authorizedUser: uid_t) throws -> uid_t {
         var observed = stat()
         guard fstatat(parent, bundleName, &observed, AT_SYMLINK_NOFOLLOW) == 0,
               observed.st_mode & S_IFMT == S_IFDIR else {
             throw VPNStagedApplicationError.unsafeStorage
         }
-        let owner = try updateSourceOwner(observed: observed.st_uid,
-                                          authorizedUser: previousOwnerUserID)
-        return try inspectInstalled(inApplicationsDirectory: parent,
-                                    ownerUserID: owner,
-                                    productionParent: productionParent, release: release)
+        return try updateSourceOwner(observed: observed.st_uid, authorizedUser: authorizedUser)
     }
 
     static func updateSourceOwner(observed: uid_t, authorizedUser: uid_t) throws -> uid_t {
