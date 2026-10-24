@@ -33,7 +33,7 @@
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137;342 isolated interface checks ARM/Intel на527484a, OTP/drop, credential focus и список1/3/18/100;53 отдельных feedback tests | Приёмка и подключение реального Keychain, UI статусов сохранения/очистки, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;446 isolated interface checks ARM/Intel на6e8d524, включая Runtime; OTP/drop, credential focus и список1/3/18/100 | Приёмка и подключение реального Keychain, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -6006,8 +6006,9 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   неизвестной мутации. Оно видно после revoke в VPN settings и после удаления
   VPN в существующей строке обычных настроек. Явная ошибка имеет приоритет;
   credential prompts не загружаются дополнительным cleanup notice. При notice
-  только resource viewport уменьшается144→112, anchor сохраняется. Agent43
-  notice/scroll/contracts tests passed (27+14+5 wiring отдельно по наборам);
+  только resource viewport уменьшается144→112, anchor сохраняется. Agent suites:
+  notice/layout/removal27 PASS36.018s; import/scroll/contracts14 PASS21.890s;
+  startup wiring5 passed (наборы пересекаются);
   independently Runtime/Panel/layout/removal42 methods PASS41.082s.19 rendered
   states включают18/100 resources +warning и home save/cleanup combination.
   Full actual build.sh87-source frontend no-TESTING ARM/Intel PASS:
@@ -6038,3 +6039,53 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   обязательными перед liveIntegrationEnabled. DNS bound transport real-utun
   isolation, relay/answers/OS protection/dead-interface cleanup, full installed
   OTP/IP/lifecycle/WARP/macOS11 и English release сохраняются в полном плане.
+
+### Продолжение 1.5fj — ожидание Worker вне Store и новая genuine factory приёмка
+
+- [x] `f0773ea`: Add/Read/Delete отправляют один неблокирующий GO под коротким
+  Store gate; ожидание ответа вынесено за lock. Add заранее оставляет durable
+  pending. Read перед выдачей bytes заново проверяет consent/revision/ref/locator
+  и точный удерживаемый directory FD. Положительный receipt подтверждается
+  атомарно/idempotently; NotFound/unknown не удаляют обязательства. Повторяется
+  только типизированный receipt-lock busy, не операция Security и не failed write.
+  Concurrent reuse Prepared, partial GO, directory replacement/mode change,
+  stale UUID/scope, post-rename acknowledgment failure покрыты отдельными cases.
+- [x] Native authenticated child baseline RED сохраняется в
+  `/tmp/pp-worker-storelock-baseline-red-i0m5k0wn/verification.json`: OTP/manual
+  submit блокировались во время backend wait. Исправленные проверки проходят
+  ДО освобождения backend latch. Независимый окончательный прогон Worker61+
+  Ledger31:92 PASS48.427s. Actual87-source no-TESTING frontend ARM/Intel typecheck
+  PASS; повторная сверка всех source hashes без расхождений:
+  `/tmp/pp-worker-unlocked-final-production-sgtejqlb/verification.json`.
+- [x] `b27d00e`: отдельный genuine default-Keychain VM fixture сохраняет actual
+  Worker/factory source unchanged; только private parent entry после worker
+  dispatch. Universal C/D с разными CDHash обеих архитектур собраны и строго
+  проверены; без GHA opt-in завершаются77 до любого Keychain API.4 safe guards
+  PASS8.088s. Two custody sentinels запрещают restore/delete/rmtree после unknown;
+  happy restoration и cross-image preservation проверяются в разных VM.
+  Это build/guard evidence, ещё НЕ положительная API-приёмка.
+- [ ] Genuine factory run40126154510 (`b27d00e`) queued: roundtrip и cross-image
+  на ARM/Intel. Сохранение пароля в Runtime остаётся OFF до actual результата.
+  На этом же source queued interface40126154493, transport40126154448,
+  actual private backend40126154506 и ownership40126154445.
+- [x] Snapshot6e8d524: interface40124194426 SUCCESS446 methods (223/arch),
+  scoped+bound transport40124194455 SUCCESS174 (87/arch), password
+  transport40124194435 SUCCESS96 (48/arch), frozen recovery40124194440
+  SUCCESS4 (2/arch). Все без skips; graph до Worker unlock.
+  Ownership40124194448 и bridge40124194442 также terminal SUCCESS;
+  их counts здесь не пересчитаны. Наборы не суммируются как unique coverage.
+- [ ] System40124194483 (`6e8d524`) продолжает тот же8-case run: ARM прошёл
+  phase6 On и выполняет repair Off; Intel собирает production artifacts.
+  Предыдущий System40121630182 terminal CANCELLED после подтверждения этого
+  исправленного replacement run; причина — stale pre-busy/pre-diagnostic graph,
+  не истечение observation timeout. Полной System приёмки пока нет.
+- [ ] Actual owned-utun40125607865 (`68b07bb`) queued на ARM/Intel. Это proof
+  scoped dependency/bound socket custody, не готовый domain relay/OS barrier.
+  DNS-IP==physical-peer-gateway, dead-interface cleanup и no-leak остаются OPEN.
+- [ ] Production domain barrier по-прежнему не выбран. Apple TN3165 прямо
+  относит pfctl/config/manpages к «PF is not API»; own anchor сам не создаёт
+  безопасный hook в чужом root ruleset. Поэтому PF не объявляется поддержанным
+  бесплатным backend, а route-only/proxy-only не подменяет исходный domain scope.
+  Исследование: https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api
+  Следующий инкремент — bounded inert answer codec/permit transaction;
+  live relay и OS protection остаются обязательными до включения domain runtime.
