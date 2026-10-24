@@ -33,6 +33,7 @@ TRACE_STAGES = {
        for step in ('addA', 'addB')},
 }
 TRACE_ERRORS = {'invalid', 'denied', 'unavailable', 'transport', 'timeout',
+                'storageUnavailable', 'staleRevision', 'invalidConfiguration', 'receiptBusy',
                 'guardFailed', 'checkFailed', 'apiFailed', 'ambiguous', 'other'}
 ANCHOR_ROLES = {'standalone', 'target', 'expected', 'actual'}
 ANCHOR_FAILURES = {'heldStat', 'heldIdentity', 'heldLink', 'namedStat', 'namedIdentity', 'namedRegular'}

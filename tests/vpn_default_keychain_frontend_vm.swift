@@ -21,6 +21,7 @@ enum VPNDefaultKeychainVMEntry {
     }
     enum ErrorCategory: String {
         case invalid, denied, unavailable, transport, timeout
+        case storageUnavailable, staleRevision, invalidConfiguration, receiptBusy
         case guardFailed, checkFailed, apiFailed, ambiguous, other
     }
     enum AnchorRole: String { case standalone, target, expected, actual }
@@ -37,6 +38,17 @@ enum VPNDefaultKeychainVMEntry {
         }
         if let error = error as? VPNPeerAuthenticationError {
             switch error { case .invalidPolicy: return .invalid; case .denied: return .denied }
+        }
+        if let error = error as? VPNValidationError {
+            switch error {
+            case .storageUnavailable: return .storageUnavailable
+            case .staleRevision: return .staleRevision
+            case .invalidConfiguration: return .invalidConfiguration
+            default: return .invalid
+            }
+        }
+        if let error = error as? VPNPasswordReceiptAcknowledgmentError {
+            switch error { case .lockBusy: return .receiptBusy }
         }
         if let error = error as? Failure {
             switch error {
