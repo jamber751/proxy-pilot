@@ -6262,3 +6262,31 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   (`/tmp/pp-schema5-genuine-frontend-final.log`), без установки/GUI/credential API.
 - [ ] Domain runtime/OS barrier/relay,
   installed OTP/IP/lifecycle/WARP/macOS11 и English release остаются OPEN.
+
+### Продолжение 1.5fo — точный SIGPIPE fixture отказ и новые приёмочные snapshots
+
+- [x] `2e159b6` отправлен только в `codex/vpn-root-acceptance`: новые handles
+  System40129257114, interface40129257099, transport40129257110,
+  ownership40129257113, actual private backend40129257151,
+  genuine factory trace40129257088 и scoped/answer40129257116. На момент записи
+  queued; это не новые положительные результаты и не публичный release/tag.
+- [x] Diagnostic utun40127137175 Intel120970859953 показал конкретный boundary:
+  baseline без защиты завершился ожидаемо; protected configure вернул22,
+  F_GETFL=6/F_GETFD=1, SO_NOSIGPIPE остался0. Fixture закрыл peer ДО configure.
+  XNU `sosetoptlock` отклоняет setsockopt после shutdown обоих направлений:
+  https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_socket.c#L4491
+  Production prepare настраивает fresh descriptor до connect; этот ранний
+  fixture failure не проверял utun routing и не требует production изменения.
+- [x] `7b2a2c1`: configure перенесён перед peer close, сохраняя baseline SIGPIPE13
+  и protected EPIPE assertions. Никакого ignore signal/process-wide workaround
+  не добавлено.5 safe compile/guard/protocol tests PASS10.938s; фактический live
+  protected EPIPE и19 routing proof markers ещё требуют нового VM run.
+- [x] `53dc6e1`: только общий CI job ceiling увеличен75→100 min. Замер Intel:
+  production build36m +fast/setup около8m, первые2 live cases около9m; восемь
+  исходных cases могут не поместиться в75m. Product/helper/protocol deadlines,
+  observation budgets, число попыток и assertions не изменялись. Это запас на
+  компиляцию и всю обязательную matrix, не продление неуспешной операции.
+- [ ] Старый System40124194483 Intel прошёл phase6 On и repair Off, выполняет
+  repair On; тот же live handle сохранён. ARM этого source terminal7/8.
+  Genuine factory40126154510 terminal FAILED4/4; новые traces должны установить
+  точные разные Add/anchor boundaries, без восстановления/удаления после unknown.
