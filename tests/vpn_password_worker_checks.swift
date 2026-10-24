@@ -38,8 +38,9 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let label = Data((request.metadata.operation.rawValue + "\n").utf8)
         _ = label.withUnsafeBytes { write(event, $0.baseAddress, $0.count) }; close(event)
         if behavior() == "delay" || behavior() == "mutate-request" { usleep(400_000) }
-        if behavior() == "wait-release" {
-            let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+        if behavior() == "wait-release" || behavior() == "delete-wait-release" {
+            let deadline = DispatchTime.now().uptimeNanoseconds
+                + (behavior() == "delete-wait-release" ? 7_000_000_000 : 3_000_000_000)
             var info = stat()
             while fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) != 0, DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
             guard fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) == 0 else {
@@ -48,6 +49,9 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         }
         if behavior() == "crash" { _exit(71) }
         if behavior() == "denied" { return .init(status: .denied, secret: Data()) }
+        if behavior() == "delete-unavailable", request.metadata.operation == .delete {
+            return .init(status: .unavailable, secret: Data())
+        }
         let name = "item-" + request.metadata.reference.itemID.uuidString
         switch request.metadata.operation {
         case .add:
@@ -377,6 +381,76 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             try rejects { try VPNPasswordWorker.prepare(store: store).deletePending(store: store, reference: reference) }
             usleep(100_000)
             try check(store.load()!.passwordLedger.pendingDeletion.count == 1)
+        case "typed-delete-pending", "typed-delete-unissued":
+            if args[1] == "typed-delete-pending" {
+                _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in .indeterminate }
+            }
+            try revoke(store)
+            var worker: VPNPasswordWorker.Prepared? = try VPNPasswordWorker.prepare(store: store)
+            if args[1] == "typed-delete-pending" {
+                try rejects { _ = try worker!.deletePendingOutcome(store: store, reference: reference) }
+                try check(store.load()!.passwordLedger.pendingDeletion.count == 1)
+            } else {
+                // Current Store retires an unissued grant directly on revoke;
+                // a stale request must not issue GO or invent an item to delete.
+                try rejects { _ = try worker!.deletePendingOutcome(store: store, reference: reference) }
+                try check(store.load()!.passwordLedger.pendingDeletion.isEmpty)
+            }
+            worker = nil
+            try joinOwnChildren()
+            try check(events(folder).isEmpty)
+        case "typed-delete", "typed-delete-not-found", "typed-delete-unavailable", "typed-delete-unknown",
+             "typed-delete-write-error", "typed-delete-late":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren(); try revoke(store)
+            let item = folder.appendingPathComponent("item-" + reference.itemID.uuidString)
+            switch args[1] {
+            case "typed-delete-not-found": try FileManager.default.removeItem(at: item)
+            case "typed-delete-unavailable": try Data("delete-unavailable".utf8).write(to: folder.appendingPathComponent("behavior"))
+            case "typed-delete-unknown": try Data("crash".utf8).write(to: folder.appendingPathComponent("behavior"))
+            case "typed-delete-late": try Data("delete-wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
+            default: break
+            }
+            let before = try Data(contentsOf: folder.appendingPathComponent("state.json"))
+            let worker = try VPNPasswordWorker.prepare(store: store)
+            if args[1] == "typed-delete-write-error" {
+                store.testRejectNextWriteAfterRename = true
+                try rejects { _ = try worker.deletePendingOutcome(store: store, reference: reference) }
+                try joinOwnChildren()
+                // Positive API result is not returned as .deleted when Store
+                // reports uncertainty. Atomic rename may still have committed.
+                try check(!FileManager.default.fileExists(atPath: item.path))
+                try check(store.load()!.passwordLedger.pendingDeletion.isEmpty)
+            } else {
+                let outcome = try worker.deletePendingOutcome(store: store, reference: reference)
+                if args[1] == "typed-delete" {
+                    try check(outcome == .deleted && store.load()!.passwordLedger.pendingDeletion.isEmpty)
+                } else {
+                    let expected: VPNPasswordDeleteOutcome = args[1] == "typed-delete-not-found" ? .notFound
+                        : args[1] == "typed-delete-unavailable" ? .unavailable : .indeterminate
+                    try check(outcome == expected && before == Data(contentsOf: folder.appendingPathComponent("state.json")))
+                }
+                if args[1] == "typed-delete-late" {
+                    let state = try store.load()!; var config = state.saved.configuration
+                    try config.setAuthentication(VPNAuthentication(mode: .password, login: "synthetic", credentialPersistence: .keychain))
+                    let enabled = try store.save(config, expectedRevision: state.saved.configuration.revision)
+                    let newer = try store.grantPasswordPersistence(expectedRevision: enabled.saved.configuration.revision)
+                    try Data().write(to: folder.appendingPathComponent("release"))
+                    try wait { try store.load()!.passwordLedger.pendingDeletion.isEmpty }
+                    try check(store.load()!.passwordLedger.active?.reference == newer)
+                }
+                try joinOwnChildren()
+                if args[1] == "typed-delete-not-found" {
+                    do {
+                        try VPNPasswordWorker.prepare(store: store).deletePending(store: store, reference: reference)
+                        throw Failure.check
+                    } catch VPNValidationError.storageUnavailable {}
+                    try joinOwnChildren()
+                    try check(store.load()!.passwordLedger.pendingDeletion.count == 1)
+                }
+            }
+            try check(events(folder) == (args[1] == "typed-delete-not-found" ? ["add", "delete", "delete"] : ["add", "delete"]))
         case "late", "parent-death", "commit-crash", "busy", "mutated-late-add":
             let behavior = args[1] == "commit-crash" ? "commit-crash" :
                 (args[1] == "busy" ? "wait-release" : (args[1] == "mutated-late-add" ? "mutate-request" : "delay"))

@@ -80,21 +80,46 @@ enum VPNPasswordWorker {
         }
 
         func deletePending(store: VPNStore, reference: VPNPasswordReference) throws {
+            guard try deletePendingOutcome(store: store, reference: reference) == .deleted else {
+                // Preserve the original throwing wrapper: a negative lookup or
+                // uncertain response must never act like acknowledged deletion.
+                throw VPNValidationError.storageUnavailable
+            }
+        }
+
+        /// The typed result distinguishes a verified negative worker response
+        /// from acknowledged deletion. Store preflight failures still throw
+        /// before GO; a positive backend result is insufficient if Store cannot
+        /// finish its acknowledgment (including uncertain post-rename errors).
+        func deletePendingOutcome(store: VPNStore, reference: VPNPasswordReference) throws -> VPNPasswordDeleteOutcome {
             try directory.requireSameDirectory(as: store.directory)
             let revision = try store.load()?.saved.configuration.revision ?? 0
-            try store.deletePendingPassword(reference: reference) { _, locator in
-                var empty = Data()
-                let result = try perform(operation: .delete, reference: reference, revision: revision,
-                                         secret: &empty, timeout: VPNPasswordWorker.softTimeout, locator: locator)
-                // A production backend must eventually supply positive deletion
-                // proof bound to its real locator. NotFound is NOT such proof.
-                switch result.status {
-                case .success: return .deleted
-                case .notFound: return .notFound
-                case .unavailable: return .unavailable
-                default: return .indeterminate
+            var observed: VPNPasswordDeleteOutcome?
+            do {
+                try store.deletePendingPassword(reference: reference) { _, locator in
+                    var empty = Data()
+                    let result = try perform(operation: .delete, reference: reference, revision: revision,
+                                             secret: &empty, timeout: VPNPasswordWorker.softTimeout, locator: locator)
+                    let outcome: VPNPasswordDeleteOutcome
+                    switch result.status {
+                    case .success: outcome = .deleted
+                    case .notFound: outcome = .notFound
+                    case .unavailable: outcome = .unavailable
+                    default: outcome = .indeterminate
+                    }
+                    observed = outcome
+                    return outcome
                 }
+            } catch VPNValidationError.storageUnavailable {
+                // Store intentionally refuses acknowledgment of nonpositive
+                // responses before any metadata write. Preserve that response
+                // for callers without dropping its exact cleanup obligation.
+                if let observed, observed != .deleted { return observed }
+                throw VPNValidationError.storageUnavailable
             }
+            // Also covers Store's proven never-issued/no-item retirement path,
+            // which acknowledges metadata without issuing worker GO at all.
+            return .deleted
         }
 
         private func perform(operation: VPNPasswordWorkerOperation, reference: VPNPasswordReference,

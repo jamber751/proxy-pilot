@@ -34,6 +34,7 @@ class VPNPasswordWorkerTests(unittest.TestCase):
         cls.different = folder / 'different'
         for output, extra in ((cls.binary, []), (cls.different, ['-D', 'DIFFERENT_WORKER_BUILD'])):
             result = subprocess.run(['/usr/bin/swiftc', '-parse-as-library', '-D', 'VPN_PASSWORD_WORKER_TESTING',
+                                     '-D', 'VPN_PASSWORD_LEDGER_TESTING',
                                      *extra, '-target', arch + '-apple-macosx11.0', *map(str, sources), '-o', str(output)],
                                     capture_output=True, text=True, timeout=120)
             if result.returncode: raise AssertionError(result.stderr)
@@ -120,6 +121,14 @@ class VPNPasswordWorkerTests(unittest.TestCase):
     def test_same_code_at_different_executable_inode_is_rejected(self): self.run_case('wrong-peer', [self.copied])
     def test_prepared_child_is_bound_to_store_directory(self): self.run_case('foreign-store')
     def test_not_found_is_not_deletion_proof(self): self.run_case('not-found-delete')
+    def test_typed_delete_returns_only_after_positive_store_ack(self): self.run_case('typed-delete')
+    def test_typed_not_found_retains_obligation_and_void_wrapper_still_throws(self): self.run_case('typed-delete-not-found')
+    def test_typed_verified_unavailable_retains_obligation(self): self.run_case('typed-delete-unavailable')
+    def test_typed_unknown_child_result_retains_obligation(self): self.run_case('typed-delete-unknown')
+    def test_typed_pending_unknown_refuses_before_worker_go(self): self.run_case('typed-delete-pending')
+    def test_typed_never_issued_retirement_has_no_worker_go(self): self.run_case('typed-delete-unissued')
+    def test_typed_positive_backend_delete_does_not_hide_store_write_error(self): self.run_case('typed-delete-write-error')
+    def test_typed_timeout_can_later_settle_only_old_deletion(self): self.run_case('typed-delete-late')
     def test_soft_timeout_child_late_completion_preserves_new_grant(self): self.run_case('late')
     def test_backend_inout_cannot_retarget_accepted_go_late_settlement(self): self.run_case('mutated-late-add')
     def test_child_retries_busy_store_only_after_security_result(self):
