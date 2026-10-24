@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import signal
 import shutil
 import subprocess
 import sys
@@ -42,15 +43,57 @@ class VPNPasswordWorkerTests(unittest.TestCase):
         cls.copied = folder / 'same-code-different-inode'
         shutil.copyfile(cls.binary, cls.copied); cls.copied.chmod(0o700)
 
+    def finish_own_group(self, group):
+        # posix_spawn's worker inherits this freshly created private session /
+        # process group even though it redirects its stdio. Parent completion
+        # therefore is not evidence that its child stopped writing the fixture.
+        deadline = time.monotonic() + 7
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.02)
+        # Only the isolated group this test created; no machine-wide matching.
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        self.fail('Own password-worker fixture exceeded bounded exit wait')
+
     def run_case(self, case, extra=(), folder=None):
         if folder is None:
             with tempfile.TemporaryDirectory(prefix='pp-password-worker-') as temporary:
                 return self.run_case(case, extra, temporary)
         os.chmod(folder, 0o700)
-        result = subprocess.run([str(self.binary), case, str(folder), *map(str, extra)],
-                                capture_output=True, text=True, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        if case != 'parent-death': self.assertIn('worker checks passed', result.stdout)
+        process = subprocess.Popen([str(self.binary), case, str(folder), *map(str, extra)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True)
+        preserve_child = False
+        try:
+            out, err = process.communicate(timeout=20)
+            self.assertEqual(process.returncode, 0, out + err)
+            if case != 'parent-death': self.assertIn('worker checks passed', out)
+            # This case deliberately exits before the child settles. Its caller
+            # owns the group until the actual persisted-result assertions finish.
+            preserve_child = case == 'parent-death'
+            return process.pid
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # The owned group exited between poll and signal.
+                process.communicate(timeout=5)
+            if not preserve_child:
+                self.finish_own_group(process.pid)
 
     def test_real_child_add_read_delete_and_no_second_add(self): self.run_case('roundtrip')
     def test_eof_before_go_has_no_backend_call(self): self.run_case('before-go')
@@ -63,7 +106,11 @@ class VPNPasswordWorkerTests(unittest.TestCase):
     def test_prepared_child_is_bound_to_store_directory(self): self.run_case('foreign-store')
     def test_not_found_is_not_deletion_proof(self): self.run_case('not-found-delete')
     def test_soft_timeout_child_late_completion_preserves_new_grant(self): self.run_case('late')
-    def test_child_retries_busy_store_only_after_security_result(self): self.run_case('busy')
+    def test_child_retries_busy_store_only_after_security_result(self):
+        for _ in range(3):
+            self.run_case('busy')
+
+    def test_observer_retries_only_storage_contention(self): self.run_case('observer')
     def test_child_crash_after_fake_add_leaves_pending(self): self.run_case('commit-crash')
     def test_throwing_initializers_close_once_and_do_not_close_reused_fd(self): self.run_case('fd-ownership')
     def test_expired_monotonic_deadline_never_underflows(self): self.run_case('expired-deadline')
@@ -76,14 +123,17 @@ class VPNPasswordWorkerTests(unittest.TestCase):
 
     def test_parent_death_after_go_child_still_settles_own_add(self):
         with tempfile.TemporaryDirectory(prefix='pp-password-worker-') as folder:
-            self.run_case('parent-death', folder=folder)
-            deadline = time.monotonic() + 7
-            while time.monotonic() < deadline:
-                state = json.loads((Path(folder) / 'state.json').read_text())
-                if state['passwordLedger']['active']['writeState'] == 'settled': break
-                time.sleep(0.02)
-            self.assertEqual(state['passwordLedger']['active']['writeState'], 'settled')
-            self.assertEqual((Path(folder) / 'events').read_text(), 'add\n')
+            group = self.run_case('parent-death', folder=folder)
+            try:
+                deadline = time.monotonic() + 7
+                while time.monotonic() < deadline:
+                    state = json.loads((Path(folder) / 'state.json').read_text())
+                    if state['passwordLedger']['active']['writeState'] == 'settled': break
+                    time.sleep(0.02)
+                self.assertEqual(state['passwordLedger']['active']['writeState'], 'settled')
+                self.assertEqual((Path(folder) / 'events').read_text(), 'add\n')
+            finally:
+                self.finish_own_group(group)
 
 
 if __name__ == '__main__': unittest.main()

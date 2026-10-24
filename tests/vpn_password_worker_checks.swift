@@ -20,9 +20,9 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         _ = label.withUnsafeBytes { write(event, $0.baseAddress, $0.count) }; close(event)
         if behavior() == "delay" { usleep(400_000) }
         if behavior() == "wait-release" {
-            let deadline = Date().addingTimeInterval(3)
+            let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
             var info = stat()
-            while fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) != 0, Date() < deadline { usleep(1000) }
+            while fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) != 0, DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
             guard fstatat(directory, "release", &info, AT_SYMLINK_NOFOLLOW) == 0 else {
                 return .init(status: .failed, secret: Data())
             }
@@ -61,9 +61,24 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         do { try action() } catch { return }; throw Failure.check
     }
     static func wait(_ predicate: () throws -> Bool) throws {
-        let deadline = Date().addingTimeInterval(7)
-        repeat { if try predicate() { return }; usleep(20_000) } while Date() < deadline
+        let deadline = DispatchTime.now().uptimeNanoseconds + 7_000_000_000
+        repeat {
+            do { if try predicate() { return } }
+            catch VPNValidationError.storageUnavailable { /* Observer raced a legitimate Store writer. */ }
+            // No producer retry, deadline renewal, or swallowing other errors.
+            usleep(20_000)
+        } while DispatchTime.now().uptimeNanoseconds < deadline
         throw Failure.check
+    }
+    static func joinOwnChildren() throws {
+        try wait {
+            var status: Int32 = 0
+            let result = waitpid(-1, &status, WNOHANG)
+            if result > 0 { return false }
+            if result < 0, errno == ECHILD { return true }
+            guard result == 0 else { throw Failure.check }
+            return false
+        }
     }
     static func seed(_ folder: URL) throws -> (VPNStore, VPNPasswordReference, UInt64) {
         let store = VPNStore(directory: folder)
@@ -108,18 +123,37 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let folder = URL(fileURLWithPath: args[2], isDirectory: true)
         let (store, reference, revision) = try seed(folder)
         switch args[1] {
+        case "observer":
+            var attempts = 0
+            try wait {
+                attempts += 1
+                if attempts < 3 { throw VPNValidationError.storageUnavailable }
+                return true
+            }
+            try check(attempts == 3)
+            attempts = 0
+            do {
+                try wait { attempts += 1; throw VPNValidationError.invalidConfiguration }
+                throw Failure.check
+            } catch VPNValidationError.invalidConfiguration { }
+            try check(attempts == 1)
         case "roundtrip":
             let worker = try VPNPasswordWorker.prepare(store: store)
             var secret = Data("synthetic-static-password".utf8)
             try check(worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret) == .definiteSuccess)
+            // A successful response is sent before the child's final Store
+            // observation. Join it before starting the next independent op.
+            try joinOwnChildren()
             try check(secret.isEmpty && store.load()!.passwordLedger.active?.writeState == .settled)
             var again = Data("synthetic-static-password".utf8)
             try rejects { _ = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &again) }
             var read = try VPNPasswordWorker.prepare(store: store).read(store: store, reference: reference, revision: revision)
             try check(read.status == .success && read.secret == Data("synthetic-static-password".utf8))
             VPNPasswordWorkerWire.clear(&read.secret)
+            try joinOwnChildren()
             try revoke(store)
             try VPNPasswordWorker.prepare(store: store).deletePending(store: store, reference: reference)
+            try joinOwnChildren()
             try check(store.load()!.passwordLedger.pendingDeletion.isEmpty && events(folder) == ["add", "read", "delete"])
         case "before-go":
             var worker: VPNPasswordWorker.Prepared? = try VPNPasswordWorker.prepare(store: store)
@@ -163,6 +197,7 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         case "not-found-delete":
             var secret = Data("synthetic-password".utf8)
             _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren()
             try FileManager.default.removeItem(at: folder.appendingPathComponent("item-" + reference.itemID.uuidString))
             try revoke(store)
             try rejects { try VPNPasswordWorker.prepare(store: store).deletePending(store: store, reference: reference) }
