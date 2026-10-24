@@ -8,6 +8,9 @@ private func rejects(_ operation: () throws -> Void) throws {
     throw Failure.check
 }
 private func word(_ value: UInt16) -> [UInt8] { [UInt8(value >> 8), UInt8(value & 255)] }
+private func dword(_ value: UInt32) -> [UInt8] {
+    [UInt8(value >> 24),UInt8((value >> 16) & 255),UInt8((value >> 8) & 255),UInt8(value & 255)]
+}
 private func name(_ value: String) -> [UInt8] {
     value.split(separator: ".").flatMap { [UInt8($0.utf8.count)] + Array($0.utf8) } + [0]
 }
@@ -64,6 +67,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
     var denyUnknown = false, routeUnknown = false, denyObligation = false, routeObligation = false, wrongRoutePermit = false
     var other: VPNDNSValidatedAnswer?, expireDuringCheck = false
     var expected: VPNDNSAnswerRequest?
+    var cachedFences = Set<String>()
     func checkCurrent(_ answer: VPNDNSValidatedAnswer) throws {
         events.append("current")
         guard active, expected == nil || expected == answer.request else { throw VPNDNSAnswerError.provenance }
@@ -78,6 +82,7 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
     }
     func establishDeny(_ answer: VPNDNSValidatedAnswer) throws -> VPNDNSBarrierPermit {
         events.append("deny"); denyObligation = true
+        cachedFences.formUnion(answer.addresses.map(\.canonical))
         if denyUnknown { throw VPNDNSAnswerError.checkpoint }
         return (foreignPermit ? foreign : permitIssuer).barrier(for: other ?? answer)
     }
@@ -109,10 +114,198 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
 }
 
 @main private enum Checks {
+    private static func negative(_ which: String, req: VPNDNSAnswerRequest) throws {
+        func soa(owner: String = "corp.test", ttl: UInt32 = 60, minimum: UInt32 = 30,
+                 names: [UInt8]? = nil, suffix: [UInt8] = []) -> RR {
+            let fields = [UInt32(11),22,33,44,minimum].flatMap(dword)
+            return RR(owner:owner,type:6,ttl:ttl,
+                      data:(names ?? (name("ns.corp.test") + name("hostmaster.corp.test"))) + fields + suffix)
+        }
+        func packet(_ aliases: [RR] = [], proof: RR? = nil, code: UInt16 = 3,
+                    request: VPNDNSAnswerRequest? = nil) -> Data {
+            let request = request ?? req
+            return wire(request,aliases,flags:0x8180 | code,authority:proof == nil ? 0 : 1)
+                + Data(proof?.wire() ?? [])
+        }
+        func parse(_ packet: Data, request: VPNDNSAnswerRequest? = nil) throws -> VPNDNSValidatedAnswer {
+            try VPNDNSAnswerCodec.decode(packet,request:request ?? req,receivedAt:1_000_000_000)
+        }
+        let proof = soa()
+        let nx = try parse(packet(proof:proof))
+        switch which {
+        case "negative-nxdomain":
+            try require(nx.outcome == .nxDomain && nx.addresses.isEmpty && nx.records.isEmpty)
+            let directive = try nx.negativeCacheDirective(at:1_000_000_000)
+            try require(directive?.key == .nxDomain(terminal:req.resource.address) && directive?.remainingTTL == 30 && directive?.request == req && directive?.expiresAt == 31_000_000_000)
+        case "negative-nodata":
+            for type in [VPNDNSQuestionType.a,.aaaa] {
+                let request = try request(type:type)
+                let result = try parse(packet(proof:proof,code:0,request:request),request:request)
+                let directive = try result.negativeCacheDirective(at:1_000_000_000)
+                try require(result.outcome == .noData && directive?.key == .noData(terminal:req.resource.address,type:type))
+            }
+        case "negative-cname":
+            let aliases = [RR(type:5,ttl:20,data:name("edge.other.test"))]
+            let result = try parse(packet(aliases,proof:soa(owner:"other.test")))
+            let directive = try result.negativeCacheDirective(at:1_000_000_000)
+            try require(result.canonicalChain == [req.resource.address,"edge.other.test"])
+            try require(directive?.key == .nxDomain(terminal:"edge.other.test") && directive?.remainingTTL == 20)
+            let response = try result.encoded(at:1_000_000_000)
+            let round = try parse(response)
+            try require(round.canonicalChain == result.canonicalChain && round.soa?.owner == "other.test")
+        case "negative-wrong-zone":
+            try rejects { _ = try parse(packet([RR(type:5,data:name("edge.other.test"))],proof:proof)) }
+        case "negative-label-suffix":
+            try rejects { _ = try parse(packet([RR(type:5,data:name("evil-corp.test"))],proof:proof)) }
+        case "negative-no-soa":
+            for code: UInt16 in [0,3] {
+                try rejects { _ = try parse(packet(code:code)) }
+                try rejects { _ = try parse(packet([RR(type:5,data:name("external.test"))],code:code)) }
+            }
+        case "negative-referral":
+            try rejects { _ = try parse(packet(proof:RR(owner:"corp.test",type:2,data:name("ns.corp.test")),code:0)) }
+        case "negative-soa-plus-ns", "negative-duplicate-soa":
+            var bytes = Array(packet(proof:proof)); bytes[9] = 2
+            bytes += (which == "negative-soa-plus-ns" ? RR(owner:"corp.test",type:2,data:name("ns.corp.test")) : proof).wire()
+            try rejects { _ = try parse(Data(bytes)) }
+        case "negative-positive-conflict":
+            for code: UInt16 in [0,3] { try rejects { _ = try parse(packet([RR()],proof:proof,code:code)) } }
+        case "negative-compressed-soa":
+            var names: [UInt8] = [2] + Array("ns".utf8)
+            names += [0xc0,16,10]; names += Array("hostmaster".utf8); names += [0xc0,16]
+            let result = try parse(packet(proof:soa(names:names)))
+            try require(result.soa?.nameserver.labels == [Data("ns".utf8),Data("corp".utf8),Data("test".utf8)])
+            let round = try parse(result.encoded(at:1_000_000_000))
+            try require(round.soa?.nameserver == result.soa?.nameserver && round.soa?.mailbox == result.soa?.mailbox)
+        case "negative-root-binary":
+            // Root MNAME; binary RNAME includes a literal dot and non-UTF8 byte
+            // INSIDE one label. A joined String would corrupt this mailbox.
+            let names: [UInt8] = [0,3,0xff,46,0,0]
+            let result = try parse(packet(proof:soa(owner:"",names:names)))
+            try require(result.soa?.owner == "" && result.soa?.nameserver.labels == [])
+            try require(result.soa?.mailbox.labels == [Data([0xff,46,0])])
+            let round = try parse(result.encoded(at:1_000_000_000))
+            try require(round.soa?.mailbox == result.soa?.mailbox)
+        case "negative-rdata-short":
+            let bytes = packet(proof:proof)
+            for size in (bytes.count - 22)..<bytes.count { try rejects { _ = try parse(Data(bytes.prefix(size))) } }
+            try rejects { _ = try parse(packet(proof:RR(owner:"corp.test",type:6,data:[0xc0]))) }
+        case "negative-rdata-tail": try rejects { _ = try parse(packet(proof:soa(suffix:[0]))) }
+        case "negative-rdata-pointer":
+            try rejects { _ = try parse(packet(proof:soa(names:[0xc0,4,0]))) }
+            let rdataStart = 12 + name(req.resource.address).count + 4 + name("corp.test").count + 10
+            try rejects { _ = try parse(packet(proof:soa(names:[0xc0,UInt8(rdataStart),0]))) }
+        case "negative-rdata-count":
+            var bytes = proof.data; bytes.removeLast()
+            try rejects { _ = try parse(packet(proof:RR(owner:"corp.test",type:6,data:bytes))) }
+        case "negative-ttl":
+            for (ttl,minimum,expected): (UInt32,UInt32,UInt32) in [(80,12,12),(10,80,10),(0x7fff_ffff,UInt32.max,86400)] {
+                let result = try parse(packet(proof:soa(ttl:ttl,minimum:minimum)))
+                try require(result.minimumTTL == expected && result.soa?.minimum == minimum)
+            }
+        case "negative-high-bit":
+            let highTTL = try parse(packet(proof:soa(ttl:0x8000_0000,minimum:30)))
+            let unsignedMinimum = try parse(packet(proof:soa(ttl:60,minimum:0x8000_0000)))
+            try require(highTTL.minimumTTL == 0 && unsignedMinimum.minimumTTL == 60)
+        case "negative-ttl-zero":
+            let result = try parse(packet(proof:soa(minimum:0)))
+            try require(result.minimumTTL == 0)
+            let directive = try result.negativeCacheDirective(at:2_000_000_000)
+            try require(directive == nil)
+            _ = try result.encoded(at:2_000_000_000)
+        case "negative-aging":
+            let directive = try nx.negativeCacheDirective(at:11_000_000_001)
+            try require(directive?.remainingTTL == 19)
+            let response = try nx.encoded(at:11_000_000_001)
+            let round = try VPNDNSAnswerCodec.decode(response,request:req,receivedAt:11_000_000_001)
+            try require(round.soa?.ttl == 19 && round.soa?.minimum == 30)
+            let later = try round.negativeCacheDirective(at:21_000_000_001)
+            let original = try nx.negativeCacheDirective(at:21_000_000_001)
+            try require(later?.remainingTTL == 9 && later?.remainingTTL == original?.remainingTTL)
+            try require(later?.key == original?.key && later?.request == original?.request)
+            try require(later!.expiresAt <= original!.expiresAt)
+            try rejects { _ = try nx.encoded(at:31_000_000_000) }
+        case "negative-upstream-errors":
+            for code: UInt16 in [1,2,4,5] {
+                let result = try parse(packet(code:code))
+                try require(result.outcome == .upstreamError(UInt8(code)) && result.soa == nil && result.addresses.isEmpty)
+                let directive = try result.negativeCacheDirective(at:1_000_000_000)
+                try require(directive == nil)
+                let encoded = try result.encoded(at:1_000_000_000)
+                try require(encoded[3] & 15 == code)
+            }
+        case "negative-error-tail": try rejects { _ = try parse(packet(code:2) + Data([0])) }
+        case "negative-error-sections":
+            for code: UInt16 in [2,5] {
+                try rejects { _ = try parse(packet(proof:proof,code:code)) }
+                try rejects { _ = try parse(packet([RR()],code:code)) }
+            }
+        case "negative-unknown-rcode": try rejects { _ = try parse(packet(code:15)) }
+        case "negative-error-origin":
+            let request = try request(clientRD:false,originalName:"App.Corp.Test",upstreamID:0xabcd)
+            let result = try parse(packet(code:2,request:request),request:request)
+            let fake = Fake(), transaction = fake.transaction(result)
+            var count = 0
+            try transaction.release { bytes in
+                try require(fake.leased && Array(bytes.prefix(4)) == [0x12,0x34,0x80,2])
+                try require(Array(bytes.dropFirst(12)) == name("App.Corp.Test") + word(1) + word(1))
+                count += 1
+            }
+            try require(count == 1)
+        case "negative-release", "negative-release-revoke", "negative-release-required", "negative-release-fence":
+            for code: UInt16 in [0,2,3,5] {
+                let result = try parse(packet(proof:(code == 0 || code == 3) ? proof : nil,code:code))
+                let fake = Fake()
+                let old = try answer(req)
+                try fake.transaction(old).release { _ in try require(fake.leased) }
+                let oldFences = fake.cachedFences
+                try require(oldFences == Set(["192.0.2.9"]))
+                fake.stages.removeAll(); fake.events.removeAll()
+                if which == "negative-release-revoke" { fake.revokeStage = .outputIssued }
+                if which == "negative-release-required" { fake.skipLease = true }
+                if which == "negative-release-fence" { fake.concurrentLease = true }
+                var outputs = 0
+                let transaction = fake.transaction(result)
+                func output(_ bytes: Data) throws { try require(fake.leased); outputs += 1 }
+                if which == "negative-release" { try transaction.release(output:output) }
+                else { try rejects { try transaction.release(output:output) } }
+                try require(outputs == ((which == "negative-release" || which == "negative-release-fence") ? 1 : 0))
+                try require(fake.cachedFences == oldFences && fake.events.contains("deny") && fake.events.contains("routes") && fake.events.contains("verify"))
+                try rejects { try transaction.release(output:output) }
+            }
+        case "negative-checkpoint-crash":
+            for stage in [VPNDNSAnswerCheckpoint.received,.denyEstablished,.routesEstablished,.verified,.outputIssued,.released] {
+                let fake = Fake(); fake.failAfterStage = stage
+                let transaction = fake.transaction(nx); var outputs = 0
+                try rejects { try transaction.release { _ in outputs += 1 } }
+                try require(outputs == (stage == .released ? 1 : 0))
+                try rejects { try transaction.release { _ in outputs += 1 } }
+            }
+        case "negative-mixed-zero-ttl":
+            let result = try parse(packet([RR(type:5,ttl:5,data:name("edge.corp.test"))],proof:soa(minimum:0)))
+            try rejects { _ = try result.encoded(at:6_000_000_000) }
+            let positive = try VPNDNSAnswerCodec.decode(wire(req,[RR(type:5,ttl:0,data:name("edge.corp.test")),RR(owner:"edge.corp.test",ttl:5)]),request:req,receivedAt:1_000_000_000)
+            try rejects { _ = try positive.encoded(at:6_000_000_000) }
+        case "negative-expiry-overflow":
+            let far = try request(deadline:UInt64.max)
+            let result = try VPNDNSAnswerCodec.decode(packet(proof:proof,request:far),request:far,receivedAt:UInt64.max - 100)
+            try rejects { _ = try result.negativeCacheDirective(at:UInt64.max - 100) }
+        case "negative-late":
+            let fake = Fake(); fake.now = 31_000_000_000
+            try rejects { try fake.transaction(nx).release { _ in throw Failure.check } }
+            try require(fake.events.isEmpty)
+        default: throw Failure.check
+        }
+    }
+
     static func main() throws {
         let which = CommandLine.arguments[1], req = try request()
         func parse(_ records: [RR], flags: UInt16 = 0x8180) throws -> VPNDNSValidatedAnswer {
             try VPNDNSAnswerCodec.decode(wire(req, records, flags: flags), request: req, receivedAt: 1_000_000_000)
+        }
+        if which.hasPrefix("negative-") {
+            try negative(which, req: req)
+            print("pure DNS answer checks passed"); return
         }
         switch which {
         case "client-remap":
@@ -277,8 +470,8 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
         case "negative":
             do { _ = try parse([],flags:0x8183); throw Failure.check }
             catch VPNDNSAnswerError.unsupportedNegative {}
-            do { _ = try parse([],flags:0x8182); throw Failure.check }
-            catch VPNDNSAnswerError.upstreamFailure(2) {}
+            let failure = try parse([],flags:0x8182)
+            try require(failure.outcome == .upstreamError(2) && failure.addresses.isEmpty)
             do { _ = try parse([]); throw Failure.check }
             catch VPNDNSAnswerError.unsupportedNegative {}
         case "sections":

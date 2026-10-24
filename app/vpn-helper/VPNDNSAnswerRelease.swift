@@ -40,6 +40,9 @@ protocol VPNDNSAnswerReleaseAuthority: AnyObject {
     func checkCurrent(_ answer: VPNDNSValidatedAnswer) throws
     /// Must cover ALL answer addresses, both families over successive queries;
     /// retain preexisting live/cached IP obligations across TTL/revoke/crashes.
+    /// Negative/error answers have no NEW addresses but MUST NOT clear, shorten,
+    /// or bypass existing IP fences. They still require every permit/current
+    /// check and the exact original-query lease; empty addresses are no approval.
     func establishDeny(_ answer: VPNDNSValidatedAnswer) throws -> VPNDNSBarrierPermit
     func establishRoutes(_ answer: VPNDNSValidatedAnswer,
                          barrier: VPNDNSBarrierPermit) throws -> VPNDNSAnswerRoutePermit
@@ -51,7 +54,7 @@ protocol VPNDNSAnswerReleaseAuthority: AnyObject {
                            routes: VPNDNSAnswerRoutePermit, body: () throws -> Void) throws
 }
 
-/// Inert answer interposition transaction. Positive DNS bytes cannot escape by
+/// Inert answer interposition transaction. Positive/negative/error bytes cannot escape by
 /// return value: output is synchronous/non-escaping and protected by authority.
 /// The future output adapter must itself use bounded nonblocking I/O and the
 /// original deadline; this pure model does not implement a client socket.

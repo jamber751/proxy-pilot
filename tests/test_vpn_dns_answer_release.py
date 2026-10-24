@@ -24,7 +24,17 @@ CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bound
          'generation', 'revision', 'mutated-corpus', 'lease-concurrent',
          'lease-suppressed-output-error', 'lease-suppressed-check-error',
          'client-remap', 'client-rd', 'client-case', 'client-exact', 'client-flags',
-         'client-sections', 'client-types', 'client-bounds', 'client-release')
+         'client-sections', 'client-types', 'client-bounds', 'client-release',
+         'negative-nxdomain', 'negative-nodata', 'negative-cname', 'negative-wrong-zone',
+         'negative-label-suffix', 'negative-no-soa', 'negative-referral', 'negative-soa-plus-ns',
+         'negative-duplicate-soa', 'negative-positive-conflict', 'negative-compressed-soa',
+         'negative-root-binary', 'negative-rdata-short', 'negative-rdata-tail',
+         'negative-rdata-pointer', 'negative-rdata-count', 'negative-ttl', 'negative-high-bit',
+         'negative-ttl-zero', 'negative-aging', 'negative-upstream-errors', 'negative-error-tail',
+         'negative-error-sections', 'negative-unknown-rcode', 'negative-error-origin',
+         'negative-release', 'negative-release-revoke', 'negative-release-required',
+         'negative-release-fence', 'negative-checkpoint-crash', 'negative-late',
+         'negative-mixed-zero-ttl', 'negative-expiry-overflow')
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
 class VPNDNSAnswerTests(unittest.TestCase):
