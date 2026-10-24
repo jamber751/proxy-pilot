@@ -4746,3 +4746,15 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Клавиатурный focus/VoiceOver всего flow, длинные значения и18 ресурсов
   проверить нативно. Settings→VPN, отдельный статус, CRUD и единые whole-row
   hitboxes/hover реализованы в коде; весь этап6 пока не закрыт.
+
+### Продолжение 1.5dm — production frontend перед итоговой сборкой
+
+- [x] Production VPN frontend собран Universal с `VPN_INSTALLER_ENTRY` и
+  isolated updater: `/tmp/pp-frontend-140-20261024-rescue-acceptance`.
+  Это локальная проверка исходников `4108ee6`, до UI-исправления `db478fd`,
+  а не финальный подписанный release payload.
+- [x] Deep/strict signature, arm64+x86_64, sealed sequence140 и строковый
+  capability marker `1` проверены. Readonly result entry вернул77 обычному
+  пользователю и64 для лишнего аргумента; GUI/helper не запускались.
+- [ ] После фиксации окончательных исходников собрать реальный C повторно,
+  проверить его signed manifest/transition и собрать один итоговый repair.pkg.
