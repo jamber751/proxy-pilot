@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; исходные5 Installer cases прошли; новый ARM ordinary update установил D и завершил cleanup | ARM40117891547 отказал на последнем root result probe77; Intel того же run ещё выполняется; нужны diagnosis/fix и полный System8; macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;812 isolated ownership checks ARM/Intel; исходные5 Installer cases проходили; новый ARM ordinary update установил D и завершил cleanup | System40117891547 FAILED: ARM final result77, Intel phase6 On recovery с failures3; нужны diagnosis/fix и полный System8; macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -5939,3 +5939,47 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   regression + bounded busy-only fresh read observation, закрытые diagnostics
   следующего gate. Auth/signatures/deadlines и final D checks не ослабляются.
   Intel того же run ещё выполняется; ни один полный System8 не принят.
+
+### Продолжение 1.5fh — ограниченное чтение результата и bound DNS transport
+
+- [x] `3bd1812`: read-only installed-result observation повторяет ТОЛЬКО
+  typed VPNReleaseStoreError.busy. Original single8s deadline сохранён,
+  bounded20ms пауза вне всех освобождённых locks; каждый повтор заново делает
+  snapshot/installed/self/runtime/final checks. Changed/unsafe/identity/runtime
+  ошибки не повторяются; partial positive не переживает busy. Native private
+  release.lock воспроизвёл RED immediatebusy; независимо39 tests PASS16.575s
+  (16 native +23 redaction). Production и VM-diagnostic graphs ARM/Intel
+  compiled без TESTING; snapshot `/tmp/pp-result-busy-production-vgfedhj1`.
+  Root-owned source hashes совпали, Binder позже изменился отдельно. Это fix
+  подтверждённого contention path, но не доказательство точной причины прежнего
+  ARM CI77. Следующий VM печатает closed phase/category +state summary при отказе;
+  77 по-прежнему failure, все8 system scenarios остаются обязательными.
+- [ ] Intel120942930030 того же40117891547 теперь terminal FAILED: первый
+  phase6 desiredOn Installer scenario истёк319s; selected C141, journal selected
+  revision2, budget desiredtrue/failures3, helper absent113/Cplist присутствует,
+  RecoveryC11runs/last0, BrokerB complete137→139. Last0 здесь может означать
+  исчерпанный budget, не успешное восстановление. Это отдельная ошибка до
+  final result probe; busy observer fix её не закрывает. Проверяются закрытые
+  startup/activation/readiness events и длительности. 2s listener/5s activation/
+  3attempts/Installer limits и auth не увеличиваются ради зелёного теста.
+- [x] `7204b3a`: inert numeric fixed53 UDP/TCP transport использует captured
+  full DomainNetworkPlan/route/server/gen/rev/utun evidence и обязательный
+  scoped authority callback без default approval/retained lifetime Service lease.
+  CLOEXEC/nonblocking/SO_NOSIGPIPE, family IP_BOUND_IF/IPV6_BOUND_IF с exact
+  getsockopt проверяются до connect/send; fresh interface/authority проверяются
+  перед каждым IO. Partial TCP при потере authority закрывается, unbound retry/
+  protocol fallback отсутствуют. Независимо60 fake-syscall tests PASS6.791s;
+  production route/DNS/lifecycle modules ARM/Intel compiled без TESTING.
+  Real Darwin adapter на host НЕ запускался. Dedicated scoped CI включает tests.
+- [ ] Transport limit — absolute IO budget max20s на операцию, не обещание
+  end-to-end20s при произвольном дорогом authority checker. Проверки времени
+  после checker запрещают дальнейший IO по истечении; будущий checker обязан
+  учитывать deadline. Runtime activation, relay, CNAME/TTL/answer interposition,
+  automatic socket cancellation и OS resource protection остаются открытыми.
+  Owned-utun disposable VM proof готовится отдельно. После смерти utunA текущая
+  codec не может подтвердить exact scope absence: receipt сохраняется, не
+  удаляется ради gate. Dead-interface production cleanup ещё не принят.
+- [ ] Snapshot37357a2 remote gates: System40121630182, ownership40121630189,
+  bridge40121630191, interface40121630238, backend40121630261,
+  transport40121630273, scoped-custody40121630322 queued при последнем наблюдении.
+  Это тот же набор handles, не повод повторно запускать jobs из-за ожидания.
