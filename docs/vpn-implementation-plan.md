@@ -4521,3 +4521,22 @@ Ownership clone проверен как эксперимент, но публи�
   executor и нет root-owned capability. Нужен отдельно проверенный переход139→C
   с исправленным executor в том же финальном установщике либо другой полностью
   доказанный путь. Нельзя объявлять всё готовым после одного только recovery139.
+
+### Продолжение 1.5de — изолированные проверки rescue без установок на host
+
+- [x] Реализованы отдельный signature domain и verified exact-edge token,
+  protected live rescue identity, read-only pending context под lifecycle lease
+  и typed destination exchange. Production rescue entry пока недоступен.
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40081400244
+  (`a71fca9`): **214 passed, без skips**, 107 на каждой архитектуре. Проверены
+  authorization, pending context, live identity, exchange и прежние ownership
+  regressions. Это fixture acceptance, не end-to-end установка.
+- [x] Добавлен test-only pending coordinator: arm → повторная проверка → drain →
+  повторная проверка → exchange; журнал и selector не изменяет. Девять сценариев
+  прерывания/повтора подготовлены для отдельного root VM прогона.
+- [ ] Проверить новый coordinator в remote CI и подключить реальные recovery/drain
+  операции; синтетические callbacks не подтверждают работоспособность launchd.
+- [ ] Проверить read-only cleanup receipt gate и затем реализовать отдельно
+  авторизованную очистку. Отсутствующий receipt не считается успешным завершением.
+- [ ] Полный recovery139, переход139→C и итоговый пакет остаются незавершёнными.
+  Пароль macOS и sudoers не меняем; промежуточные host installers не запускаем.
