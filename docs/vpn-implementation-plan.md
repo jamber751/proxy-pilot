@@ -5071,3 +5071,24 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Compile-only V1/V2 повторно passed; host Keychain API не выполнялись.
 - [ ] VM retry должен дойти до реального private ACL/locked-read поведения.
   Production password persistence и silent GUI гарантия пока не реализованы.
+
+### Продолжение 1.5ea — воспроизводимая распаковка engine sources
+
+- [x] Run40094114643 Intel выявил конкретную причину make failure: после release
+  configure make запустил отсутствующий aclocal-1.18 для aclocal.m4. Архив SHA
+  совпадал; extract() записывал всем entries свежие времена вместо upstream mtime.
+- [x] Проверенный OpenVPN archive:594 entries имеют одинаковое release время,
+  generated aclocal.m4 идёт раньше configure.ac/m4 inputs. Fresh writes делали
+  dependencies новее generated файла и случайно запускали maintainer regeneration.
+- [x] Recipe сохраняет validated original file mtime после close/chmod и directory
+  mtime после создания всех детей, deepest-first. Negative/nonfinite/out-of-range
+  signed64-nanosecond timestamps отвергаются до любых filesystem writes.
+- [x] Engine unit suite17 passed. Настоящий make на synthetic tree воспроизводит
+  crossing-second и generated-newer случаи: при удалении восстановления времени
+  оба случая падают. Точные mtime проверены для всех6659 entries официальных
+  OpenVPN/OpenSSL archives в disposable directories; полного engine build это не заменяет.
+- [x] Fast CI gate теперь выполняет material5+engine17 перед дорогой сборкой.
+  Никакие autotools/Homebrew dependencies и runtime crypto policy не добавлены.
+- [ ] Полный Universal engine и system Installer повторить с обновлённой recipe.
+  Старый локальный artifact135 имеет прежнюю recipe provenance: его нельзя
+  переименовать или переписать provenance ради нового финального C; нужен rebuild.

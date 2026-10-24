@@ -5,9 +5,12 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('vpn_engine_build', ROOT / 'app/vpn-engine/build.py')
@@ -41,6 +44,73 @@ class VPNEngineBuildTests(unittest.TestCase):
         folder = builder.extract(data, self.base / 'out', 'source')
         self.assertEqual((folder / 'configure').read_bytes(), b'test')
         self.assertEqual((folder / 'configure').stat().st_mode & 0o7777, 0o700)
+
+    def timestamp_archive(self, entries):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz', format=tarfile.PAX_FORMAT) as archive:
+            for name, timestamp, content in entries:
+                info = tarfile.TarInfo(name)
+                info.mtime = timestamp
+                if content is None:
+                    info.type = tarfile.DIRTYPE
+                else:
+                    info.size = len(content)
+                archive.addfile(info, None if content is None else io.BytesIO(content))
+        return output.getvalue()
+
+    def test_release_timestamps_prevent_maintainer_regeneration_across_write_seconds(self):
+        # Like the release tar, generated aclocal.m4 precedes its inputs. Simulate
+        # extraction crossing a second without sleeps. Dropping mtime restoration
+        # makes make invoke the forbidden regeneration recipe in both cases.
+        copy = shutil.copyfileobj
+        for generated_time in (1788419994, 1788419995):
+            with self.subTest(generated_time=generated_time):
+                writes = []
+                def copy_with_fresh_time(source, output):
+                    copy(source, output)
+                    output.flush()
+                    writes.append(Path(output.name).name)
+                    fresh = (1800000000 + len(writes)) * 10**9
+                    os.utime(output.name, ns=(fresh, fresh))
+                data = self.timestamp_archive([
+                    ('source/aclocal.m4', generated_time, b'generated\n'),
+                    ('source/configure.ac', 1788419994, b'input\n'),
+                    ('source/m4', 1788419994, None),
+                    ('source/m4/libtool.m4', 1788419994, b'macro\n'),
+                    ('source/Makefile', 1788419994,
+                     b'aclocal.m4: configure.ac m4/libtool.m4\n\t@echo unexpected > regenerated\n\t@false\n'),
+                ])
+                with mock.patch.object(builder.shutil, 'copyfileobj', side_effect=copy_with_fresh_time):
+                    folder = builder.extract(data, self.base / str(generated_time), 'source')
+                self.assertLess(writes.index('aclocal.m4'), writes.index('configure.ac'))
+                result = subprocess.run(['/usr/bin/make', 'aclocal.m4'], cwd=folder,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse((folder / 'regenerated').exists())
+                self.assertEqual((folder / 'aclocal.m4').stat().st_mtime_ns, generated_time * 10**9)
+                self.assertEqual((folder / 'configure.ac').stat().st_mtime_ns, 1788419994 * 10**9)
+
+    def test_restores_explicit_directory_and_fractional_file_times_after_children(self):
+        data = self.timestamp_archive([
+            ('source', 1500000000, None),
+            ('source/nested', 1500000001, None),
+            ('source/nested/file', 1500000002.125, b'content'),
+        ])
+        folder = builder.extract(data, self.base / 'out', 'source')
+        self.assertEqual(folder.stat().st_mtime_ns, 1500000000 * 10**9)
+        self.assertEqual((folder / 'nested').stat().st_mtime_ns, 1500000001 * 10**9)
+        self.assertEqual((folder / 'nested/file').stat().st_mtime_ns, 1500000002125000000)
+
+    def test_invalid_timestamps_rejected_before_any_output(self):
+        for timestamp in (-1, float('nan'), float('inf'), -float('inf'), 2**63):
+            with self.subTest(timestamp=timestamp):
+                data = self.timestamp_archive([
+                    ('source/valid', 1500000000, b'valid'),
+                    ('source/invalid', timestamp, b'invalid'),
+                ])
+                with self.assertRaises(ValueError):
+                    builder.extract(data, self.base / 'out', 'source')
+                self.assertFalse((self.base / 'out').exists())
 
     def test_checks_all_names_before_creating_output(self):
         for name in ('../outside', '/outside', 'source/../../outside', 'other/file', 'source\\file'):

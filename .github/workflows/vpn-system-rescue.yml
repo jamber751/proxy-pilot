@@ -36,8 +36,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Fast signed fixture and engine continuity checks
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials -v
+      - name: Fast signed fixture, engine continuity and source extraction checks
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_rescue_system_materials test_vpn_engine_build -v
       - name: Build production artifacts with synthetic trust as ordinary user
         env:
           PROXYPILOT_VM_SYSTEM_RESCUE_BUILD: '1'

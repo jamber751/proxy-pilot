@@ -7,6 +7,7 @@ and license material accompanies the candidate, which is NOT enrolled in the
 privileged helper's release manifest by this tool.
 """
 import argparse
+from decimal import Decimal, InvalidOperation
 import hashlib
 import io
 import json
@@ -52,18 +53,34 @@ def extract(data, folder, root):
                     or not (member.isfile() or member.isdir())
                     or (len(name.parts) == 1 and not member.isdir())):
                 raise ValueError('Unsafe source archive entry')
+            # Keep upstream generated sources at their release timestamps:
+            # fresh extraction times can make make invoke unavailable autotools.
+            # Validate before touching disk, within signed 64-bit nanoseconds.
+            try:
+                timestamp = Decimal(str(member.mtime))
+                if not timestamp.is_finite() or not 0 <= timestamp <= Decimal(2**63 - 1) / 10**9:
+                    raise ValueError('Unsafe source archive timestamp')
+                timestamp_ns = int(timestamp * 10**9)
+            except (InvalidOperation, OverflowError) as error:
+                raise ValueError('Unsafe source archive timestamp') from error
             names.add(name)
-            members.append(member)
+            members.append((member, timestamp_ns))
         folder.mkdir(mode=0o700)
-        for member in members:
+        directories = []
+        for member, timestamp_ns in members:
             destination = folder.joinpath(*PurePosixPath(member.name).parts)
             if member.isdir():
                 destination.mkdir(parents=True, exist_ok=True)
+                directories.append((destination, timestamp_ns))
             else:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.extractfile(member) as source, destination.open('xb') as output:
                     shutil.copyfileobj(source, output)
                 destination.chmod(0o700 if member.mode & 0o111 else 0o600)
+                os.utime(destination, ns=(timestamp_ns, timestamp_ns), follow_symlinks=False)
+        # Creating children changes directory mtimes, so restore them last.
+        for destination, timestamp_ns in sorted(directories, key=lambda item: len(item[0].parts), reverse=True):
+            os.utime(destination, ns=(timestamp_ns, timestamp_ns), follow_symlinks=False)
         return folder / root
 
 
