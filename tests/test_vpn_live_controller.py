@@ -99,6 +99,14 @@ class VPNLiveControllerTests(unittest.TestCase):
         for mode in ('feedback-inert', 'feedback-otp', 'feedback-private-key'):
             with self.subTest(mode=mode): self.run_case(mode)
 
+    def test_stale_saved_application_rejects_human_secret_before_any_frame(self):
+        for change in ('otp-login', 'password-login', 'password-mode', 'password-resources', 'password-dns',
+                       'password-profile', 'password-profile-bytes', 'password-disabled', 'password-revision', 'private-login', 'private-disabled', 'certificate-resources'):
+            with self.subTest(change=change): self.run_case('preflight-' + change)
+    def test_throwing_saved_preflight_wipes_input_without_consuming_frame(self): self.run_case('preflight-password-busy')
+    def test_cached_secret_rechecks_application_at_exchange_boundary(self): self.run_case('preflight-cached-disabled')
+    def test_ledger_only_change_keeps_unchanged_application_eligible(self): self.run_case('preflight-password-ledger')
+
 
 if __name__ == '__main__':
     unittest.main()

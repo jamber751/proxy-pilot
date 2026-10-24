@@ -93,6 +93,8 @@ final class VPNLiveController: ObservableObject {
     }
     #if VPN_LIVE_CONTROLLER_TESTING
     var testPasswordCandidate: VPNPasswordSaveCandidate? { passwordCandidate }
+    var testBeforeCredentialPreflight: (() throws -> Void)?
+    var testAfterCredentialPreflight: (() throws -> Void)?
     #endif
 
     /// Presentation identity only: two consecutive prompts may have the same
@@ -189,6 +191,19 @@ final class VPNLiveController: ObservableObject {
 
     private func submit(secret: inout Data, live: VPNLiveSession,
                         challenge: VPNCredentialChallenge, manual: Bool) throws {
+        // A preflight failure can happen before response construction. Never
+        // leave either a manual input or a returned cached secret with callers.
+        defer { Self.clear(&secret) }
+        #if VPN_LIVE_CONTROLLER_TESTING
+        try testBeforeCredentialPreflight?()
+        #endif
+        guard let expectedApplication,
+              try currentApplicationFromStore() == expectedApplication else {
+            throw VPNLiveControllerError.unverifiedState
+        }
+        #if VPN_LIVE_CONTROLLER_TESTING
+        try testAfterCredentialPreflight?()
+        #endif
         if challenge.kind == .vpnPassword {
             passwordCandidate?.clear(); passwordCandidate = nil
             if manual, let binding = persistenceBinding(challenge) {
@@ -203,7 +218,7 @@ final class VPNLiveController: ObservableObject {
         if result.0 == .needsCredential, result.1?.identifier == challenge.identifier {
             throw VPNLiveControllerError.unverifiedState
         }
-        try accept(result, revision: try expectedApplication.unwrap().revision)
+        try accept(result, revision: expectedApplication.revision)
     }
 
     func cancelCredential() {
@@ -241,9 +256,9 @@ final class VPNLiveController: ObservableObject {
 
     private func enabledInput() throws -> (profile: Data, application: VPNApplicationSpec) {
         guard var stored = try store.load(),
-              let name = stored.saved.configuration.profileName,
-              let bytes = stored.saved.profileContents,
-              let authentication = stored.saved.configuration.authentication else {
+              stored.saved.configuration.profileName != nil,
+              stored.saved.profileContents != nil,
+              stored.saved.configuration.authentication != nil else {
             throw VPNLiveControllerError.notConfigured
         }
         var configuration = stored.saved.configuration
@@ -255,6 +270,29 @@ final class VPNLiveController: ObservableObject {
             try configuration.setEnabled(true)
             stored = try store.save(configuration,
                 expectedRevision: stored.saved.configuration.revision)
+        }
+        return try applicationInput(from: stored)
+    }
+
+    /// A status/prompt refresh is not authority to send a human secret to the
+    /// previously applied server. Re-read current saved intent without enabling
+    /// it or changing any settings, immediately before every exchange.
+    private func currentApplicationFromStore() throws -> VPNApplicationSpec {
+        guard let stored = try store.load(), stored.saved.configuration.desiredEnabled else {
+            throw VPNLiveControllerError.notConfigured
+        }
+        return try applicationInput(from: stored).application
+    }
+
+    private func applicationInput(from stored: VPNStoredState) throws -> (profile: Data, application: VPNApplicationSpec) {
+        guard let name = stored.saved.configuration.profileName,
+              let bytes = stored.saved.profileContents,
+              let authentication = stored.saved.configuration.authentication else {
+            throw VPNLiveControllerError.notConfigured
+        }
+        guard stored.saved.configuration.corporateDNS.isEmpty,
+              !stored.saved.configuration.resources.contains(where: { $0.kind == .domain }) else {
+            throw VPNLiveControllerError.unsupportedResources
         }
         let profile = try VPNProfileImporter.inspect(data: bytes, name: name)
         guard profile.supports(authentication: authentication) else {
@@ -390,12 +428,5 @@ final class VPNLiveController: ObservableObject {
         case .connected: return .connected
         case .failed: return .failed("Не удалось подключить VPN. Попробуйте ещё раз.")
         }
-    }
-}
-
-private extension Optional {
-    func unwrap() throws -> Wrapped {
-        guard let self else { throw VPNLiveControllerError.unverifiedState }
-        return self
     }
 }

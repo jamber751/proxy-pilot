@@ -464,6 +464,105 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
         }
     }
 
+    static func preflightFlow(_ mode: String, path: String) throws {
+        let otp = mode.contains("otp")
+        let certificate = mode.contains("certificate")
+        let privateContinuation = mode.contains("private") && !certificate
+        let cached = mode.contains("cached")
+        let store = try configuredStore(path, password: !certificate, staticPassword: !otp && !certificate, savePassword: cached || mode.contains("ledger"))
+        let driver = FakePasswordSession()
+        if cached {
+            let state = try store.load()!
+            let reference = try store.grantPasswordPersistence(expectedRevision: state.saved.configuration.revision)
+            var initial = Data("cached-static".utf8)
+            _ = try driver.addOnce(store: store, reference: reference, revision: state.saved.configuration.revision, secret: &initial)
+            driver.adds = 0
+        }
+        let live = FakeLiveSession(requiresCredential: true, requiresSecondCredential: privateContinuation)
+        if certificate { live.challenge = VPNCredentialChallenge(generation: 1, kind: .privateKeyPassword) }
+        let persistence = VPNPasswordPersistenceCoordinator(store: store, available: cached, prepare: { _ in driver }, schedule: { $0() })
+        let controller = VPNLiveController(store: store, passwordPersistence: persistence, openSession: { live })
+        func mutate() throws {
+            let before = try store.load()!; var config = before.saved.configuration
+            if mode.contains("disabled") { try config.setEnabled(false) }
+            else if mode.contains("resources") { try config.saveResource(VPNResource(address: "10.30.0.0/16")) }
+            else if mode.contains("dns") { try config.setDNS(["10.20.0.53"]) }
+            else if mode.contains("profile") {
+                let text = certificate ? certificateProfile : passwordProfile
+                let changed = try VPNProfileImporter.inspect(data: Data(text.replacingOccurrences(of: "vpn.company.example", with: "new.company.example").utf8), name: "company.ovpn")
+                if mode.contains("profile-bytes") {
+                    // Independent same-revision byte change: checking only the
+                    // saved revision/name must not let a secret reach old host.
+                    let saved = VPNSnapshot(configuration: config, profileContents: changed.protectedContents,
+                        suggestedDNS: before.saved.suggestedDNS, suggestedResources: before.saved.suggestedResources,
+                        hasIgnoredProfileRoutes: before.saved.hasIgnoredProfileRoutes)
+                    let replacement = VPNStoredState(saved: saved, applied: before.applied, passwordLedger: before.passwordLedger)
+                    let file = store.directory.appendingPathComponent("state.json")
+                    try JSONEncoder().encode(replacement).write(to: file, options: .atomic)
+                    guard chmod(file.path, 0o600) == 0 else { throw NSError(domain: "profile-bytes", code: 41) }
+                    try require(try store.load()!.saved.configuration == before.saved.configuration,
+                                "profile-only byte control changed other application metadata")
+                    return
+                }
+                try config.setProfile(name: changed.name)
+                _ = try store.save(config, importing: changed, expectedRevision: before.saved.configuration.revision)
+                return
+            } else if mode.contains("mode") {
+                try config.setAuthentication(VPNAuthentication(mode: .oneTimePassword, login: "employee"))
+            } else if mode.contains("revision") {
+                let auth = config.authentication!
+                try config.setProfile(name: config.profileName!)
+                try config.setAuthentication(auth)
+            } else {
+                try config.setAuthentication(VPNAuthentication(mode: otp ? .oneTimePassword : .password, login: "other"))
+            }
+            _ = try store.save(config, expectedRevision: before.saved.configuration.revision)
+        }
+        if cached {
+            controller.testBeforeCredentialPreflight = {
+                controller.testBeforeCredentialPreflight = nil
+                try mutate()
+            }
+            controller.connect()
+            try require(live.submissions == 0 && live.requests == 4 && driver.adds == 0,
+                        "cached secret reached an obsolete application")
+            return
+        }
+        controller.connect()
+        if privateContinuation {
+            var first = Data("manual-static".utf8)
+            controller.submitCredential(&first, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+            try require(first.isEmpty && controller.state == .needsCredential(.privateKeyPassword), "private-key continuation missing")
+        }
+        let requests = live.requests, submissions = live.submissions
+        if mode.contains("ledger") {
+            let state = try store.load()!
+            _ = try store.grantPasswordPersistence(expectedRevision: state.saved.configuration.revision)
+        } else if mode.contains("busy") {
+            let fd = open(store.directory.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "preflight-busy", code: 40) }
+            defer { flock(fd, LOCK_UN); close(fd) }
+            var secret = Data("late-secret".utf8)
+            controller.submitCredential(&secret, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+            try require(secret.isEmpty && live.requests == requests && live.submissions == submissions,
+                        "throwing preflight consumed a frame or retained incoming data")
+            return
+        } else { try mutate() }
+        var secret = Data("late-secret".utf8)
+        controller.submitCredential(&secret, expectedPromptIdentifier: controller.credentialPromptIdentifier)
+        try require(secret.isEmpty, "late incoming credential retained")
+        if mode.contains("ledger") {
+            try require(controller.state == .connected && live.submissions == submissions + 1,
+                        "ledger-only change incorrectly rejected unchanged application")
+        } else {
+            try require(live.requests == requests && live.submissions == submissions && live.closed,
+                        "late human credential reached old application or consumed a frame")
+            if mode.contains("disabled") {
+                try require(try store.load()!.saved.configuration.desiredEnabled == false, "submission silently re-enabled saved intent")
+            }
+        }
+    }
+
     static func feedbackFlow(_ mode: String, path: String) throws {
         let otp = mode == "feedback-otp"
         let store = try configuredStore(path, password: true, staticPassword: !otp, savePassword: !otp)
@@ -532,8 +631,13 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
         var heldFD: Int32 = -1
         var emptyCapture: VPNPasswordSaveCandidate?
         if ["feedback-capture-failed", "feedback-capture-unproven", "feedback-capture-private", "feedback-capture-revoked"].contains(mode) {
-            heldFD = open(store.directory.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
-            guard heldFD >= 0, flock(heldFD, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "capture-lock", code: 31) }
+            // Metadata contention may arrive after the application was proven
+            // fresh. It may lose capture, but must not invalidate that proof.
+            controller.testAfterCredentialPreflight = { [weak controller] in
+                controller?.testAfterCredentialPreflight = nil
+                heldFD = open(store.directory.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                guard heldFD >= 0, flock(heldFD, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "capture-lock", code: 31) }
+            }
             live.onSubmission = {
                 emptyCapture = controller.testPasswordCandidate
                 if heldFD >= 0 { flock(heldFD, LOCK_UN); close(heldFD); heldFD = -1 }
@@ -559,6 +663,7 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
             }
         }
         defer {
+            controller.testAfterCredentialPreflight = nil
             VPNPasswordPersistenceCoordinator.testAfterBusySavedObservation = nil
             if heldFD >= 0 { flock(heldFD, LOCK_UN); close(heldFD) }
         }
@@ -711,6 +816,9 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
 
     static func main() throws {
         let mode = CommandLine.arguments[1], path = CommandLine.arguments[2]
+        if mode.hasPrefix("preflight-") {
+            try preflightFlow(mode, path: path); print("preflight flow passed"); return
+        }
         if mode.hasPrefix("feedback-") {
             try feedbackFlow(mode, path: path); print("feedback flow passed"); return
         }
