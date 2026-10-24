@@ -110,7 +110,11 @@ enum VPNPasswordDeleteOutcome: Equatable { case deleted, notFound, unavailable, 
 enum VPNPasswordReceiptAcknowledgmentError: Error { case lockBusy }
 
 struct VPNPasswordLedger: Codable, Equatable {
-    static let maximumPendingDeletions = 64
+    // The extra legacy slot is retirement-only. New password admissions keep
+    // pending below64, reserving space to revoke their eventual active item.
+    static let maximumPendingDeletions = 65
+    static let maximumTotalSlots = 65
+    static let newPasswordQueueLimit = 64
     var active: VPNPasswordSlot?
     var pendingDeletion: [VPNPasswordSlot]
 
@@ -120,6 +124,7 @@ struct VPNPasswordLedger: Codable, Equatable {
 
     fileprivate func validate(saved: VPNSnapshot) throws {
         guard pendingDeletion.count <= Self.maximumPendingDeletions,
+              pendingDeletion.count + (active == nil ? 0 : 1) <= Self.maximumTotalSlots,
               Set(pendingDeletion.map { $0.reference.itemID }).count == pendingDeletion.count,
               active.map({ value in !pendingDeletion.contains(where: { $0.reference.itemID == value.reference.itemID }) }) ?? true
         else { throw VPNValidationError.invalidConfiguration }
@@ -188,7 +193,7 @@ struct VPNStoredState: Codable, Equatable {
     var hasPendingChanges: Bool { applied?.configuration.revision != saved.configuration.revision }
 
     fileprivate func validate() throws {
-        guard schemaVersion == 4 else { throw VPNValidationError.invalidConfiguration }
+        guard schemaVersion == 5 else { throw VPNValidationError.invalidConfiguration }
         try saved.validate()
         try passwordLedger.validate(saved: saved)
         if let applied = applied {
@@ -201,14 +206,14 @@ struct VPNStoredState: Codable, Equatable {
     }
 
     init(saved: VPNSnapshot, applied: VPNSnapshot?, passwordLedger: VPNPasswordLedger = VPNPasswordLedger()) {
-        schemaVersion = 4; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
+        schemaVersion = 5; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
     }
 
     private enum CodingKeys: String, CodingKey { case schemaVersion, saved, applied, passwordLedger }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .schemaVersion)
-        guard (1...4).contains(version) else { throw VPNValidationError.invalidConfiguration }
+        guard (1...5).contains(version) else { throw VPNValidationError.invalidConfiguration }
         saved = try container.decode(VPNSnapshot.self, forKey: .saved)
         applied = try container.decodeIfPresent(VPNSnapshot.self, forKey: .applied)
         if version == 1 {
@@ -231,7 +236,15 @@ struct VPNStoredState: Codable, Equatable {
         } else {
             passwordLedger = try container.decode(VPNPasswordLedger.self, forKey: .passwordLedger)
         }
-        schemaVersion = 4
+        // Do not retroactively admit malformed legacy queues just because
+        // schema5 has retirement headroom. Legacy64+active1 remains lossless.
+        if version < 5 {
+            guard passwordLedger.pendingDeletion.count <= 64,
+                  passwordLedger.pendingDeletion.count + (passwordLedger.active == nil ? 0 : 1) <= 65 else {
+                throw VPNValidationError.invalidConfiguration
+            }
+        }
+        schemaVersion = 5
     }
 
     private struct LegacyPasswordLedger: Decodable {
@@ -348,8 +361,10 @@ final class VPNStore {
                   let contents = snapshot.profileContents else { throw VPNValidationError.invalidConfiguration }
             if let existing = current.passwordLedger.active {
                 guard existing.writeState == .notIssued else { throw VPNValidationError.staleRevision }
+                guard current.passwordLedger.pendingDeletion.count < VPNPasswordLedger.newPasswordQueueLimit else { throw VPNValidationError.storageUnavailable }
                 return existing.reference
             }
+            guard current.passwordLedger.pendingDeletion.count < VPNPasswordLedger.newPasswordQueueLimit else { throw VPNValidationError.storageUnavailable }
             let reference = VPNPasswordReference(itemID: UUID(), profileSHA256: VPNPasswordReference.digest(contents), login: login)
             var ledger = current.passwordLedger
             ledger.active = VPNPasswordSlot(reference: reference, writeState: .notIssued)
@@ -373,7 +388,11 @@ final class VPNStore {
                   auth.credentialPersistence == .keychain, let login = auth.login,
                   let contents = snapshot.profileContents else { throw VPNValidationError.invalidConfiguration }
             var ledger = current.passwordLedger
-            if let old = ledger.active, old.writeState != .notIssued && old.writeState != .noItem {
+            let retiresIssued = ledger.active.map { $0.writeState != .notIssued && $0.writeState != .noItem } ?? false
+            guard ledger.pendingDeletion.count + (retiresIssued ? 1 : 0) < VPNPasswordLedger.newPasswordQueueLimit else {
+                throw VPNValidationError.storageUnavailable
+            }
+            if let old = ledger.active, retiresIssued {
                 guard ledger.pendingDeletion.count < VPNPasswordLedger.maximumPendingDeletions else {
                     throw VPNValidationError.storageUnavailable
                 }
@@ -412,6 +431,9 @@ final class VPNStore {
             try requireDirectoryIdentity(expectedDirectoryDescriptor, actual: descriptor)
             let current = try requireActivePassword(reference: reference, expectedRevision: expectedRevision, directory: descriptor)
             guard current.passwordLedger.active?.writeState == .notIssued else { throw VPNValidationError.staleRevision }
+            guard current.passwordLedger.pendingDeletion.count < VPNPasswordLedger.newPasswordQueueLimit else {
+                throw VPNValidationError.storageUnavailable // Before pending write or any backend/GO.
+            }
             var ledger = current.passwordLedger
             ledger.active?.writeState = .pending
             let pending = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)

@@ -44,6 +44,20 @@ QUJDRA==
     static func grant(_ store: VPNStore) throws -> VPNPasswordReference {
         try store.grantPasswordPersistence(expectedRevision: store.load()!.saved.configuration.revision)
     }
+    static func syntheticQueue(_ count: Int, like ref: VPNPasswordReference) -> [VPNPasswordSlot] {
+        (0..<count).map { _ in VPNPasswordSlot(reference: VPNPasswordReference(itemID: UUID(),
+            profileSHA256: ref.profileSHA256, login: ref.login), writeState: .pending) }
+    }
+    static func installLedger(_ store: VPNStore, pending: [VPNPasswordSlot], active: VPNPasswordSlot?, version: Int) throws {
+        let old = try store.load()!
+        let value = VPNStoredState(saved: old.saved, applied: old.applied,
+            passwordLedger: VPNPasswordLedger(active: active, pendingDeletion: pending))
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as! [String: Any]
+        object["schemaVersion"] = version
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            .write(to: store.directory.appendingPathComponent("state.json"), options: .atomic)
+        guard chmod(store.directory.appendingPathComponent("state.json").path, 0o600) == 0 else { throw Failure.assertion }
+    }
     static func main() throws {
         let args = CommandLine.arguments; guard args.count == 3 else { exit(64) }
         let folder = URL(fileURLWithPath: args[2], isDirectory: true)
@@ -96,7 +110,7 @@ QUJDRA==
         }
         switch args[1] {
         case "grant":
-            try check(initial.passwordLedger.active == nil && initial.schemaVersion == 4)
+            try check(initial.passwordLedger.active == nil && initial.schemaVersion == 5)
             try check(grant(store) == reference)
             var reads = 0, writes = 0
             try rejects { _ = try store.readPassword(reference: reference, expectedRevision: revision) { _, _ in reads += 1 } }
@@ -193,7 +207,7 @@ QUJDRA==
             envelope["schemaVersion"] = 1; envelope.removeValue(forKey: "passwordLedger")
             try JSONSerialization.data(withJSONObject: envelope).write(to: file)
             let migrated = try store.load()!
-            try check(migrated.schemaVersion == 4 && migrated.passwordLedger.active == nil && migrated.saved == initial.saved)
+            try check(migrated.schemaVersion == 5 && migrated.passwordLedger.active == nil && migrated.saved == initial.saved)
             let renewed = try grant(store)
             try check(renewed != reference)
             let valid = try Data(contentsOf: file)
@@ -206,7 +220,7 @@ QUJDRA==
             legacy["passwordLedger"] = ["active": active["reference"]!, "pendingDeletion": []]
             try JSONSerialization.data(withJSONObject: legacy).write(to: file)
             let oldSchema = try store.load()!
-            try check(oldSchema.schemaVersion == 4 && oldSchema.passwordLedger.active?.writeState == .pending)
+            try check(oldSchema.schemaVersion == 5 && oldSchema.passwordLedger.active?.writeState == .pending)
             try rejects { _ = try grant(store) }
             try rejects { _ = try store.addPasswordOnce(reference: renewed, expectedRevision: revision) { _ in .added(locator) } }
             legacy["passwordLedger"] = ["pendingDeletion": [active["reference"]!]]
@@ -234,24 +248,78 @@ QUJDRA==
             corrupt = parsed; corrupt["passwordLedger"] = ledger
             try JSONSerialization.data(withJSONObject: corrupt).write(to: file)
             try rejects { _ = try store.load() }
-        case "capacity":
-            for index in 0..<VPNPasswordLedger.maximumPendingDeletions {
-                _ = try auth(store)
-                if index + 1 < VPNPasswordLedger.maximumPendingDeletions {
-                    _ = try auth(store, consent: .keychain); let next = try grant(store)
-                    try store.addPasswordOnce(reference: next, expectedRevision: store.load()!.saved.configuration.revision) { _ in .indeterminate }
-                }
+        case "schema4-headroom", "legacy-retire65", "legacy-late-added", "legacy-late-noio":
+            var old = try store.load()!.passwordLedger.active!
+            let pending = syntheticQueue(64, like: reference)
+            if args[1].hasPrefix("legacy-late") { old.writeState = .pending; old.locator = nil }
+            try installLedger(store, pending: pending, active: old, version: 4)
+            let legacyBytes = try Data(contentsOf: file)
+            let migrated = try store.load()!
+            try check(migrated.schemaVersion == 5 && migrated.passwordLedger.pendingDeletion == pending
+                && migrated.passwordLedger.active == old && legacyBytes == Data(contentsOf: file))
+            if args[1] == "schema4-headroom" { break }
+            _ = try auth(store)
+            let retired = try store.load()!
+            try check(retired.passwordLedger.active == nil && retired.passwordLedger.pendingDeletion == pending + [old]
+                && retired.passwordLedger.pendingDeletion.count == 65)
+            if args[1] == "legacy-late-added" {
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .added(locator))
+                try check(store.load()!.passwordLedger.pendingDeletion.last?.locator == locator)
+                try store.acknowledgePasswordDeletionReceipt(reference: reference, locator: locator)
+            } else if args[1] == "legacy-late-noio" {
+                try store.acknowledgePasswordAddReceipt(reference: reference, outcome: .definitelyNoIO)
+                try store.deletePendingPassword(reference: reference) { _, _ in throw Failure.assertion }
+            } else {
+                _ = try auth(store, .oneTimePassword, login: "changed")
+                let state = try store.load()!; var config = state.saved.configuration
+                try config.removeProfile(); _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
+                try check(store.load()!.saved.configuration.profileName == nil)
             }
-            _ = try auth(store, consent: .keychain); let active = try grant(store)
-            try store.addPasswordOnce(reference: active, expectedRevision: store.load()!.saved.configuration.revision) { _ in .indeterminate }
+            try check(Array(try store.load()!.passwordLedger.pendingDeletion.prefix(64)) == pending)
+        case "schema5-bounds":
+            let active = try store.load()!.passwordLedger.active!, pending = syntheticQueue(65, like: reference)
+            // Both a legacy queue65 and total66 are invalid, never truncated.
+            for (version, rows, chosen): (Int, [VPNPasswordSlot], VPNPasswordSlot?) in [
+                (4, pending, nil), (4, pending, active), (5, pending, active),
+                (5, syntheticQueue(66, like: reference), nil)] {
+                try installLedger(store, pending: rows, active: chosen, version: version)
+                let before = try Data(contentsOf: file)
+                try rejects { _ = try store.load() }
+                try check(before == Data(contentsOf: file))
+                // Restore a valid base without decoding the rejected file.
+                try JSONEncoder().encode(initial).write(to: file, options: .atomic)
+                guard chmod(file.path, 0o600) == 0 else { throw Failure.assertion }
+            }
+            try installLedger(store, pending: pending, active: nil, version: 5)
+            try check(store.load()!.passwordLedger.pendingDeletion == pending)
+        case "unissued-at64":
+            let pending = syntheticQueue(64, like: reference)
+            let unissued = VPNPasswordSlot(reference: reference, writeState: .notIssued)
+            try installLedger(store, pending: pending, active: unissued, version: 4)
+            let before = try Data(contentsOf: file); var called = false
+            try rejects { _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in called = true; return .added(locator) } }
+            try check(!called && before == Data(contentsOf: file))
+            _ = try auth(store)
+            try check(store.load()!.passwordLedger.active == nil && store.load()!.passwordLedger.pendingDeletion == pending)
+        case "capacity":
+            // Reach the new admission edge through real APIs, not edited state.
+            for _ in 0..<63 {
+                _ = try auth(store)
+                _ = try auth(store, consent: .keychain); let next = try grant(store)
+                _ = try store.addPasswordOnce(reference: next, expectedRevision: store.load()!.saved.configuration.revision) { _ in .indeterminate }
+            }
+            let active = try store.load()!.passwordLedger.active!.reference
             let before = try Data(contentsOf: file)
-            try rejects { _ = try auth(store) }
-            try check(before == Data(contentsOf: file) && store.load()!.passwordLedger.active?.reference == active)
-            try store.completePasswordAdd(reference: active, outcome: .definitelyNoIO)
-            let fresh = try store.createPasswordSaveGrant(expectedRevision: store.load()!.saved.configuration.revision, expectedActive: active)
-            try check(fresh != active && store.load()!.passwordLedger.pendingDeletion.count == VPNPasswordLedger.maximumPendingDeletions)
-            _ = try auth(store) // unissued grant retirement also needs no queue slot
-            try check(store.load()!.passwordLedger.active == nil && store.load()!.passwordLedger.pendingDeletion.count == VPNPasswordLedger.maximumPendingDeletions)
+            try rejects { _ = try store.createPasswordSaveGrant(expectedRevision: store.load()!.saved.configuration.revision, expectedActive: active) }
+            try check(before == Data(contentsOf: file))
+            _ = try auth(store) // The reserved retirement slot is always usable.
+            try check(store.load()!.passwordLedger.pendingDeletion.count == 64 && store.load()!.passwordLedger.active == nil)
+            _ = try auth(store, consent: .keychain)
+            let full = try Data(contentsOf: file)
+            try rejects { _ = try grant(store) }
+            try rejects { _ = try store.createPasswordSaveGrant(expectedRevision: store.load()!.saved.configuration.revision, expectedActive: nil) }
+            try check(full == Data(contentsOf: file))
+            _ = try auth(store, .oneTimePassword, login: "changed") // Configuration stays usable.
         case "errors":
             let before = try Data(contentsOf: file)
             try rejects { try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in throw Failure.expected } }
@@ -433,7 +501,7 @@ QUJDRA==
                 envelope["passwordLedger"] = ["active": ["reference": ref, "writeState": oldState], "pendingDeletion": []]
                 try JSONSerialization.data(withJSONObject: envelope).write(to: file)
                 let migrated = try store.load()!
-                try check(migrated.schemaVersion == 4 && migrated.passwordLedger.active?.writeState == .pending && migrated.passwordLedger.active?.locator == nil)
+                try check(migrated.schemaVersion == 5 && migrated.passwordLedger.active?.writeState == .pending && migrated.passwordLedger.active?.locator == nil)
                 try rejects { _ = try store.readPassword(reference: reference, expectedRevision: revision) { _, _ in throw Failure.assertion } }
                 try rejects { _ = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in throw Failure.assertion } }
                 _ = try auth(store)
