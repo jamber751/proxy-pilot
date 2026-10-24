@@ -22,6 +22,20 @@ def function(name):
 
 
 class PowerTests(unittest.TestCase):
+    def test_config_filename_uses_argument_not_callers_dynamic_mode(self):
+        out = self.run_zsh(['effective_bridge_bypass', 'write_gost_config'], '''
+gost_nameservers() { print 192.0.2.53; }
+mode=http
+first=$(write_gost_config direct)
+unset mode
+second=$(write_gost_config socks)
+[[ "$first" == "$CFG_DIR/gost-direct.yaml" && -f "$first" ]] || exit 1
+[[ "$second" == "$CFG_DIR/gost-socks.yaml" && -f "$second" ]] || exit 1
+[[ ! -e "$CFG_DIR/gost-http.yaml" && ! -e "$CFG_DIR/gost-.yaml" ]] || exit 1
+print exact-filenames
+''')
+        self.assertIn('exact-filenames', out)
+
     def test_socks_detection_requires_no_auth(self):
         for reply, expected in [(r'\x05\x00', 0), (r'\x05\x02', 1), (r'\x05\xff', 1), (r'\x04\x00', 1)]:
             out = self.run_zsh(['is_socks5'], f'''

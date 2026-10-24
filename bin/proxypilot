@@ -433,7 +433,8 @@ gost_nameservers() {
 }
 
 write_gost_config() {  # mode -> путь к конфигу
-  local mode="$1" cfg="$CFG_DIR/gost-$mode.yaml"
+  local mode="$1"
+  local cfg="$CFG_DIR/gost-$mode.yaml"
   local NO_PROXY_LIST=$(effective_bridge_bypass)
   local upstream="" connector="" ns e
   case "$mode" in
