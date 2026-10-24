@@ -76,11 +76,11 @@ final class VPNPasswordRuntime {
         statusLock.lock()
         unknownMutation = unknownMutation || report.stoppedOnUnknown || report.quarantinedSkipped > 0 || report.pendingSkipped > 0
         if unknownMutation {
-            detail = "Не удалось подтвердить удаление сохранённого пароля."
+            detail = "Удаление прежних паролей пока не подтверждено. VPN можно использовать."
         } else if remaining == nil || report.storageUnavailable {
-            detail = "Нужно подтвердить удаление сохранённых паролей."
+            detail = "Удаление прежних паролей пока не подтверждено. VPN можно использовать."
         } else if remaining! > 0 {
-            detail = "Не все сохранённые пароли удалены."
+            detail = "Удаление прежних паролей пока не подтверждено. VPN можно использовать."
         } else { detail = nil }
         let current = detail, callback = handler
         statusLock.unlock()

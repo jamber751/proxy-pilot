@@ -185,7 +185,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "cleanup-sett
         panel.settings = true
     }
     if scenario.hasPrefix("cleanup-") {
-        panel.passwordCleanupDetail = "Не удалось подтвердить удаление сохранённого пароля."
+        panel.passwordCleanupDetail = "Удаление прежних паролей пока не подтверждено. VPN можно использовать."
         panel.settings = !scenario.hasPrefix("cleanup-home")
     }
     if scenario == "resource" {
@@ -263,7 +263,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "cleanup-sett
     case "cleanup-home", "cleanup-home-save": required += ["vpnPower", "vpnSettings", "vpnNotice"]
     case "feedback-read-confirmation":
         required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel", "vpnStatusDetail"]
-        precondition(panel.statusDetail.contains("Сохранение пароля не подтверждено."), "Manual lookup warning hidden")
+        precondition(panel.statusDetail == "Не удалось подставить пароль. Введите его вручную.", "Manual lookup guidance hidden")
     case "feedback-saving", "feedback-saved", "feedback-unconfirmed":
         required += ["vpnPower", "vpnSettings", "vpnStatusDetail"]
         precondition(panel.statusDetail.contains("\n"), "Save feedback not rendered")

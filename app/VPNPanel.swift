@@ -165,8 +165,8 @@ final class VPNPanelModel: ObservableObject {
             }
             if configuration.configuration.authentication?.mode == .password,
                passwordPersistenceEvent?.phase == .needsConfirmation,
-               let detail = passwordPersistenceDetail {
-                return "Введите пароль VPN.\n" + detail
+               passwordPersistenceDetail != nil {
+                return "Не удалось подставить пароль. Введите его вручную."
             }
             return passwordPersistenceAvailable && configuration.configuration.authentication?.credentialPersistence == .keychain
                 ? "Попробуем сохранить пароль после подключения."

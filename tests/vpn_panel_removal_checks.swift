@@ -215,7 +215,7 @@ private final class RemovalMetrics { var destination = RemovalDestinationKey.def
             settle(host)
             try require(metrics.destination.screen == "settings" && panel.configuration.profile == nil,
                 "removal warning prevented completed product navigation")
-            try require(metrics.destination.cleanupDetail == "Не удалось подтвердить удаление сохранённого пароля.",
+            try require(metrics.destination.cleanupDetail == "Удаление прежних паролей пока не подтверждено. VPN можно использовать.",
                 "unknown cleanup warning lost after navigation")
             try require(host.fittingSize.height <= 432 && metrics.rowBounds.height >= 48 && metrics.rowBounds.maxX <= 345
                 && metrics.rowBounds.minX >= -1 && metrics.rowBounds.maxY <= 432 && !host.subviewsRecursive.contains(where: { $0 is NSScrollView }),

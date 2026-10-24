@@ -151,12 +151,12 @@ private final class PanelPasswordSession: VPNPasswordPersistenceSession {
                 "revoke did not finish in VPN settings")
             while !cleanupJobs.isEmpty { cleanupJobs.removeFirst()() }
             for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
-            try require(panel.notice == "Не все сохранённые пароли удалены." && !panel.passwordPersistenceSelected,
+            try require(panel.notice == "Удаление прежних паролей пока не подтверждено. VPN можно использовать." && !panel.passwordPersistenceSelected,
                 "revoked consent hid retained-password warning")
             panel.message = "Connection error"
             try require(panel.notice == "Connection error", "cleanup replaced explicit error")
             panel.message = ""; panel.beginAuthentication(); panel.selectAuthentication(.oneTimePassword); panel.saveAuthentication()
-            try require(panel.notice == "Не все сохранённые пароли удалены.", "mode change hid cleanup warning")
+            try require(panel.notice == "Удаление прежних паролей пока не подтверждено. VPN можно использовать.", "mode change hid cleanup warning")
             print("credential presentation flow passed"); return
         }
         let controller = VPNLiveController(store: store, passwordPersistence: cache, openSession: { session })
@@ -168,7 +168,7 @@ private final class PanelPasswordSession: VPNPasswordPersistenceSession {
                 let warning = "Сохранение пароля не подтверждено."
                 try require(panel.needsCredential && !panel.connected && session.submissions == 0
                     && passwordSession.reads == 1 && panel.passwordPersistenceDetail == warning
-                    && panel.statusDetail.contains(warning),
+                    && panel.statusDetail == "Не удалось подставить пароль. Введите его вручную.",
                     "cache read failure warning hidden from the manual password prompt")
             }
             panel.secret = "synthetic static password"
