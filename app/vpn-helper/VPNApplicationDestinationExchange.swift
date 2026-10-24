@@ -12,6 +12,12 @@ enum VPNApplicationDestinationExchangeError: Error {
 enum VPNApplicationDestinationExchange {
     enum Outcome { case exchanged, alreadyExchanged }
     private static let app = "ProxyPilot.app"
+    private enum ExecutorMode {
+        case ordinary(required: Bool)
+        #if VPN_EXPLICIT_RESCUE
+        case rescue(VPNRescueExecutor)
+        #endif
+    }
 
     static func exchange(inTrustedDirectory base: Int32,
                          previous: VerifiedVPNRelease,
@@ -29,7 +35,7 @@ enum VPNApplicationDestinationExchange {
         return try perform(base: base, destination: destination, previous: previous,
                            previousOwnerUserID: previousOwnerUserID,
                            candidate: candidate, transition: transition,
-                           productionDestination: true, requireExecutor: true,
+                           productionDestination: true, executorMode: .ordinary(required: true),
                            authorizeMutation: authorizeMutation, checkpoint: checkpoint)
     }
 
@@ -51,8 +57,31 @@ enum VPNApplicationDestinationExchange {
         return try perform(base: base, destination: destination, previous: previous,
                            previousOwnerUserID: previousOwnerUserID,
                            candidate: candidate, transition: transition,
-                           productionDestination: false, requireExecutor: requireExecutor,
+                           productionDestination: false, executorMode: .ordinary(required: requireExecutor),
                            authorizeMutation: authorizeMutation, checkpoint: checkpoint)
+    }
+    #endif
+
+    #if VPN_EXPLICIT_RESCUE && VPN_APPLICATION_DESTINATION_ROOT_TESTING
+    /// Root VM integration only. The live proof is separately authorized for
+    /// this exact signed edge; it never impersonates the frozen executor A.
+    /// Production publication remains unavailable until the journal/recovery
+    /// coordinator enforces pending-state and cleanup boundaries.
+    static func testRescueExchange(inTrustedDirectory base: Int32, destination: Int32,
+                                  previous: VerifiedVPNRelease, previousOwnerUserID: uid_t,
+                                  candidate: VerifiedVPNRelease,
+                                  transition: VerifiedVPNUpdateTransition,
+                                  executor: VPNRescueExecutor,
+                                  authorizeMutation: () throws -> Void,
+                                  checkpoint: (String) throws -> Void = { _ in }) throws -> Outcome {
+        guard getuid() == 0, geteuid() == 0 else {
+            throw VPNApplicationDestinationExchangeError.requiresRoot
+        }
+        return try perform(base: base, destination: destination, previous: previous,
+                           previousOwnerUserID: previousOwnerUserID, candidate: candidate,
+                           transition: transition, productionDestination: false,
+                           executorMode: .rescue(executor), authorizeMutation: authorizeMutation,
+                           checkpoint: checkpoint)
     }
     #endif
 
@@ -68,7 +97,7 @@ enum VPNApplicationDestinationExchange {
                                 candidate: VerifiedVPNRelease,
                                 transition: VerifiedVPNUpdateTransition,
                                 productionDestination: Bool,
-                                requireExecutor: Bool,
+                                executorMode: ExecutorMode,
                                 authorizeMutation: () throws -> Void,
                                 checkpoint: (String) throws -> Void) throws -> Outcome {
         guard transition.matchesSource(previous), transition.matchesDestination(candidate),
@@ -88,8 +117,30 @@ enum VPNApplicationDestinationExchange {
                                                           release: candidate)
         let protectedA = try VPNStagedApplication.inspect(inTrustedDirectory: oldCopy,
                                                           release: previous)
-        let executor = requireExecutor
-            ? try VPNReplacementExecutor.inspect(inTrustedDirectory: base, release: previous) : nil
+        let revalidateExecutor: () throws -> Void
+        switch executorMode {
+        case .ordinary(let required):
+            let executor = required
+                ? try VPNReplacementExecutor.inspect(inTrustedDirectory: base, release: previous) : nil
+            revalidateExecutor = { try executor?.revalidate() }
+        #if VPN_EXPLICIT_RESCUE
+        case .rescue(let executor):
+            guard executor.authorization.matchesSource(previous),
+                  executor.authorization.matchesDestination(candidate),
+                  executor.authorization.matchesTransition(transition) else {
+                throw VPNApplicationDestinationExchangeError.invalidTransition
+            }
+            try executor.revalidate()
+            // A must still be present and valid. Static evidence of A is not
+            // claimed as live A authentication; rescue proves its own identity.
+            let retainedExecutor = try VPNReplacementExecutor.inspectPrepared(
+                inTrustedDirectory: base, release: previous)
+            revalidateExecutor = {
+                try executor.revalidate()
+                try retainedExecutor.revalidatePrepared()
+            }
+        #endif
+        }
 
         func checkProtected() throws {
             try lease.check()
@@ -100,19 +151,38 @@ enum VPNApplicationDestinationExchange {
             try VPNStagedApplication.requireExclusiveBundle(inTrustedDirectory: stage)
             try VPNStagedApplication.revalidate(protectedB, inTrustedDirectory: current)
             try VPNStagedApplication.revalidate(protectedA, inTrustedDirectory: oldCopy)
-            try executor?.revalidate()
+            try revalidateExecutor()
         }
         try checkProtected()
 
-        let before = (try? VPNStagedApplication.inspectInstalledForUpdate(
-            inApplicationsDirectory: destination, previousOwnerUserID: previousOwnerUserID,
-            productionParent: productionDestination, release: previous)) != nil
+        func inspectPreviousInstalled() throws -> VPNStagedApplicationInspection {
+            #if VPN_EXPLICIT_RESCUE
+            if case .rescue = executorMode {
+                return try VPNStagedApplication.inspectInstalled(
+                    inApplicationsDirectory: destination, ownerUserID: 0,
+                    productionParent: productionDestination, release: previous)
+            }
+            #endif
+            return try VPNStagedApplication.inspectInstalledForUpdate(
+                inApplicationsDirectory: destination, previousOwnerUserID: previousOwnerUserID,
+                productionParent: productionDestination, release: previous)
+        }
+        func inspectPreviousRetained() throws -> VPNStagedApplicationInspection {
+            #if VPN_EXPLICIT_RESCUE
+            if case .rescue = executorMode {
+                return try VPNStagedApplication.inspectProtected(
+                    inTrustedDirectory: stage, contentOwnerUserID: 0, release: previous)
+            }
+            #endif
+            return try VPNStagedApplication.inspectRetainedUpdateSource(
+                inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
+                release: previous)
+        }
+        let before = (try? inspectPreviousInstalled()) != nil
             && matchesProtected(stage, owner: geteuid(), release: candidate)
         let after = matchesInstalled(destination, owner: geteuid(),
                                      production: productionDestination, release: candidate)
-            && (try? VPNStagedApplication.inspectRetainedUpdateSource(
-                inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
-                release: previous)) != nil
+            && (try? inspectPreviousRetained()) != nil
         guard before != after else { throw VPNApplicationDestinationExchangeError.invalidLayout }
 
         if after {
@@ -122,9 +192,7 @@ enum VPNApplicationDestinationExchange {
                 let installed = try VPNStagedApplication.inspectInstalled(
                     inApplicationsDirectory: destination, ownerUserID: geteuid(),
                     productionParent: productionDestination, release: candidate)
-                let retained = try VPNStagedApplication.inspectRetainedUpdateSource(
-                    inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
-                    release: previous)
+                let retained = try inspectPreviousRetained()
                 try sync(destination, stage)
                 try VPNStagedApplication.revalidate(installed, inTrustedDirectory: destination)
                 try VPNStagedApplication.revalidate(retained, inTrustedDirectory: stage)
@@ -132,9 +200,7 @@ enum VPNApplicationDestinationExchange {
             } catch { throw VPNApplicationDestinationExchangeError.commitUncertain }
         }
 
-        let installedA = try VPNStagedApplication.inspectInstalledForUpdate(
-            inApplicationsDirectory: destination, previousOwnerUserID: previousOwnerUserID,
-            productionParent: productionDestination, release: previous)
+        let installedA = try inspectPreviousInstalled()
         let stagedB = try VPNStagedApplication.inspect(inTrustedDirectory: stage,
                                                        release: candidate)
         let oldInstalled = try childIdentity(destination)
@@ -165,9 +231,7 @@ enum VPNApplicationDestinationExchange {
                 inApplicationsDirectory: destination, ownerUserID: geteuid(),
                 productionParent: productionDestination, release: candidate)
             try checkpoint("afterCandidateInspection")
-            let retainedA = try VPNStagedApplication.inspectRetainedUpdateSource(
-                inTrustedDirectory: stage, previousOwnerUserID: previousOwnerUserID,
-                release: previous)
+            let retainedA = try inspectPreviousRetained()
             try checkpoint("afterPreviousInspection")
             try VPNStagedApplication.revalidate(installedB, inTrustedDirectory: destination)
             try checkpoint("afterCandidateRevalidation")
