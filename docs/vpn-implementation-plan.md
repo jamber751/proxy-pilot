@@ -6598,3 +6598,26 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   private/genuine Keychain, utun, System/ownership/frontend gates. PasswordRuntime
   остаётся OFF, domain backend/OS barrier/ordinary DNS policy и final installed
   OTP/IP/lifecycle/WARP/VoiceOver/macOS11/English release всё ещё OPEN.
+
+
+### Продолжение 1.5fw — свежий acceptance snapshot9ac5266
+
+- [x] Все согласованные code/test изменения отправлены одним source push только
+  в codex/vpn-root-acceptance;9ac526642df2ddd8080b866ca65ad4f2568f1090.
+  Public main/tag/release и host Installer не менялись. Рабочая папка после
+  source push чистая.
+- [ ] Новые подтверждённые handles на exact9ac5266:
+  System40135758259; private backend40135758246;
+  genuine default40135758251; interface40135758253;
+  corrected utun40135758303; transport40135758289;
+  scoped+continuous/profile40135758333; ownership40135758301.
+  Они queued/частично уже имеют live jobs, но положительных итогов ещё нет.
+  Не запускать replacement по observation timeout; poll тех же handles.
+- [ ] Старые System40129583883/b327ab6 (ARM8/8 green, Intellive) и
+  System40132902845/b0322dc (ARM прошёл первые5 и выполняет ordinaryOff;
+  Intelbuild) сохраняются для точной отдельной атрибуции. Старый ownership
+ 40132902851 имеет положительные завершённые jobs и remaining queued; live
+  работы не прерывались. Source snapshots не смешиваются при оценке готовности.
+- [ ] PasswordRuntime, production domains/relay/OS barrier, final installed
+  lifecycle/OTP/IP/WARP/accessibility/macOS11 и English public release остаются
+  OPEN. Новые clocks/route profiles проходят приёмку до включения пользователя.
