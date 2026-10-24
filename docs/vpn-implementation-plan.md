@@ -4826,3 +4826,16 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Keychain изолированного стенда, включая закрытое хранилище и обновление
   приложения. Аудит не обращался к реальному Keychain, приватным профилям,
   root-службам или сети и не закрывает исходную приёмку входа из плана.
+
+### Продолжение 1.5do — grouped rescue CI прошёл обе архитектуры
+
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40089132668
+  (`ce2fc39`): все6 jobs successful, **760 passed, без skips**:380 на arm64
+  и380 на Intel. Полный лог проверен:40 suite summaries, нет FAILED/skipped.
+  Split на contracts/primitives/transactions устранил прежний15min timeout.
+- [x] В том числе выполнены preparation11, replacement22, pending15, cleanup13,
+  broker23 и package8 на каждой архитектуре. Подлинные root primitive tests
+  выполнялись только внутри одноразовых GitHub macOS, не на Mac владельца.
+- [ ] Run40089145131 (`4108ee6`): полная настоящая Installer/system-launchd
+  приёмка всё ещё in_progress на обеих архитектурах; завершение ещё не доказано.
+  Green primitive/coordinator tests не заменяют этот gate.
