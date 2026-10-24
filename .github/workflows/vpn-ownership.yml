@@ -28,3 +28,9 @@ jobs:
         run: |
           test "$GITHUB_ACTIONS" = true
           sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 /usr/bin/python3 -m unittest discover -s tests -p test_vpn_destination_root_vm.py -v
+      - name: Source clone refuses ordinary users
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_legacy_source_clone.VPNLegacySourceCloneUnprivilegedTests -v
+      - name: Private source clone with real ownership
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          sudo -n env PROXYPILOT_VM_ROOT_TESTS=1 PYTHONPATH=tests /usr/bin/python3 -m unittest test_vpn_legacy_source_clone.VPNLegacySourceCloneTests -v
