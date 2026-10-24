@@ -6433,3 +6433,20 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [x] Ownership40129257113 source2e159b6 terminal SUCCESS6/6 jobs: transactions
   76/arch, primitives77/arch, contracts258/arch =822 PASS без skips. Это новая
   verified baseline, не доказательство ещё не запущенных context/route fixes.
+
+
+### Продолжение 1.5fs — единый acceptance push b0322dc
+
+- [x] HEAD b0322dc отправлен только в codex/vpn-root-acceptance; remote SHA
+  подтверждён git ls-remote. Публичные main/tag/release не менялись.
+- [ ] GitHub подтвердил новые queued handles на exact b0322dc:
+  System40132902845, ownership40132902851, private backend40132902855,
+  scoped/answer40132902862, genuine default40132902868,
+  corrected utun40132902880. Это ожидающие реальные проверки, не PASS.
+  Повторные dispatch не выполнялись; сохраняем handles для последующих poll.
+- [ ] Старый System40129583883 на b327ab6 продолжает production build на
+  ARM/Intel. Live run не отменён ради нового: результаты разных sources
+  анализируются отдельно. Новый System включает context d3d115b, старый — нет.
+- [x] Safe code/fixture increments закоммичены логически; рабочая папка после
+  push чистая. Host сеть, root services, Keychain item APIs, Installer и пароль
+  macOS не менялись; финальная installed приёмка остаётся отдельной границей.
