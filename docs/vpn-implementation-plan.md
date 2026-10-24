@@ -6201,3 +6201,64 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   сохранить все65 obligations, резервировать retirement headroom ДО нового Add
   и не блокировать manual flow/config changes. Нельзя просто увеличить очередь
   на один и получить следующий dead end. Runtime до этой приёмки остаётся OFF.
+
+### Продолжение 1.5fn — retirement headroom, same-actor witness и точные API traces
+
+- [x] `1287aa8`: schema5 сохраняет жёсткий total bound65 (pending+active), но
+  разрешает lossless retirement legacy64+issued active→65 pending/no active.
+  Новые grants/Add заранее резервируют место: pending после retirement старого
+  active должен быть<64, Add отказывает ДО durable pending/GO/API. Ни один unknown
+  ref не выбрасывается. Schema4 мигрируется только из ранее допустимых состояний;
+  invalid66 отвергается. Actual old schema4 reader отказывает schema5 без мутации.
+  Независимо49 tests PASS16.304s (Ledger37/Core9/Model1/native capacity flow2).
+  Flow2 доказывает manual helper exchange/connect,0 cache Add при насыщении,
+  disconnect/revoke/mode/import/remove без потери65 refs. Store no-TESTING модули
+  ARM/Intel прошли, `/tmp/pp-headroom-schema5-proof-5du_aclf/verification.json`.
+- [x] `a8f0989`: bounded cleanup pass читает весь допустимый ledger≤65, чтобы
+  последняя legacy запись не голодала. Новые admissions по-прежнему≤64;
+  quarantine history остаётся64, без eviction/самоповторов. Все65 actionable
+  посещаются один раз,64 unavailable не скрывают последнюю deletable запись,
+  pending unknown не вызывает API, full quarantine запрещает новый mutator.
+  Независимо51 checks PASS16.408s; botharch no-TESTING modules passed;
+  `/tmp/pp-cleanup65-proof-jqlyxare/verification.json`. Отдельный актуальный
+  Worker61 PASS42.402s, Cleanup source hash до/после совпал. Наборы пересекаются.
+- [x] `050bdb7`: manual prompt при silent lookup fallback прямо предлагает
+  ручной ввод, не путает чтение с сохранением. Cleanup notice декларативно
+  сообщает uncertainty и доступность VPN; отсутствующую кнопку подтверждения
+  больше не подразумевает. Элементы/переходы не добавлены. Native Panel/removal/
+  offscreen layout/Runtime42 PASS43.043s, включая прежние19 rendered states.
+- [x] `d893804`: только private System VM snapshot вставляет после настоящего
+  durable handoffStarted self-emitted witness исходного C. Gate свежий, root0600,
+  pins original PID/kernel birth+nonce+exact edge/content identity; witness
+  связывает actual actor/transaction UUID/published Inbox inode. Atomic
+  RENAME_EXCL исключает linkcount publication race. OriginalPID проверяется
+  прямо ДО G; после G обязательный witness переживает допустимую rotation,
+  а final D/ordinary status всё равно обязателен. Published Inbox не удаляется
+  успешным rotation/status; его identity тоже проверяется. Production Handler
+  unchanged, frozen139 untouched, no policy bypass. Witness — process-death
+  observation, не обещание power-loss durability. Независимо40 material/witness/
+  diagnostics tests PASS7.446s, actual full helper diagnostic graph typechecked
+  ARM/Intel; новый VM positive ещё требуется.
+- [x] `24f14f0`/`3310025`: default-Keychain fixture добавляет закрытые stage/error
+  traces вокруг ТОЧНО существующих Add/SetDefault/anchor checks. Worker/factory
+  и обе custody sentinels не менялись; нет новых preflight Security API. В том
+  числе различимы Store unavailable/stale/invalid/receipt busy. Независимо6 safe
+  compile/guard/protocol checks PASS7.930s; live cases этим не подтверждены.
+- [ ] Original genuine factory40126154510 FAILED все4 jobs. Cross-image ARM/
+  Intel: rpc absent, дополнительные path/baseline markers после первого Add;
+  roundtrip ARM/Intel: rpc addA остаётся unknown. Поэтому отсутствие addA marker
+  НЕ доказывает preGO отказ: прежний fixture Add не печатал phase и мог уже
+  завершиться с удалением sentinel. Причины разных failures ещё не установлены.
+  Ни restore/delete/rmtree после unknown не выполнялись; namespaces+images
+  сохранены до VM disposal. Функция Runtime остаётся OFF до actual green.
+- [x] `66b7152`: native capacity flow добавлен в dedicated interface workflow.
+  Frontend-only и guarded utun fixture edits не запускают повторные812 ownership
+  checks; production helper source changes по-прежнему запускают общий gate.
+- [ ] Same System40124194483 Intel прошёл первый phase6 On (ранее падавший),
+  сейчас repair Off; ARM только7/8, причина восьмого ещё не приписана race/SIGPIPE.
+  Это не полная System приёмка и не доказательство причины старого Intel failure.
+- [x] Полный genuine frontend с schema5/cleanup65/new UX собран Universal,
+  deep/strict signatures и реальные closed-role guards прошли:3 PASS242.898s
+  (`/tmp/pp-schema5-genuine-frontend-final.log`), без установки/GUI/credential API.
+- [ ] Domain runtime/OS barrier/relay,
+  installed OTP/IP/lifecycle/WARP/macOS11 и English release остаются OPEN.
