@@ -4945,3 +4945,16 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   idempotent repair само по себе не доказывает весь этот пользовательский путь.
 - [ ] Один реальный подписанный итоговый host package, installed acceptance и
   остальные исходные этапы VPN-плана ещё не завершены.
+
+### Продолжение 1.5du — UI acceptance ARM/Intel
+
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40091754470
+  (`ebcb24a`): оба jobs successful, **62 passed без skips**,31 на каждую
+  архитектуру. Проверены реальные adapter/controller, NSItemProvider delivery,
+  offscreen SwiftUI/NSScrollView geometry и source wiring contracts в своей
+  области. Лог содержит два suite summaries31, нет FAILED/skipped.
+- [x] Текущие OTP draft lifecycle, drop replacement и bounded resource list
+  прошли эту матрицу на macOS14 ARM и macOS15 Intel с compile target macOS11.
+  Native keyboard/VoiceOver, Finder gesture и runtime macOS11 по-прежнему открыты.
+- [ ] Полная Installer/system VM приёмка идёт отдельно;62 UI tests не закрывают
+  её, подключение корпоративного VPN, DNS backend или Keychain persistence.
