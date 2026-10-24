@@ -250,6 +250,13 @@ final class ProxyModel: ObservableObject {
             let routeOK = !choosing || args[1] == "auto" || fresh?.enabled == false || fresh?.running == args[1]
             let offChoice = choosing && args.count == 2 && fresh?.enabled == false
             let verified = selectedOK && routeOK && (off ? (fresh?.enabled == false && fresh?.system_proxy == false && fresh?.owns_system_proxy != true) : (offChoice || fresh?.connected == true))
+            // Closed diagnostic fields only: CLI output and arguments may contain
+            // proxy addresses or credentials and must never enter the system log.
+            let diagnosticAction = ["disable", "enable", "route", "setup", "detect"].contains(args.first ?? "") ? args[0] : "other"
+            NSLog("ProxyPilot operation action=%@ exit=%d verified=%d state=%d selected=%d route=%d enabled=%d system=%d owns=%d",
+                  diagnosticAction, result.code, verified ? 1 : 0, fresh != nil ? 1 : 0,
+                  selectedOK ? 1 : 0, routeOK ? 1 : 0, fresh?.enabled == true ? 1 : 0,
+                  fresh?.system_proxy == true ? 1 : 0, fresh?.owns_system_proxy == true ? 1 : 0)
             DispatchQueue.main.async {
                 self.busy = false; self.loading = false; self.state = fresh
                 if result.succeeded && verified {
