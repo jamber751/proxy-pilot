@@ -6450,3 +6450,97 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [x] Safe code/fixture increments закоммичены логически; рабочая папка после
   push чистая. Host сеть, root services, Keychain item APIs, Installer и пароль
   macOS не менялись; финальная installed приёмка остаётся отдельной границей.
+
+
+### Продолжение 1.5ft — новые факты без повторного host Installer
+
+- [ ] Genuine default40132902868 sourceb0322dc ARM roundtrip job120988236161
+  terminal FAILED. Теперь addA.dispatch storageUnavailable, rpcaddA unknown;
+  locatorProof/refreshAnchor не достигнуты. Значит этот failure class не только
+  Intel; исправление stale anchor остаётся pure-proven, actual positive ещё OPEN.
+  Остальные3 jobs того же run сохраняем, не запускаем replacement по timeout.
+- [ ] Private ACK diagnostic40132902855 jobs120988236319 Intel/120988236497 ARM
+  пока queued; именно они должны различить before-ACK и typedbusy/write failure.
+  Store/Worker retry policies не расширены, unknown custody не очищена.
+- [x] Read-only build audit уточнил стоимость: Intel System40124194483 engine
+  build8m33s из~36m, остальные~27m helper/rescue/probe. Поэтому простой engine
+  cache не убирает36m; непроверенный cache artifact не является доказательством
+  сборки recipe. Cache/flags/workflow не менялись, live gates сохранены.
+- [x] Driver-only audit actual113-source graph: swiftc -O даёт113 frontend
+  commands с113 source paths в каждом; -O -whole-module-optimization даёт один.
+  Это возможная причина части build overhead, не замер ускорения. WMO меняет
+  code generation/pins/память и требует отдельного A/B benchmark+приёмки;
+  сейчас flags не менялись, текущая полная matrix не подменена быстрым build.
+- [ ] Следующий FULLDNS increment согласован: one-shot UDP→at-most-one TCP
+  exchange на actual bound socket, SAME corporate binding и original absolute
+  deadline, exact resource UUID/gen/rev; cancellation token не закрывает чужой
+  FD, owner unwinds/closes после bounded poll slices. Возвращает только sealed
+  validated answer, без output/permits/runtime activation. Production relay,
+  ordinary DNS/WARP policy и OS crash barrier по-прежнему отдельно OPEN.
+
+
+### Продолжение 1.5fu — один DNS exchange и реальные следующие отказные границы
+
+- [x] Local4bd46ec: inert one-shot coordinator использует production BoundSocket
+  и codec, required fresh authority, exact selected resource UUID/host+gen/rev.
+  Один original absolute deadline с одним20s IO cap; только sealed needsTCP
+  допускает один TCP на том же captured server/tunnel/routeProof/query. Нет
+  alternative server/default resolver/EDNS downgrade/retry loop/output/permit.
+  Constructor не выполняет даже clock/interface IO; попытка consumed и при ошибке.
+- [x] Cooperative cancellation token только ставит flag. Poll slices<=100ms
+  вне authority lease; владелец FD завершает работу и закрывает его сам. Это не
+  hard100ms latency guarantee: scheduling/checker cost не ограничены. UDP закрыт
+  до TCP allocation; same-number FD reuse и closeonce проверены. Receive timestamp
+  берётся до дорогого post-read proof, затем TTL проверяется ещё раз.
+- [x] Parent46 pure checks PASS8.438s; original author unchanged Bound60+Codec124
+  compatibility PASS, финальные no-TESTING production modules ARM/Intel и Intel
+  updated46-case compile/link PASS. Реальных host sockets/interfaces/root не было.
+  Проверены A/AAAA, обе upstream families, TCP client ingress, original query/ID,
+  partial frames, cancellation между allocation/setup и во время poll, expired/
+  revoked authority, budget consumption, post-proof positive/SOA TTL aging.
+  Source callgraph показывает references только внутри нового файла; runtime
+  factory не появился. Новое изменение пока local, текущие VM gates — b0322dc.
+- [x] Independent review не нашёл нового FD/binding/budget дефекта4bd46ec.
+  RD mismatch intentionally ignored существующим client-rd compatibility test;
+  client output сохраняет оригинальный RD, новая строгая проверка не добавлена.
+- [ ] Sleep/TTL integration gate: DispatchTime uptime не считает сон. Нужны
+  отдельные typed continuous TTL/query expiry и uptime-only IO deadlines либо
+  доказанная invalidation ДО любого postwake IO/release. Одной async didWake
+  notification недостаточно. Continuous_ns нельзя передать как DispatchTime
+  uptime_ns; deny-IP obligations при TTL expiry не очищаются автоматически.
+  Primary: https://developer.apple.com/documentation/dispatch/dispatchtime
+  https://github.com/apple/darwin-xnu/blob/main/osfmk/mach/mach_time.h
+- [ ] Отдельный прежний transport edge воспроизведён fake: POLLIN|POLLHUP
+  с полным buffered TCP answer сейчас даёт closed до drain. Требуется узкий
+  read-ready+FIN fix; bareHUP/ERR/NVAL/write/connect ошибки остаются отказами,
+  неполный frame не принимается. Исправление отдельно проверяется.
+- [x] b0322dc ARMcross job120988236464 фактически прошёл ОБА Add, refreshAnchor,
+  setB и оба C readA; D cross-read=fallback без замены item. D unavailable перед
+  Delete сохранил exact pending slot; затем C prepare прошёл и записал deleteA.
+  Значит stale anchor fix уже actual exercised, хотя весь case terminal FAILED.
+- [ ] rpcdeleteA не доказывает GO/API/ACK. Remaining window включает begin fsync,
+  Delete/ACK, child join, absence check и definite; отдельной trace нет. Intel
+  round120988236336 снова addA.dispatch storageUnavailable. Private diagnostic
+ 40132902855 пока queued; metadata/ошибки/markers не скрываются ради green.
+- [x] utun40132902880 Intel120988236574 показал real GET-sendESRCH normalization:
+  IPv6 baselineLookup send3 → callOK. IPv4 ADD+confirmed cleanup также прошли.
+- [ ] Затем IPv6 ADD verification FAILED: expectedFlags18437/observed19461,
+  exact interfaceIndex11. Разница RTF_LLINFO0x400. XNU nd6_rtrequest добавляет
+  этот kernel-derived flag прямому IPv6 /128 на point-to-point utun; это
+  объяснение observed metadata, не ownership proof. IPv6 issued/unknown receipt
+  сохранён до VM disposal;19 required proofs ещё не выполнены. Разбираем strict
+  request-vs-kernel identity profile/versioning, не глобальную flags mask.
+
+- [x] Local8577f06 закрыл readable TCP half-close: parent59 exchange checks
+  PASS8.955s, author119 (60 existing Bound+59 Exchange) PASS16.396s; Intel full
+  pure-graph compile PASS. Baseline full-frame+POLLIN|POLLHUP RED воспроизведён.
+  ERR/NVAL/bareHUP/write/connect HUP, incomplete header/body, cancelled/revoked/
+  dead authority отказывают с owner-closeonce; deadline/fallback не расширены.
+- [ ] Kernel-derived IPv6 profile fix согласован для реализации: flags остаются
+  EXACT kernel expectation, request encoder удаляет только предсказанный LLINFO
+  в строгом managed direct /128 utun profile; snapshot equality без mask. New
+  journal3 с explicit legacy1/2 validation, plan2/3 byteencoding неизменно;
+  raw managed-profile gateway обязан быть actual matching AF_LINK. Legacy
+  records не получают новый флаг при decode. Nonmatching exact-row при pending
+  eligible profile сохраняет obligation, а не превращается в absence. Эта
+  реализация ещё не завершена и не отправлена на новый VM run.
