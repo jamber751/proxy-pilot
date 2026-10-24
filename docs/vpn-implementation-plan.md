@@ -4658,3 +4658,37 @@ swap второй переход завершается через сущест�
 - [ ] Связать prepared→pending→protected swap→destination stage/exchange под одним
   service lease и проверить forward retry. System arm/drain, dispatcher, подпись
   итогового пакета и end-to-end установка остаются впереди.
+
+### Продолжение 1.5dj — системные обвязки и сборка native rescue
+
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40084508479
+  (`aadcb8b`): **572 passed, без skips**. Исправленный cleanup13, preparation11,
+  protected swap14 и обе frozen139 handoff2 прошли на каждой архитектуре.
+- [x] Typed primitives/coordinators получили отдельные fixed-system wrappers.
+  Ordinary staging7 + swap12 + destination8 + cleanup13 =40 passed; system
+  module компилируется arm64/x86_64 с тремя rescue flags и без TESTING flags.
+- [x] Replacement coordinator объединяет prepared→arm/drain→pending→protected
+  swap→destination stage/exchange с тем же service lease. 22 root cases собраны
+  для CI; selected A не меняется до existing recovery.
+- [x] Loader проверяет полную связку A/B/C, оба edge, три signed statements,
+  один Universal executable и C capability. 26 новых +24 existing payload
+  tests passed локально. Только static evidence, не live/root authority.
+- [x] Read-only installed-C probe и suspended-child verifier:11 локальных tests
+  passed. Helper peer policy не расширяется; C использует существующий installer
+  readiness. OFF проверяется точным отсутствием launchd job/socket без stop/start.
+- [x] Native rescue собран обеими архитектурами с `-O`, ровно тремя production
+  flags, без TESTING: `/tmp/pp-rescue-native-build-20261024-final-snapshot-v1`.
+  Зафиксированы106 source hashes; Universal подпись проверена. Это compile/static
+  acceptance до добавления readonly package preflight, не system execution.
+- [x] Первый pending rescue теперь восстанавливает отсутствующий destination
+  stage после проверок protected B/A и executorA; installedB retry сохраняет
+  oldA в stage. 15 pending root cases подготовлены, ожидают remote execution.
+- [ ] Новый remote прогон: replacement22, pending15, loader26, installed-child11.
+- [ ] Проверить production dispatcher и настоящий Installer в disposable system
+  VM с synthetic trust, сначала весь137→139→C, затем idempotent повтор ON/OFF.
+- [ ] Собрать конкретный подписанный итоговый комплект, выполнить installed
+  acceptance с разрешения владельца и вернуться к остальным этапам VPN-плана.
+
+Frozen139 workflow вынесен отдельно с фильтром его fixture dependencies: обычные
+изменения rescue больше не пересобирают неизменённый исторический helper.
+Проверка остаётся доступна вручную и при изменении соответствующих inputs.

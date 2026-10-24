@@ -1,0 +1,36 @@
+name: VPN frozen recovery acceptance
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - .github/workflows/vpn-frozen-recovery.yml
+      - tests/test_vpn_frozen139_recovery_handoff.py
+      - tests/vpn_frozen139_recovery_handoff_checks.swift
+      - tests/test_vpn_recovery_daemon_entry.py
+      - tests/test_vpn_staged_application.py
+      - tests/vpn_recovery_probe.swift
+      - tests/vpn_staged_application_checks.swift
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-recovery:
+    name: Frozen 139 recovery handoff (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Frozen recovery with real disposable user launchd jobs
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          PROXYPILOT_VM_LAUNCHD_TESTS=1 python3 -m unittest tests.test_vpn_frozen139_recovery_handoff -v
