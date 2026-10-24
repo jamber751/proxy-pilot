@@ -5639,3 +5639,20 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   ownership trigger (`26ac9b0`): есть dedicated CI. Старые queued duplicate runs
   40106362358/40107242848 отменены явно; не засчитываются как успешные. Следующий
   root graph требует своего нового grouped/System gate.
+
+### Продолжение 1.5fa — восстановление после reset и проверка закрытого reply
+
+- [x] `321313c` исправляет настоящий SIGPIPE в production reply transport:
+  SO_NOSIGPIPE устанавливается только на owned reply socket, без изменения
+  process-wide signal policy. Actual hardened child без TESTING defines и с
+  SIGPIPE=SIG_DFL сначала завершался signal13, после исправления возвращает
+  bounded typed error. Полный transport suite:14 passed; это не root VM proof.
+- [ ] Новый восьмой System scenario должен доказать authenticated partial-frame
+  descriptor barrier, закрытый reply socket, handoff тем же broker incarnation
+  и настоящий установленный successor D. Исходные семь сценариев сохраняются.
+  Пока новый root gate не запускался, предыдущий полный run остаётся FAILED.
+- [ ] Real legacy password adapter и private-only disposable CI fixture проходят
+  отдельный review. Factory приложения по-прежнему unavailable: пользовательский
+  Keychain и системная сеть на host не затрагиваются. Unknown Security mutation
+  RPC требует сохранения всего private fixture до удаления VM, даже после выхода
+  child; NotFound не подтверждает удаление обязательства.
