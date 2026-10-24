@@ -5506,3 +5506,33 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   доверенный изолированный worker, интеграция после verified connected, opt-in UI
   и реальная silent Keychain приёмка остаются открыты. Секреты в JSON не добавлены;
   действия проверок ограничены синтетическими temporary stores.
+
+### Продолжение 1.5ew — credential UX и отдельный DNS session эксперимент
+
+- [x] Credential prompt получает приоритет над settings/resource/auth editor,
+  сохраняя вложенные drafts. Published prompt UUID управляет фокусом отдельного
+  NSSecureTextField, включая новый запрос прежнего типа; фокус разрешён только
+  собственному видимому key window. Pending focus инвалидируется по UUID/epoch,
+  busy и dismantle. Старое поле отсоединяет delegate/action до очистки и не
+  пишет в binding нового запроса.
+- [x] Credential buttons имеют полный label/hit/hover размером минимум36pt,
+  Continue/Cancel и поле недоступны при working. Модель проверяет busy до очистки
+  секрета; power недоступен во время запроса. Return/Escape и header Back
+  согласованы с submit/cancel и текущим editor destination.
+- [x] Шесть локальных suites прошли36 checks: credentials, native layout,
+  UI contract, import/drop, removal, resources. После последней правки teardown
+  повторены затронутые native+credentials:15/15 passed. Изолированное окно
+  проверяет actual responder/target-action/delegate и размеры labels при
+  контролируемом key-state; это НЕ global key delivery, installed popover или
+  VoiceOver acceptance. Последние остаются открытыми.
+- [x] Добавлен отдельный guarded VM эксперимент настоящих SCDynamicStore API:
+  session-option add/copy/close, SIGKILL child и equal foreign overwrite.
+  Namespace только State:/ProxyPilotAcceptance/UUID/fixed-case, вне Network/DNS.
+  Локально compiled +3 guard tests passed; ни одного SC API локально не вызвано.
+- [ ] Новый workflow vpn-dns-session.yml запущен run40105163106 на ARM/Intel;
+  результат ещё отсутствует. Даже его успех докажет только session lifetime /
+  ownership, не resolver effectiveness, utun pin, отсутствие утечек или готовый
+  production backend. Полный domain/split-DNS gate не снят.
+- [ ] Изолированный password worker разрабатывается отдельно. Настоящий backend
+  требует привязки к конкретному хранилищу: NotFound в новом default Keychain не
+  подтверждает удаление из прежнего. Никаких host Keychain/системных действий.
