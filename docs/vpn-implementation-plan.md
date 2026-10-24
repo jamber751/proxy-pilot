@@ -5132,3 +5132,19 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Run40095760561: fast material/engine gate прошёл обе архитектуры;
   полная сборка и реальные Installer cases ещё выполняются. Полный system
   acceptance остаётся незакрытым, новый host installer не предлагается.
+
+### Продолжение 1.5ee — isolated Keychain experiment прошёл обе архитектуры
+
+- [x] Run40096738485 (`79605f3`): ARM/macOS14 и Intel/macOS15 successful,
+  по одному test без skips (9.368s/28.599s). V1 create/add/read, mode0600,
+  actual differently signed V2 bounded denial, повторный успешный V1 read,
+  locked V1 denial, restored interaction flag и точное удаление своего private
+  Keychain прошли. Default/search-list metadata до/после совпадают.
+- [x] Это default creator ACL на отдельном synthetic legacy Keychain при
+  одинаковых identifier/execution path; broad ACL или paid certificate не
+  добавлялись. Конкретный OSStatus не логировался: доказан nonzero отказ,
+  а не определённый код ошибки. Host Keychain API не запускались.
+- [ ] По одному window sample с console session/metadata и нулём SecurityAgent
+  окон не доказывают отсутствие transient GUI prompt; guiAbsenceProven=false.
+  Реальный production adapter, login-Keychain, ручной UI fallback, crash-safe
+  revocation, macOS11 и полноценное обновление приложения остаются открыты.
