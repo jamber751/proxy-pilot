@@ -26,6 +26,7 @@ final class VPNPanelModel: ObservableObject {
     private let controller: VPNLiveController?
     private let queue = DispatchQueue(label: "proxypilot.vpn.frontend")
     private var modelChanges: AnyCancellable?
+    private var credentialPromptIdentifier: UUID?
 
     init(preview: Bool = false) {
         if preview {
@@ -41,6 +42,18 @@ final class VPNPanelModel: ObservableObject {
             do { try configuration.load() }
             catch { message = error.localizedDescription }
         }
+        observeConfiguration()
+    }
+
+    #if VPN_PANEL_TESTING
+    init(configuration: VPNModel, controller: VPNLiveController) {
+        self.configuration = configuration
+        self.controller = controller
+        observeConfiguration()
+    }
+    #endif
+
+    private func observeConfiguration() {
         modelChanges = configuration.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
@@ -91,6 +104,7 @@ final class VPNPanelModel: ObservableObject {
     func refresh() { run { $0.refresh() } }
 
     func restoreDesiredConnection() {
+        dismissCredentialPrompt()
         let desired = configuration.configuration.desiredEnabled
         run({ controller in
             controller.refresh()
@@ -112,6 +126,7 @@ final class VPNPanelModel: ObservableObject {
     }
 
     func reconnectAfterNetworkChange() {
+        dismissCredentialPrompt()
         let desired = configuration.configuration.desiredEnabled
         run({ controller in
             controller.refresh()
@@ -127,6 +142,7 @@ final class VPNPanelModel: ObservableObject {
         })
     }
     func toggle() {
+        dismissCredentialPrompt()
         guard ready else { settings = true; return }
         let shouldDisconnect = connected
         run { controller in shouldDisconnect ? controller.disconnect() : controller.connect() }
@@ -137,20 +153,39 @@ final class VPNPanelModel: ObservableObject {
         secret = ""
         run { $0.submitCredential(&bytes) }
     }
-    func cancelCredential() { run { $0.cancelCredential() } }
+    func cancelCredential() {
+        dismissCredentialPrompt()
+        run { $0.cancelCredential() }
+    }
+
+    /// Only the transient field is cleared. Login, password-saving consent and
+    /// an authenticated connection are independent of a prompt's visibility.
+    func dismissCredentialPrompt() { secret = "" }
+
+    private func adoptLiveState(_ state: VPNLiveState, promptIdentifier: UUID?) {
+        let next: UUID?
+        if case .needsCredential = state { next = promptIdentifier }
+        else { next = nil }
+        if next == nil || next != credentialPromptIdentifier { dismissCredentialPrompt() }
+        credentialPromptIdentifier = next
+        liveState = state
+    }
 
     /// Explicit app exit must stop the managed tunnel before the proxy and app
     /// are allowed to terminate. Failure keeps the app alive with a visible
     /// explanation instead of abandoning owned routes.
     func disconnectForQuit(completion: @escaping () -> Void) {
+        dismissCredentialPrompt()
         guard let controller, configured else { completion(); return }
         working = true; message = "Выключаем VPN…"
         queue.async { [weak self] in
             controller.disconnect()
             let state = controller.state
+            let promptIdentifier = controller.credentialPromptIdentifier
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.liveState = state; self.liveChecked = true; self.working = false
+                self.adoptLiveState(state, promptIdentifier: promptIdentifier)
+                self.liveChecked = true; self.working = false
                 if state == .off {
                     do { try self.configuration.load() } catch { }
                     completion()
@@ -295,9 +330,11 @@ final class VPNPanelModel: ObservableObject {
         queue.async { [weak self] in
             controller.disconnect()
             let state = controller.state
+            let promptIdentifier = controller.credentialPromptIdentifier
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.liveState = state; self.liveChecked = true; self.working = false
+                self.adoptLiveState(state, promptIdentifier: promptIdentifier)
+                self.liveChecked = true; self.working = false
                 guard state == .off else {
                     self.message = "Не удалось безопасно выключить VPN. Настройки не удалены."
                     return
@@ -335,13 +372,14 @@ final class VPNPanelModel: ObservableObject {
     private func run(_ operation: @escaping (VPNLiveController) -> Void,
                      completion: ((VPNLiveState) -> Void)? = nil) {
         guard !working, let controller else {
-            if controller == nil { liveState = .unavailable }
+            if controller == nil { adoptLiveState(.unavailable, promptIdentifier: nil) }
             return
         }
         working = true; message = ""
         queue.async { [weak self] in
             operation(controller)
             let state = controller.state
+            let promptIdentifier = controller.credentialPromptIdentifier
             var bridgeError = false
             #if VPN_INSTALLER_ENTRY
             // CLI takes the cross-process bridge lock, then obtains its own
@@ -355,7 +393,7 @@ final class VPNPanelModel: ObservableObject {
             let bridgeFailed = bridgeError
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.liveState = state
+                self.adoptLiveState(state, promptIdentifier: promptIdentifier)
                 self.liveChecked = true
                 self.working = false
                 do { try self.configuration.load() }
@@ -391,6 +429,9 @@ struct VPNPanelView: View {
         .padding(.horizontal, 24).frame(width: 344, height: 432)
         .foregroundColor(ink).accentColor(accent).background(background)
         .onAppear { panel.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSPopover.didCloseNotification)) { _ in
+            panel.dismissCredentialPrompt()
+        }
     }
 
     private var header: some View {
@@ -475,6 +516,7 @@ struct VPNPanelView: View {
                     .disabled(panel.secret.isEmpty)
             }
         }
+        .onDisappear { panel.dismissCredentialPrompt() }
     }
 
     private var importScreen: some View {

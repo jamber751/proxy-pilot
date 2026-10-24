@@ -47,6 +47,7 @@ enum VPNLiveState: Equatable {
 }
 final class VPNLiveController: ObservableObject {
     @Published private(set) var state: VPNLiveState = .off
+    var credentialPromptIdentifier: UUID? { nil }
     init(store: VPNStore) {}
     func refresh() { state = .off }
     func connect() { state = .connected }

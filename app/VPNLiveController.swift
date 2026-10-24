@@ -68,7 +68,12 @@ final class VPNLiveController: ObservableObject {
     private let openSession: () throws -> VPNLiveSession
     private var session: VPNLiveSession?
     private var challenge: VPNCredentialChallenge?
+    private var promptIdentifier: UUID?
     private var expectedApplication: VPNApplicationSpec?
+
+    /// Presentation identity only: two consecutive prompts may have the same
+    /// kind while belonging to different authenticated requests.
+    var credentialPromptIdentifier: UUID? { promptIdentifier }
 
     #if VPN_LIVE_CONTROLLER_TESTING
     init(store: VPNStore, openSession: @escaping () throws -> VPNLiveSession) {
@@ -94,8 +99,10 @@ final class VPNLiveController: ObservableObject {
             defer { live.close() }
             let (status, snapshot) = try live.tunnelStatus()
             guard status == .ok, let snapshot else { throw VPNLiveControllerError.unverifiedState }
+            promptIdentifier = snapshot.phase == .needsCredential ? snapshot.challenge?.identifier : nil
             state = Self.project(snapshot)
         } catch {
+            promptIdentifier = nil
             state = .unavailable
         }
     }
@@ -132,7 +139,7 @@ final class VPNLiveController: ObservableObject {
             secret.removeAll(keepingCapacity: false)
             return
         }
-        busy = true; state = .connecting
+        busy = true; state = .connecting; promptIdentifier = nil
         var response = VPNCredentialResponse(challenge: challenge, secret: secret)
         secret.resetBytes(in: 0..<secret.count)
         secret.removeAll(keepingCapacity: false)
@@ -175,7 +182,7 @@ final class VPNLiveController: ObservableObject {
             guard try live.disconnectTunnel() == .ok else {
                 throw VPNLiveControllerError.helperRejected
             }
-            live.close(); session = nil; challenge = nil; expectedApplication = nil
+            live.close(); session = nil; challenge = nil; promptIdentifier = nil; expectedApplication = nil
             try persistDisabledAfterStop()
             state = .off
         } catch { fail(error) }
@@ -219,6 +226,7 @@ final class VPNLiveController: ObservableObject {
         case .needsCredential:
             guard let next = result.1 else { throw VPNLiveControllerError.unverifiedState }
             challenge = next
+            promptIdentifier = next.identifier
             state = .needsCredential(next.kind)
         case .ok:
             guard let live = session, let expectedApplication else {
@@ -262,7 +270,7 @@ final class VPNLiveController: ObservableObject {
     }
 
     private func closeHeldSession() {
-        session?.close(); session = nil; challenge = nil; expectedApplication = nil
+        session?.close(); session = nil; challenge = nil; promptIdentifier = nil; expectedApplication = nil
     }
 
     private static func project(_ snapshot: VPNTunnelSnapshot) -> VPNLiveState {
