@@ -5677,3 +5677,44 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   run40112286162 проверяет current head; предыдущий UI40112217315 не считать
   результатом нового backend. Factory приложения всё ещё unavailable; app/build/UI wiring,
   explicit per-mode consent и verified-connected save остаются открытыми.
+
+### Продолжение 1.5fb — native Intel gate и интеграция password consent
+
+- [x] UI40112217315 (`ec968b8`) success ARM/Intel:214 tests,107 на архитектуру,
+  без skips/errors. Лог `/tmp/pp-ui-40112217315.log`. Это snapshot ДО нового
+  coordinator/Panel checkbox, а не подтверждение actual Keychain integration.
+- [ ] System8 run40112217369: ARM прошёл fast suite и настоящий cross-UID/readonly
+  DMG gate, затем начал сборку. Intel остановился ДО live Installer: старый Inbox
+  test harness собирал arm64 executable и получил Errno86. `2eeeea3` выбирает
+  native target в обоих entry points; локально7 passed,1 optional signed-app skip.
+  Runtime Intel proof и весь новый System8 пока не завершены. Старый ARM handle
+  сохраняется до terminal outcome; observation timeout не повод перезапуска.
+- [ ] Actual backend40112286222 FAILED обе архитектуры: все6 private cases
+  остановились в общем setup. Диагностический40113139424 (`278adc0`) тоже FAILED:
+  Create/GetPath/preferences/UI flag status0, но returned path не совпал ни с
+  ожидаемым base, ни с DB string. Это точная причина fixture refusal; успешное
+  сохранение/чтение/удаление item не доказано. Готовится проверка alias через
+  held descriptors и exact expected private-file identity, без suffix guessing
+  или принятия произвольного пути. Host Keychain API не вызывались.
+- [x] `06475f3`: новый inert VPNDomainNetworkPlan объединяет static resources и
+  mandatory corporate DNS host routes, сохраняет physical peer bypass, не выдаёт
+  planned routes за kernel proof. dnsPlan требует full exact applied identities
+  и generation/revision/utun binding.9 local tests passed, production ARM/Intel
+  typechecks passed. Domain IDs/names остаются exact hosts; SC publication,
+  runtime capability gate и существующий tunnel coordinator не изменены.
+- [ ] Domain runtime требует answer interposition ДО выдачи A/AAAA/CNAME ответа,
+  TTL/reference-counted routes и доказанной OS-enforced защиты при crash/route
+  loss/configd restart. Прямой SC suffix resolver не выполняет exact-host policy;
+  InterfaceName сам по себе не доказывает pinning. Поэтому gate остаётся закрыт.
+- [ ] Новый password persistence coordinator/Controller/Panel находится в review:
+  strict displayed prompt UUID, exact session/attempt binding, manual candidate
+  сохраняется через same-attempt private-key prompt; wrong cached ref даёт manual
+  recovery без повторного auto-read. Queued old-save intent инвалидируется новой
+  попыткой.31 fake-helper/driver checks прошли; полный local UI suite:
+  134 passed, без skips/errors (`/tmp/pp-ui-cache-integration-local.log`). Это
+  snapshot ДО финального уточнения grant-as-claim и дополнительных race cases.
+  Default unavailable не показывает неработающий checkbox.
+- [ ] До включения real factory/UI остаются actual backend acceptance и bounded
+  cleanup exact settled locators при revoke/profile replacement/removal/startup.
+  Unknown pending Add не разрешает speculative lookup/delete. Финальная живая
+  OTP/IP, lifecycle/WARP, macOS11 и полный release по-прежнему не закрыты.
