@@ -6290,3 +6290,11 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   repair On; тот же live handle сохранён. ARM этого source terminal7/8.
   Genuine factory40126154510 terminal FAILED4/4; новые traces должны установить
   точные разные Add/anchor boundaries, без восстановления/удаления после unknown.
+- [ ] Corrected utun gate40129583995 (`b327ab6`) queued на обеих архитектурах;
+  System100 gate40129583883 того же source queued. Это новые конкретные handles,
+  повторных workflow_dispatch из-за observation timeout не выполнялось.
+- [x] Superseded queued System40129257114 (старый75m ceiling) и
+  ownership40127137271 (pre-headroom source) terminal CANCELLED только после
+  подтверждения replacements40129583883/40129257113. Live jobs сохранены.
+- [ ] Старый Intel40124194483 прошёл первые4 cases, включая repair On, и
+  выполняет idempotent same-capsule reinstall. Полного green8 ещё нет.
