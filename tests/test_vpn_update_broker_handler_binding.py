@@ -83,16 +83,34 @@ class VPNUpdateBrokerHandlerSourceContractTests(unittest.TestCase):
         serve = daemon.index("try serve(listener:", resume)
         self.assertLess(resume, serve)
 
-    def test_durable_ready_ack_precedes_executor_handoff(self):
+    def test_durable_ready_notification_is_nonthrowing_and_precedes_executor_handoff(self):
         handler = HANDLER.read_text()
         daemon = DAEMON.read_text()
         ready_publish = handler.index("state: .ready")
-        ready_callback = handler.index("try ready?(response)", ready_publish)
+        ready_callback = handler.index("ready?(response)", ready_publish)
         handoff = handler.index("VPNReplacementExecutorHandoff", ready_callback)
         self.assertLess(ready_publish, ready_callback)
         self.assertLess(ready_callback, handoff)
-        self.assertIn("var acknowledged = false", daemon)
-        self.assertIn("if !acknowledged", daemon)
+        self.assertNotIn("try ready?(response)", handler)
+        self.assertNotIn("(VPNUpdateBrokerResponse) throws -> Void", handler)
+        self.assertIn("(VPNUpdateBrokerResponse) -> Void", handler)
+        attempted = daemon.index("readyNotificationAttempted = true")
+        notification = daemon.index("try? VPNUpdateBrokerTransport.send(", attempted)
+        fallback = daemon.index("if !readyNotificationAttempted", notification)
+        self.assertLess(attempted, notification)
+        self.assertLess(notification, fallback)
+        self.assertNotIn("acknowledged", daemon)
+
+    def test_only_notification_delivery_is_best_effort(self):
+        handler = HANDLER.read_text()
+        daemon = DAEMON.read_text()
+        self.assertNotIn("try?", handler)
+        self.assertEqual(daemon.count("try?"), 1)
+        for required in ("try VPNUpdateBroker.authorizePrivateInbox(",
+                         "try VPNJointUpdatePreparation.prepareFromBroker(",
+                         "try statusStore.publish(",
+                         "try VPNReplacementExecutorHandoff.launchPreparedFromBroker("):
+            self.assertIn(required, handler)
 
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"),
@@ -109,7 +127,7 @@ class VPNUpdateBrokerHandlerSwiftContractTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=120)
             self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
             for group in ("pipeline", "retry-busy", "invalid-signed",
-                          "crashes", "handoff-gates"):
+                          "crashes", "handoff-gates", "ready-loss"):
                 with self.subTest(group=group):
                     result = subprocess.run([str(binary), group], capture_output=True,
                                             text=True, timeout=30)

@@ -81,18 +81,21 @@ enum VPNUpdateBrokerDaemon {
                             + 2_000_000_000)
                 case .submit:
                     let directory = try received.takeCandidateDirectory()
-                    var acknowledged = false
+                    var readyNotificationAttempted = false
                     let response = try handler.submit(
                         received.request, candidateDirectory: directory,
                         ready: { ready in
-                            try VPNUpdateBrokerTransport.send(
+                            // The durable transaction owns completion even if
+                            // this ordinary caller has stopped receiving. Mark
+                            // before sending; do not attempt a second reply.
+                            readyNotificationAttempted = true
+                            try? VPNUpdateBrokerTransport.send(
                                 ready, socket: client,
                                 deadline: DispatchTime.now().uptimeNanoseconds
                                     + 2_000_000_000)
-                            acknowledged = true
                         })
                     // Busy/stale never reach the durable ready boundary.
-                    if !acknowledged {
+                    if !readyNotificationAttempted {
                         try VPNUpdateBrokerTransport.send(
                             response, socket: client,
                             deadline: DispatchTime.now().uptimeNanoseconds

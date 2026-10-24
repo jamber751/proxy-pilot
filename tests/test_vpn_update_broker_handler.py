@@ -1,10 +1,10 @@
-"""Test-only contract for the future unified VPN update-broker handler.
+"""Test-only sequencing contract for the unified VPN update-broker handler.
 
 This model has no production imports and performs no filesystem, process, or
 service mutation.  It fixes the transaction semantics expected when receive,
 private inbox, signed authorization, joint preparation, executor handoff, and
-durable status are eventually wired together.  The final test is deliberately
-red until that production binding exists.
+durable status. Source-binding checks connect this model to the production
+handler; these are not actual root/executor or disconnected-client VM evidence.
 """
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -118,10 +118,9 @@ class UnifiedBrokerHandlerContract:
         self.durable.events.append("receive")
         # Ownership transfers to the broker before any reply is attempted.
         self.durable.events.append("broker-owns-request")
-        response = self._submit(expected, candidate)
-        return reply(response)
+        return self._submit(expected, candidate, ready=reply)
 
-    def _submit(self, expected, candidate):
+    def _submit(self, expected, candidate, *, ready):
         if self.durable.transaction_lock:
             current = self.durable.transaction
             if current is not None and current.identity == candidate.identity:
@@ -163,6 +162,13 @@ class UnifiedBrokerHandlerContract:
                 self._checkpoint("afterPreparation")
                 self._publish(State.READY, transaction)
                 self._checkpoint("afterReadyStatus")
+                # Notification happens at READY, not after completion. A lost
+                # response cannot cancel the already-authorized transaction.
+                self.durable.events.append("ready.notification.attempted")
+                try:
+                    ready(transaction.status)
+                except CallerGone:
+                    self.durable.events.append("ready.notification.lost")
                 self._checkpoint("beforeHandoff")
                 self._publish(State.INSTALLING, transaction)
                 self._checkpoint("afterInstallingStatus")
@@ -324,15 +330,72 @@ class UnifiedBrokerHandlerContractTests(unittest.TestCase):
                     self.request, descriptors)
 
     def test_caller_death_after_receive_does_not_cancel_broker_owned_work(self):
+        notifications = []
+
         def dead_reply(_response):
+            self.assertEqual(_response.state, State.READY)
+            self.assertFalse(self.durable.transaction.handoff_complete)
+            self.assertNotIn("service.drain", self.durable.events)
+            notifications.append(_response)
             raise CallerGone("peer disconnected")
 
-        with self.assertRaises(CallerGone):
-            self.submit(reply=dead_reply)
+        completed = self.submit(reply=dead_reply)
+        self.assertEqual(completed.state, State.COMPLETE)
+        self.assertEqual(len(notifications), 1)
         self.assertEqual(self.durable.transaction.status.state, State.COMPLETE)
         self.assertTrue(self.durable.transaction.handoff_complete)
+        self.assertEqual(self.durable.events.count("handoff.go"), 1)
+        self.assertEqual(self.durable.events.count("service.drain"), 1)
+        self.assertEqual(self.durable.events.count("ready.notification.lost"), 1)
+        self.assertLess(self.durable.events.index("ready.notification.lost"),
+                        self.durable.events.index("handoff.go"))
         self.assertLess(self.durable.events.index("broker-owns-request"),
                         self.durable.events.index("prepare.armRecovery"))
+
+    def test_authorization_and_preparation_failures_never_notify_or_handoff(self):
+        for failed_boundary in ('authorization', 'preparation'):
+            with self.subTest(failed_boundary=failed_boundary):
+                durable = DurableBrokerState()
+                notifications = []
+
+                def refuse_preparation(point):
+                    if point == 'afterPreparation':
+                        raise Refused('preparationFailed')
+
+                handler = UnifiedBrokerHandlerContract(durable, hook=refuse_preparation
+                                                       if failed_boundary == 'preparation' else None)
+                candidate = self.candidate if failed_boundary == 'preparation' else CandidateDirectory(
+                    19, b'invalid synthetic signature', 41, 42, signed_transition=False)
+                with self.assertRaises(Refused):
+                    handler.receive(self.request, [candidate], reply=notifications.append)
+                self.assertEqual(notifications, [])
+                self.assertNotIn('handoff.go', durable.events)
+                self.assertNotIn('service.drain', durable.events)
+
+    def test_status_write_and_handoff_failures_are_not_notification_failures(self):
+        for boundary in ('readyPublication', 'handoff'):
+            with self.subTest(boundary=boundary):
+                durable = DurableBrokerState()
+                notifications = []
+
+                class FailingBoundary(UnifiedBrokerHandlerContract):
+                    def _publish(self, state, transaction):
+                        if boundary == 'readyPublication' and state == State.READY:
+                            raise OSError('synthetic status write failure')
+                        return super()._publish(state, transaction)
+
+                    def _handoff(self, transaction, *, signed_authorized):
+                        raise OSError('synthetic handoff failure')
+
+                def dead_reply(response):
+                    notifications.append(response.state)
+                    raise CallerGone('synthetic disconnected client')
+
+                with self.assertRaises(OSError):
+                    FailingBoundary(durable).receive(self.request, [self.candidate], reply=dead_reply)
+                self.assertEqual(notifications, [] if boundary == 'readyPublication' else [State.READY])
+                self.assertFalse(durable.transaction.handoff_complete)
+                self.assertNotIn('service.drain', durable.events)
 
     def test_status_is_durable_numeric_and_survives_fresh_handler(self):
         expected = self.submit()

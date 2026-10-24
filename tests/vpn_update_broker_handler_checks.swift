@@ -25,7 +25,7 @@ enum HandlerCandidateKind {
 
 enum HandlerFixtureError: Error, Equatable {
     case invalidDescriptor, invalidAuthorization, injectedCrash
-    case recoveryNotArmed, brokerRotationNotReady
+    case recoveryNotArmed, brokerRotationNotReady, callerGone
 }
 
 struct HandlerTransaction {
@@ -72,7 +72,8 @@ final class HandlerSequencingModel {
 
     func submit(_ request: HandlerRequest,
                 candidateDirectory: Int32,
-                candidate: HandlerCandidateKind) throws -> HandlerResponse {
+                candidate: HandlerCandidateKind,
+                ready: (HandlerResponse) -> Void = { _ in }) throws -> HandlerResponse {
         guard candidateDirectory >= 0 else { throw HandlerFixtureError.invalidDescriptor }
         let identity: UInt64
         let toSequence: UInt64
@@ -164,6 +165,8 @@ final class HandlerSequencingModel {
         try checkpoint("afterBrokerRotationReady")
         publish(.ready)
         try checkpoint("afterReady")
+        durable.events.append("ready.notification.attempted")
+        ready(durable.transaction!.response!)
         try checkpoint("beforeHandoff")
 
         transaction = durable.transaction!
@@ -288,9 +291,11 @@ final class HandlerSequencingModel {
 
     static func invalidSignedInput() throws {
         let durable = HandlerDurableFixture()
+        var notifications = 0
         do {
             _ = try HandlerSequencingModel(durable: durable).submit(
-                request, candidateDirectory: 24, candidate: .invalidSignature)
+                request, candidateDirectory: 24, candidate: .invalidSignature,
+                ready: { _ in notifications += 1 })
             throw NSError(domain: "broker-handler-contract", code: 3)
         } catch HandlerFixtureError.invalidAuthorization { }
         try require(durable.drainCount == 0)
@@ -299,6 +304,32 @@ final class HandlerSequencingModel {
         try require(!durable.events.contains("prepare.joint"))
         try require(!durable.events.contains("recovery.arm"))
         try require(!durable.events.contains("broker.rotation.ready"))
+        try require(notifications == 0)
+    }
+
+    static func lostReady() throws {
+        let durable = HandlerDurableFixture()
+        var attempted = false, validBoundary = false, sends = 0
+        func disconnectedSend(_ response: HandlerResponse) throws {
+            sends += 1
+            validBoundary = response.state == .ready && !durable.transaction!.handoffComplete
+                && durable.drainCount == 0
+            throw HandlerFixtureError.callerGone
+        }
+        let final = try HandlerSequencingModel(durable: durable).submit(
+            request, candidateDirectory: 27, candidate: .signedAtoB,
+            ready: { response in
+                attempted = true
+                try? disconnectedSend(response)
+            })
+        // Daemon replies directly only when no durable READY notification was
+        // attempted. A failed notification must not produce a second reply.
+        if !attempted { try disconnectedSend(final) }
+        try require(attempted && validBoundary && sends == 1)
+        try require(final.state == .complete && durable.handoffCount == 1 && durable.drainCount == 1)
+        try require(durable.events.filter { $0 == "handoff.executor" }.count == 1)
+        try require(durable.events.firstIndex(of: "ready.notification.attempted")!
+                    < durable.events.firstIndex(of: "handoff.executor")!)
     }
 
     static func crashes() throws {
@@ -343,6 +374,7 @@ final class HandlerSequencingModel {
         case "invalid-signed": try invalidSignedInput()
         case "crashes": try crashes()
         case "handoff-gates": try handoffGates()
+        case "ready-loss": try lostReady()
         default: exit(64)
         }
         print("\(group) checks passed")

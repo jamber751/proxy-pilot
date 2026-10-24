@@ -51,7 +51,7 @@ final class VPNUpdateBrokerHandler {
     /// Consumes and closes `candidateDirectory`, including every failure path.
     func submit(_ request: VPNUpdateBrokerRequest,
                 candidateDirectory: Int32,
-                ready: ((VPNUpdateBrokerResponse) throws -> Void)? = nil) throws
+                ready: ((VPNUpdateBrokerResponse) -> Void)? = nil) throws
         -> VPNUpdateBrokerResponse {
         try performSubmit(request, candidateDirectory: candidateDirectory,
                           checkpoint: { _ in }, ready: ready)
@@ -102,7 +102,7 @@ final class VPNUpdateBrokerHandler {
     private func performSubmit(
         _ request: VPNUpdateBrokerRequest, candidateDirectory: Int32,
         checkpoint: (String) throws -> Void,
-        ready: ((VPNUpdateBrokerResponse) throws -> Void)?
+        ready: ((VPNUpdateBrokerResponse) -> Void)?
     ) throws -> VPNUpdateBrokerResponse {
         guard request.operation == .submit, request.expectedFromSequence > 0,
               candidateDirectory >= 0 else {
@@ -161,7 +161,7 @@ final class VPNUpdateBrokerHandler {
         identity: Data, published: Int32,
         authorization: VPNUpdateBrokerAuthorization,
         checkpoint: (String) throws -> Void,
-        ready: ((VPNUpdateBrokerResponse) throws -> Void)? = nil
+        ready: ((VPNUpdateBrokerResponse) -> Void)? = nil
     ) throws -> VPNUpdateBrokerResponse {
 
         let from = authorization.selected.release.sequence
@@ -200,7 +200,9 @@ final class VPNUpdateBrokerHandler {
                 state: .ready, fromSequence: from, toSequence: to)
             // This is the only safe point for app A to release its read-only
             // mount: the private inbox and recovery journal are now durable.
-            try ready?(response)
+            // Delivery is an observation, never another authorization gate.
+            // Losing the caller cannot cancel this already-owned transaction.
+            ready?(response)
         }
         try checkpoint("beforeHandoff")
 
