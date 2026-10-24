@@ -4839,3 +4839,27 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Run40089145131 (`4108ee6`): полная настоящая Installer/system-launchd
   приёмка всё ещё in_progress на обеих архитектурах; завершение ещё не доказано.
   Green primitive/coordinator tests не заменяют этот gate.
+
+### Продолжение 1.5dp — замена профиля перетаскиванием
+
+- [x] Existing profile card принимает `.ovpn` через тот же `acceptDrop` и
+  transactional importer, что первый экран. Настоящее имя файла остаётся видимым;
+  при наведении оба drop target подсвечиваются и показывают «Отпустите файл здесь».
+  Выбор файла кнопкой сохранён. Нового обработчика импорта или отдельного окна нет.
+- [x] Import eligibility проверяется при принятии drop и перед commit после
+  асинхронной доставки `NSItemProvider`. Работающая операция, активный VPN или
+  credential attempt не допускают замену. Встроенная ошибка сохраняет прежний
+  профиль; поздний callback не может обойти это ограничение.
+- [x] 8 новых adapter/import сценариев с настоящим `NSItemProvider` и synthetic
+  файлами в temporary store passed: valid replacement сохраняет resource IDs,
+  названия и адреса; empty/malformed/wrong extension/symlink/multiple/non-file
+  сохраняют старое имя и точные persisted bytes; delayed delivery во время
+  операции также не меняет профиль. Отдельный source contract проверяет wiring
+  обоих drop targets и hover copy: всего9 новых проверок.
+- [x] Existing credential lifecycle10 и offscreen SwiftUI layout1 прошли.
+  Layout измеряет также новую строку `vpnReplaceProfile` при0/3/18 ресурсах:
+  hitbox и границы поповера сохранены. Всего20 проверок для этого изменения.
+- [ ] Нативный drag-hover/drop и keyboard file-picker пройти после repair gate.
+  Source contract и offscreen render не доказывают реальный жест Finder или
+  пользовательскую приёмку. Finder/OpenPanel, настоящие профили, Keychain,
+  root-службы и сеть локально не запускались.

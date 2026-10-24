@@ -64,6 +64,9 @@ final class VPNPanelModel: ObservableObject {
     var ready: Bool { configuration.connectionAvailability == .ready }
     var configured: Bool { configuration.profile != nil }
     var connected: Bool { liveState == .connected }
+    var canImportProfile: Bool {
+        !working && !connected && !needsCredential && liveState != .connecting
+    }
     var mainStatus: String? {
         guard configured else { return nil }
         guard liveChecked else { return "VPN проверяется" }
@@ -199,6 +202,7 @@ final class VPNPanelModel: ObservableObject {
     }
 
     func chooseProfile() {
+        guard requireImportAvailability() else { return }
         let picker = NSOpenPanel()
         picker.title = "Выберите конфигурацию VPN"
         picker.prompt = "Добавить"
@@ -211,6 +215,7 @@ final class VPNPanelModel: ObservableObject {
 
     @discardableResult
     func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard requireImportAvailability() else { return false }
         guard providers.count == 1,
               providers[0].hasItemConformingToTypeIdentifier("public.file-url") else {
             message = "Добавьте один файл .ovpn."
@@ -357,6 +362,9 @@ final class VPNPanelModel: ObservableObject {
     }
 
     private func importProfiles(_ urls: [URL]) {
+        // Item-provider delivery is asynchronous: state may have changed since
+        // the drop was accepted. Check again before the transactional import.
+        guard requireImportAvailability() else { return }
         do {
             try configuration.importProfile(files: urls)
             login = configuration.profile?.suggestedLogin ?? ""
@@ -367,6 +375,14 @@ final class VPNPanelModel: ObservableObject {
             }
             settings = true; message = ""
         } catch { message = error.localizedDescription }
+    }
+
+    private func requireImportAvailability() -> Bool {
+        guard canImportProfile else {
+            message = "Перед заменой файла завершите подключение или выключите VPN."
+            return false
+        }
+        return true
     }
 
     private func run(_ operation: @escaping (VPNLiveController) -> Void,
@@ -529,7 +545,7 @@ struct VPNPanelView: View {
             Button(action: panel.chooseProfile) {
                 VStack(spacing: 12) {
                     Image(systemName: "arrow.down.doc").font(.system(size: 29, weight: .light)).foregroundColor(accent)
-                    Text("Перетащите .ovpn сюда").font(.system(size: 14, weight: .semibold))
+                    Text(dropTarget ? "Отпустите файл здесь" : "Перетащите .ovpn сюда").font(.system(size: 14, weight: .semibold))
                     Text("или выберите файл").font(.system(size: 11)).foregroundColor(.secondary)
                 }.frame(maxWidth: .infinity, minHeight: 154)
                     .background(dropTarget ? accent.opacity(0.12) : ink.opacity(0.025)).cornerRadius(14)
@@ -537,6 +553,7 @@ struct VPNPanelView: View {
                     .contentShape(RoundedRectangle(cornerRadius: 14))
             }.buttonStyle(PilotButtonStyle(cornerRadius: 14)).accessibilityIdentifier("vpnImport")
                 .accessibilityLabel("Добавить файл VPN")
+                .disabled(!panel.canImportProfile)
                 .onDrop(of: ["public.file-url"], isTargeted: $dropTarget, perform: panel.acceptDrop)
                 .padding(.top, 24)
             if !panel.message.isEmpty {
@@ -593,12 +610,18 @@ struct VPNPanelView: View {
                     Image(systemName: "doc.badge.gearshape").foregroundColor(accent).frame(width: 24)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(panel.configuration.profile?.name ?? "Добавить .ovpn").font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                        Text("Нажмите, чтобы заменить файл").font(.system(size: 9)).foregroundColor(.secondary)
+                        Text(dropTarget ? "Отпустите файл здесь" : "Нажмите или перетащите .ovpn для замены")
+                            .font(.system(size: 9)).foregroundColor(dropTarget ? accent : .secondary)
                     }
                     Spacer(); Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
                 }.padding(.horizontal, 11).frame(maxWidth: .infinity, minHeight: 48)
-                    .background(ink.opacity(0.035)).cornerRadius(10).contentShape(Rectangle())
+                    .background(dropTarget ? accent.opacity(0.12) : ink.opacity(0.035)).cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(dropTarget ? accent : .clear).allowsHitTesting(false))
+                    .contentShape(Rectangle())
         }.buttonStyle(PilotButtonStyle(cornerRadius: 10))
+            .accessibilityIdentifier("vpnReplaceProfile")
+            .disabled(!panel.canImportProfile)
+            .onDrop(of: ["public.file-url"], isTargeted: $dropTarget, perform: panel.acceptDrop)
     }
 
     private var authenticationSummary: some View {

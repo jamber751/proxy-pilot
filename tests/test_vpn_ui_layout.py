@@ -16,7 +16,7 @@ class VPNUILayoutTests(unittest.TestCase):
         panel = (ROOT / 'app/VPNPanel.swift').read_text().split(
             '\n/// Keeps the proxy home untouched.', 1)[0]
         identifiers = (
-            'vpnBack', 'vpnSettings', 'vpnPower', 'vpnImport',
+            'vpnBack', 'vpnSettings', 'vpnPower', 'vpnImport', 'vpnReplaceProfile',
             'vpnCredential', 'vpnCredentialSubmit', 'vpnCredentialCancel',
             'vpnAddResource', 'vpnRemoveResource', 'vpnRemove',
             'vpnSettingsDone', 'vpnAuthenticationSave', 'vpnResourceSave',
@@ -156,7 +156,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     case "import": required += ["vpnImport"]
     case "resource": required += ["vpnResourceSave"]
     case "auth": required += ["vpnAuthenticationSave"]
-    default: required += ["vpnAddResource", "vpnRemove", "vpnSettingsDone"]
+    default: required += ["vpnReplaceProfile", "vpnAddResource", "vpnRemove", "vpnSettingsDone"]
     }
     for name in required {
         guard let frame = bounds[name] else { fatalError("Missing \(name) in \(scenario)") }
