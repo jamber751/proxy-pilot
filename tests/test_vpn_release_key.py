@@ -33,6 +33,7 @@ class VPNReleaseKeyTests(unittest.TestCase):
                                 str(ROOT / 'app/vpn-helper/VPNReleaseAuthorization.swift'),
                                 str(ROOT / 'app/vpn-helper/VPNReleaseTrust.swift'),
                                 str(ROOT / 'app/vpn-helper/VPNCompanionMetadata.swift'),
+                                str(ROOT / 'app/vpn-helper/VPNRescueAuthorization.swift'),
                                 str(ROOT / 'app/vpn-release-key.swift'), '-o', str(cls.tool)],
                                capture_output=True, text=True, timeout=180)
         if built.returncode:

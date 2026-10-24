@@ -63,6 +63,7 @@ key_tool="$scratch/key/vpn-release-key"
   "$HERE/vpn-helper/VPNReleaseAuthorization.swift" \
   "$HERE/vpn-helper/VPNReleaseTrust.swift" \
   "$HERE/vpn-helper/VPNCompanionMetadata.swift" \
+  "$HERE/vpn-helper/VPNRescueAuthorization.swift" \
   "$HERE/vpn-release-key.swift" -o "$key_tool"
 public_key="$HERE/vpn-release-public-key.txt"
 manifest="$ASSETS/ProxyPilot-$VERSION-vpn-release.manifest"

@@ -7,7 +7,9 @@ import Security
 /// the private key lives in the Keychain and never touches disk, argv, output or
 /// the repository. Only the public key is printed and committed. This signs a
 /// release description; it does not build, install or activate anything.
+#if !VPN_RELEASE_KEY_TESTING
 @main
+#endif
 enum VPNReleaseKeyTool {
     static let service = "kz.documentolog.proxypilot.vpn-release"
     static let account = "kz.documentolog.proxypilot"
@@ -26,6 +28,8 @@ enum VPNReleaseKeyTool {
           vpn-release-key verify <manifest> <signature> <public-key-file>
           vpn-release-key sign-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature-file> [--keychain <path>]
           vpn-release-key verify-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature> <public-key-file>
+          vpn-release-key sign-rescue <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <rescue-description> <rescue-artifact> <rescue-signature-file> [--keychain <path>]
+          vpn-release-key verify-rescue <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <rescue-description> <rescue-artifact> <rescue-signature> <public-key-file>
           vpn-release-key sign-companion <metadata> <signature-file> [--keychain <path>]
           vpn-release-key verify-companion <metadata> <signature> <public-key-file>
           vpn-release-key verify-companion-artifact <metadata> <signature> <public-key-file> <artifact>
@@ -117,10 +121,83 @@ enum VPNReleaseKeyTool {
             + "to-sha256=\(hex(Data(SHA256.hash(data: candidatePayload))))\n").utf8)
     }
 
+    struct RescueInputs {
+        let previousPayload: Data
+        let previousSignature: Data
+        let candidatePayload: Data
+        let candidateSignature: Data
+        let transitionPayload: Data
+        let transitionSignature: Data
+        let payload: Data
+        let artifact: Data
+    }
+
+    /// Byte validation only: signing metadata does not authenticate a live root
+    /// executor or replace the independent Universal/static signature checks.
+    static func rescueInputs(_ arguments: [String]) -> RescueInputs? {
+        guard arguments.count >= 10,
+              let previous = file(arguments[2], limit: VPNReleaseAuthority.maximumPayloadBytes),
+              let previousSignature = signature(arguments[3]),
+              let candidate = file(arguments[4], limit: VPNReleaseAuthority.maximumPayloadBytes),
+              let candidateSignature = signature(arguments[5]),
+              let transition = file(arguments[6], limit: VPNReleaseAuthority.maximumUpdateTransitionBytes),
+              let transitionSignature = signature(arguments[7]),
+              let payload = file(arguments[8], limit: VPNReleaseAuthority.maximumRescueAuthorizationBytes),
+              let artifact = boundedRescueArtifact(arguments[9]) else { return nil }
+        return RescueInputs(previousPayload: previous, previousSignature: previousSignature,
+            candidatePayload: candidate, candidateSignature: candidateSignature,
+            transitionPayload: transition, transitionSignature: transitionSignature,
+            payload: payload, artifact: artifact)
+    }
+
+    static func boundedRescueArtifact(_ path: String) -> Data? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0, info.st_size <= VPNRescueAuthorization.maximumArtifactBytes else { return nil }
+        var bytes = Data()
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let count = read(fd, &buffer, buffer.count)
+            if count < 0 { if errno == EINTR { continue }; return nil }
+            if count == 0 { break }
+            guard bytes.count <= VPNRescueAuthorization.maximumArtifactBytes - count else { return nil }
+            bytes.append(contentsOf: buffer.prefix(count))
+        }
+        guard bytes.count == info.st_size else { return nil }
+        return bytes
+    }
+
+    static func verifyRescue(_ inputs: RescueInputs, signature: Data,
+                            publicKey: Data) throws -> VerifiedVPNRescueAuthorization {
+        let authority = try VPNReleaseAuthority(trustedPublicKey: publicKey,
+            minimumSequence: 1, supportedProtocol: 1)
+        let previous = try authority.verify(payload: inputs.previousPayload,
+            signature: inputs.previousSignature, previous: nil)
+        let verified = try VPNRescueAuthorization.verify(payload: inputs.payload, signature: signature,
+            authority: authority, previous: previous,
+            previousPayload: inputs.previousPayload, previousSignature: inputs.previousSignature,
+            candidatePayload: inputs.candidatePayload, candidateSignature: inputs.candidateSignature,
+            transitionPayload: inputs.transitionPayload, transitionSignature: inputs.transitionSignature)
+        try verified.validateArtifact(inputs.artifact)
+        return verified
+    }
+
+    /// The CLI publishes only after this same canonical verifier accepts every
+    /// signed input, the exact edge, and the supplied artifact bytes.
+    static func validatedRescueSignature(_ inputs: RescueInputs,
+                                        key: Curve25519.Signing.PrivateKey) throws -> Data {
+        let signed = try key.signature(for: VPNReleaseAuthority.rescueAuthorizationDomain + inputs.payload)
+        _ = try verifyRescue(inputs, signature: signed, publicKey: key.publicKey.rawRepresentation)
+        return signed
+    }
+
     static func main() {
         let arguments = CommandLine.arguments
         guard arguments.count >= 2 else { usage() }
-        let chain = keychain(arguments)
+        let chain = arguments[1] == "verify-rescue" ? nil : keychain(arguments)
         switch arguments[1] {
         case "generate":
             guard arguments.count >= 3 else { usage() }
@@ -224,6 +301,25 @@ enum VPNReleaseKeyTool {
                 fail("Release transition or signature rejected.")
             }
             print("Verified transition \(edge.fromSequence) to \(edge.toSequence)")
+        case "sign-rescue":
+            guard arguments.count == 11 || (arguments.count == 13 && arguments[11] == "--keychain"),
+                  let inputs = rescueInputs(arguments),
+                  let key = storedKey(chain),
+                  let signed = try? validatedRescueSignature(inputs, key: key) else {
+                fail("Rescue description, edge or artifact rejected; signature not written.")
+            }
+            write(signed.base64EncodedString() + "\n", to: arguments[10])
+            print("Signed exact-edge rescue description")
+        case "verify-rescue":
+            guard arguments.count == 12,
+                  let inputs = rescueInputs(arguments),
+                  let signed = signature(arguments[10]),
+                  let publicText = try? String(contentsOfFile: arguments[11], encoding: .utf8),
+                  let publicKey = Data(base64Encoded: publicText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let verified = try? verifyRescue(inputs, signature: signed, publicKey: publicKey) else {
+                fail("Rescue description, signature, edge or artifact rejected.")
+            }
+            print("Verified rescue \(verified.fromSequence) to \(verified.toSequence) artifact bytes")
         case "sign-companion":
             guard arguments.count >= 4,
                   let key = storedKey(chain),
