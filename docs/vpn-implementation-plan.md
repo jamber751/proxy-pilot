@@ -6678,3 +6678,20 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Все7 этапов сохранены: новый final package, installed OTP/IP/resource UX,
   exact-host domain/split-DNS и bridge, WARP/lifecycle, accessibility/macOS11,
   итоговая английская документация и отдельно разрешённая публикация.
+
+
+### Продолжение 1.5fz — новый проверяемый snapshot0b44158
+
+- [x] Изменения отправлены только в codex/vpn-root-acceptance, без main/tags
+  и публичного релиза. Рабочие изменения сохранены отдельными коммитами.
+- [x] Source9ac5266 scoped custody40135758333 terminal SUCCESS ARM/Intel:
+  jobs120996807590/120996807733. Это предыдущая интеграция без нового sequence fix.
+- [ ] Source0b44158: System40138409802; genuine default40138409792;
+  scoped custody40138409955; owned utun40138409864;
+  ownership40138409810; password transport40138409899.
+  Первое наблюдение — queued, а не завершение или отказ.
+  Genuine jobs121004771414/121004771581/121004771588/121004771638;
+  utun jobs121004771943/121004772298. Наблюдать именно эти handles.
+- [ ] Предыдущие System40135758259 ARM120996807377/Intel120996807601
+  in_progress; предыдущие genuine roundtrip120996807566/120996807649 тоже
+  in_progress. Их не отменяли и не перезапускали по таймауту наблюдения.
