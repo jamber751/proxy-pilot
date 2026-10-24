@@ -28,7 +28,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40124194483 ARM прошёл первые7 Installer cases, включая ordinary Off/On | ARM восьмой case требует устойчивого handoff witness; Intel прошёл6 cases, затем readinessTimeout при repair. Исправление повторных journal validations проверяется; полный System8 и macOS11 runtime OPEN |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40129583883 ARM прошёл все8 реальных Installer cases на b327ab6 | Полный Intel8 и свежий комплект после context/route/clock fixes ещё проверяются; macOS11 runtime OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -6544,3 +6544,57 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   records не получают новый флаг при decode. Nonmatching exact-row при pending
   eligible profile сохраняет obligation, а не превращается в absence. Эта
   реализация ещё не завершена и не отправлена на новый VM run.
+
+
+### Продолжение 1.5fv — конкретная причина ACK и согласованный исправленный snapshot
+
+- [x] Private40132902855 b0322dc terminal FAILED обе архитектуры: Intel3/11,
+  ARM2/11 failures. В КАЖДОМ initialAdd дошёл до parent ACK, затем typed
+  workerAcknowledgmentBusy и storageUnavailable. На isolated Store пишут только
+  свой parent/child: SEND-before-child-settlement создавал собственную конкуренцию
+  за flock, а parent имел50ms/3 attempts. Это подтверждённая граница этих failures,
+  а не предположение о Security API/пароле или preGO directory fsync.
+- [x] Local2f7e383: child валидирует/кодирует точный результат, затем завершает
+  settlement captured receipt ДО SEND; после SEND Store не трогает. Parent всё
+  ещё независимо проверяет/ACKs exact reference/locator/directory. Timers5s,
+  50ms/3, late-child-after-parent-death и запрет второго API не изменялись.
+  Новый testAfterBackend сохраняет прежние pre-settlement race guards; отдельный
+  immediate-beforeSEND hook причинно доказывает settled/removed, а не pending.
+- [x] Старый production Worker causal2 RED/0errors; parent final63 PASS42.980s,
+  author145 Ledger/Runtime/Cleanup/Live regressions PASS23.305s. Final causal2
+  отдельно прошли с реальным50ms clock, не frozen clock. Genuine87-source
+  frontend no-TESTING ARM/Intel typecheck PASS/stale[]. Fault/budget tests отдельно
+  моделируют lost metadata receipt точным test-only rollback ДО SEND; это не
+  power-loss durability proof и не новый production Store hook.
+- [x] Local4e03b51: строго предсказывается kernel LLINFO для managed directIPv6
+  /128 utun resource/dependency, identity.flags остаются exact. Encoder удаляет
+  derived bit только в таком профиле, decoder требует actual matching AF_LINK
+  (без LL address/selector), snapshot.matches ничего не маскирует. Journal3
+  выбирается для новых eligible plans; plan2/3 JSON bytes не меняются. Legacy1/2
+  читаются с прежними flags; nonmatching pending exactrow сохраняет obligation.
+- [x] Parent27 focused PASS6.281s; author134 route/socket/domain/guard tests
+  PASS60.363s плюс controller/peer11 PASS12.072s. ARM/Intel no-TESTING modules
+  и Intel actual utun probe compile PASS. Настоящий frozen8577f06 reader принял
+  legacy1/2, отклонил оба new3 invalidState, все4 input hashes неизменны.
+  Basic19 VM markers прежние; actual fresh-profile/IPv6 crash proof ещё OPEN.
+- [x] Local711b4b1: request deadline/receivedAt/cache expiry/codec+REQUIRED Release
+  clock теперь VPNDNSContinuousInstant. RAW public clock считает сон, constructor
+  не читает clock. Exchange фиксирует C0/U0/C1, переводит только remaining duration
+  в отдельный fixed uptime end; оба ends сохраняются между UDP/TCP. Failed/
+  backwards clocks, +120s sleep при U-stalled и post-read/proof expiry прекращают
+  дальнейшие IO/output с owner-closeonce. Старые deny-IP obligations сохраняются.
+  UInt64/DispatchTime compatibility overload не добавлен, runtime factory закрыт.
+- [x] Author214 clock/codec/exchange tests PASS20.645s; exact botharch current
+  helper NO TESTING typecheck PASS/stale[]. Parent единый FINAL358 всех9 DNS/
+  route/clock suites PASS56.714s после обоих изменений; host network, sleep,
+  Keychain items и root APIs не выполнялись. 76a9fd4 включает новые suites в CI.
+- [x] System40129583883 b327ab6 ARM120978234134 terminal SUCCESS:151 fast+6
+  root ownership guards+ВСЕ8 настоящих Installer cases. В том числе ordinary
+  Off/On и потеря reply receiver с настоящим same-actor witness/финальным D.
+  Это закрывает старый ARM eighth-case observation defect для этого snapshot;
+  production Handler не менялся только ради witness. Intel того же run ещёlive,
+  свежий System40132902845 b0322dc тоже live. Это не finalhost/latest-release proof.
+- [ ] Все7 этапов сохраняются. Новый source batch ещё должен пройти реальные
+  private/genuine Keychain, utun, System/ownership/frontend gates. PasswordRuntime
+  остаётся OFF, domain backend/OS barrier/ordinary DNS policy и final installed
+  OTP/IP/lifecycle/WARP/VoiceOver/macOS11/English release всё ещё OPEN.
