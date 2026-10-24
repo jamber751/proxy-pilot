@@ -31,7 +31,7 @@ final class VPNUpdateBrokerInbox {
         "vpn-update-transition", "vpn-update-transition.sig",
     ]
     private static let cloneResolveBeneath: UInt32 = 0x0010
-    private let parent: Int32
+    private var parent: Int32
 
     private enum NodeKind: UInt8 { case directory = 0x44, file = 0x46, link = 0x4c }
     private struct Node: Equatable {
@@ -51,10 +51,18 @@ final class VPNUpdateBrokerInbox {
         parent = fcntl(trustedParent, F_DUPFD_CLOEXEC, 0)
         guard parent >= 0 else { throw VPNUpdateBrokerInboxError.unsafeStorage }
         do { try Self.checkPrivateDirectory(parent) }
-        catch { close(parent); throw error }
+        catch {
+            let rejected = parent
+            parent = -1
+            close(rejected)
+            #if VPN_UPDATE_BROKER_INBOX_COPY_TESTING
+            Self.testAfterRejectedInitClose?(rejected)
+            #endif
+            throw error
+        }
     }
 
-    deinit { close(parent) }
+    deinit { if parent >= 0 { close(parent) } }
 
     func ingest(sourceDirectory: Int32,
                 checkpoint: (String) throws -> Void) throws
@@ -719,6 +727,9 @@ final class VPNUpdateBrokerInbox {
 
     #if VPN_UPDATE_BROKER_INBOX_TESTING || VPN_UPDATE_BROKER_INBOX_COPY_TESTING
     static var testCloneFailure: Int32?
+    #if VPN_UPDATE_BROKER_INBOX_COPY_TESTING
+    static var testAfterRejectedInitClose: ((Int32) -> Void)?
+    #endif
     #endif
 
     private static func scratchName(_ name: String, source: Snapshot) -> String {

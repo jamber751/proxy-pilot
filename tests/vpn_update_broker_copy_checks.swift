@@ -14,6 +14,31 @@ import Foundation
         #if VPN_UPDATE_BROKER_INBOX_COPY_TESTING
         VPNUpdateBrokerInbox.testCloneFailure = args[3] == "clone" ? nil : args[3] == "unsupported" ? ENOTSUP : (args[3] == "denied" ? EACCES : EXDEV)
         #endif
+        #if VPN_UPDATE_BROKER_INBOX_COPY_TESTING
+        if args[3] == "init-failure" {
+            var reused: Int32 = -1
+            VPNUpdateBrokerInbox.testAfterRejectedInitClose = { closed in
+                let replacement = open("/dev/null", O_RDONLY | O_CLOEXEC)
+                guard replacement >= 0 else { return }
+                if replacement != closed {
+                    guard dup2(replacement, closed) == closed else { close(replacement); return }
+                    close(replacement)
+                }
+                reused = closed
+            }
+            defer {
+                VPNUpdateBrokerInbox.testAfterRejectedInitClose = nil
+                if reused >= 0 { close(reused) }
+            }
+            var rejected = false
+            do { _ = try VPNUpdateBrokerInbox(trustedParent: parent) }
+            catch { rejected = true }
+            guard rejected, reused >= 0, fcntl(reused, F_GETFD) >= 0,
+                  fcntl(parent, F_GETFD) >= 0 else { throw Failure.check }
+            print("bounded copy passed")
+            return
+        }
+        #endif
         let inbox = try VPNUpdateBrokerInbox(trustedParent: parent)
         if args[3] == "uninstall" {
             try inbox.removeAllForUninstall()

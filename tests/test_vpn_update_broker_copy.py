@@ -236,6 +236,10 @@ class VPNUpdateBrokerCopyTests(unittest.TestCase):
         self.assertTrue(published.is_dir())
         self.assertEqual(foreign.read_bytes(), b'leave untouched')
 
+    def test_failed_initialization_closes_owned_descriptor_exactly_once(self):
+        self.parent.chmod(0o755)
+        self.run_copy(error='init-failure')
+
     def test_permission_error_does_not_trigger_bytecopy(self):
         self.assertNotEqual(self.run_copy(error='denied', success=False).returncode, 0)
         self.assertFalse(list(self.parent.rglob('.copy-*')))
