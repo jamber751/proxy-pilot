@@ -37,4 +37,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Credential, drop, scrolling and offscreen layout regressions
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_live_controller test_vpn_ui_contract test_vpn_ui_layout test_vpn_panel_credentials test_vpn_panel_import test_vpn_resource_list -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_live_controller test_vpn_ui_contract test_vpn_ui_layout test_vpn_panel_credentials test_vpn_panel_import test_vpn_panel_removal test_vpn_resource_list -v
