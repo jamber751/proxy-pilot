@@ -28,12 +28,12 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;760 isolated rescue checks на ARM/Intel | Полный настоящий Installer/system recovery, обычное обновление после rescue, macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;766 isolated checks на ARM/Intel до нового observer | Полный настоящий Installer/system recovery, обычное обновление после rescue, новые observer root cases, macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение 137 с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay | Connected overlay 137, legacy CLI, domain/split-DNS backend |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137; isolated OTP/drop и длинный список1/3/18/100 | Keychain, диагностика, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;124 isolated core/model/ledger/UI checks на ARM/Intel, OTP/drop и список1/3/18/100 | Реальный Keychain adapter и opt-in UI, диагностика, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -46,9 +46,11 @@ ordinary-user signature/bytes и HTTP/SOCKS5 проверены. Один пов
 дал ошибку, следующий цикл успешен; этот сбой ещё не объяснён. См. 1.5cr.
 Подробности той установки — 1.5cq. Затем обновление 137→139 остановилось до
 замены Applications: старый executor137 несовместим с root-owned A. Исправление
-в новом B не изменяет старый executor. Native rescue собран;760 isolated checks
-прошли на ARM/Intel. Полный пакет с реальным движком проходит отдельную
-Installer/system VM приёмку, см. 1.5dr. Итоговый host package ещё не готов.
+в новом B не изменяет старый executor. Native rescue собран;766 isolated checks
+прошли на ARM/Intel. Настоящая Installer/system VM приёмка выявила остаточный
+recovery plist и повторное выполнение уже подтверждённого exchange; см. 1.5ei/
+1.5em. Исправление observer и новый7-case gate ещё требуют полного прогона.
+Итоговый host package ещё не готов.
 Повторные host installers остановлены по просьбе владельца: один итоговый пакет
 после изолированной приёмки, без изменения пароля macOS или sudoers.
 Ниже результаты 18 октября исторические.
@@ -5309,7 +5311,10 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   typed JournalContext20 passed. Семь новых root tests используют настоящий
   initial exchange и3 observation, проверяют единственный trace arm/drain/exchange,
   inode/journal/activation unchanged и отказные случаи. Host root не запускался.
-- [ ] Optimized Universal native build выполняется; затем root observer cases,
-  полный ownership и Installer7/C→D gate нужны заново. Total budget300s и
+- [x] Optimized Universal native107-source snapshot build/strict signature и
+  guards77/64/77 прошли: `/tmp/pp-rescue-observe-after-exchange-20261024-v1`.
+  Snapshot hashes и соответствие обоих изменённых production files проверены.
+- [ ] Root observer cases, полный ownership и Installer7/C→D gate нужны заново.
+  Total budget300s и
   action deadlines не увеличены. Добавлены только fixed безопасные категории
   destinationLayout/Storage/Uncertain, без private associated values.
