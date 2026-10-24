@@ -17,7 +17,7 @@ enum VPNDefaultKeychainVMEntry {
     // preflight and no changes to the genuine worker/backend source or factory.
     enum TraceStage: String {
         case targetAnchor, expectedDefault, setAPI, resultDefault, requireDefault
-        case prepare, begin, dispatch, locatorProof, children, ledger, definite
+        case prepare, begin, dispatch, locatorProof, children, ledger, definite, refreshAnchor
     }
     enum ErrorCategory: String {
         case invalid, denied, unavailable, transport, timeout
@@ -248,12 +248,35 @@ enum VPNDefaultKeychainVMEntry {
             try remove("unknown-rpc")
         }
     }
-    struct Created {
-        let anchor: DefaultAnchor
+    final class Created {
+        private(set) var anchor: DefaultAnchor
         let folder: URL
         let directory: Int32
         let target: VPNPrivateKeychainPathProof.Target
         let leaf: VPNPrivateKeychainPathProof.Leaf
+        init(anchor: DefaultAnchor, folder: URL, directory: Int32,
+             target: VPNPrivateKeychainPathProof.Target, leaf: VPNPrivateKeychainPathProof.Leaf) {
+            self.anchor = anchor; self.folder = folder; self.directory = directory
+            self.target = target; self.leaf = leaf
+        }
+        /// A successful Add may atomically replace its own database file. Only
+        /// the authenticated post-Add locator and durable exact Store receipt
+        /// authorize adopting that new inode; pathname continuity alone cannot.
+        /// The old anchor remains held until every new-anchor check succeeds.
+        func refreshAfterConfirmedAdd(_ locator: VPNPasswordItemLocator) throws {
+            try prove(locator, self)
+            let replacement = try DefaultAnchor(anchor.keychain)
+            try replacement.validate()
+            let origin = locator.origin, info = replacement.attributes
+            try check(replacement.canonical == origin.path &&
+                origin.device == UInt64(UInt32(bitPattern: info.st_dev)) &&
+                origin.inode == UInt64(info.st_ino) && origin.ownerUID == info.st_uid &&
+                origin.birthSeconds == Int64(info.st_birthtimespec.tv_sec) &&
+                origin.birthNanoseconds == UInt32(info.st_birthtimespec.tv_nsec))
+            try prove(locator, self)
+            try replacement.validate()
+            anchor = replacement
+        }
     }
     static func create(_ root: Root, first: Bool) throws -> Created {
         let target: VPNPrivateKeychainPathProof.Target = first ? .first : .second
@@ -359,6 +382,7 @@ enum VPNDefaultKeychainVMEntry {
         try trace(step, .children) { try joinChildren() }
         try trace(step, .ledger) { try check(store.load()?.passwordLedger.active?.locator == locator) }
         try trace(step, .definite) { try root.definite(step) }
+        try trace(step, .refreshAnchor) { try target.refreshAfterConfirmedAdd(locator) }
         return locator
     }
     static func delete(_ root: Root, _ store: VPNStore, reference: VPNPasswordReference, step: Step) throws {

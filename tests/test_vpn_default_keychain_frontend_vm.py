@@ -29,7 +29,7 @@ PRESERVED = b'EXPECTED-UNKNOWN-PRESERVED'
 TRACE_STAGES = {
     **{step: {'targetAnchor', 'expectedDefault', 'begin', 'setAPI', 'resultDefault', 'definite'}
        for step in ('setA', 'setB', 'restore')},
-    **{step: {'requireDefault', 'prepare', 'begin', 'dispatch', 'locatorProof', 'children', 'ledger', 'definite'}
+    **{step: {'requireDefault', 'prepare', 'begin', 'dispatch', 'locatorProof', 'children', 'ledger', 'definite', 'refreshAnchor'}
        for step in ('addA', 'addB')},
 }
 TRACE_ERRORS = {'invalid', 'denied', 'unavailable', 'transport', 'timeout',
@@ -252,7 +252,7 @@ class GenuineDefaultSourceGuardTests(unittest.TestCase):
         add = fixture.split('static func add(_ root:', 1)[1].split('static func delete(_ root:', 1)[0]
         for first, second in [('requireDefault', 'prepare'), ('prepare', 'begin'), ('begin', 'dispatch'),
                               ('dispatch', 'locatorProof'), ('locatorProof', 'children'),
-                              ('children', 'ledger'), ('ledger', 'definite')]:
+                              ('children', 'ledger'), ('ledger', 'definite'), ('definite', 'refreshAnchor')]:
             self.assertLess(add.index('trace(step, .' + first + ')'), add.index('trace(step, .' + second + ')'))
         self.assertEqual(add.count('VPNPasswordWorkerSession.prepare('), 1)
         self.assertEqual(add.count('session.addOnce('), 1)
