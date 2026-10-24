@@ -1,0 +1,33 @@
+name: VPN disposable dynamic-store session experiment
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-dns-session.yml'
+      - 'tests/vpn_dns_session_vm_checks.swift'
+      - 'tests/test_vpn_dns_session_vm.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  session:
+    name: Synthetic session lifetime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check fail-closed guards without system APIs
+        run: python3 tests/test_vpn_dns_session_vm.py
+      - name: Exercise exact synthetic keys in disposable VM as root
+        run: |
+          swiftc -parse-as-library tests/vpn_dns_session_vm_checks.swift -framework SystemConfiguration -o "$RUNNER_TEMP/proxypilot-dns-session"
+          sudo /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_DNS_SESSION_TESTS=1 "$RUNNER_TEMP/proxypilot-dns-session" --acceptance
