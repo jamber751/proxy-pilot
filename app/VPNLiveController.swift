@@ -65,32 +65,49 @@ final class VPNLiveController: ObservableObject {
     @Published private(set) var busy = false
 
     private let store: VPNStore
+    private let passwordPersistence: VPNPasswordPersistenceCoordinator
     private let openSession: () throws -> VPNLiveSession
     private var session: VPNLiveSession?
     private var challenge: VPNCredentialChallenge?
     private var promptIdentifier: UUID?
     private var expectedApplication: VPNApplicationSpec?
+    private var sessionIdentifier: UUID?
+    private var expectedAttempt: VPNConnectAttemptBinding?
+    private var attemptedPasswordRead = false
+    private var currentCachedReference: VPNPasswordReference?
+    // Keep a rejected exact item suppressed across user reconnects, rather than
+    // repeatedly submitting a wrong cached value before manual input is offered.
+    private var rejectedCachedReference: VPNPasswordReference?
+    private var passwordCandidate: VPNPasswordSaveCandidate?
+
+    var passwordPersistenceAvailable: Bool { passwordPersistence.available }
+    #if VPN_LIVE_CONTROLLER_TESTING
+    var testPasswordCandidate: VPNPasswordSaveCandidate? { passwordCandidate }
+    #endif
 
     /// Presentation identity only: two consecutive prompts may have the same
     /// kind while belonging to different authenticated requests.
     var credentialPromptIdentifier: UUID? { promptIdentifier }
 
     #if VPN_LIVE_CONTROLLER_TESTING
-    init(store: VPNStore, openSession: @escaping () throws -> VPNLiveSession) {
+    init(store: VPNStore, passwordPersistence: VPNPasswordPersistenceCoordinator? = nil,
+         openSession: @escaping () throws -> VPNLiveSession) {
         self.store = store
+        self.passwordPersistence = passwordPersistence ?? VPNPasswordPersistenceCoordinator(store: store)
         self.openSession = openSession
     }
     #else
-    init(store: VPNStore,
+    init(store: VPNStore, passwordPersistence: VPNPasswordPersistenceCoordinator? = nil,
          openSession: @escaping () throws -> VPNLiveSession = {
              try VPNFrontendHelperSession.open()
          }) {
         self.store = store
+        self.passwordPersistence = passwordPersistence ?? VPNPasswordPersistenceCoordinator(store: store)
         self.openSession = openSession
     }
     #endif
 
-    deinit { session?.close() }
+    deinit { session?.close(); passwordCandidate?.clear(); passwordPersistence.invalidatePendingSave() }
 
     func refresh() {
         guard !busy else { return }
@@ -99,10 +116,17 @@ final class VPNLiveController: ObservableObject {
             defer { live.close() }
             let (status, snapshot) = try live.tunnelStatus()
             guard status == .ok, let snapshot else { throw VPNLiveControllerError.unverifiedState }
+            if session != nil, (snapshot.phase != .needsCredential
+                || snapshot.attempt != expectedAttempt || snapshot.challenge != challenge) {
+                passwordPersistence.invalidatePendingSave()
+                if snapshot.phase == .failed { rejectCachedCredential() }
+                closeHeldSession()
+            }
             promptIdentifier = snapshot.phase == .needsCredential ? snapshot.challenge?.identifier : nil
             state = Self.project(snapshot)
         } catch {
-            promptIdentifier = nil
+            passwordPersistence.invalidatePendingSave()
+            rejectCachedCredential(); closeHeldSession()
             state = .unavailable
         }
     }
@@ -110,11 +134,13 @@ final class VPNLiveController: ObservableObject {
     func connect() {
         guard !busy else { return }
         busy = true; state = .connecting
+        passwordPersistence.invalidatePendingSave()
         do {
             closeHeldSession()
             let input = try enabledInput()
             let live = try openSession()
             session = live
+            sessionIdentifier = UUID()
             guard try live.storeProfile(input.profile) == .ok else {
                 throw VPNLiveControllerError.profileRejected
             }
@@ -133,32 +159,40 @@ final class VPNLiveController: ObservableObject {
         busy = false
     }
 
-    func submitCredential(_ secret: inout Data) {
-        guard !busy, let live = session, let challenge else {
-            secret.resetBytes(in: 0..<secret.count)
-            secret.removeAll(keepingCapacity: false)
+    func submitCredential(_ secret: inout Data, expectedPromptIdentifier: UUID?) {
+        guard !busy, let live = session, let challenge,
+              expectedPromptIdentifier == challenge.identifier else {
+            Self.clear(&secret)
             return
         }
         busy = true; state = .connecting; promptIdentifier = nil
+        defer { busy = false }
+        do { try submit(secret: &secret, live: live, challenge: challenge, manual: true) }
+        catch { fail(error) }
+    }
+
+    private func submit(secret: inout Data, live: VPNLiveSession,
+                        challenge: VPNCredentialChallenge, manual: Bool) throws {
+        if challenge.kind == .vpnPassword {
+            passwordCandidate?.clear(); passwordCandidate = nil
+            if manual, let binding = persistenceBinding(challenge) {
+                // The helper deliberately consumes/wipes its inout response.
+                passwordCandidate = passwordPersistence.captureManual(secret, binding: binding)
+            }
+        }
         var response = VPNCredentialResponse(challenge: challenge, secret: secret)
-        secret.resetBytes(in: 0..<secret.count)
-        secret.removeAll(keepingCapacity: false)
-        defer {
-            response.secret.resetBytes(in: 0..<response.secret.count)
-            response.secret.removeAll(keepingCapacity: false)
-            busy = false
+        Self.clear(&secret)
+        defer { Self.clear(&response.secret) }
+        let result = try live.submitCredentialExchange(&response)
+        if result.0 == .needsCredential, result.1?.identifier == challenge.identifier {
+            throw VPNLiveControllerError.unverifiedState
         }
-        do {
-            let result = try live.submitCredentialExchange(&response)
-            let revision = try expectedApplication.unwrap().revision
-            try accept(result, revision: revision)
-        } catch {
-            fail(error)
-        }
+        try accept(result, revision: try expectedApplication.unwrap().revision)
     }
 
     func cancelCredential() {
         guard !busy, let live = session, let challenge else { return }
+        passwordPersistence.invalidatePendingSave()
         busy = true
         defer { busy = false }
         do {
@@ -173,6 +207,7 @@ final class VPNLiveController: ObservableObject {
 
     func disconnect() {
         guard !busy else { return }
+        passwordPersistence.invalidatePendingSave()
         busy = true
         defer { busy = false }
         do {
@@ -182,7 +217,7 @@ final class VPNLiveController: ObservableObject {
             guard try live.disconnectTunnel() == .ok else {
                 throw VPNLiveControllerError.helperRejected
             }
-            live.close(); session = nil; challenge = nil; promptIdentifier = nil; expectedApplication = nil
+            live.close(); session = nil; closeHeldSession()
             try persistDisabledAfterStop()
             state = .off
         } catch { fail(error) }
@@ -224,28 +259,67 @@ final class VPNLiveController: ObservableObject {
                         revision: UInt64) throws {
         switch result.0 {
         case .needsCredential:
-            guard let next = result.1 else { throw VPNLiveControllerError.unverifiedState }
+            guard let next = result.1, let live = session, let expectedApplication else {
+                throw VPNLiveControllerError.unverifiedState
+            }
+            let (status, snapshot) = try live.tunnelStatus()
+            guard status == .ok, let snapshot, snapshot.phase == .needsCredential,
+                  snapshot.challenge == next, let attempt = snapshot.attempt,
+                  attempt.application.spec == expectedApplication,
+                  next.generation == attempt.generation,
+                  expectedAttempt == nil || expectedAttempt == attempt,
+                  (try? snapshot.validate()) != nil else { throw VPNLiveControllerError.unverifiedState }
+            expectedAttempt = attempt
+            if next.kind == .vpnPassword {
+                passwordPersistence.invalidatePendingSave()
+                rejectCachedCredential()
+                passwordCandidate?.clear(); passwordCandidate = nil
+            } else if let candidate = passwordCandidate,
+                      candidate.binding.attempt != attempt || candidate.binding.sessionIdentifier != sessionIdentifier {
+                candidate.clear(); passwordCandidate = nil
+            }
             challenge = next
             promptIdentifier = next.identifier
             state = .needsCredential(next.kind)
+            if next.kind == .vpnPassword, !attemptedPasswordRead,
+               let binding = persistenceBinding(next), binding.eligible,
+               passwordPersistence.available {
+                attemptedPasswordRead = true
+                if var cached = passwordPersistence.read(binding: binding, excluding: rejectedCachedReference) {
+                    currentCachedReference = cached.reference
+                    defer { Self.clear(&cached.secret) }
+                    promptIdentifier = nil; state = .connecting
+                    try submit(secret: &cached.secret, live: live, challenge: next, manual: false)
+                }
+            }
         case .ok:
             guard let live = session, let expectedApplication else {
                 throw VPNLiveControllerError.unverifiedState
             }
             let (status, snapshot) = try live.tunnelStatus()
             guard status == .ok, let snapshot, snapshot.phase == .connected,
-                  snapshot.active?.spec == expectedApplication else {
+                  snapshot.active?.spec == expectedApplication,
+                  let attempt = snapshot.attempt,
+                  expectedAttempt == nil || expectedAttempt == attempt,
+                  snapshot.generation == attempt.generation,
+                  (try? snapshot.validate()) != nil else {
                 throw VPNLiveControllerError.unverifiedState
             }
             try store.acknowledgeApplied(revision: revision)
+            let candidate = passwordCandidate, sessionID = sessionIdentifier
+            passwordCandidate = nil
             closeHeldSession(); state = .connected
+            if let candidate, let sessionID {
+                passwordPersistence.saveVerified(candidate, snapshot: snapshot, sessionIdentifier: sessionID)
+            }
         default:
             throw VPNLiveControllerError.helperRejected
         }
     }
 
     private func fail(_ error: Error) {
-        closeHeldSession()
+        passwordPersistence.invalidatePendingSave()
+        rejectCachedCredential(); closeHeldSession()
         if let localized = error as? LocalizedError,
            let description = localized.errorDescription {
             state = .failed(description)
@@ -271,6 +345,23 @@ final class VPNLiveController: ObservableObject {
 
     private func closeHeldSession() {
         session?.close(); session = nil; challenge = nil; promptIdentifier = nil; expectedApplication = nil
+        sessionIdentifier = nil; expectedAttempt = nil; attemptedPasswordRead = false; currentCachedReference = nil
+        passwordCandidate?.clear(); passwordCandidate = nil
+    }
+
+    private func rejectCachedCredential() {
+        if let currentCachedReference { rejectedCachedReference = currentCachedReference }
+        currentCachedReference = nil
+    }
+
+    private func persistenceBinding(_ challenge: VPNCredentialChallenge) -> VPNPasswordPersistenceBinding? {
+        guard let sessionIdentifier, let expectedAttempt else { return nil }
+        return VPNPasswordPersistenceBinding(sessionIdentifier: sessionIdentifier,
+            attempt: expectedAttempt, challenge: challenge)
+    }
+
+    private static func clear(_ bytes: inout Data) {
+        bytes.resetBytes(in: 0..<bytes.count); bytes.removeAll(keepingCapacity: false)
     }
 
     private static func project(_ snapshot: VPNTunnelSnapshot) -> VPNLiveState {

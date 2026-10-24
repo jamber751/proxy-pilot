@@ -47,10 +47,12 @@ class VPNUIContractTests(unittest.TestCase):
         self.assertIn('ScrollViewReader', panel)
         self.assertIn('showsIndicators: overflows', panel)
 
-    def test_ui_does_not_offer_unimplemented_secret_persistence(self):
+    def test_password_save_requires_capability_and_domains_remain_gated(self):
         panel = (ROOT / 'app/VPNPanel.swift').read_text()
-        self.assertNotIn('keychain', panel.lower())
-        self.assertIn('Пароли и коды не сохраняются', panel)
+        self.assertIn('panel.authenticationChoice == .password && panel.passwordPersistenceAvailable', panel)
+        self.assertIn('controller?.passwordPersistenceAvailable ?? false', panel)
+        self.assertIn('Одноразовые коды не сохраняются', panel)
+        self.assertIn('expectedPromptIdentifier: prompt', panel)
         self.assertIn('candidate.kind != .domain', panel)
 
 

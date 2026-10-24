@@ -38,6 +38,7 @@ struct PilotButtonStyle: ButtonStyle {
 }
 
 struct PilotCheckboxStyle: ToggleStyle {
+    var minimumHeight: CGFloat = 28
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             HStack(spacing: 8) {
@@ -52,7 +53,7 @@ struct PilotCheckboxStyle: ToggleStyle {
                 }.frame(width: 16, height: 16)
                 configuration.label
                 Spacer(minLength: 0)
-            }.frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            }.frame(maxWidth: .infinity, minHeight: minimumHeight, alignment: .leading)
                 .contentShape(Rectangle())
         }.buttonStyle(PilotButtonStyle())
             .accessibilityValue(configuration.isOn ? "Включено" : "Выключено")

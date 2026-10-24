@@ -18,11 +18,15 @@ class VPNUILayoutTests(unittest.TestCase):
         # Presentation-only state injection; production view/control code is unchanged.
         panel = panel.replace('@Published private(set) var liveState:', '@Published var liveState:')
         panel = panel.replace('@Published private(set) var credentialPromptIdentifier:', '@Published var credentialPromptIdentifier:')
+        # Presentation-only capability injection; no driver or Keychain is used.
+        panel = panel.replace('var passwordPersistenceAvailable: Bool { controller?.passwordPersistenceAvailable ?? false }',
+                              'var passwordPersistenceAvailable: Bool { true }')
         identifiers = (
             'vpnBack', 'vpnSettings', 'vpnPower', 'vpnImport', 'vpnReplaceProfile',
             'vpnCredential', 'vpnCredentialSubmit', 'vpnCredentialCancel',
             'vpnAddResource', 'vpnRemoveResource', 'vpnRemove',
             'vpnSettingsDone', 'vpnAuthenticationSave', 'vpnResourceSave',
+            'vpnSavePassword',
         )
         for name in identifiers:
             marker = f'.accessibilityIdentifier("{name}")'
@@ -63,7 +67,8 @@ final class VPNLiveController: ObservableObject {
     func refresh() { state = .off }
     func connect() { state = .connected }
     func disconnect() { state = .off }
-    func submitCredential(_ secret: inout Data) { secret.removeAll(); state = .connected }
+    var passwordPersistenceAvailable: Bool { true }
+    func submitCredential(_ secret: inout Data, expectedPromptIdentifier: UUID?) { secret.removeAll(); state = .connected }
     func cancelCredential() { state = .off }
 }
 struct PowerStyle: ButtonStyle {
@@ -146,17 +151,21 @@ private func secureField(_ view: NSView) -> VPNSecretField.Field? {
     if let field = view as? VPNSecretField.Field { return field }
     return view.subviews.lazy.compactMap { secureField($0) }.first
 }
-for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "credential-settings", "credential-resource"] {
+for scenario in ["import", "settings0", "settings3", "settings18", "resource", "auth", "auth-save", "auth-otp", "credential-settings", "credential-resource"] {
     let panel = VPNPanelModel(preview: true)
     if scenario != "import" {
         try configure(panel, resources: scenario == "settings18" ? 18 : scenario == "settings3" ? 3 : 0,
-                      credentials: scenario == "auth")
+                      credentials: scenario.hasPrefix("auth"))
         panel.settings = true
     }
     if scenario == "resource" {
         panel.beginResource(); panel.resourceAddress = "10.55.0.0/16"
     }
-    if scenario == "auth" { panel.beginAuthentication(); panel.authenticationChoice = .password }
+    if scenario.hasPrefix("auth") {
+        panel.beginAuthentication(); panel.authenticationChoice = .password
+        if scenario == "auth-save" { panel.choosePasswordPersistence(true) }
+        if scenario == "auth-otp" { panel.selectAuthentication(.oneTimePassword) }
+    }
 
     var bounds: [String: CGRect] = [:]
     let root = VPNPanelView(panel: panel, close: {})
@@ -196,7 +205,10 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
     case "credential-settings", "credential-resource": required += ["vpnCredential", "vpnCredentialCancel", "vpnCredentialSubmit", "cancelLabel", "submitLabel"]
     case "import": required += ["vpnImport"]
     case "resource": required += ["vpnResourceSave"]
-    case "auth": required += ["vpnAuthenticationSave"]
+    case "auth", "auth-save": required += ["vpnAuthenticationSave", "vpnSavePassword"]
+    case "auth-otp":
+        required += ["vpnAuthenticationSave"]
+        precondition(bounds["vpnSavePassword"] == nil, "OTP offered password saving")
     default: required += ["vpnReplaceProfile", "vpnAddResource", "vpnRemove", "vpnSettingsDone"]
     }
     for name in required {
@@ -251,7 +263,7 @@ for scenario in ["import", "settings0", "settings3", "settings18", "resource", "
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count(': vpnBack='), 8, result.stdout)
+            self.assertEqual(result.stdout.count(': vpnBack='), 10, result.stdout)
 
 
 if __name__ == '__main__':

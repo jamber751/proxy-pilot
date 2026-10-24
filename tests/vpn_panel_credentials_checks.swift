@@ -88,15 +88,41 @@ private final class PromptSession: VPNLiveSession {
         try config.setProfile(name: profile.name)
         try config.saveResource(VPNResource(name: "Synthetic", address: "10.20.0.0/16"))
         let editingAuthentication = a[1].hasPrefix("auth-")
-        let staticPassword = editingAuthentication || a[1] == "password-consent"
-        let hasConsent = staticPassword && !a[1].hasSuffix("default")
+        let testingConsent = a[1].hasPrefix("consent-")
+        let staticPassword = editingAuthentication || testingConsent || a[1] == "password-consent"
+        let hasConsent = testingConsent ? a[1] == "consent-revoke" : staticPassword && !a[1].hasSuffix("default")
         try config.setAuthentication(VPNAuthentication(mode: staticPassword ? .password : .oneTimePassword,
             login: "employee", credentialPersistence: hasConsent ? .keychain : .none))
         _ = try store.save(config, importing: profile, expectedRevision: nil)
         let configuration = VPNModel(store: store); try configuration.load()
         let session = PromptSession()
-        let controller = VPNLiveController(store: store, openSession: { session })
+        let cache = testingConsent ? VPNPasswordPersistenceCoordinator(store: store,
+            available: a[1] != "consent-unavailable") : nil
+        let controller = VPNLiveController(store: store, passwordPersistence: cache, openSession: { session })
         let panel = VPNPanelModel(configuration: configuration, controller: controller)
+        if testingConsent {
+            panel.settings = true; panel.beginAuthentication()
+            try require(!panel.passwordPersistenceSelected || hasConsent, "save was enabled by default")
+            panel.choosePasswordPersistence(a[1] != "consent-revoke")
+            switch a[1] {
+            case "consent-cancel": panel.cancelAuthentication()
+            case "consent-login": panel.login = "another-employee"
+            case "consent-case": panel.login = "Employee"
+            case "consent-whitespace": panel.login = "  employee  "
+            case "consent-otp": panel.selectAuthentication(.oneTimePassword)
+            default: break
+            }
+            if a[1] == "consent-cancel" { panel.finishSettings() } else { panel.saveAuthentication() }
+            try require(panel.message.isEmpty, "explicit save edit failed")
+            let saved = try store.load()!
+            let expectsConsent = a[1] == "consent-opt-in" || a[1] == "consent-whitespace"
+            let expectedPersistence: VPNCredentialPersistence = expectsConsent ? .keychain : .none
+            try require(saved.saved.configuration.authentication?.credentialPersistence == expectedPersistence,
+                        "save consent crossed login/mode/cancel/capability boundary")
+            try require(saved.passwordLedger.active == nil && saved.passwordLedger.pendingDeletion.isEmpty,
+                        "settings edit created a password grant or credential write")
+            print("credential presentation flow passed"); return
+        }
         if editingAuthentication {
             let previous = configuration.configuration.authentication
             panel.settings = true
@@ -141,8 +167,21 @@ private final class PromptSession: VPNLiveSession {
         let firstID = controller.credentialPromptIdentifier
         panel.secret = "synthetic draft"
         switch a[1] {
+        case "stale-actions":
+            panel.cancelCredential(expectedPromptIdentifier: firstID); try wait(panel)
+            panel.toggle(); try wait(panel)
+            let current = panel.credentialPromptIdentifier
+            try require(current != nil && current != firstID, "replacement prompt missing")
+            panel.secret = "new synthetic draft"
+            panel.submitCredential(expectedPromptIdentifier: firstID)
+            panel.cancelCredential(expectedPromptIdentifier: firstID)
+            panel.submitCredential(expectedPromptIdentifier: nil)
+            try require(!panel.working && panel.secret == "new synthetic draft" && session.submissions == 0 && !session.cancelled,
+                        "stale UI action submitted/cancelled or erased the new prompt")
+            panel.submitCredential(expectedPromptIdentifier: current); try wait(panel)
+            try require(panel.connected && session.submissions == 1, "current prompt failed positive control")
         case "cancel-new-attempt":
-            panel.cancelCredential()
+            panel.cancelCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier)
             try require(panel.secret.isEmpty, "cancel retained field before asynchronous work")
             try wait(panel)
             try require(session.cancelled && panel.liveState == .off, "cancel did not finish")
@@ -156,7 +195,7 @@ private final class PromptSession: VPNLiveSession {
         case "busy-preserves-draft":
             panel.refresh()
             try require(panel.working, "refresh did not hold busy state")
-            panel.submitCredential(); panel.cancelCredential()
+            panel.submitCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier); panel.cancelCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier)
             try require(panel.secret == "synthetic draft" && !session.cancelled && session.submissions == 0,
                         "busy action discarded draft or invoked a credential operation")
             try wait(panel)
@@ -179,7 +218,7 @@ private final class PromptSession: VPNLiveSession {
             // A refresh observes a new request, but does not transfer its held
             // transport ownership. This proves presentation clearing only;
             // submitting a newly entered secret may require reconnecting.
-            panel.submitCredential()
+            panel.submitCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier)
             try require(session.submissions == 0, "old prompt draft was submitted to a new request")
         case "prompt-disappeared":
             session.waiting = false
@@ -208,7 +247,7 @@ private final class PromptSession: VPNLiveSession {
                             "transient clearing changed password persistence consent")
             }
         case "submit":
-            panel.submitCredential()
+            panel.submitCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier)
             try require(panel.secret.isEmpty, "submit retained field")
             try wait(panel)
             try require(panel.connected && controller.credentialPromptIdentifier == nil, "completed prompt retained identity")

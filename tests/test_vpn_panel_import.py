@@ -20,7 +20,7 @@ class VPNPanelImportTests(unittest.TestCase):
         adapter = folder / 'VPNPanelModel.swift'
         adapter.write_text((ROOT / 'app/VPNPanel.swift').read_text().split('\nstruct VPNPanelView:', 1)[0])
         sources = [ROOT / name for name in ('app/VPNConfiguration.swift', 'app/VPNProfileImporter.swift',
-            'app/VPNStore.swift', 'app/VPNModel.swift', 'app/VPNLiveController.swift',
+            'app/VPNStore.swift', 'app/VPNModel.swift', 'app/VPNPasswordPersistenceCoordinator.swift', 'app/VPNLiveController.swift',
             'app/vpn-helper/VPNHelperProtocol.swift', 'app/vpn-helper/VPNApplicationSpec.swift',
             'app/vpn-helper/VPNTunnelStateStore.swift')]
         cls.binary = folder / 'checks'

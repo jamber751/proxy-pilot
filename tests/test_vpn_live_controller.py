@@ -22,7 +22,7 @@ class VPNLiveControllerTests(unittest.TestCase):
             ROOT / 'app/VPNStore.swift', ROOT / 'app/vpn-helper/VPNHelperProtocol.swift',
             ROOT / 'app/vpn-helper/VPNApplicationSpec.swift',
             ROOT / 'app/vpn-helper/VPNTunnelStateStore.swift',
-            ROOT / 'app/VPNLiveController.swift', ROOT / 'tests/vpn_live_controller_checks.swift']
+            ROOT / 'app/VPNPasswordPersistenceCoordinator.swift', ROOT / 'app/VPNLiveController.swift', ROOT / 'tests/vpn_live_controller_checks.swift']
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
         result = subprocess.run(['swiftc', '-D', 'VPN_LIVE_CONTROLLER_TESTING',
             '-target', f'{arch}-apple-macosx11.0', *map(str, sources), '-o', str(cls.binary)],
@@ -45,6 +45,36 @@ class VPNLiveControllerTests(unittest.TestCase):
     def test_cancel_persists_off(self): self.run_case('cancel')
     def test_disconnect_proves_cleanup_before_persisting_off(self): self.run_case('disconnect')
     def test_domain_intent_never_opens_helper(self): self.run_case('unsupported')
+
+    def test_manual_save_is_bound_to_verified_connection_and_not_helper_inout_buffer(self): self.run_case('cache-manual')
+    def test_manual_candidate_survives_exact_private_key_sequence(self): self.run_case('cache-private-sequence')
+    def test_private_key_prompt_from_different_attempt_wipes_candidate(self): self.run_case('cache-private-attempt-changed')
+    def test_failed_status_refresh_wipes_candidate(self): self.run_case('cache-refresh-failed')
+    def test_connected_status_refresh_cannot_save_candidate(self): self.run_case('cache-refresh-connected')
+    def test_new_vpn_password_prompt_replaces_candidate(self): self.run_case('cache-new-vpn')
+    def test_cancel_wipes_candidate(self): self.run_case('cache-cancel-candidate')
+    def test_new_session_wipes_candidate(self): self.run_case('cache-reconnect')
+    def test_otp_never_calls_cache(self): self.run_case('cache-otp')
+    def test_private_key_never_calls_cache(self): self.run_case('cache-key-only')
+    def test_unavailable_default_does_not_capture_or_prepare(self): self.run_case('cache-inert')
+    def test_cache_add_unknown_keeps_connected_vpn_and_pending_obligation(self): self.run_case('cache-add-unknown')
+    def test_wrong_attempt_cannot_save(self): self.run_case('cache-bad-attempt')
+    def test_unproven_routes_cannot_save(self): self.run_case('cache-unproven')
+    def test_failed_helper_cannot_save(self): self.run_case('cache-failed')
+    def test_stale_prompt_cannot_submit(self): self.run_case('cache-stale-prompt')
+    def test_cached_success_never_adds_again(self): self.run_case('cache-auto')
+    def test_failed_cached_submission_is_suppressed_on_reconnect_for_manual_recovery(self): self.run_case('cache-auto-failed')
+    def test_cached_failure_falls_back_to_manual(self): self.run_case('cache-read-fallback')
+    def test_cached_credential_retried_at_most_once_per_attempt(self): self.run_case('cache-auto-reprompt')
+    def test_revocation_after_cache_read_discards_result(self): self.run_case('cache-read-revoked')
+    def test_new_verified_save_precedes_old_claimed_add_and_stale_callback_is_refused(self): self.run_case('cache-claim-new-first')
+    def test_old_claimed_add_then_new_verified_save_keeps_new_password_and_old_obligation(self): self.run_case('cache-claim-old-first')
+    def test_new_connection_invalidates_older_queued_password(self): self.run_case('cache-queued-replaced')
+    def test_disconnect_invalidates_queued_password(self): self.run_case('cache-queued-disconnect')
+    def test_worker_prepare_holds_neither_store_nor_cancellation_lock(self): self.run_case('cache-prepare-cancel')
+    def test_queued_save_revalidates_fresh_store(self):
+        for change in ('revoke', 'login', 'mode', 'profile', 'grant'):
+            with self.subTest(change=change): self.run_case('cache-stale-' + change)
 
 
 if __name__ == '__main__':

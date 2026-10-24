@@ -23,7 +23,7 @@ class VPNPanelRemovalTests(unittest.TestCase):
         source = folder / 'VPNPanel.swift'; source.write_text(panel)
         sources = [ROOT / name for name in ('app/Controls.swift', 'app/VPNConfiguration.swift',
             'app/VPNProfileImporter.swift', 'app/VPNStore.swift', 'app/VPNModel.swift',
-            'app/VPNLiveController.swift', 'app/vpn-helper/VPNHelperProtocol.swift',
+            'app/VPNPasswordPersistenceCoordinator.swift', 'app/VPNLiveController.swift', 'app/vpn-helper/VPNHelperProtocol.swift',
             'app/vpn-helper/VPNApplicationSpec.swift', 'app/vpn-helper/VPNTunnelStateStore.swift')]
         cls.binary = folder / 'checks'
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'

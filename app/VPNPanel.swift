@@ -16,6 +16,11 @@ final class VPNPanelModel: ObservableObject {
     @Published var editingResource = false
     @Published var editingAuthentication = false
     @Published var authenticationChoice: VPNAuthenticationMode?
+    private struct PasswordPersistenceChoice {
+        let login: String
+        let enabled: Bool
+    }
+    @Published private var passwordPersistenceChoice: PasswordPersistenceChoice?
     @Published var login = ""
     @Published var resourceName = ""
     @Published var resourceAddress = ""
@@ -70,6 +75,20 @@ final class VPNPanelModel: ObservableObject {
 
     var ready: Bool { configuration.connectionAvailability == .ready }
     var configured: Bool { configuration.profile != nil }
+    var passwordPersistenceAvailable: Bool { controller?.passwordPersistenceAvailable ?? false }
+    var passwordPersistenceSelected: Bool {
+        guard (authenticationChoice ?? configuration.configuration.authentication?.mode) == .password,
+              let draft = try? VPNAuthentication(mode: .password, login: login), let login = draft.login else { return false }
+        if let choice = passwordPersistenceChoice, choice.login == login { return choice.enabled }
+        guard let saved = configuration.configuration.authentication,
+              saved.mode == .password, saved.login == login else { return false }
+        return saved.credentialPersistence == .keychain
+    }
+    func choosePasswordPersistence(_ enabled: Bool) {
+        guard passwordPersistenceAvailable, authenticationChoice == .password,
+              let draft = try? VPNAuthentication(mode: .password, login: login), let login = draft.login else { return }
+        passwordPersistenceChoice = PasswordPersistenceChoice(login: login, enabled: enabled)
+    }
     var connected: Bool { liveState == .connected }
     var canImportProfile: Bool {
         !working && !connected && !needsCredential && liveState != .connecting
@@ -158,14 +177,16 @@ final class VPNPanelModel: ObservableObject {
         let shouldDisconnect = connected
         run { controller in shouldDisconnect ? controller.disconnect() : controller.connect() }
     }
-    func submitCredential() {
-        guard !working, needsCredential, !secret.isEmpty else { return }
+    func submitCredential(expectedPromptIdentifier: UUID?) {
+        guard !working, needsCredential, let prompt = credentialPromptIdentifier,
+              expectedPromptIdentifier == prompt, !secret.isEmpty else { return }
         var bytes = Data(secret.utf8)
         secret = ""
-        run { $0.submitCredential(&bytes) }
+        run { $0.submitCredential(&bytes, expectedPromptIdentifier: prompt) }
     }
-    func cancelCredential() {
-        guard !working, needsCredential else { return }
+    func cancelCredential(expectedPromptIdentifier: UUID?) {
+        guard !working, needsCredential, let prompt = credentialPromptIdentifier,
+              expectedPromptIdentifier == prompt else { return }
         dismissCredentialPrompt()
         run { $0.cancelCredential() }
     }
@@ -257,12 +278,14 @@ final class VPNPanelModel: ObservableObject {
     }
 
     func beginAuthentication() {
+        passwordPersistenceChoice = nil
         login = configuration.configuration.authentication?.login ?? login
         authenticationChoice = configuration.configuration.authentication?.mode
         editingAuthentication = true; message = ""
     }
 
     func cancelAuthentication() {
+        passwordPersistenceChoice = nil
         login = configuration.configuration.authentication?.login ?? ""
         authenticationChoice = configuration.configuration.authentication?.mode
         editingAuthentication = false; message = ""
@@ -275,16 +298,19 @@ final class VPNPanelModel: ObservableObject {
         }
         do {
             try persistAuthenticationChoice(mode)
+            passwordPersistenceChoice = nil
             editingAuthentication = false; message = ""
         } catch { message = error.localizedDescription }
     }
 
     private func persistAuthenticationChoice(_ mode: VPNAuthenticationMode) throws {
-        // Use the model's normalization/validation, including case-sensitive
-        // login identity. An unchanged edit preserves consent, never creates it.
+        // A choice belongs to the normalized, case-sensitive login shown when
+        // it was made. Editing another login never inherits that consent.
         let draft = try VPNAuthentication(mode: mode, login: mode == .certificate ? nil : login)
         var persistence: VPNCredentialPersistence = .none
-        if let previous = configuration.configuration.authentication,
+        if passwordPersistenceAvailable, draft.mode == .password {
+            persistence = passwordPersistenceSelected ? .keychain : .none
+        } else if let previous = configuration.configuration.authentication,
            draft.mode == .password, previous.mode == draft.mode, previous.login == draft.login {
             persistence = previous.credentialPersistence
         }
@@ -423,6 +449,7 @@ final class VPNPanelModel: ObservableObject {
         guard requireImportAvailability() else { return }
         do {
             try configuration.importProfile(files: urls)
+            passwordPersistenceChoice = nil
             login = configuration.profile?.suggestedLogin ?? ""
             authenticationChoice = nil
             if configuration.profile?.requiresCredentials == false {
@@ -574,7 +601,7 @@ struct VPNPanelView: View {
 
     private func goBack() {
         guard !panel.working else { return }
-        if panel.needsCredential { panel.cancelCredential() }
+        if panel.needsCredential { panel.cancelCredential(expectedPromptIdentifier: panel.credentialPromptIdentifier) }
         else if panel.editingResource { panel.cancelResource() }
         else if panel.editingAuthentication { panel.cancelAuthentication() }
         else if panel.settings { panel.settings = false }
@@ -586,14 +613,15 @@ struct VPNPanelView: View {
         return VStack(spacing: 9) {
             VPNSecretField(text: $panel.secret, prompt: panel.credentialPromptIdentifier,
                            enabled: !panel.working, label: panel.statusTitle,
-                           submit: panel.submitCredential, cancel: panel.cancelCredential)
+                           submit: { panel.submitCredential(expectedPromptIdentifier: displayedPrompt) },
+                           cancel: { panel.cancelCredential(expectedPromptIdentifier: displayedPrompt) })
                 .frame(height: 28).accessibilityIdentifier("vpnCredential")
             HStack(spacing: 8) {
-                Button(action: panel.cancelCredential) {
+                Button(action: { panel.cancelCredential(expectedPromptIdentifier: displayedPrompt) }) {
                     Text("Отмена").frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
                 }.buttonStyle(PilotButtonStyle(cornerRadius: 8))
                     .accessibilityIdentifier("vpnCredentialCancel").keyboardShortcut(.cancelAction)
-                Button(action: panel.submitCredential) {
+                Button(action: { panel.submitCredential(expectedPromptIdentifier: displayedPrompt) }) {
                     Text("Продолжить").frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
                 }.buttonStyle(PilotButtonStyle(cornerRadius: 8))
                     .accessibilityIdentifier("vpnCredentialSubmit").keyboardShortcut(.defaultAction)
@@ -629,7 +657,7 @@ struct VPNPanelView: View {
                     .multilineTextAlignment(.center).padding(.top, 12)
             }
             Spacer()
-            Text("Файл хранится только на этом Mac. Пароли и коды не сохраняются.")
+            Text("Файл хранится только на этом Mac. Одноразовые коды не сохраняются.")
                 .font(.system(size: 10)).foregroundColor(.secondary).multilineTextAlignment(.center)
                 .padding(.bottom, 16)
         }
@@ -724,7 +752,17 @@ struct VPNPanelView: View {
                     authButton("Пароль", .password)
                     authButton("Код / 2FA", .oneTimePassword)
                 }
-                Text("Секрет вводится при каждом подключении и не сохраняется.")
+                if panel.authenticationChoice == .password && panel.passwordPersistenceAvailable {
+                    Toggle("Сохранять пароль на этом Mac", isOn: Binding(
+                        get: { panel.passwordPersistenceSelected },
+                        set: { panel.choosePasswordPersistence($0) }))
+                        .toggleStyle(PilotCheckboxStyle(minimumHeight: 36))
+                        .font(.system(size: 11))
+                        .accessibilityIdentifier("vpnSavePassword")
+                }
+                Text(panel.authenticationChoice == .oneTimePassword ? "Одноразовый код не сохраняется." :
+                     panel.passwordPersistenceSelected && panel.passwordPersistenceAvailable ?
+                     "Пароль сохранится после успешного подключения." : "Пароль вводится при подключении.")
                     .font(.system(size: 9)).foregroundColor(.secondary)
             } else {
                 HStack(spacing: 9) {
