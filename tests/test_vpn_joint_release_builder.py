@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import subprocess
+import tempfile
 import unittest
 
 
@@ -10,6 +11,19 @@ SCRIPT = ROOT / "app/build-joint-release.sh"
 
 
 class VPNJointReleaseBuilderTests(unittest.TestCase):
+    def test_prebuilt_zip_app_engine_is_executable_after_root_install(self):
+        line = next(line for line in SCRIPT.read_text().splitlines()
+                    if line.startswith('/bin/chmod ') and 'Resources/bin/gost' in line)
+        with tempfile.TemporaryDirectory(prefix='pp-release-mode-') as directory:
+            engine = Path(directory) / 'app/ProxyPilot.app/Contents/Resources/bin/gost'
+            engine.parent.mkdir(parents=True)
+            engine.write_bytes(b'fixture engine bytes')
+            engine.chmod(0o700)
+            subprocess.run(['zsh', '-f', '-c', line],
+                           env=dict(os.environ, WORK=directory), check=True, timeout=5)
+            self.assertEqual(engine.stat().st_mode & 0o7777, 0o755)
+            self.assertEqual(engine.read_bytes(), b'fixture engine bytes')
+
     def test_shell_syntax_and_no_external_mutation(self):
         result = subprocess.run(["zsh", "-n", str(SCRIPT)],
                                 capture_output=True, text=True)

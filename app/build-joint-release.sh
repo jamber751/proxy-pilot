@@ -69,7 +69,7 @@ GOST_ARCHES=$(/usr/bin/lipo -archs "$UNIVERSAL_GOST")
 }
 /bin/cp "$UNIVERSAL_GOST" \
   "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
-/bin/chmod 700 "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
+/bin/chmod 755 "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
 /usr/bin/codesign --force --sign - --options runtime,hard,kill \
   --identifier kz.documentolog.proxypilot "$WORK/app/ProxyPilot.app"
 /usr/bin/codesign --verify --deep --strict "$WORK/app/ProxyPilot.app"
