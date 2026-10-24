@@ -28,10 +28,10 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;800 isolated checks ARM/Intel с новым lock-order fix; исходные5 Installer cases прошли ARM | Полный7-case Installer gate/обычный update с исправлением ещё выполняется; macOS11 |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;800 isolated checks ARM/Intel; исходные5 Installer cases теперь прошли на обеих архитектурах | Обычный update после repair отказал на обеих архитектурах; исправления Inbox/READY подготовлены, новый полный gate ещё не пройден; macOS11 |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
-| 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение 137 с OTP и проверка выбранных IP |
-| 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay | Connected overlay 137, legacy CLI, domain/split-DNS backend |
+| 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
+| 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
 | 6. Интерфейс | Installed settings137;140 isolated core/model/ledger/UI checks суммарно на ARM/Intel, OTP/drop, credential focus и список1/3/18/100 | Реальный Keychain adapter и opt-in UI, диагностика, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты | Полный acceptance, английские notes, публичная поставка |
@@ -5567,3 +5567,75 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Будущий backend должен захватывать actual returned item/owner locator и
   подтверждать positive deletion exact item. Настоящий adapter остаётся unwired;
   schema3 reference ещё не содержит locator. На host Keychain API не вызывались.
+
+### Продолжение 1.5ey — ordinary update выявил ошибки приёма и уведомления
+
+- [x] Run40103531276 (`ba2802f`) завершил исходные5 real Installer scenarios
+  успешно на ARM и Intel, включая idempotent reinstall. Полный gate FAILED:
+  owner C→D Off на обеих архитектурах остался на141/C без service journals,
+  slots и destination stage; owner On skipped. Submit ветвь ready/indeterminate
+  в этом прогоне ещё не печаталась, поэтому принятие D не доказано. Логи:
+  `/tmp/pp-system-{arm,intel}-40103531276.log`.
+- [x] Найден конкретный source bug: initial Inbox source traversal требовал UID
+  брокера/root от вложенных папок ordinary пользователя. `35e3f35` разделяет
+  untrusted source и broker-owned private snapshots; private UID gate усилен
+  для файлов/ссылок, не снят. Добавлены5 настоящих cross-UID root cases до дорогой
+  CI-сборки; локально только compile, actual root execution ещё впереди.
+- [x] Независимо подтверждён cross-volume gap: clone-only Inbox не поддерживал
+  EXDEV/ENOTSUP, тогда как companion приходит из readonly DMG. `4132a52` добавляет
+  bounded descriptor copy, source/top-bound private scratch, atomic publication,
+  полные до/после fingerprints и отказ от SUID/GID. Процессовые crash/restart
+  случаи пройдены локально; actual readonly sealed-app DMG fixture добавлен
+  только для guarded CI, локального mount/root не было.
+- [x] `77e8eaf` разрешает безопасное удаление own interrupted scratch без source
+  material, сохраняя строгий published validator. Неполные relative app links
+  разрешены только для removal без следования по ним. Unicode-lookalike hash
+  names сначала дали RED, затем strict64 ASCII classifier используется совместно
+  Inbox/StateRemoval.27 tests passed,1 optional signed-app case skipped; production
+  ARM/Intel compile прошёл. `e4ead82` отдельно исправляет failed-init double-close:
+ 21 copy/lifecycle checks passed, regression сначала RED.
+- [x] `d62d85f`: lost READY notification больше не отменяет durable authorized
+  handoff. Observer nonthrowing, daemon делает одну best-effort delivery attempt;
+  auth/preparation/status/handoff errors не подавляются.20 contract/source checks
+  passed, production helper arm64 typecheck passed. Это ещё не actual lost-reply
+  VM acceptance. Закрытый peer также выявил настоящий SIGPIPE в production send
+  (ordinary child RED exit13); отдельное socket-only исправление и восьмой VM
+  сценарий разрабатываются до нового полного прогона.
+- [ ] Root graph ещё не заморожен для нового полного gate. Genuine C-v2
+  helper/native и unsigned manifest/drafts теперь superseded; их нельзя подписать
+  как результат этих исправлений. Нужны новый helper/native, обновлённый frontend
+  и заново полученные manifest/edge/rescue drafts после подходящей приёмки.
+
+### Продолжение 1.5ez — bridge160, cache prerequisites и точные границы CI
+
+- [x] Run40107242907 (`c1cad20`) success:160 checks,80 на архитектуру, без skips.
+  Managed-v2 runtime отделяет YAML/process metadata/log от old0518754 writer.
+  Реальный старый writer/stop не трогает новый listener; positive control
+  подтверждает, что old scanner действительно находит собственный legacy мост.
+  Проверены spaces/metacharacters, off/direct/stop, чужой port/process, inode
+  replacement и own launch ledger. Первый unrecorded legacy с уже unlinked
+  executable не принимается: остановка до первой замены остаётся delivery gate.
+- [x] Run40106362424 (`11c7452`) success ARM/Intel: настоящий getaddrinfo A/AAAA,
+  собственные UDP packets, TCP fallback после TC, owner-session cleanup и закрытие
+  sockets. Только random .test и loopback, не host/corporate DNS. Это НЕ utun pin,
+  routing, no-leak, fail-closed, configd/WARP или готовый production DNS backend.
+- [x] Worker core `2b92c17` реализует exact same-executable/UID/birth/inode/code
+  authentication, one-shot private IPC и bounded parent callback; child может
+  завершить собственную запись после смерти родителя. Реального backend тогда
+  не было. Run40107242850: ARM87 passed, Intel86 passed+1 observer contention
+  error; этот прогон не green. `6606ff3` исправляет только observer/own-child
+  cleanup, не повторяет Add и не продлевает budgets;18 local worker cases passed.
+- [x] `02cfea9`: schema4 требует captured item/backend locator до read eligibility;
+  only definitely-no-mutation permits noItem, NotFound не подтверждает delete.
+  v2 wire carries exact locator, late completion не меняет новый grant, fixed
+  role/version/bounds сохранены.26 ledger +29 actual hardened fake-child cases
+  passed; minimal no-TESTING production module ARM/Intel compile passed.
+- [ ] Security backend в новом файле разрабатывается отдельно; current factory
+  остаётся unavailable before GO. Настоящий Keychain backend, per-mode opt-in,
+  verified-connected save и app wiring ещё не приняты. Ни UI140 старой schema3,
+  ни fake backend cases не доказывают новую feature. Подготовленный private-only
+  GHA backend fixture ещё не запускался; host Keychain API не вызывались.
+- [x] Не относящиеся к root graph worker/DNS/namespace tests исключены из broad
+  ownership trigger (`26ac9b0`): есть dedicated CI. Старые queued duplicate runs
+  40106362358/40107242848 отменены явно; не засчитываются как успешные. Следующий
+  root graph требует своего нового grouped/System gate.
