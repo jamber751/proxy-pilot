@@ -151,9 +151,15 @@ private final class Driver {
                 try check(fixture.store.load()!.passwordLedger.pendingDeletion.count == 1)
             }
         #if VPN_PASSWORD_CLEANUP_TESTING
-        case "positive-busy", "positive-busy-held", "positive-malformed":
+        case "positive-busy", "positive-busy-held", "positive-malformed", "positive-expire", "positive-oversleep":
             let slot = try fixture.slot(); try fixture.queue([slot])
             var held: Int32 = -1, busyReads = 0
+            let baseline: UInt64 = 1_000_000_000
+            var logicalNow = baseline, clockReads = 0
+            VPNPasswordCleanupCoordinator.testObservationNow = {
+                clockReads += 1
+                return mode == "positive-oversleep" && clockReads >= 3 ? baseline + 60_000_000 : logicalNow
+            }
             driver.after = { _ in
                 if mode == "positive-malformed" {
                     try Data("invalid-store".utf8).write(to: fixture.root.appendingPathComponent("state.json"))
@@ -164,12 +170,17 @@ private final class Driver {
             }
             VPNPasswordCleanupCoordinator.testAfterBusyObservation = {
                 busyReads += 1
-                if mode == "positive-busy", held >= 0 {
+                if ["positive-busy", "positive-expire", "positive-oversleep"].contains(mode), held >= 0 {
                     flock(held, LOCK_UN); close(held); held = -1
+                    if mode == "positive-expire" { logicalNow = baseline + 60_000_000 }
+                    if mode == "positive-busy" {
+                        Thread.sleep(forTimeInterval: 0.06) // Descheduling does not define this positive clock scenario.
+                    }
                 }
             }
             defer {
                 VPNPasswordCleanupCoordinator.testAfterBusyObservation = nil
+                VPNPasswordCleanupCoordinator.testObservationNow = nil
                 if held >= 0 { flock(held, LOCK_UN); close(held) }
             }
             run()
@@ -177,7 +188,10 @@ private final class Driver {
             if mode == "positive-busy" {
                 try check(busyReads == 1 && reports[0].deleted == 1 && !reports[0].stoppedOnUnknown)
             } else if mode == "positive-busy-held" {
-                try check((1...3).contains(busyReads) && reports[0].deleted == 0 && reports[0].stoppedOnUnknown)
+                try check(busyReads == 3 && reports[0].deleted == 0 && reports[0].stoppedOnUnknown)
+            } else if mode == "positive-expire" || mode == "positive-oversleep" {
+                try check(busyReads == 1 && reports[0].deleted == 0 && reports[0].stoppedOnUnknown
+                    && clockReads == (mode == "positive-expire" ? 2 : 3))
             } else {
                 try check(busyReads == 0 && reports[0].deleted == 0 && reports[0].stoppedOnUnknown)
             }

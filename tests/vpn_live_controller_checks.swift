@@ -653,18 +653,30 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
             }
             if mode == "feedback-capture-unproven" { live.rejectSubmission = true }
         }
-        if mode == "feedback-saved-busy" {
+        var logicalNow: UInt64 = 1_000_000_000, observationClockReads = 0, savedBusyReads = 0
+        if ["feedback-saved-busy", "feedback-saved-expire", "feedback-saved-oversleep"].contains(mode) {
+            VPNPasswordPersistenceCoordinator.testObservationNow = {
+                observationClockReads += 1
+                return mode == "feedback-saved-oversleep" && observationClockReads >= 3
+                    ? 1_060_000_000 : logicalNow
+            }
             driver.afterAdd = { _ in
                 heldFD = open(store.directory.appendingPathComponent("state.lock").path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
                 guard heldFD >= 0, flock(heldFD, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "saved-lock", code: 32) }
             }
             VPNPasswordPersistenceCoordinator.testAfterBusySavedObservation = {
+                savedBusyReads += 1
                 flock(heldFD, LOCK_UN); close(heldFD); heldFD = -1
+                if mode == "feedback-saved-expire" { logicalNow = 1_060_000_000 }
+                if mode == "feedback-saved-busy" {
+                    Thread.sleep(forTimeInterval: 0.06) // Positive scenario's logical clock stays within budget.
+                }
             }
         }
         defer {
             controller.testAfterCredentialPreflight = nil
             VPNPasswordPersistenceCoordinator.testAfterBusySavedObservation = nil
+            VPNPasswordPersistenceCoordinator.testObservationNow = nil
             if heldFD >= 0 { flock(heldFD, LOCK_UN); close(heldFD) }
         }
         var manual = Data("manual-static".utf8)
@@ -727,8 +739,13 @@ final class FakePasswordSession: VPNPasswordPersistenceSession {
             try require(events.map(\.phase) == [.needsConfirmation] && driver.adds == 0
                 && emptyCapture?.isCleared == true && store.load()!.passwordLedger.active == nil,
                 "empty capture marker created a grant or skipped confirmation")
-        } else if ["feedback-prepare-nil", "feedback-prepare-throw", "feedback-unknown", "feedback-no-io", "feedback-ack-failed"].contains(mode) {
+        } else if ["feedback-prepare-nil", "feedback-prepare-throw", "feedback-unknown", "feedback-no-io", "feedback-ack-failed", "feedback-saved-expire", "feedback-saved-oversleep"].contains(mode) {
             try require(events.map(\.phase) == [.saving, .needsConfirmation], "failed save falsely reported success")
+            if mode == "feedback-saved-expire" || mode == "feedback-saved-oversleep" {
+                try require(savedBusyReads == 1 && driver.adds == 1
+                    && observationClockReads == (mode == "feedback-saved-expire" ? 2 : 3),
+                    "expired observation retried a mutation or reset its budget")
+            }
             if mode == "feedback-ack-failed" {
                 try require(try store.load()!.passwordLedger.active?.writeState == .settled,
                             "post-rename acknowledgment failure was not exercised")

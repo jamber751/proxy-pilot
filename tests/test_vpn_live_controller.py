@@ -78,6 +78,8 @@ class VPNLiveControllerTests(unittest.TestCase):
 
     def test_feedback_saved_requires_positive_add_and_store_ack(self): self.run_case('feedback-saved')
     def test_feedback_positive_ack_tolerates_brief_late_store_lock(self): self.run_case('feedback-saved-busy')
+    def test_feedback_observation_expired_before_retry_never_reports_saved(self): self.run_case('feedback-saved-expire')
+    def test_feedback_observation_oversleep_never_resets_budget_or_readds(self): self.run_case('feedback-saved-oversleep')
     def test_feedback_prepare_nil_is_confirmation_without_vpn_failure(self): self.run_case('feedback-prepare-nil')
     def test_feedback_superseded_during_prepare_invalidates_old_saving_event(self): self.run_case('feedback-prepare-superseded')
     def test_feedback_prepare_throw_is_confirmation_without_vpn_failure(self): self.run_case('feedback-prepare-throw')

@@ -177,15 +177,21 @@ final class VPNPasswordCleanupCoordinator {
     /// exact settlement can briefly contend with our read-only observation.
     /// Retry only this observation: one monotonic budget, at most three reads,
     /// no second GO, preparation, mutation or automatically scheduled pass.
+    private static func observationNow() -> UInt64 {
+        #if VPN_PASSWORD_CLEANUP_TESTING
+        if let clock = testObservationNow { return clock() }
+        #endif
+        return DispatchTime.now().uptimeNanoseconds
+    }
     private func observePositiveRemoval(_ reference: VPNPasswordReference) throws -> Bool {
-        let deadline = DispatchTime.now().uptimeNanoseconds + 50_000_000
+        let deadline = Self.observationNow() + 50_000_000
         for attempt in 0..<3 {
-            if attempt > 0, DispatchTime.now().uptimeNanoseconds >= deadline {
+            if attempt > 0, Self.observationNow() >= deadline {
                 throw VPNValidationError.storageUnavailable
             }
             do { return try isRemoved(reference) }
             catch VPNValidationError.storageUnavailable {
-                let now = DispatchTime.now().uptimeNanoseconds
+                let now = Self.observationNow()
                 guard attempt < 2, now < deadline, deadline - now >= 10_000_000 else {
                     throw VPNValidationError.storageUnavailable
                 }
@@ -196,6 +202,7 @@ final class VPNPasswordCleanupCoordinator {
     }
 
     #if VPN_PASSWORD_CLEANUP_TESTING
+    static var testObservationNow: (() -> UInt64)?
     static var testAfterBusyObservation: (() -> Void)?
     #endif
     private func isRemoved(_ reference: VPNPasswordReference) throws -> Bool {

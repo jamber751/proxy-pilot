@@ -274,12 +274,18 @@ final class VPNPasswordPersistenceCoordinator {
         catch { /* Unknown cache storage needs confirmation, not VPN failure. */ }
         publish(.needsConfirmation, application: application, intent: intent)
     }
+    private static func observationNow() -> UInt64 {
+        #if VPN_LIVE_CONTROLLER_TESTING
+        if let clock = testObservationNow { return clock() }
+        #endif
+        return DispatchTime.now().uptimeNanoseconds
+    }
     private enum AddedObservation { case acknowledged, stale, unconfirmed }
     private func observeAdded(_ reference: VPNPasswordReference, locator: VPNPasswordItemLocator,
                               application: VPNApplicationSpec) throws -> AddedObservation {
-        let deadline = DispatchTime.now().uptimeNanoseconds + 50_000_000
+        let deadline = Self.observationNow() + 50_000_000
         for attempt in 0..<3 {
-            if attempt > 0, DispatchTime.now().uptimeNanoseconds >= deadline { throw VPNValidationError.storageUnavailable }
+            if attempt > 0, Self.observationNow() >= deadline { throw VPNValidationError.storageUnavailable }
             do {
                 let state = try current(application)
                 guard let slot = state.passwordLedger.active, slot.reference == reference else { return .stale }
@@ -289,7 +295,7 @@ final class VPNPasswordPersistenceCoordinator {
                 #if VPN_LIVE_CONTROLLER_TESTING
                 Self.testAfterBusySavedObservation?()
                 #endif
-                let now = DispatchTime.now().uptimeNanoseconds
+                let now = Self.observationNow()
                 guard attempt < 2, now < deadline, deadline - now >= 10_000_000 else { throw VPNValidationError.storageUnavailable }
                 Thread.sleep(forTimeInterval: 0.01)
             }
@@ -297,6 +303,7 @@ final class VPNPasswordPersistenceCoordinator {
         throw VPNValidationError.storageUnavailable
     }
     #if VPN_LIVE_CONTROLLER_TESTING
+    static var testObservationNow: (() -> UInt64)?
     static var testAfterBusySavedObservation: (() -> Void)?
     #endif
 

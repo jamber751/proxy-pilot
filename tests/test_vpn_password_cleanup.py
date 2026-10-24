@@ -33,6 +33,8 @@ class VPNPasswordCleanupTests(unittest.TestCase):
     def test_positive_delete_acknowledges_exact_queue_item(self): self.run_case('positive')
     def test_positive_ack_survives_brief_late_worker_store_contention(self): self.run_case('positive-busy')
     def test_positive_ack_observation_retry_is_bounded_without_another_go(self): self.run_case('positive-busy-held')
+    def test_positive_observation_expired_before_retry_does_not_ack_or_repeat_go(self): self.run_case('positive-expire')
+    def test_positive_observation_oversleep_cannot_reset_budget_or_repeat_go(self): self.run_case('positive-oversleep')
     def test_post_positive_malformed_store_is_not_retried_as_busy(self): self.run_case('positive-malformed')
     def test_not_found_retains_obligation(self): self.run_case('not-found')
     def test_known_unavailable_retains_obligation(self): self.run_case('known-unavailable')
