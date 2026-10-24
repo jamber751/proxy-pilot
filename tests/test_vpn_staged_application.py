@@ -123,6 +123,11 @@ class VPNStagedApplicationTests(unittest.TestCase):
             pins[arch] = next(line[7:] for line in output.splitlines() if line.startswith('CDHash='))
         self.command([str(self.checker), 'inspect-system-installed-update', '/Applications',
                       pins['arm64'], pins['x86_64'], info['CFBundleVersion']])
+        compatibility = [str(self.checker), 'system-installed-executor-compatibility',
+                         '/Applications', pins['arm64'], pins['x86_64'], info['CFBundleVersion']]
+        if info.get('ProxyPilotVPNRootOwnedUpdateExecutor') != '1':
+            compatibility.append('incompatibleExecutor')
+        self.command(compatibility)
         after = installed.stat()
         self.assertEqual((before.st_dev, before.st_ino, before.st_uid, before.st_mtime_ns),
                          (after.st_dev, after.st_ino, after.st_uid, after.st_mtime_ns))
@@ -245,7 +250,8 @@ class VPNStagedApplicationTests(unittest.TestCase):
 
     def test_harness_has_no_install_or_execution_path(self):
         source = (ROOT / 'tests/vpn_staged_application_checks.swift').read_text()
-        self.assertNotIn('/Applications', source); self.assertNotIn('exec', source)
+        self.assertNotIn('/Applications', source)
+        self.assertNotRegex(source, r'\b(?:exec\w*|posix_spawn\w*|system|popen|Process)\s*\(')
 
     @unittest.skipUnless(REAL_CANDIDATE, 'set PROXYPILOT_STAGED_APP_CANDIDATE to an absolute built .app')
     def test_optional_real_built_candidate_copy(self):

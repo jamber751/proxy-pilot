@@ -3,7 +3,7 @@ import Foundation
 import Security
 
 enum VPNStagedApplicationError: Error {
-    case unsafeStorage, invalidBundle, invalidSignature, changed, limitExceeded
+    case unsafeStorage, invalidBundle, invalidSignature, changed, limitExceeded, incompatibleExecutor
 }
 
 /// A static observation of ONE protected staged object. Not installed-app
@@ -130,6 +130,26 @@ enum VPNStagedApplication {
             throw VPNStagedApplicationError.unsafeStorage
         }
         return observed
+    }
+
+    /// A supplies the replacement executor. A valid signature alone does not
+    /// prove that an old executor can handle an Installer-owned source bundle.
+    /// Check its sealed capability before publishing a journal or draining VPN.
+    static func requireUpdateExecutorCompatibility(_ source: VPNStagedApplicationInspection,
+                                                    inApplicationsDirectory parent: Int32) throws {
+        try revalidate(source, inTrustedDirectory: parent)
+        guard source.policy.nodeOwner == 0 else { return }
+        let bundle = openat(parent, bundleName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard bundle >= 0 else { throw VPNStagedApplicationError.unsafeStorage }
+        defer { close(bundle) }
+        let contents = try openDirectory(bundle, "Contents")
+        defer { close(contents) }
+        let bytes = try readFile(contents, "Info.plist", limit: 1024 * 1024, policy: source.policy)
+        let info = try PropertyListSerialization.propertyList(from: bytes, options: [], format: nil) as? [String: Any]
+        guard info?["ProxyPilotVPNRootOwnedUpdateExecutor"] as? String == "1" else {
+            throw VPNStagedApplicationError.incompatibleExecutor
+        }
+        try revalidate(source, inTrustedDirectory: parent)
     }
 
     private static func inspect(parent: Int32, release: VerifiedVPNRelease,

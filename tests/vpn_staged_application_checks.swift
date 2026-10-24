@@ -61,6 +61,14 @@ import Foundation
                     productionParent: false, release: candidate)
                 precondition(receipt.matchesRelease(candidate))
                 try VPNStagedApplication.revalidate(receipt, inTrustedDirectory: fd)
+                try VPNStagedApplication.requireUpdateExecutorCompatibility(receipt,
+                    inApplicationsDirectory: fd)
+            case "system-installed-executor-compatibility":
+                let receipt = try VPNStagedApplication.inspectInstalledForUpdate(
+                    inApplicationsDirectory: fd, previousOwnerUserID: geteuid(),
+                    productionParent: true, release: candidate)
+                try VPNStagedApplication.requireUpdateExecutorCompatibility(receipt,
+                    inApplicationsDirectory: fd)
             case "inspect-system-installed-update":
                 // Read-only opt-in probe: no lifecycle, helper or installation action.
                 let receipt = try VPNStagedApplication.inspectInstalledForUpdate(

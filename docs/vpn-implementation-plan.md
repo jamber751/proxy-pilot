@@ -4399,3 +4399,18 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   исправления из нового B. Перед следующим пакетом нужен проверенный migration/
   recovery путь для уже pending 137→139. Новый sequence сам по себе не лечит
   committed journal. Запрещено считать per-user green suite готовностью установки.
+
+### Продолжение 1.5cz — отказ несовместимого executor до drain
+
+- [x] Source staging теперь проверяет sealed capability старого A:
+  root-owned source требует `ProxyPilotVPNRootOwnedUpdateExecutor=1` (string).
+  Новый VPN build включает этот ключ до подписи. User-owned legacy source не
+  требует capability. Полное inspection/revalidation остаётся обязательным.
+- [x] Read-only regression установленного root-owned 137 подтверждает:
+  signed source допустим, но его executor несовместим и отвергается заранее.
+  Никаких записей в Applications или остановки VPN в тесте нет.
+- [x] Staged suite: 18 passed, 1 optional candidate skipped; transaction staging:
+  7 passed. `zsh -n app/build.sh` и `git diff --check` прошли.
+- [ ] Проверка предотвращает новую неудачную транзакцию, но не чинит уже pending
+  137→139. Исправление старого executor не подменяется новым marker, подпись A
+  не меняется. Installed recovery и root-owned positive integration остаются открыты.

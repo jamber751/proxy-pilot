@@ -154,6 +154,7 @@ PLIST
 if [[ "$VPN_INSTALLER" == 1 ]]; then
   /usr/bin/plutil -insert ProxyPilotVPNInstaller -bool YES "$APP/Contents/Info.plist"
   /usr/bin/plutil -insert ProxyPilotVPNReleaseSequence -integer "$VPN_RELEASE_SEQUENCE" "$APP/Contents/Info.plist"
+  /usr/bin/plutil -insert ProxyPilotVPNRootOwnedUpdateExecutor -string 1 "$APP/Contents/Info.plist"
 fi
 
 # ad-hoc подпись: без неё macOS не выдаёт стабильный идентификатор,

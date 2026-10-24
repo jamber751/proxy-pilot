@@ -34,6 +34,8 @@ enum VPNApplicationTransactionStager {
         let old = try VPNStagedApplication.inspectInstalledForUpdate(
             inApplicationsDirectory: applications, previousOwnerUserID: previousOwnerUserID,
             productionParent: true, release: previous)
+        try VPNStagedApplication.requireUpdateExecutorCompatibility(old,
+            inApplicationsDirectory: applications)
         let next = try VPNStagedApplication.inspect(
             inTrustedDirectory: candidateDirectory, release: candidate)
         return try perform(base: base,
