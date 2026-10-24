@@ -5706,11 +5706,14 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   TTL/reference-counted routes и доказанной OS-enforced защиты при crash/route
   loss/configd restart. Прямой SC suffix resolver не выполняет exact-host policy;
   InterfaceName сам по себе не доказывает pinning. Поэтому gate остаётся закрыт.
-- [ ] Новый password persistence coordinator/Controller/Panel находится в review:
+- [x] Интеграционный слой `da7191c`: password persistence coordinator/Controller/Panel:
   strict displayed prompt UUID, exact session/attempt binding, manual candidate
   сохраняется через same-attempt private-key prompt; wrong cached ref даёт manual
   recovery без повторного auto-read. Queued old-save intent инвалидируется новой
-  попыткой.31 fake-helper/driver checks прошли; полный local UI suite:
+  попыткой до irrevocable grant claim. Claim не означает actual Add dispatch:
+  slot остаётся notIssued до существующего Store gate. Оба after-claim race
+  ordering проверены; latest confirmed UUID/password выигрывает.33 affected
+  fake-helper/driver checks прошли; полный local UI suite:
   134 passed, без skips/errors (`/tmp/pp-ui-cache-integration-local.log`). Это
   snapshot ДО финального уточнения grant-as-claim и дополнительных race cases.
   Default unavailable не показывает неработающий checkbox.
@@ -5718,3 +5721,29 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   cleanup exact settled locators при revoke/profile replacement/removal/startup.
   Unknown pending Add не разрешает speculative lookup/delete. Финальная живая
   OTP/IP, lifecycle/WARP, macOS11 и полный release по-прежнему не закрыты.
+
+### Продолжение 1.5fc — полноценный frontend graph и повторное открытие prompt
+
+- [x] Полный обычный frontend graph из76 actual build sources без TESTING:
+  ARM/Intel typecheck exit0, immutable inputs совпали с repo snapshot da7191c.
+  Verification `/tmp/pp-frontend-cache-typecheck-bbts376f/verification.json`.
+  Ничего не запускалось/не устанавливалось; это compile proof, не user-flow proof.
+- [x] `4a6b63c`: исправлен реальный serial-IPC flow: presentation refresh при
+  held credential prompt не открывает вторую readiness connection и не тратит
+  request budget. Пять reopen-refresh на каждом из двух prompts сохраняют один
+  session; полный VPN-password/private-key путь занимает ровно8 frames. Expired
+  prompt проверяется следующим explicit submit/cancel, refresh не заявляет live
+  validity. Protocol/timeouts не увеличивались.33 affected checks passed,
+  production module ARM/Intel compiled. Panel+11 offscreen layouts:17 tests passed.
+- [ ] UI40114410480 проверяет da7191c; новый held-prompt snapshot требует своего
+  run после push. Actual Keychain factory и UI capability всё ещё отключены.
+- [ ] Новый System8 run40113952613 и ownership40113952607 (`0f583ee`) включают
+  native Intel test fix и inert domain planner. Old ARM40112217369 завершил build
+  и начал реальные Installer scenarios; Intel старого run остался FAILED Errno86.
+  Ни один новый полный System8 ещё не объявлен успешным.
+- [ ] Backend40114148972 (`f8da023`): ARM setup вновь отказал, actual path open
+  succeeded, forced intended DB-name open failed. Не вычисленные same-file/parent
+  booleans не являются отрицательным доказательством. Следующий fixture проверяет
+  только два точно известных requested base/DB имени с positive ENOENT другого,
+  held-vnode/parent/canonical/name-binding proof; arbitrary returned leaf запрещён.
+  Production identity/factory не ослабляются до фактической приёмки.
