@@ -6108,7 +6108,8 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   compression/CNAME/TTL, mutation corpus, stale resource/gen/rev, expiry,
   чужие permits, revoke/unknown/pre/post-checkpoint crashes, double callbacks.
   Agent no-TESTING macOS11 module compile прошёл ARM/Intel. Workflow scoped DNS
-  теперь включает этот suite; live helper/build/runtime пока не подключены.
+  теперь включает этот suite. Helper builder включает все helper Swift files,
+  поэтому inert типы входят в source graph; runtime/factory не подключены.
 - [ ] Original client request/RD binding, validated negative SOA/NXDOMAIN/NODATA,
   EDNS/DNSSEC/authority/additional handling остаются OPEN. Positive subset
   возвращает typed unsupportedNegative/upstreamFailure, не придумывает NXDOMAIN
@@ -6125,3 +6126,39 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   проходит dupedkey chain к нужной маске. Fake contradictory /24 reply не
   объявляется kernel reproduction. Отдельная defensive rejection такого reply
   рассматривается без новых host route/sysctl/PF/socket вызовов.
+
+### Продолжение 1.5fl — original client provenance и уточнение kernel evidence
+
+- [x] `c02d163`: sealed client question создаётся только bounded decoder из
+  исходного wire query. Request требует её и отдельный upstream ID. Upstream
+  query сохраняет исходный RD/question case; ответ проверяет upstream ID и
+  восстанавливает client ID/question bytes/RD, не доверяет upstream RD.
+  Это сохранение client case, не доказательство upstream 0x20 authentication.
+  Прежние lease/one-shot/deadline safeguards сохранены. Независимо55 tests
+  PASS7.476s, включая различающиеся IDs, RD directions, casing и actual output
+  под fake lease. Negative/EDNS/CD/DNSSEC формы пока явно unsupported.
+- [x] `53fa746`: ordinary lookup принимает nil только по ESRCH/ENOENT либо
+  доказанному same-family containing-broader/default fallback. Contradictory
+  narrower/unrelated/other-family/missing-DST reply отказывает и сохраняет
+  journal. Exact и scoped поведение сохранены. Это defensive evidence admission,
+  не воспроизведённая kernel lookup ошибка. Baseline fake controls8 GREEN,
+  contradictory contracts10 RED; исправленные18 +existing scoped18 GREEN.
+  Независимый повтор36 PASS10.682s. Во всех recovery cases точные journal bytes
+  сохранены и ADD/DELETE не выполняются.
+- [x] Actual production helper glob113 sources, без TESTING, с production entry:
+  ARM/Intel macOS11 target typecheck PASS, stale=[] на client+route snapshot.
+  `/var/folders/zz/5wvv0n3915jc5t2283_x8zgw0000gn/T/pp-helper-dns-client-route-full-x328_4no/verification.json`.
+  Это compile/typecheck proof, не запуск macOS11 и не live DNS acceptance.
+- [ ] Actual utun40125607865: Intel120966247846 terminal FAILED до первого PASS:
+  upstream errno22 →child →ownerFailure. По порядку fixture это начальный SIGPIPE
+  scenario, до настройки utuns/routes. Из старого журнала нельзя отличить
+  configure от send или baseline от protected; причина НЕ объявляется найденной.
+  ARM120966248070 остаётся queued, original handle сохраняется.
+- [x] `97b1c41`: двухфайловая VM-only socket диагностика добавляет
+  закрытые role/stage/int32 tokens и read-only configure postconditions; никакого
+  repair/retry syscall и никакого production change. Baseline всё ещё требует
+  signal13, protected требует EPIPE. Diagnostics не заменяют19 PASS proofs.
+  Независимо5 safe compile/guard/protocol tests PASS10.841s; Intel compile прошёл
+  у агента. Следующий VM run должен установить точное место отказа.
+- [ ] System40124194483: ARM прошёл первые5 сценариев и выполняет ordinary
+  owner C→D Off; Intel по-прежнему production build. Системная приёмка ещё OPEN.
