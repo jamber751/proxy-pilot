@@ -1,7 +1,8 @@
 import Foundation
 
-/// Bounded positive and SOA-backed negative subset. EDNS/DNSSEC, additional
-/// data and SOA+NS forms remain unsupported. Transport failures are never NXDOMAIN.
+/// Bounded positive/SOA-negative/EDNS0 DO0 subset. DNSSEC, non-OPT additional
+/// data and SOA+NS remain unsupported. Transport failures are never NXDOMAIN.
+/// EDNS transactions: https://www.rfc-editor.org/rfc/rfc6891 §§6,7.
 /// Negative semantics: https://www.rfc-editor.org/rfc/rfc2308 §§2,3,5.
 /// Wire grammar: RFC 1035 §§4.1, 4.1.4; CNAME exclusivity: RFC 2181 §10.1.
 /// https://www.rfc-editor.org/rfc/rfc1035 https://www.rfc-editor.org/rfc/rfc2181
@@ -9,9 +10,19 @@ import Foundation
 enum VPNDNSAnswerError: Error, Equatable {
     case malformed, capacity, questionMismatch, unsupported, unsupportedNegative
     case provenance, stale, permit, checkpoint, outputAlreadyIssued
+    case unsupportedDNSSEC, unsupportedVersion(UInt8), unsupportedRCODE(UInt16)
 }
 
 enum VPNDNSQuestionType: UInt16 { case a = 1, aaaa = 28 }
+/// Trusted listener metadata, not a transport chosen by bytes in the DNS query.
+enum VPNDNSClientIngress: Equatable { case udp, tcp }
+struct VPNDNSClientEDNS: Equatable {
+    let version: UInt8
+    let advertisedUDPPayload: UInt16
+    fileprivate init(version: UInt8, advertisedUDPPayload: UInt16) {
+        self.version = version; self.advertisedUDPPayload = advertisedUDPPayload
+    }
+}
 
 /// Sealed proof of an actual original client query, not reconstructed metadata.
 /// Only the bounded query decoder below can construct this value. Exact original
@@ -22,12 +33,20 @@ struct VPNDNSClientQuestion: Equatable {
     let transactionID: UInt16
     let type: VPNDNSQuestionType
     let recursionDesired: Bool
+    let ingress: VPNDNSClientIngress
+    let edns: VPNDNSClientEDNS?
+    /// Per-transaction implementation cap, not a path-MTU/no-fragmentation proof.
+    var udpResponseLimit: Int {
+        min(max(Int(edns?.advertisedUDPPayload ?? 512), 512), VPNDNSAnswerCodec.udpPayloadCap)
+    }
     fileprivate let questionBytes: Data
 
     fileprivate init(resource: VPNResource, transactionID: UInt16, type: VPNDNSQuestionType,
-                     recursionDesired: Bool, questionBytes: Data) {
+                     recursionDesired: Bool, ingress: VPNDNSClientIngress,
+                     edns: VPNDNSClientEDNS?, questionBytes: Data) {
         self.resource = resource; self.transactionID = transactionID; self.type = type
-        self.recursionDesired = recursionDesired; self.questionBytes = questionBytes
+        self.recursionDesired = recursionDesired; self.ingress = ingress
+        self.edns = edns; self.questionBytes = questionBytes
     }
 }
 
@@ -53,11 +72,18 @@ struct VPNDNSAnswerRequest: Equatable {
     /// A standard one-question query only; no unvalidated client flag/section is
     /// copied upstream. Endpoint binding and unique live ID allocation are the
     /// future transport owner's responsibility, not proven by this pure encoder.
-    func upstreamQuery() -> Data {
+    func upstreamQuery() throws -> Data {
+        if let edns = clientQuestion.edns, edns.version != 0 { throw VPNDNSAnswerError.unsupportedVersion(edns.version) }
         var bytes = [UInt8(upstreamTransactionID >> 8), UInt8(upstreamTransactionID & 255)]
         bytes += [clientQuestion.recursionDesired ? 1 : 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
-        return Data(bytes) + clientQuestion.questionBytes
+        var result = Data(bytes) + clientQuestion.questionBytes
+        if clientQuestion.edns != nil {
+            result[11] = 1
+            result += VPNDNSAnswerCodec.optRecord(payload: UInt16(VPNDNSAnswerCodec.udpPayloadCap), rcode: 0)
+        }
+        return result
     }
+    var upstreamUDPLimit: Int { clientQuestion.edns == nil ? 512 : VPNDNSAnswerCodec.udpPayloadCap }
 }
 
 /// Binary DNS labels, including root and mailbox labels containing literal dots.
@@ -71,10 +97,35 @@ struct VPNDNSWireName: Equatable {
 }
 
 enum VPNDNSAnswerOutcome: Equatable {
-    case positive, nxDomain, noData, upstreamError(UInt8)
-    fileprivate var rcode: UInt8 {
-        switch self { case .nxDomain: return 3; case .upstreamError(let code): return code; default: return 0 }
+    case positive, nxDomain, noData, upstreamError(UInt16), protocolError(VPNDNSClientProtocolError)
+    fileprivate var rcode: UInt16 {
+        switch self {
+        case .nxDomain: return 3
+        case .upstreamError(let code): return code
+        case .protocolError(.badVersion): return 16
+        default: return 0
+        }
     }
+}
+
+enum VPNDNSClientProtocolError: Equatable { case badVersion }
+
+/// Grammar/original-query receipt ONLY, not endpoint/route attestation. A future
+/// coordinator must keep the SAME captured corporate server/binding, fresh full
+/// authority and ORIGINAL deadline, allowing at most ONE TCP attempt. No default
+/// resolver/EDNS downgrade/retry loop is provided here. Never an answer permit.
+struct VPNDNSNeedsTCP: Equatable {
+    enum Reason: Equatable { case truncated, oversizedUDP }
+    let request: VPNDNSAnswerRequest
+    let receivedAt: UInt64
+    let reason: Reason
+    fileprivate init(request: VPNDNSAnswerRequest, receivedAt: UInt64, reason: Reason) {
+        self.request = request; self.receivedAt = receivedAt; self.reason = reason
+    }
+}
+enum VPNDNSUpstreamInspection {
+    case answer(VPNDNSValidatedAnswer)
+    case needsTCP(VPNDNSNeedsTCP)
 }
 
 /// IN class only. NXDOMAIN targets the terminal canonical name, never its aliases;
@@ -181,8 +232,8 @@ struct VPNDNSValidatedAnswer: Equatable {
             for label in value.split(separator: ".") { bytes.append(UInt8(label.utf8.count)); bytes += label.utf8 }
             bytes.append(0)
         }
-        word(request.transactionID); word(0x8000 | (request.clientQuestion.recursionDesired ? 0x0100 : 0) | UInt16(outcome.rcode))
-        word(1); word(UInt16(records.count)); word(soa == nil ? 0 : 1); word(0)
+        word(request.transactionID); word(0x8000 | (request.clientQuestion.recursionDesired ? 0x0100 : 0) | (outcome.rcode & 15))
+        word(1); word(UInt16(records.count)); word(soa == nil ? 0 : 1); word(request.clientQuestion.edns == nil ? 0 : 1)
         bytes += request.clientQuestion.questionBytes
         for record in records {
             name(record.owner); word(record.type); word(1)
@@ -199,7 +250,21 @@ struct VPNDNSValidatedAnswer: Equatable {
             bytes += soa.nameserver.encoded; bytes += soa.mailbox.encoded
             for value in [soa.serial, soa.refresh, soa.retry, soa.expire, soa.minimum] { dword(value) }
         }
+        if request.clientQuestion.edns != nil {
+            bytes += VPNDNSAnswerCodec.optRecord(payload: UInt16(VPNDNSAnswerCodec.udpPayloadCap), rcode: outcome.rcode)
+        }
         guard bytes.count <= 65535 else { throw VPNDNSAnswerError.capacity }
+        if request.clientQuestion.ingress == .udp, bytes.count > request.clientQuestion.udpResponseLimit {
+            // Whole RRsets omitted: no partial CNAME/address/SOA proof escapes.
+            var minimal = Array(bytes.prefix(12))
+            minimal[2] |= 2; minimal[6] = 0; minimal[7] = 0; minimal[8] = 0; minimal[9] = 0
+            minimal += request.clientQuestion.questionBytes
+            if request.clientQuestion.edns != nil {
+                minimal += VPNDNSAnswerCodec.optRecord(payload: UInt16(VPNDNSAnswerCodec.udpPayloadCap), rcode: outcome.rcode)
+            }
+            guard minimal.count <= request.clientQuestion.udpResponseLimit else { throw VPNDNSAnswerError.capacity }
+            return Data(minimal)
+        }
         return Data(bytes)
     }
 }
@@ -209,56 +274,103 @@ enum VPNDNSAnswerCodec {
     static let maximumAliases = 16
     static let maximumTTL: UInt32 = 86400
 
-    /// Initial supported client grammar: standard uncompressed single IN A/AAAA
-    /// question, RD only, no answer/authority/additional data. EDNS, CD/DNSSEC and
-    /// other query operations are explicitly unsupported, not converted to errors
-    /// on the wire. A resolver suffix/descendant is never an exact host grant.
-    static func clientQuestion(_ wire: Data, resource: VPNResource) throws -> VPNDNSClientQuestion {
+    // Explicit implementation bounds. 1232 is not a discovered path MTU.
+    static let udpPayloadCap = 1232
+    static let maximumClientBytes = 4096
+    static let maximumOptions = 64
+
+    /// Query metadata is sealed only after the COMPLETE packet/TLV grammar.
+    /// Unknown option values and reserved EDNS Z bits are ignored, not retained,
+    /// echoed or forwarded. Query DO/CD and DNSSEC RRs remain unsupported.
+    static func clientQuestion(_ wire: Data, resource: VPNResource,
+                               ingress: VPNDNSClientIngress) throws -> VPNDNSClientQuestion {
         try resource.validate()
         guard resource.kind == .domain else { throw VPNDNSAnswerError.provenance }
-        guard wire.count >= 12, wire.count <= 271 else { throw VPNDNSAnswerError.capacity }
+        guard wire.count >= 12, wire.count <= maximumClientBytes else { throw VPNDNSAnswerError.capacity }
         var reader = Reader(bytes: Array(wire))
         let identifier = try reader.word(), flags = try reader.word()
-        guard flags & 0xfeff == 0 else { throw VPNDNSAnswerError.unsupported }
+        // RFC6840 §5.7: query AD signals interest, not a DO/CD request. Ignore
+        // it; this non-validating relay neither forwards nor asserts AD.
+        // https://www.rfc-editor.org/rfc/rfc6840.html#section-5.7
+        if flags & 0x0010 != 0 { throw VPNDNSAnswerError.unsupportedDNSSEC }
+        guard flags & 0xfedf == 0 else { throw VPNDNSAnswerError.unsupported }
         guard try reader.word() == 1 else { throw VPNDNSAnswerError.questionMismatch }
-        guard try reader.word() == 0, try reader.word() == 0, try reader.word() == 0 else {
-            throw VPNDNSAnswerError.unsupported
-        }
+        guard try reader.word() == 0, try reader.word() == 0 else { throw VPNDNSAnswerError.unsupported }
+        let additional = try reader.word()
+        guard additional <= 1 else { throw VPNDNSAnswerError.unsupported }
         guard try reader.name() == resource.address else { throw VPNDNSAnswerError.questionMismatch }
         guard let type = VPNDNSQuestionType(rawValue: try reader.word()), try reader.word() == 1 else {
             throw VPNDNSAnswerError.unsupported
         }
-        guard !reader.usedCompression, reader.offset == reader.bytes.count else { throw VPNDNSAnswerError.malformed }
+        let questionEnd = reader.offset
+        guard !reader.usedCompression else { throw VPNDNSAnswerError.malformed }
+        let opt = additional == 1 ? try reader.opt(query: true) : nil
+        guard reader.offset == reader.bytes.count else { throw VPNDNSAnswerError.malformed }
+        guard (opt?.extendedRCODE ?? 0) == 0 else { throw VPNDNSAnswerError.unsupported }
+        let edns = opt.map { VPNDNSClientEDNS(version: $0.version, advertisedUDPPayload: $0.payload) }
         return VPNDNSClientQuestion(resource: resource, transactionID: identifier, type: type,
-                                    recursionDesired: flags & 0x0100 != 0, questionBytes: Data(wire.dropFirst(12)))
+            recursionDesired: flags & 0x0100 != 0, ingress: ingress, edns: edns,
+            questionBytes: Data(reader.bytes[12..<questionEnd]))
     }
 
-    static func decode(_ wire: Data, request: VPNDNSAnswerRequest,
-                       receivedAt: UInt64) throws -> VPNDNSValidatedAnswer {
+    /// An unsupported client EDNS version can produce ONLY an origin-bound
+    /// BADVERS token, still requiring the normal authority/permits/leased output.
+    /// Malformed queries and unsupported DNSSEC flags do not acquire this token.
+    static func clientProtocolError(request: VPNDNSAnswerRequest, receivedAt: UInt64) throws -> VPNDNSValidatedAnswer {
+        guard receivedAt < request.deadline else { throw VPNDNSAnswerError.stale }
+        guard let edns = request.clientQuestion.edns, edns.version != 0 else { throw VPNDNSAnswerError.provenance }
+        return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
+            records: [], canonicalChain: [request.resource.address], addresses: [], minimumTTL: 0,
+            outcome: .protocolError(.badVersion))
+    }
+
+    /// TC/oversize never validates the RR body or yields addresses/negative
+    /// evidence. The bounded original question/header alone can request TCP.
+    static func inspectUpstream(_ wire: Data, request: VPNDNSAnswerRequest, receivedAt: UInt64,
+                                transport: VPNDNSUpstreamTransport) throws -> VPNDNSUpstreamInspection {
+        let preamble = try responsePreamble(wire, request: request, receivedAt: receivedAt)
+        if preamble.flags & 0x0200 != 0 || (transport == .udp && wire.count > request.upstreamUDPLimit) {
+            guard transport == .udp else { throw VPNDNSAnswerError.unsupported }
+            let reason: VPNDNSNeedsTCP.Reason = preamble.flags & 0x0200 != 0 ? .truncated : .oversizedUDP
+            return .needsTCP(VPNDNSNeedsTCP(request: request, receivedAt: receivedAt, reason: reason))
+        }
+        return .answer(try decode(wire, request: request, receivedAt: receivedAt, transport: transport))
+    }
+
+    fileprivate static func optRecord(payload: UInt16, rcode: UInt16) -> [UInt8] {
+        // New per-hop OPT; VERSION=0, DO=0, options empty, never a cached RR.
+        [0,0,41,UInt8(payload >> 8),UInt8(payload & 255),UInt8(rcode >> 4),0,0,0,0,0]
+    }
+
+    private static func responsePreamble(_ wire: Data, request: VPNDNSAnswerRequest,
+                                         receivedAt: UInt64) throws -> (reader: Reader, flags: UInt16, count: Int, authority: UInt16, additional: UInt16) {
         guard wire.count >= 12, wire.count <= 65535 else { throw VPNDNSAnswerError.capacity }
         guard receivedAt < request.deadline else { throw VPNDNSAnswerError.stale }
+        if let edns = request.clientQuestion.edns, edns.version != 0 { throw VPNDNSAnswerError.unsupportedVersion(edns.version) }
         var reader = Reader(bytes: Array(wire))
         guard try reader.word() == request.upstreamTransactionID else { throw VPNDNSAnswerError.questionMismatch }
         let flags = try reader.word()
-        guard flags & 0x8000 != 0, flags & 0x7800 == 0, flags & 0x0200 == 0,
-              flags & 0x0040 == 0 else { throw VPNDNSAnswerError.unsupported }
+        guard flags & 0x8000 != 0, flags & 0x7800 == 0, flags & 0x0040 == 0 else { throw VPNDNSAnswerError.unsupported }
+        if flags & 0x0010 != 0 { throw VPNDNSAnswerError.unsupportedDNSSEC }
         let questions = try reader.word(), count = Int(try reader.word())
         let authority = try reader.word(), additional = try reader.word()
         guard questions == 1 else { throw VPNDNSAnswerError.questionMismatch }
-        let question = try reader.name()
-        guard question == request.resource.address, try reader.word() == request.type.rawValue,
+        guard try reader.name() == request.resource.address, try reader.word() == request.type.rawValue,
               try reader.word() == 1 else { throw VPNDNSAnswerError.questionMismatch }
-        let code = UInt8(flags & 15)
+        return (reader, flags, count, authority, additional)
+    }
+
+    /// Full answer entry requires trusted received-transport metadata as well.
+    /// UDP TC/over-cap is not accepted here: use inspectUpstream for its receipt.
+    static func decode(_ wire: Data, request: VPNDNSAnswerRequest, receivedAt: UInt64,
+                       transport: VPNDNSUpstreamTransport) throws -> VPNDNSValidatedAnswer {
+        let preamble = try responsePreamble(wire, request: request, receivedAt: receivedAt)
+        guard preamble.flags & 0x0200 == 0,
+              transport == .tcp || wire.count <= request.upstreamUDPLimit else { throw VPNDNSAnswerError.unsupported }
+        var reader = preamble.reader
+        let count = preamble.count, authority = preamble.authority, additional = preamble.additional
         guard count <= maximumRecords else { throw VPNDNSAnswerError.capacity }
-        guard authority <= 1, additional == 0 else { throw VPNDNSAnswerError.unsupported }
-        if code != 0 && code != 3 {
-            // Only explicit known query errors in the initial profile, and only
-            // after validating the COMPLETE empty-section grammar and tail.
-            guard [1,2,4,5].contains(code), count == 0, authority == 0,
-                  reader.offset == reader.bytes.count else { throw VPNDNSAnswerError.unsupported }
-            return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
-                records: [], canonicalChain: [question], addresses: [], minimumTTL: 0, outcome: .upstreamError(code))
-        }
+        guard authority <= 1, additional <= 1 else { throw VPNDNSAnswerError.unsupported }
         var records = [VPNDNSValidatedAnswer.Record]()
         for _ in 0..<count {
             let owner = try reader.name(), type = try reader.word(), cls = try reader.word()
@@ -295,8 +407,23 @@ enum VPNDNSAnswerCodec {
                 serial: reader.dword(), refresh: reader.dword(), retry: reader.dword(),
                 expire: reader.dword(), minimum: reader.dword(), ttl: ttl)
         }
+        let opt = additional == 1 ? try reader.opt(query: false) : nil
+        // RFC6891 §7 forbids unsolicited OPT for a non-EDNS query. Reject it,
+        // rather than masking an extended error into NOERROR/NXDOMAIN.
+        guard opt == nil || request.clientQuestion.edns != nil else { throw VPNDNSAnswerError.unsupported }
+        if let opt = opt, opt.version != 0 { throw VPNDNSAnswerError.unsupportedVersion(opt.version) }
         guard reader.offset == reader.bytes.count else { throw VPNDNSAnswerError.malformed }
-        var chain = [question], consumed = Set<Int>(), canonical = [VPNDNSValidatedAnswer.Record]()
+        // Missing OPT is an explicitly accepted legacy reply: extRCODE=0. It
+        // neither claims upstream EDNS support nor triggers a downgrade/retry.
+        let code = UInt16(opt?.extendedRCODE ?? 0) << 4 | (preamble.flags & 15)
+        if code != 0 && code != 3 {
+            guard [1,2,4,5,16].contains(code) else { throw VPNDNSAnswerError.unsupportedRCODE(code) }
+            guard count == 0, authority == 0 else { throw VPNDNSAnswerError.unsupported }
+            return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
+                records: [], canonicalChain: [request.resource.address], addresses: [], minimumTTL: 0,
+                outcome: .upstreamError(code))
+        }
+        var chain = [request.resource.address], consumed = Set<Int>(), canonical = [VPNDNSValidatedAnswer.Record]()
         while true {
             let owner = chain.last!
             let indices = records.indices.filter { records[$0].owner == owner }
@@ -344,6 +471,33 @@ enum VPNDNSAnswerCodec {
         // Compression targets must be earlier recognized label boundaries, not
         // arbitrary header/address bytes that happen to resemble a name.
         var boundaries = Set<Int>()
+        struct OPT {
+            let payload: UInt16
+            let extendedRCODE: UInt8
+            let version: UInt8
+        }
+        mutating func opt(query: Bool) throws -> OPT {
+            guard offset < bytes.count, bytes[offset] == 0 else { throw VPNDNSAnswerError.malformed }
+            offset += 1
+            guard try word() == 41 else { throw VPNDNSAnswerError.unsupported }
+            let payload = try word(), control = try dword(), length = Int(try word())
+            guard length <= VPNDNSAnswerCodec.maximumClientBytes, offset + length <= bytes.count else { throw VPNDNSAnswerError.capacity }
+            let end = offset + length
+            var options = 0
+            while offset < end {
+                guard offset + 4 <= end else { throw VPNDNSAnswerError.malformed }
+                _ = try word(); let size = Int(try word())
+                guard offset + size <= end else { throw VPNDNSAnswerError.malformed }
+                options += 1
+                guard options <= VPNDNSAnswerCodec.maximumOptions else { throw VPNDNSAnswerError.capacity }
+                offset += size // Unknown well-formed option: discard opaque bytes.
+            }
+            // RFC6840 §5.6 requires ignoring DO in RESPONSES. Query DO stays
+            // unsupported. This flag never permits DNSSEC RRs or asserts AD.
+            // https://www.rfc-editor.org/rfc/rfc6840.html#section-5.6
+            if query && control & 0x8000 != 0 { throw VPNDNSAnswerError.unsupportedDNSSEC }
+            return OPT(payload: payload, extendedRCODE: UInt8(control >> 24), version: UInt8((control >> 16) & 255))
+        }
         mutating func word() throws -> UInt16 {
             guard offset + 2 <= bytes.count else { throw VPNDNSAnswerError.malformed }
             defer { offset += 2 }; return UInt16(bytes[offset]) << 8 | UInt16(bytes[offset + 1])

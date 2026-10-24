@@ -12,7 +12,7 @@ SOURCES = [ROOT / 'app/VPNConfiguration.swift'] + [ROOT / 'app/vpn-helper' / nam
     'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift', 'VPNKernelInterfaceSnapshot.swift',
     'VPNTunnelInterfaceResolver.swift', 'VPNRoutePlan.swift', 'VPNRouteJournal.swift',
     'VPNDarwinRouteSocket.swift', 'VPNRouteTransaction.swift', 'VPNDNSPlan.swift',
-    'VPNDomainNetworkPlan.swift', 'VPNLifecycleOwnership.swift', 'VPNDNSAnswerCodec.swift', 'VPNDNSAnswerRelease.swift')]
+    'VPNDomainNetworkPlan.swift', 'VPNLifecycleOwnership.swift', 'VPNBoundDNSUpstreamSocket.swift', 'VPNDNSAnswerCodec.swift', 'VPNDNSAnswerRelease.swift')]
 CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bounds',
          'question', 'headers', 'pointer-loop', 'pointer-foreign', 'malformed',
          'alias-cycle', 'alias-conflict', 'alias-depth', 'unrelated', 'family',
@@ -34,7 +34,17 @@ CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bound
          'negative-error-sections', 'negative-unknown-rcode', 'negative-error-origin',
          'negative-release', 'negative-release-revoke', 'negative-release-required',
          'negative-release-fence', 'negative-checkpoint-crash', 'negative-late',
-         'negative-mixed-zero-ttl', 'negative-expiry-overflow')
+         'negative-mixed-zero-ttl', 'negative-expiry-overflow',
+         'edns-question', 'edns-privacy', 'edns-z-bits', 'edns-payload', 'edns-client-version',
+         'edns-badvers-lease', 'edns-upstream-version', 'edns-extended-rcode', 'edns-legacy-opt',
+         'edns-legacy-upstream', 'edns-dnssec', 'edns-root-type', 'edns-query-extended',
+         'edns-duplicate', 'edns-tlv-truncation', 'edns-option-count', 'edns-query-bound',
+         'edns-tail', 'edns-slice', 'edns-udp-boundary', 'edns-legacy-boundary',
+         'edns-tcp-independent', 'edns-upstream-tc', 'edns-upstream-oversize',
+         'edns-tc-provenance', 'edns-leased-tc', 'edns-tc-revoked', 'edns-negative-opt', 'edns-inspect-complete',
+         'edns-small-payload', 'edns-large-negative', 'edns-query-ad',
+         'edns-response-do-positive', 'edns-response-do-error',
+         'edns-response-do-negative', 'edns-response-do-lease')
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS Swift required')
 class VPNDNSAnswerTests(unittest.TestCase):
