@@ -131,18 +131,25 @@ final class VPNRescueInstallationPayload {
     func revalidate() throws {
         try checkBindings()
         let fresh = try Self.load(inTrustedDirectory: root, authority: authority)
-        guard sidecars == fresh.sidecars,
-              second.previousManifest == fresh.second.previousManifest,
-              second.previousSignature == fresh.second.previousSignature,
-              second.transitionPayload == fresh.second.transitionPayload,
-              second.transitionSignature == fresh.second.transitionSignature,
-              second.candidate.manifest == fresh.second.candidate.manifest,
-              second.candidate.signature == fresh.second.candidate.signature,
-              second.candidate.helper == fresh.second.candidate.helper,
-              second.candidate.engine == fresh.second.candidate.engine else {
+        guard hasSameVerifiedMaterial(as: fresh) else {
             throw VPNRescueInstallationPayloadError.changed
         }
         try checkBindings()
+    }
+
+    /// Static content equality, not permission to overwrite either package.
+    /// Signed statements bind executable bytes/pins; candidate app identity is
+    /// checked against its signed manifest when each bundle is loaded.
+    func hasSameVerifiedMaterial(as other: VPNRescueInstallationPayload) -> Bool {
+        sidecars == other.sidecars
+            && second.previousManifest == other.second.previousManifest
+            && second.previousSignature == other.second.previousSignature
+            && second.transitionPayload == other.second.transitionPayload
+            && second.transitionSignature == other.second.transitionSignature
+            && second.candidate.manifest == other.second.candidate.manifest
+            && second.candidate.signature == other.second.candidate.signature
+            && second.candidate.helper == other.second.candidate.helper
+            && second.candidate.engine == other.second.candidate.engine
     }
 
     func duplicateCandidateDirectory() throws -> Int32 { try duplicate(candidate) }
