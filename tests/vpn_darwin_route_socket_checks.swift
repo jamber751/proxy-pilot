@@ -369,7 +369,12 @@ final class FakeRouteTransport: VPNRouteSocketTransport {
     static func recovery(_ path: String) throws {
         let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { exit(70) }; defer { close(descriptor) }
-        let routePlan = try plan(), identity = try identities()[0]
+        let routePlan = try plan()
+        // This creates a NEW journal (v3 for this mixed IPv6-host plan), so
+        // checkpoint the exact predicted managed identity, not legacy flags.
+        let identity = try VPNOwnedRouteIdentity(planned: routePlan.routes[0],
+            evidence: VPNRouteKernelEvidence(gateway: ipv4("192.0.2.1"), interfaceIndex: interfaceIndex(),
+                flags: VPNManagedIPv6HostRoute.flags(for: routePlan.routes[0])))
         let journal = try VPNRouteJournal(trustedDirectoryDescriptor: descriptor)
         _ = try journal.create(routePlan)
         _ = try journal.beginInstall(identity, generation: 31, revision: 7)

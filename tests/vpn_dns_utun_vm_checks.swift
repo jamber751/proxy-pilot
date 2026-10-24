@@ -483,7 +483,12 @@ private final class Baseline {
             let planned = VPNPlannedRoute(role: role, destination: prefix, physicalGatewayBytes: nil,
                 interfaceIndex: context.bIndex, interfaceName: context.bName)
             // Relative to the A transaction, this is a foreign read-only peer.
-            let flags = UInt32(RTF_UP | RTF_STATIC | RTF_HOST) | (role == .resource ? UInt32(RTF_PROTO2) : 0)
+            var flags = UInt32(RTF_UP | RTF_STATIC | RTF_HOST) | (role == .resource ? UInt32(RTF_PROTO2) : 0)
+            if role == .resource && prefix.family == .ipv6 {
+                // Predict the strict kernel profile BEFORE issued/ADD. Neither
+                // observed equality nor alreadyPresent can acquire custody.
+                flags = VPNManagedIPv6HostRoute.flags(for: planned)
+            }
             let evidence: VPNRouteKernelEvidence
             if prefix.family == .ipv4 { evidence = try VPNRouteKernelEvidence(gateway: Optional<in_addr>.none, interfaceIndex: context.bIndex, flags: flags) }
             else { evidence = try VPNRouteKernelEvidence(gateway: Optional<in6_addr>.none, interfaceIndex: context.bIndex, flags: flags) }

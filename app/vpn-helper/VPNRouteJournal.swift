@@ -57,6 +57,53 @@ struct VPNRouteKernelEvidence {
     }
 }
 
+/// Predicted kernel profile, not a flag-normalization rule. XNU's
+/// nd6_rtrequest(RTM_ADD) adds LLINFO to direct IPv6 HOST routes even on p2p
+/// utuns. Keep that EXACT expected bit in custody; omit it only on requests.
+/// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/netinet6/nd6.c
+/// Only our managed utun resource/dependency /128 form is supported here.
+enum VPNManagedIPv6HostRoute {
+    static func applies(to route: VPNPlannedRoute) -> Bool {
+        guard route.role == .resource || route.role == .dnsDependency,
+              route.destination.family == .ipv6, route.destination.prefixLength == 128,
+              route.physicalGatewayBytes == nil, let index = route.interfaceIndex, index > 0,
+              let name = route.interfaceName, name.hasPrefix("utun"), name.utf8.count < IFNAMSIZ else { return false }
+        let suffix = name.dropFirst(4)
+        guard !suffix.isEmpty, suffix.utf8.allSatisfy({ (48...57).contains($0) }) else { return false }
+        if route.role == .dnsDependency {
+            return route.interfaceScope?.interfaceIndex == index && route.interfaceScope?.interfaceName == name
+        }
+        return route.interfaceScope == nil
+    }
+    static func flags(for route: VPNPlannedRoute) -> UInt32 {
+        var flags = UInt32(RTF_UP | RTF_STATIC | RTF_PROTO2)
+        if Int(route.destination.prefixLength) == route.destination.bytes.count * 8 { flags |= UInt32(RTF_HOST) }
+        if route.physicalGatewayBytes != nil { flags |= UInt32(RTF_GATEWAY) }
+        if route.role == .dnsDependency { flags |= UInt32(RTF_IFSCOPE) }
+        if applies(to: route) { flags |= UInt32(RTF_LLINFO) }
+        return flags
+    }
+    static func applies(to identity: VPNOwnedRouteIdentity) -> Bool {
+        applies(to: VPNPlannedRoute(role: identity.role, destination: identity.destination,
+            physicalGatewayBytes: identity.gatewayBytes, interfaceIndex: identity.interfaceIndex,
+            interfaceName: identity.interfaceName, interfaceScope: identity.interfaceScope))
+    }
+    static func isExact(_ identity: VPNOwnedRouteIdentity) -> Bool {
+        let route = VPNPlannedRoute(role: identity.role, destination: identity.destination,
+            physicalGatewayBytes: identity.gatewayBytes, interfaceIndex: identity.interfaceIndex,
+            interfaceName: identity.interfaceName, interfaceScope: identity.interfaceScope)
+        return applies(to: route) && identity.flags == flags(for: route)
+    }
+    static func hasKernelShape(destination: VPNRoutePrefix, interfaceIndex: UInt32,
+                               interfaceName: String, flags: UInt32) -> Bool {
+        let base = UInt32(RTF_UP | RTF_STATIC | RTF_HOST | RTF_PROTO2 | RTF_LLINFO)
+        return destination.family == .ipv6 && destination.prefixLength == 128 && interfaceIndex > 0
+            && interfaceName.hasPrefix("utun") && !interfaceName.dropFirst(4).isEmpty
+            && interfaceName.dropFirst(4).utf8.allSatisfy({ (48...57).contains($0) })
+            && (flags == base || flags == base | UInt32(RTF_IFSCOPE))
+    }
+}
+
 /// Exact identity to compare with a later kernel snapshot before deletion. It
 /// is evidence owned by this journal, not evidence that the route is present.
 struct VPNOwnedRouteIdentity: Codable, Equatable, Comparable {
@@ -113,8 +160,12 @@ struct VPNOwnedRouteIdentity: Codable, Equatable, Comparable {
               interfaceName.utf8.count < IFNAMSIZ,
               !interfaceName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               flags != 0 else { throw VPNRoutePlanError.invalidKernelEvidence }
+        if flags & UInt32(RTF_LLINFO) != 0, !VPNManagedIPv6HostRoute.isExact(self) {
+            throw VPNRoutePlanError.invalidKernelEvidence
+        }
         if role == .dnsDependency {
             let required = UInt32(RTF_UP | RTF_STATIC | RTF_PROTO2 | RTF_HOST | RTF_IFSCOPE)
+                | (flags & UInt32(RTF_LLINFO))
             guard let scope = interfaceScope, flags == required, gatewayBytes == nil,
                   destination.prefixLength == size * 8,
                   scope.interfaceIndex == interfaceIndex, scope.interfaceName == interfaceName else {
@@ -146,8 +197,12 @@ struct VPNRouteJournalOperation: Codable, Equatable {
 struct VPNRouteJournalSnapshot: Codable, Equatable {
     static let schema = 1
     static let scopedSchema = 2
-    static func schema(for plan: VPNRoutePlan) -> Int {
+    static let directIPv6Schema = 3
+    static func legacySchema(for plan: VPNRoutePlan) -> Int {
         plan.schemaVersion == VPNRoutePlan.scopedSchema ? scopedSchema : schema
+    }
+    static func schema(for plan: VPNRoutePlan) -> Int {
+        plan.ownedRoutes.contains(where: VPNManagedIPv6HostRoute.applies) ? directIPv6Schema : legacySchema(for: plan)
     }
     let schemaVersion: Int
     let plan: VPNRoutePlan
@@ -156,16 +211,19 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
     let operation: VPNRouteJournalOperation?
 
     func validate() throws {
-        guard schemaVersion == Self.schema(for: plan) else { throw VPNRouteJournalError.invalidState }
+        guard schemaVersion == Self.legacySchema(for: plan)
+                || (schemaVersion == Self.directIPv6Schema && Self.schema(for: plan) == Self.directIPv6Schema) else {
+            throw VPNRouteJournalError.invalidState
+        }
         try plan.validate()
         guard applied == applied.sorted(), Set(applied.map(Self.key)).count == applied.count else {
             throw VPNRouteJournalError.invalidState
         }
-        for entry in applied { try Self.match(entry, plan: plan) }
+        for entry in applied { try Self.match(entry, plan: plan, schemaVersion: schemaVersion) }
         let appliedKeys = applied.map(Self.key)
         let expectedKeys = plan.ownedRoutes.prefix(applied.count).map(Self.key)
         guard appliedKeys == expectedKeys else { throw VPNRouteJournalError.invalidState }
-        if let operation = operation { try Self.match(operation.entry, plan: plan) }
+        if let operation = operation { try Self.match(operation.entry, plan: plan, schemaVersion: schemaVersion) }
         switch phase {
         case .planned:
             guard applied.isEmpty, operation == nil else { throw VPNRouteJournalError.invalidState }
@@ -210,11 +268,17 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
         scope.map { ":scope:\($0.interfaceIndex):\($0.interfaceName)" } ?? ""
     }
 
-    fileprivate static func match(_ entry: VPNOwnedRouteIdentity, plan: VPNRoutePlan) throws {
+    fileprivate static func match(_ entry: VPNOwnedRouteIdentity, plan: VPNRoutePlan, schemaVersion: Int) throws {
         try entry.validate()
         guard let planned = plan.routes.first(where: {
             Self.key($0) == Self.key(entry)
         }) else { throw VPNRouteJournalError.invalidState }
+        if schemaVersion == directIPv6Schema {
+            guard entry.flags == VPNManagedIPv6HostRoute.flags(for: planned) else { throw VPNRouteJournalError.invalidState }
+        } else {
+            // Legacy1/2 flags are never silently reinterpreted or upgraded.
+            guard entry.flags & UInt32(RTF_LLINFO) == 0 else { throw VPNRouteJournalError.invalidState }
+        }
         if entry.role == .peerBypass {
             guard planned.physicalGatewayBytes == entry.gatewayBytes,
                   planned.interfaceIndex == entry.interfaceIndex,
@@ -273,7 +337,7 @@ final class VPNRouteJournal {
               !old.applied.contains(where: {
                   VPNRouteJournalSnapshot.key($0) == VPNRouteJournalSnapshot.key(entry)
               }) else { throw VPNRouteJournalError.invalidState }
-        try VPNRouteJournalSnapshot.match(entry, plan: old.plan)
+        try VPNRouteJournalSnapshot.match(entry, plan: old.plan, schemaVersion: old.schemaVersion)
         let next = VPNRouteJournalSnapshot(schemaVersion: old.schemaVersion, plan: old.plan, phase: .installing,
             applied: old.applied, operation: VPNRouteJournalOperation(action: .install, entry: entry))
         try write(next); return next

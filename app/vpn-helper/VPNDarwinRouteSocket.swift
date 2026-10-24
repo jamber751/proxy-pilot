@@ -172,10 +172,13 @@ enum VPNDarwinRouteCodec {
         guard isHost == (identity.flags & UInt32(RTF_HOST) != 0) else {
             throw VPNDarwinRouteError.invalidIdentity
         }
+        // Stored identity is the exact KERNEL expectation. Strip the derived
+        // neighbor bit only for this strict managed IPv6 direct-host profile.
+        let requestFlags = VPNManagedIPv6HostRoute.isExact(identity) ? identity.flags & ~UInt32(RTF_LLINFO) : identity.flags
         let required = UInt32(RTF_UP | RTF_STATIC)
         let forbidden = UInt32(RTF_DYNAMIC | RTF_MODIFIED | RTF_DONE | RTF_LLINFO
             | RTF_WASCLONED | RTF_LOCAL | RTF_BROADCAST | RTF_MULTICAST | RTF_CONDEMNED | RTF_DEAD)
-        guard identity.flags & required == required, identity.flags & forbidden == 0,
+        guard requestFlags & required == required, requestFlags & forbidden == 0,
               (identity.gatewayBytes != nil) == (identity.flags & UInt32(RTF_GATEWAY) != 0) else {
             throw VPNDarwinRouteError.invalidIdentity
         }
@@ -190,7 +193,7 @@ enum VPNDarwinRouteCodec {
         let host = isHost
         if !host { addresses.append((RTA_NETMASK, netmask(identity.destination))) }
         return try message(type: type, sequence: sequence, pid: pid, error: 0,
-                           index: identity.interfaceIndex, flags: identity.flags,
+                           index: identity.interfaceIndex, flags: requestFlags,
                            addresses: addresses)
     }
 
@@ -223,7 +226,9 @@ enum VPNDarwinRouteCodec {
             var data = try encode(type: type, sequence: sequence, pid: pid, identity: identity)
             try mutateHeader(&data) {
                 $0.rtm_errno = error
-                $0.rtm_flags |= Int32(bitPattern: responseFlags)
+                // Synthetic KERNEL replies retain the exact expected flags;
+                // encode() above intentionally produces request flags instead.
+                $0.rtm_flags = Int32(bitPattern: identity.flags | responseFlags)
             }
             return data
         }
@@ -246,6 +251,19 @@ enum VPNDarwinRouteCodec {
         guard index > 0 else { throw VPNDarwinRouteError.malformedMessage }
         let name = try interfaceName(index)
         let family = try ipBytes(destinationAddress).family
+        let routeFlags = UInt32(bitPattern: header.rtm_flags) & ~UInt32(RTF_DONE)
+        if let destination, VPNManagedIPv6HostRoute.hasKernelShape(destination: destination,
+            interfaceIndex: index, interfaceName: name, flags: routeFlags) {
+            // A missing gateway is NOT a nil AF_LINK. New managed neighbor
+            // profiles require a real direct link, never a numeric next hop.
+            guard let link = sockaddrs[Int(RTAX_GATEWAY)], link.count >= 8,
+                  Int32(link[1]) == AF_LINK, link[6] == 0, link[7] == 0 else {
+                throw VPNDarwinRouteError.malformedMessage
+            }
+            // Our request has no LL address/selector; nd6_rtrequest's p2p path
+            // skips link-layer resolution and adds LLINFO, not a MAC address.
+            // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/netinet6/nd6.c
+        }
         let gateway = try gatewayBytes(sockaddrs[Int(RTAX_GATEWAY)], family: family,
                                        interfaceIndex: index, interfaceName: name)
         // RTM_GET returns the best route, including the default when the
@@ -257,7 +275,6 @@ enum VPNDarwinRouteCodec {
             }
             return (header.rtm_type, header.rtm_seq, header.rtm_pid, header.rtm_errno, nil)
         }
-        let routeFlags = UInt32(bitPattern: header.rtm_flags) & ~UInt32(RTF_DONE)
         let snapshot = VPNDarwinRouteSnapshot(destination: destination, gatewayBytes: gateway,
             interfaceIndex: index, interfaceName: name, flags: routeFlags)
         return (header.rtm_type, header.rtm_seq, header.rtm_pid, header.rtm_errno, snapshot)

@@ -126,7 +126,10 @@ private final class LegacyOnlyKernel: VPNRouteKernelController {
                 let data = try VPNDarwinRouteCodec.encode(type: UInt8(type), sequence: 1, pid: 414, identity: value)
                 let header = try VPNDarwinRouteCodec.identify(data)
                 try check(header.rtm_index == 42 && UInt32(bitPattern: header.rtm_flags) & UInt32(RTF_IFSCOPE) != 0)
-                try check(try VPNDarwinRouteCodec.decode(data).snapshot?.matches(value) == true)
+                let requestFlags = UInt32(bitPattern: header.rtm_flags)
+                try check(requestFlags == value.flags & ~UInt32(RTF_LLINFO))
+                let reply = try VPNDarwinRouteCodec.encodeReply(type:UInt8(type),sequence:1,pid:414,error:0,identity:value)
+                try check(try VPNDarwinRouteCodec.decode(reply).snapshot?.matches(value) == true)
             }
             let request = try VPNDarwinRouteCodec.encodeLookup(key: value.lookupKey, sequence: 2, pid: 414)
             let header = try VPNDarwinRouteCodec.identify(request)
@@ -238,14 +241,14 @@ private final class LegacyOnlyKernel: VPNRouteKernelController {
         switch mode {
         case "coexist":
             let proof = try tx.install(value)
-            try check(try journal.load().schemaVersion == 2)
+            try check(try journal.load().schemaVersion == 3)
             try tx.verifyApplied(proof)
         case "crash-before", "crash-after", "foreign", "missing", "wrong-scope-recovery":
             kernel.failBefore = mode == "crash-before" ? 1 : nil
             kernel.failAfter = mode == "crash-before" ? nil : 1
             try rejects { _ = try tx.install(value) }
             let snapshot = try journal.load()
-            try check(snapshot.schemaVersion == 2 && snapshot.operation?.entry == identities[1])
+            try check(snapshot.schemaVersion == 3 && snapshot.operation?.entry == identities[1])
             if mode == "wrong-scope-recovery" {
                 let before = try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(VPNRouteJournal.name))
                 let fake = Transport()

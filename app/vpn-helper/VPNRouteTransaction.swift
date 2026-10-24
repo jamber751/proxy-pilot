@@ -55,12 +55,7 @@ enum VPNRouteIdentityFactory {
     static func make(plan: VPNRoutePlan) throws -> [VPNOwnedRouteIdentity] {
         do { try plan.validate() } catch { throw VPNRouteTransactionError.invalidPlan }
         return try plan.routes.map { route in
-            var flags = UInt32(RTF_UP | RTF_STATIC | RTF_PROTO2)
-            if Int(route.destination.prefixLength) == route.destination.bytes.count * 8 {
-                flags |= UInt32(RTF_HOST)
-            }
-            if route.physicalGatewayBytes != nil { flags |= UInt32(RTF_GATEWAY) }
-            if route.role == .dnsDependency { flags |= UInt32(RTF_IFSCOPE) }
+            let flags = VPNManagedIPv6HostRoute.flags(for: route)
             guard let index = route.interfaceIndex else {
                 throw VPNRouteTransactionError.invalidPlan
             }
@@ -306,9 +301,11 @@ final class VPNRouteTransaction {
         let observed: VPNDarwinRouteSnapshot?
         do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.lookupKey) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
-        if operation.entry.role == .dnsDependency, let observed, !observed.matches(operation.entry) {
+        if (operation.entry.role == .dnsDependency || VPNManagedIPv6HostRoute.applies(to: operation.entry)),
+           let observed, !observed.matches(operation.entry) {
             // A foreign same-key replacement after an uncertain mutation is
-            // not absence proof and must retain the in-flight obligation.
+            // not absence proof. This includes legacy IPv6 direct-host entries:
+            // a newly observed LLINFO bit cannot upgrade their old flags/custody.
             throw VPNRouteTransactionError.cleanupBlocked
         }
         let owned = observed?.matches(operation.entry) == true
