@@ -29,16 +29,82 @@ struct VPNPasswordReference: Codable, Equatable, CustomDebugStringConvertible {
     }
 }
 
-enum VPNPasswordWriteState: String, Codable { case notIssued, pending, settled }
+/// Observed origin, not an immutable database UUID or proof of global absence.
+struct VPNPasswordBackendLocator: Codable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    enum Kind: String, Codable { case legacyKeychain }
+    let kind: Kind
+    let path: String
+    /// Unsigned widening of UInt32(bitPattern: Darwin stat.st_dev).
+    let device: UInt64
+    let inode: UInt64
+    let ownerUID: UInt32
+    let birthSeconds: Int64
+    let birthNanoseconds: UInt32
+    var description: String { "VPNPasswordBackendLocator(redacted)" }
+    var debugDescription: String { description }
 
-struct VPNPasswordSlot: Codable, Equatable {
-    let reference: VPNPasswordReference
-    var writeState: VPNPasswordWriteState
+    func validate() throws {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard path.utf8.count <= 1023, path.hasPrefix("/"), parts.count > 1,
+              parts.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              path.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+              device <= UInt64(UInt32.max), inode > 0, ownerUID != UInt32.max,
+              birthSeconds >= 0, birthNanoseconds < 1_000_000_000
+        else { throw VPNValidationError.invalidConfiguration }
+    }
 }
 
-/// A definite result is supplied only by a trusted, authenticated backend.
-/// Timeout, lost acknowledgement and client death are never definite failures.
-enum VPNPasswordAddOutcome: Equatable { case definiteSuccess, definiteFailure, indeterminate }
+struct VPNPasswordItemLocator: Codable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    static let maximumPersistentReferenceBytes = 4096
+    let persistentReference: Data
+    let origin: VPNPasswordBackendLocator
+    var description: String { "VPNPasswordItemLocator(redacted)" }
+    var debugDescription: String { description }
+    func validate() throws {
+        guard !persistentReference.isEmpty,
+              persistentReference.count <= Self.maximumPersistentReferenceBytes
+        else { throw VPNValidationError.invalidConfiguration }
+        try origin.validate()
+    }
+}
+
+enum VPNPasswordWriteState: String, Codable { case notIssued, pending, settled, noItem }
+
+struct VPNPasswordSlot: Codable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    let reference: VPNPasswordReference
+    var writeState: VPNPasswordWriteState
+    var locator: VPNPasswordItemLocator? = nil
+    var description: String { "VPNPasswordSlot(redacted)" }
+    var debugDescription: String { description }
+    fileprivate func validate() throws {
+        try reference.validate()
+        if writeState == .settled {
+            guard let locator else { throw VPNValidationError.invalidConfiguration }
+            try locator.validate()
+        } else if locator != nil { throw VPNValidationError.invalidConfiguration }
+    }
+    fileprivate mutating func complete(_ outcome: VPNPasswordAddOutcome) throws {
+        guard writeState == .pending else { throw VPNValidationError.staleRevision }
+        switch outcome {
+        case .added(let captured):
+            try captured.validate(); locator = captured; writeState = .settled
+        case .definitelyNoIO: writeState = .noItem
+        case .indeterminate: throw VPNValidationError.staleRevision
+        }
+        try validate()
+    }
+}
+
+/// Trusted authenticated completion only. definitelyNoIO proves mutation was
+/// NEVER issued; generic API errors, lost acknowledgment and client death do not.
+enum VPNPasswordAddOutcome: Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    case added(VPNPasswordItemLocator), definitelyNoIO, indeterminate
+    var description: String { "VPNPasswordAddOutcome(redacted)" }
+    var debugDescription: String { description }
+}
+
+/// Only positive deletion of the exact verified item can acknowledge removal.
+enum VPNPasswordDeleteOutcome: Equatable { case deleted, notFound, unavailable, indeterminate }
 
 struct VPNPasswordLedger: Codable, Equatable {
     static let maximumPendingDeletions = 64
@@ -54,15 +120,20 @@ struct VPNPasswordLedger: Codable, Equatable {
               Set(pendingDeletion.map { $0.reference.itemID }).count == pendingDeletion.count,
               active.map({ value in !pendingDeletion.contains(where: { $0.reference.itemID == value.reference.itemID }) }) ?? true
         else { throw VPNValidationError.invalidConfiguration }
-        for slot in pendingDeletion { try slot.reference.validate() }
+        for slot in pendingDeletion { try slot.validate() }
         if let active {
-            try active.reference.validate()
+            try active.validate()
             guard active.reference.matches(saved) else { throw VPNValidationError.invalidConfiguration }
         }
     }
 
     fileprivate mutating func reconcile(saved: VPNSnapshot) throws {
         if let previous = active, !previous.reference.matches(saved) {
+            if previous.writeState == .notIssued || previous.writeState == .noItem {
+                active = nil
+                try validate(saved: saved)
+                return
+            }
             guard pendingDeletion.count < Self.maximumPendingDeletions else {
                 throw VPNValidationError.storageUnavailable
             }
@@ -114,7 +185,7 @@ struct VPNStoredState: Codable, Equatable {
     var hasPendingChanges: Bool { applied?.configuration.revision != saved.configuration.revision }
 
     fileprivate func validate() throws {
-        guard schemaVersion == 3 else { throw VPNValidationError.invalidConfiguration }
+        guard schemaVersion == 4 else { throw VPNValidationError.invalidConfiguration }
         try saved.validate()
         try passwordLedger.validate(saved: saved)
         if let applied = applied {
@@ -127,14 +198,14 @@ struct VPNStoredState: Codable, Equatable {
     }
 
     init(saved: VPNSnapshot, applied: VPNSnapshot?, passwordLedger: VPNPasswordLedger = VPNPasswordLedger()) {
-        schemaVersion = 3; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
+        schemaVersion = 4; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
     }
 
     private enum CodingKeys: String, CodingKey { case schemaVersion, saved, applied, passwordLedger }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .schemaVersion)
-        guard (1...3).contains(version) else { throw VPNValidationError.invalidConfiguration }
+        guard (1...4).contains(version) else { throw VPNValidationError.invalidConfiguration }
         saved = try container.decode(VPNSnapshot.self, forKey: .saved)
         applied = try container.decodeIfPresent(VPNSnapshot.self, forKey: .applied)
         if version == 1 {
@@ -149,15 +220,29 @@ struct VPNStoredState: Codable, Equatable {
             passwordLedger = VPNPasswordLedger(
                 active: legacy.active.map { VPNPasswordSlot(reference: $0, writeState: .pending) },
                 pendingDeletion: legacy.pendingDeletion.map { VPNPasswordSlot(reference: $0, writeState: .pending) })
+        } else if version == 3 {
+            let legacy = try container.decode(LegacySchema3Ledger.self, forKey: .passwordLedger)
+            passwordLedger = VPNPasswordLedger(
+                active: legacy.active.map { VPNPasswordSlot(reference: $0.reference, writeState: .pending) },
+                pendingDeletion: legacy.pendingDeletion.map { VPNPasswordSlot(reference: $0.reference, writeState: .pending) })
         } else {
             passwordLedger = try container.decode(VPNPasswordLedger.self, forKey: .passwordLedger)
         }
-        schemaVersion = 3
+        schemaVersion = 4
     }
 
     private struct LegacyPasswordLedger: Decodable {
         let active: VPNPasswordReference?
         let pendingDeletion: [VPNPasswordReference]
+    }
+    private struct LegacySchema3Ledger: Decodable {
+        struct Slot: Decodable {
+            enum State: String, Decodable { case notIssued, pending, settled }
+            let reference: VPNPasswordReference
+            let writeState: State
+        }
+        let active: Slot?
+        let pendingDeletion: [Slot]
     }
 }
 
@@ -171,6 +256,7 @@ final class VPNStore {
     private let maximumBytes = 8 * 1_048_576
     #if VPN_PASSWORD_LEDGER_TESTING
     var testRejectNextPendingDirectorySync = false
+    var testRejectNextWriteAfterRename = false
     #endif
 
     init(directory: URL) { self.directory = directory }
@@ -284,7 +370,7 @@ final class VPNStore {
                   auth.credentialPersistence == .keychain, let login = auth.login,
                   let contents = snapshot.profileContents else { throw VPNValidationError.invalidConfiguration }
             var ledger = current.passwordLedger
-            if let old = ledger.active, old.writeState != .notIssued {
+            if let old = ledger.active, old.writeState != .notIssued && old.writeState != .noItem {
                 guard ledger.pendingDeletion.count < VPNPasswordLedger.maximumPendingDeletions else {
                     throw VPNValidationError.storageUnavailable
                 }
@@ -303,11 +389,12 @@ final class VPNStore {
     /// settled from an item lookup, a delay, or an item-not-found result.
     /// No credential bytes enter this store or its serialized state.
     func readPassword<T>(reference: VPNPasswordReference, expectedRevision: UInt64,
-                         silently read: (VPNPasswordReference) throws -> T) throws -> T {
+                         silently read: (VPNPasswordReference, VPNPasswordItemLocator) throws -> T) throws -> T {
         try withLock(create: false) { descriptor in
             let current = try requireActivePassword(reference: reference, expectedRevision: expectedRevision, directory: descriptor)
-            guard current.passwordLedger.active?.writeState == .settled else { throw VPNValidationError.staleRevision }
-            return try read(reference)
+            guard let slot = current.passwordLedger.active, slot.writeState == .settled,
+                  let locator = slot.locator else { throw VPNValidationError.staleRevision }
+            return try read(reference, locator)
         }
     }
 
@@ -327,8 +414,13 @@ final class VPNStore {
             try writeState(pending, directory: descriptor, requireDirectorySync: true)
             let outcome = try add(reference)
             if outcome != .indeterminate {
-                ledger.active?.writeState = .settled
-                try writeState(VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger), directory: descriptor)
+                try ledger.active?.complete(outcome)
+                let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
+                try next.validate()
+                // A write error after atomic rename can still leave valid
+                // settled metadata committed. Never attempt a rollback; a fresh
+                // read may observe either pending or settled with its locator.
+                try writeState(next, directory: descriptor)
             }
             return outcome
         }
@@ -346,30 +438,33 @@ final class VPNStore {
     /// Trusted late receipt seam only. A future coordinator authenticates a
     /// DEFINITE worker completion before calling; a read witness is insufficient.
     /// Exact old queued identity may settle without touching the new active slot.
-    func completePasswordAdd(reference: VPNPasswordReference) throws {
+    func completePasswordAdd(reference: VPNPasswordReference, outcome: VPNPasswordAddOutcome) throws {
         try withLock(create: false) { descriptor in
             guard let current = try readState(directory: descriptor) else { throw VPNValidationError.staleRevision }
             var ledger = current.passwordLedger
             if ledger.active?.reference == reference, ledger.active?.writeState == .pending {
-                ledger.active?.writeState = .settled
+                try ledger.active?.complete(outcome)
             } else if let index = ledger.pendingDeletion.firstIndex(where: { $0.reference == reference && $0.writeState == .pending }) {
-                ledger.pendingDeletion[index].writeState = .settled
+                try ledger.pendingDeletion[index].complete(outcome)
             } else { throw VPNValidationError.staleRevision }
             let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
             try next.validate(); try writeState(next, directory: descriptor)
         }
     }
 
-    /// The adapter treats item-not-found as success. Failure retains the exact
-    /// deletion obligation; revoke is never rolled back. A crash after delete
-    /// but before this acknowledgement is retried against the same old UUID.
+    /// NotFound is not deletion proof. Only a positive exact-item deletion may
+    /// acknowledge this locator. A crash after deletion but before acknowledgment
+    /// can leave a pending obligation even if later lookup returns NotFound.
     func deletePendingPassword(reference: VPNPasswordReference,
-                               silently delete: (VPNPasswordReference) throws -> Void) throws {
+                               silently delete: (VPNPasswordReference, VPNPasswordItemLocator) throws -> VPNPasswordDeleteOutcome) throws {
         try withLock(create: false) { descriptor in
             guard let current = try readState(directory: descriptor),
                   let slot = current.passwordLedger.pendingDeletion.first(where: { $0.reference == reference }),
                   slot.writeState != .pending else { throw VPNValidationError.staleRevision }
-            if slot.writeState == .settled { try delete(reference) }
+            if slot.writeState == .settled {
+                guard let locator = slot.locator,
+                      try delete(reference, locator) == .deleted else { throw VPNValidationError.storageUnavailable }
+            }
             var ledger = current.passwordLedger
             ledger.pendingDeletion.removeAll { $0.reference == reference }
             let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
@@ -449,6 +544,12 @@ final class VPNStore {
             }
         }
         guard fsync(file) == 0, renameat(directory, temporary, directory, filename) == 0 else { throw VPNValidationError.storageUnavailable }
+        #if VPN_PASSWORD_LEDGER_TESTING
+        if testRejectNextWriteAfterRename {
+            testRejectNextWriteAfterRename = false
+            throw VPNValidationError.storageUnavailable
+        }
+        #endif
         // Ordinary configuration saves retain their existing rename boundary.
         // An add may start ONLY after syncing its pending intent directory;
         // failure can leave pending committed, but must never dispatch backend IO.

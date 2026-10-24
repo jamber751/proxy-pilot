@@ -43,27 +43,42 @@ class VPNPasswordWorkerTests(unittest.TestCase):
         cls.copied = folder / 'same-code-different-inode'
         shutil.copyfile(cls.binary, cls.copied); cls.copied.chmod(0o700)
 
+    def own_group_has_writers(self, group):
+        # Darwin can reject signal 0 for an exited/hardened child. Positively
+        # observe only our group, with no command/path output or global kills.
+        result = subprocess.run(['/bin/ps', '-axo', 'pgid=,uid=,stat='],
+                                capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, 'Cannot inspect own worker group')
+        live = False
+        for row in result.stdout.splitlines():
+            fields = row.split()
+            if not fields or fields[0] != str(group):
+                continue
+            self.assertEqual(len(fields), 3, 'Malformed own worker group observation')
+            self.assertEqual(fields[1], str(os.geteuid()), 'Private worker group owner changed')
+            if not fields[2].startswith('Z'):
+                live = True
+        return live
+
     def finish_own_group(self, group):
-        # posix_spawn's worker inherits this freshly created private session /
-        # process group even though it redirects its stdio. Parent completion
-        # therefore is not evidence that its child stopped writing the fixture.
+        # A child redirects stdio and can outlive its parent. Wait for positive
+        # no-live-writer proof before deleting the private fixture directory.
         deadline = time.monotonic() + 7
         while time.monotonic() < deadline:
-            try:
-                os.killpg(group, 0)
-            except ProcessLookupError:
+            if not self.own_group_has_writers(group):
                 return
             time.sleep(0.02)
-        # Only the isolated group this test created; no machine-wide matching.
         try:
             os.killpg(group, signal.SIGKILL)
         except ProcessLookupError:
             return
+        except PermissionError:
+            if not self.own_group_has_writers(group):
+                return
+            raise
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline:
-            try:
-                os.killpg(group, 0)
-            except ProcessLookupError:
+            if not self.own_group_has_writers(group):
                 break
             time.sleep(0.02)
         self.fail('Own password-worker fixture exceeded bounded exit wait')
@@ -106,17 +121,34 @@ class VPNPasswordWorkerTests(unittest.TestCase):
     def test_prepared_child_is_bound_to_store_directory(self): self.run_case('foreign-store')
     def test_not_found_is_not_deletion_proof(self): self.run_case('not-found-delete')
     def test_soft_timeout_child_late_completion_preserves_new_grant(self): self.run_case('late')
+    def test_backend_inout_cannot_retarget_accepted_go_late_settlement(self): self.run_case('mutated-late-add')
     def test_child_retries_busy_store_only_after_security_result(self):
         for _ in range(3):
             self.run_case('busy')
 
     def test_observer_retries_only_storage_contention(self): self.run_case('observer')
+    def test_maximum_valid_locator_wire_budget(self): self.run_case('wire-bounds')
+    def test_closed_v2_locator_and_operation_shapes(self): self.run_case('wire-invalid')
+    def test_add_missing_locator_remains_pending(self): self.run_case('missing-locator')
+    def test_add_invalid_locator_remains_pending(self): self.run_case('invalid-locator')
+    def test_generic_api_denial_is_not_no_io_proof(self): self.run_case('generic-denied')
+    def test_definite_no_io_is_distinct_terminal_without_second_add(self): self.run_case('noio')
+    def test_stale_locator_read_never_returns_replacement_secret(self): self.run_case('stale-read')
+    def test_late_positive_delete_settles_only_captured_item(self): self.run_case('late-delete')
+    def test_late_delete_cannot_acknowledge_changed_locator(self): self.run_case('changed-delete-locator')
+
+    def test_legacy_or_unknown_worker_role_is_refused_before_storage(self):
+        for role in ('--vpn-password-worker-v1', '--vpn-password-worker-v3', '--vpn-password-worker'):
+            result = subprocess.run([str(self.binary), role], capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 64)
+            self.assertEqual(result.stdout, b'')
+            self.assertEqual(result.stderr, b'')
     def test_child_crash_after_fake_add_leaves_pending(self): self.run_case('commit-crash')
     def test_throwing_initializers_close_once_and_do_not_close_reused_fd(self): self.run_case('fd-ownership')
     def test_expired_monotonic_deadline_never_underflows(self): self.run_case('expired-deadline')
 
     def test_wrong_direct_parent_is_denied_without_storage(self):
-        result = subprocess.run([str(self.binary), '--vpn-password-worker-v1'], capture_output=True, timeout=10)
+        result = subprocess.run([str(self.binary), '--vpn-password-worker-v2'], capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 77)
         self.assertEqual(result.stdout, b'')
         self.assertEqual(result.stderr, b'')

@@ -13,12 +13,31 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let count = read(fd, &bytes, bytes.count)
         return count > 0 ? String(decoding: bytes.prefix(count), as: UTF8.self) : "normal"
     }
+    fileprivate func locator(_ reference: VPNPasswordReference, descriptor: Int32) throws -> VPNPasswordItemLocator {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o777 == 0o600 else {
+            throw VPNPasswordWorkerError.unavailable
+        }
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(directory, F_GETPATH, &path) == 0 else { throw VPNPasswordWorkerError.unavailable }
+        let result = VPNPasswordItemLocator(persistentReference: Data(reference.itemID.uuidString.utf8),
+            origin: .init(kind: .legacyKeychain,
+                path: String(cString: path) + "/item-" + reference.itemID.uuidString,
+                device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino),
+                ownerUID: info.st_uid, birthSeconds: Int64(info.st_birthtimespec.tv_sec),
+                birthNanoseconds: UInt32(info.st_birthtimespec.tv_nsec)))
+        try result.validate(); return result
+    }
     func execute(_ request: inout VPNPasswordWorkerWire.Request) throws -> VPNPasswordWorkerWire.Response {
+        if behavior() == "noio", request.metadata.operation == .add {
+            return .init(status: .definitelyNoIO, secret: Data())
+        }
         let event = openat(directory, "events", O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard event >= 0 else { throw VPNPasswordWorkerError.unavailable }
         let label = Data((request.metadata.operation.rawValue + "\n").utf8)
         _ = label.withUnsafeBytes { write(event, $0.baseAddress, $0.count) }; close(event)
-        if behavior() == "delay" { usleep(400_000) }
+        if behavior() == "delay" || behavior() == "mutate-request" { usleep(400_000) }
         if behavior() == "wait-release" {
             let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
             var info = stat()
@@ -36,16 +55,38 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             guard fd >= 0 else { return .init(status: .failed, secret: Data()) }; defer { close(fd) }
             let n = request.secret.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
             if behavior() == "commit-crash" { _exit(72) }
-            return .init(status: n == request.secret.count ? .success : .failed, secret: Data())
+            guard n == request.secret.count else { return .init(status: .failed, secret: Data()) }
+            if behavior() == "missing-locator" { return .init(status: .success, secret: Data()) }
+            var captured = try locator(request.metadata.reference, descriptor: fd)
+            if behavior() == "invalid-locator" {
+                captured = .init(persistentReference: Data(), origin: captured.origin)
+            }
+            if behavior() == "mutate-request" {
+                let original = request.metadata
+                VPNPasswordWorkerWire.clear(&request.secret)
+                request = .init(metadata: .init(operation: .add,
+                    reference: .init(itemID: UUID(), profileSHA256: original.reference.profileSHA256,
+                                     login: original.reference.login), revision: original.revision), secret: Data())
+            }
+            return .init(status: .success, secret: Data(), locator: captured)
         case .read:
             let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { return .init(status: .notFound, secret: Data()) }; defer { close(fd) }
+            guard request.metadata.locator == (try locator(request.metadata.reference, descriptor: fd)) else {
+                return .init(status: .denied, secret: Data())
+            }
             var bytes = [UInt8](repeating: 0, count: VPNPasswordWorkerWire.maximumSecretBytes)
             let n = read(fd, &bytes, bytes.count)
             defer { bytes.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
             guard n > 0 else { return .init(status: .failed, secret: Data()) }
             return .init(status: .success, secret: Data(bytes.prefix(n)))
         case .delete:
+            let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { return .init(status: errno == ENOENT ? .notFound : .failed, secret: Data()) }
+            defer { close(fd) }
+            guard request.metadata.locator == (try locator(request.metadata.reference, descriptor: fd)) else {
+                return .init(status: .denied, secret: Data())
+            }
             let result = unlinkat(directory, name, 0)
             return .init(status: result == 0 ? .success : (errno == ENOENT ? .notFound : .failed), secret: Data())
         }
@@ -110,6 +151,13 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         try config.setAuthentication(VPNAuthentication(mode: .password, login: "synthetic"))
         _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
     }
+    static func fakeLocator(_ folder: URL, reference: VPNPasswordReference) throws -> VPNPasswordItemLocator {
+        let directory = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw Failure.check }; defer { close(directory) }
+        let item = openat(directory, "item-" + reference.itemID.uuidString, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard item >= 0 else { throw Failure.check }; defer { close(item) }
+        return try FakePasswordBackend(directory: directory).locator(reference, descriptor: item)
+    }
     static func main() throws {
         if let status = VPNPasswordWorker.testRunIfRequested(arguments: CommandLine.arguments,
                 backend: { FakePasswordBackend(directory: $0) }) { exit(status) }
@@ -123,6 +171,128 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         let folder = URL(fileURLWithPath: args[2], isDirectory: true)
         let (store, reference, revision) = try seed(folder)
         switch args[1] {
+        case "wire-invalid":
+            let locator = VPNPasswordItemLocator(persistentReference: Data([1]), origin: .init(kind: .legacyKeychain,
+                path: "/synthetic/item", device: 1, inode: 1, ownerUID: getuid(), birthSeconds: 0, birthNanoseconds: 0))
+            let nonce = Data(repeating: 0, count: VPNPasswordWorkerWire.nonceBytes)
+            let invalid = VPNPasswordItemLocator(persistentReference: Data(), origin: locator.origin)
+            for operation in [VPNPasswordWorkerOperation.read, .delete] {
+                try rejects { _ = try VPNPasswordWorkerWire.Metadata(operation: operation, reference: reference, revision: revision).encoded() }
+                try rejects { _ = try VPNPasswordWorkerWire.Metadata(operation: operation, reference: reference, revision: revision, locator: invalid).encoded() }
+                try rejects { _ = try VPNPasswordWorkerWire.response(.init(status: .definitelyNoIO, secret: Data()), nonce: nonce, operation: operation) }
+            }
+            try rejects { _ = try VPNPasswordWorkerWire.Metadata(operation: .add, reference: reference, revision: revision, locator: locator).encoded() }
+            for captured in [nil, invalid] as [VPNPasswordItemLocator?] {
+                let response = VPNPasswordWorkerWire.Response(status: .success, secret: Data(), locator: captured)
+                try check(response.addOutcome == .indeterminate)
+                try rejects { _ = try VPNPasswordWorkerWire.response(response, nonce: nonce, operation: .add) }
+            }
+            for status in [VPNPasswordWorkerStatus.failed, .denied, .unavailable, .notFound, .indeterminate] {
+                let response = VPNPasswordWorkerWire.Response(status: status, secret: Data())
+                try check(response.addOutcome == .indeterminate)
+                try rejects { _ = try VPNPasswordWorkerWire.response(.init(status: status, secret: Data(), locator: locator), nonce: nonce, operation: .add) }
+            }
+            try rejects { _ = try VPNPasswordWorkerWire.response(.init(status: .success, secret: Data("secret".utf8)), nonce: nonce, operation: .add) }
+            try rejects { _ = try VPNPasswordWorkerWire.response(.init(status: .success, secret: Data("secret".utf8), locator: locator), nonce: nonce, operation: .read) }
+            var old = try VPNPasswordWorkerWire.request(.init(metadata: .init(operation: .add,
+                reference: reference, revision: revision), secret: Data("secret".utf8)), nonce: nonce)
+            old.replaceSubrange(0..<8, with: Data("PPPWGO01".utf8))
+            try rejects { _ = try VPNPasswordWorkerWire.decodeRequest(old, nonce: nonce) }
+            var response = try VPNPasswordWorkerWire.response(.init(status: .success, secret: Data(), locator: locator), nonce: nonce, operation: .add)
+            response.replaceSubrange(0..<8, with: Data("PPPWRS01".utf8))
+            try rejects { _ = try VPNPasswordWorkerWire.decodeResponse(response, nonce: nonce, operation: .add) }
+        case "missing-locator", "invalid-locator", "generic-denied", "noio":
+            let behavior = args[1] == "generic-denied" ? "denied" : args[1]
+            try Data(behavior.utf8).write(to: folder.appendingPathComponent("behavior"))
+            var secret = Data("synthetic-password".utf8)
+            let outcome = try VPNPasswordWorker.prepare(store: store).addOnce(store: store,
+                reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren()
+            try check(secret.isEmpty)
+            let slot = try store.load()!.passwordLedger.active!
+            if args[1] == "noio" {
+                try check(outcome == .definitelyNoIO && slot.writeState == .noItem && slot.locator == nil && events(folder).isEmpty)
+            } else {
+                try check(outcome == .indeterminate && slot.writeState == .pending && slot.locator == nil && events(folder) == ["add"])
+            }
+            var again = Data("synthetic-password".utf8)
+            try rejects { _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store,
+                reference: reference, revision: revision, secret: &again) }
+            try check(again.isEmpty && events(folder).filter { $0 == "add" }.count == (args[1] == "noio" ? 0 : 1))
+        case "stale-read":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren()
+            let captured = try store.load()!.passwordLedger.active!.locator!
+            let path = folder.appendingPathComponent("item-" + reference.itemID.uuidString)
+            try FileManager.default.removeItem(at: path)
+            try Data("other-item".utf8).write(to: path)
+            guard chmod(path.path, 0o600) == 0 else { throw Failure.check }
+            let actual = try fakeLocator(folder, reference: reference)
+            try check(actual != captured)
+            let read = try VPNPasswordWorker.prepare(store: store).read(store: store, reference: reference, revision: revision)
+            try joinOwnChildren()
+            try check(read.status == .denied && read.secret.isEmpty && store.load()!.passwordLedger.active?.locator == captured)
+            try check(events(folder) == ["add", "read"])
+        case "late-delete", "changed-delete-locator":
+            var secret = Data("synthetic-password".utf8)
+            _ = try VPNPasswordWorker.prepare(store: store).addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            try joinOwnChildren(); try revoke(store)
+            try Data("wait-release".utf8).write(to: folder.appendingPathComponent("behavior"))
+            let worker = try VPNPasswordWorker.prepare(store: store)
+            try rejects {
+                try store.deletePendingPassword(reference: reference) { _, locator in
+                    var empty = Data()
+                    let response = try worker.testPerform(operation: .delete, reference: reference, revision: revision,
+                        secret: &empty, timeout: 30_000_000, locator: locator)
+                    try check(response.status == .indeterminate)
+                    return .indeterminate
+                }
+            }
+            var changed: VPNPasswordItemLocator?
+            if args[1] == "changed-delete-locator" {
+                let other = VPNPasswordReference(itemID: UUID(), profileSHA256: reference.profileSHA256, login: reference.login)
+                let file = folder.appendingPathComponent("item-" + other.itemID.uuidString)
+                try Data("other-item".utf8).write(to: file)
+                guard chmod(file.path, 0o600) == 0 else { throw Failure.check }
+                changed = try fakeLocator(folder, reference: other)
+                let state = try store.load()!; var ledger = state.passwordLedger
+                ledger.pendingDeletion[0].locator = changed
+                let replacement = VPNStoredState(saved: state.saved, applied: state.applied, passwordLedger: ledger)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                try encoder.encode(replacement).write(to: folder.appendingPathComponent("state.json"), options: .atomic)
+                guard chmod(folder.appendingPathComponent("state.json").path, 0o600) == 0 else { throw Failure.check }
+            }
+            try Data().write(to: folder.appendingPathComponent("release"))
+            try joinOwnChildren()
+            let state = try store.load()!
+            if let changed {
+                try check(state.passwordLedger.pendingDeletion.count == 1 && state.passwordLedger.pendingDeletion[0].locator == changed)
+            } else { try check(state.passwordLedger.pendingDeletion.isEmpty) }
+            try check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("item-" + reference.itemID.uuidString).path))
+            try check(events(folder) == ["add", "delete"])
+        case "wire-bounds":
+            let origin = VPNPasswordBackendLocator(kind: .legacyKeychain,
+                path: "/" + String(repeating: "\\\"", count: 511),
+                device: UInt64(UInt32.max), inode: UInt64.max, ownerUID: UInt32.max - 1,
+                birthSeconds: Int64.max, birthNanoseconds: 999_999_999)
+            let locator = VPNPasswordItemLocator(persistentReference: Data(repeating: 255, count: 4096), origin: origin)
+            try locator.validate()
+            let longReference = VPNPasswordReference(itemID: UUID(), profileSHA256: String(repeating: "f", count: 64),
+                login: String(repeating: "\"", count: 255))
+            let metadata = VPNPasswordWorkerWire.Metadata(operation: .read, reference: longReference,
+                revision: UInt64.max, locator: locator)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let measured = try encoder.encode(metadata).count
+            print("wire-bound-metadata=\(measured)")
+            try check(measured > 8192 && measured <= VPNPasswordWorkerWire.maximumMetadataBytes)
+            let nonce = Data(repeating: 0, count: VPNPasswordWorkerWire.nonceBytes)
+            let request = try VPNPasswordWorkerWire.request(.init(metadata: metadata, secret: Data()), nonce: nonce)
+            try check(request.count < VPNPasswordWorkerWire.maximumFrameBytes)
+            try check(VPNPasswordWorkerWire.decodeRequest(request, nonce: nonce).metadata == metadata)
+            let response = try VPNPasswordWorkerWire.response(.init(status: .success, secret: Data(), locator: locator),
+                nonce: nonce, operation: .add)
+            try check(VPNPasswordWorkerWire.decodeResponse(response, nonce: nonce, operation: .add).locator == locator)
         case "observer":
             var attempts = 0
             try wait {
@@ -140,11 +310,14 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
         case "roundtrip":
             let worker = try VPNPasswordWorker.prepare(store: store)
             var secret = Data("synthetic-static-password".utf8)
-            try check(worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret) == .definiteSuccess)
+            let outcome = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &secret)
+            guard case .added(let captured) = outcome else { throw Failure.check }
+            try captured.validate()
             // A successful response is sent before the child's final Store
             // observation. Join it before starting the next independent op.
             try joinOwnChildren()
-            try check(secret.isEmpty && store.load()!.passwordLedger.active?.writeState == .settled)
+            try check(secret.isEmpty && store.load()!.passwordLedger.active?.writeState == .settled &&
+                store.load()!.passwordLedger.active?.locator == captured)
             var again = Data("synthetic-static-password".utf8)
             try rejects { _ = try worker.addOnce(store: store, reference: reference, revision: revision, secret: &again) }
             var read = try VPNPasswordWorker.prepare(store: store).read(store: store, reference: reference, revision: revision)
@@ -175,9 +348,10 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             var secret = Data("synthetic-password".utf8)
             let result = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in
                 let response = try worker.testReplayGO(reference: reference, revision: revision, secret: &secret)
-                return response.status == .success ? .definiteSuccess : .definiteFailure
+                return response.addOutcome
             }
-            try check(result == .definiteSuccess && secret.isEmpty && events(folder) == ["add"])
+            guard case .added = result else { throw Failure.check }
+            try check(secret.isEmpty && events(folder) == ["add"])
         case "unavailable":
             try Data("unavailable".utf8).write(to: folder.appendingPathComponent("behavior"))
             do { _ = try VPNPasswordWorker.prepare(store: store); throw Failure.check }
@@ -203,15 +377,16 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
             try rejects { try VPNPasswordWorker.prepare(store: store).deletePending(store: store, reference: reference) }
             usleep(100_000)
             try check(store.load()!.passwordLedger.pendingDeletion.count == 1)
-        case "late", "parent-death", "commit-crash", "busy":
-            let behavior = args[1] == "commit-crash" ? "commit-crash" : (args[1] == "busy" ? "wait-release" : "delay")
+        case "late", "parent-death", "commit-crash", "busy", "mutated-late-add":
+            let behavior = args[1] == "commit-crash" ? "commit-crash" :
+                (args[1] == "busy" ? "wait-release" : (args[1] == "mutated-late-add" ? "mutate-request" : "delay"))
             try Data(behavior.utf8).write(to: folder.appendingPathComponent("behavior"))
             let worker = try VPNPasswordWorker.prepare(store: store)
             var secret = Data("synthetic-password".utf8)
             let result = try store.addPasswordOnce(reference: reference, expectedRevision: revision) { _ in
                 let response = try worker.testPerform(operation: .add, reference: reference, revision: revision,
                     secret: &secret, timeout: 30_000_000)
-                return response.status == .indeterminate ? .indeterminate : .definiteSuccess
+                return response.addOutcome
             }
             try check(result == .indeterminate && secret.isEmpty)
             if args[1] == "parent-death" { _exit(0) }
@@ -239,6 +414,8 @@ private struct FakePasswordBackend: VPNPasswordWorkerBackend {
                 _ = try store.save(config, expectedRevision: state.saved.configuration.revision)
                 let new = try store.createPasswordSaveGrant(expectedRevision: config.revision, expectedActive: nil)
                 try wait { try store.load()!.passwordLedger.pendingDeletion[0].writeState == .settled }
+                try joinOwnChildren()
+                try check(store.load()!.passwordLedger.pendingDeletion[0].locator == fakeLocator(folder, reference: reference))
                 try check(store.load()!.passwordLedger.active?.reference == new && store.load()!.passwordLedger.active?.writeState == .notIssued)
                 try check(events(folder) == ["add"])
             }

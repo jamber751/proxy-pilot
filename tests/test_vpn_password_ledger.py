@@ -44,7 +44,15 @@ class VPNPasswordLedgerTests(unittest.TestCase):
     def test_profile_replace_and_remove_queue_old_binding(self): self.run_case('profile')
     def test_acknowledgements_preserve_ledger_and_applied_never_grants(self): self.run_case('ack')
     def test_locked_callback_prevents_competing_process_store_update(self): self.run_case('lock')
-    def test_schema1_and_2_migration_and_schema3_malformed_fail_closed(self): self.run_case('schema')
+    def test_schema1_and_2_migration_and_malformed_state_fail_closed(self): self.run_case('schema')
+    def test_schema3_every_write_state_migrates_to_unknown(self): self.run_case('schema3')
+    def test_locator_bounds_and_redacted_descriptions(self): self.run_case('locator')
+    def test_invalid_or_replayed_completion_does_not_settle_unknown_add(self): self.run_case('invalid-completion')
+    def test_definitely_no_io_is_unreadable_and_retires_without_backend(self): self.run_case('no-item')
+    def test_late_no_io_completion_only_retires_old_queued_reference(self): self.run_case('late-no-io')
+    def test_delete_not_found_and_unavailable_retain_exact_locator(self): self.run_case('delete-outcomes')
+    def test_malformed_state_locator_combinations_and_8mb_limit(self): self.run_case('malformed-slot')
+    def test_completion_error_after_atomic_rename_preserves_valid_locator(self): self.run_case('rename-error')
     def test_full_queue_rejects_without_losing_obligations(self): self.run_case('capacity')
     def test_callback_errors_do_not_lose_durable_state(self): self.run_case('errors')
     def test_one_add_per_uuid_and_fresh_save_rejects_stale_editor(self): self.run_case('once')
@@ -59,7 +67,7 @@ class VPNPasswordLedgerTests(unittest.TestCase):
             self.run_case('add-crash', folder, expected=43)
             self.run_case('resume-add-crash', folder)
 
-    def test_process_exit_after_delete_before_ack_is_retried(self):
+    def test_process_exit_after_delete_before_ack_keeps_not_found_pending(self):
         with tempfile.TemporaryDirectory(prefix='pp-password-ledger-') as folder:
             self.run_case('prepare-crash', folder)
             self.run_case('delete-crash', folder, expected=42)
