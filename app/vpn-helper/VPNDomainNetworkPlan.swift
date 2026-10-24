@@ -37,17 +37,16 @@ struct VPNDomainNetworkPlan: Equatable {
 
         // Only configured resource prefixes can cover an upstream. The peer
         // bypass is a physical transport dependency, never DNS tunnel coverage.
-        var combined = resources.filter { $0.kind != .domain }
+        let combined = resources.filter { $0.kind != .domain }
         let configuredPrefixes = try combined.map(VPNRoutePrefix.init(resource:))
-        for server in upstreams where !configuredPrefixes.contains(where: { $0.contains(host: server) }) {
-            // This temporary resource is not inserted into saved configuration;
-            // VPNRoutePlan retains prefixes, not these temporary UUIDs.
-            combined.append(try VPNResource(address: server.canonical))
+        let dependencies = upstreams.filter { server in
+            !configuredPrefixes.contains(where: { $0.contains(host: server) })
         }
-        guard combined.count <= 1000 else { throw VPNDomainNetworkPlanError.capacity }
+        guard combined.count + dependencies.count <= 1000 else { throw VPNDomainNetworkPlanError.capacity }
         // Reuse the existing no-overlap, peer-capture and typed-utun validators.
         staticRoutes = try VPNRoutePlan(generation: generation, revision: revision,
-                                       resources: combined, peer: peer, tunnel: tunnel)
+                                       resources: combined, peer: peer, tunnel: tunnel,
+                                       dnsDependencies: dependencies)
         corporateUpstreams = upstreams
         domainResources = domains
     }

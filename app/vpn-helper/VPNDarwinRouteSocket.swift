@@ -116,6 +116,15 @@ struct VPNDarwinRouteSnapshot: Equatable {
     let interfaceName: String
     let flags: UInt32
 
+    func matches(_ key: VPNRouteLookupKey) -> Bool {
+        guard destination == key.destination else { return false }
+        if let scope = key.interfaceScope {
+            return flags & UInt32(RTF_IFSCOPE) != 0 && interfaceIndex == scope.interfaceIndex
+                && interfaceName == scope.interfaceName
+        }
+        return flags & UInt32(RTF_IFSCOPE) == 0
+    }
+
     func kernelEvidence() throws -> VPNRouteKernelEvidence {
         switch destination.family {
         case .ipv4:
@@ -186,13 +195,25 @@ enum VPNDarwinRouteCodec {
     }
 
     static func encodeLookup(destination: VPNRoutePrefix, sequence: Int32, pid: Int32) throws -> Data {
-        try destination.validate()
+        try encodeLookup(key: VPNRouteLookupKey(destination: destination, interfaceScope: nil), sequence: sequence, pid: pid)
+    }
+
+    static func encodeLookup(key: VPNRouteLookupKey, sequence: Int32, pid: Int32) throws -> Data {
+        try key.validate()
+        if let scope = key.interfaceScope {
+            guard (try? interfaceName(scope.interfaceIndex)) == scope.interfaceName else {
+                throw VPNDarwinRouteError.invalidIdentity
+            }
+        }
+        let destination = key.destination
         let host = Int(destination.prefixLength) == destination.bytes.count * 8
         var addresses: [(Int32, Data)] = [(RTA_DST, address(destination.bytes,
                                                              family: destination.family))]
         if !host { addresses.append((RTA_NETMASK, netmask(destination))) }
         return try message(type: UInt8(RTM_GET), sequence: sequence, pid: pid, error: 0,
-                           index: 0, flags: host ? UInt32(RTF_HOST) : 0, addresses: addresses)
+                           index: key.interfaceScope?.interfaceIndex ?? 0,
+                           flags: (host ? UInt32(RTF_HOST) : 0) | (key.interfaceScope == nil ? 0 : UInt32(RTF_IFSCOPE)),
+                           addresses: addresses)
     }
 
     /// Kept internal for deterministic fake-kernel tests; it performs no I/O.
@@ -471,8 +492,12 @@ final class VPNDarwinRouteSocket {
     }
 
     func lookupExact(_ destination: VPNRoutePrefix) throws -> VPNDarwinRouteSnapshot? {
+        try lookupExact(VPNRouteLookupKey(destination: destination, interfaceScope: nil))
+    }
+
+    func lookupExact(_ key: VPNRouteLookupKey) throws -> VPNDarwinRouteSnapshot? {
         try VPNFlowDiagnostics.run(.kernelLookup) {
-            try serialized { deadline in try lookup(destination, deadline: deadline) }
+            try serialized { deadline in try lookup(key, deadline: deadline) }
         }
     }
 
@@ -482,7 +507,7 @@ final class VPNDarwinRouteSocket {
     private func addLogged(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult {
         try serialized { deadline in
             try identity.validate()
-            if let existing = try lookup(identity.destination, deadline: deadline) {
+            if let existing = try lookup(identity.lookupKey, deadline: deadline) {
                 guard existing.matches(identity) else { throw VPNDarwinRouteError.preexistingNonIdentical }
                 return .alreadyPresent
             }
@@ -491,11 +516,11 @@ final class VPNDarwinRouteSocket {
                                                          pid: pid, identity: identity)
             do { _ = try transact(request, sequence: sequence, type: UInt8(RTM_ADD), deadline: deadline) }
             catch VPNDarwinRouteError.kernel(let code) where code == EEXIST {
-                guard let raced = try lookup(identity.destination, deadline: deadline),
+                guard let raced = try lookup(identity.lookupKey, deadline: deadline),
                       raced.matches(identity) else { throw VPNDarwinRouteError.preexistingNonIdentical }
                 return .alreadyPresent
             }
-            guard let installed = try lookup(identity.destination, deadline: deadline),
+            guard let installed = try lookup(identity.lookupKey, deadline: deadline),
                   installed.matches(identity) else { throw VPNDarwinRouteError.verificationFailed }
             return .installed
         }
@@ -507,29 +532,58 @@ final class VPNDarwinRouteSocket {
     private func deleteLogged(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult {
         try serialized { deadline in
             try identity.validate()
-            guard let existing = try lookup(identity.destination, deadline: deadline),
+            guard let existing = try lookup(identity.lookupKey, deadline: deadline),
                   existing.matches(identity) else { throw VPNDarwinRouteError.missingOrForeign }
             let sequence = try nextSequence()
             let request = try VPNDarwinRouteCodec.encode(type: UInt8(RTM_DELETE), sequence: sequence,
                                                          pid: pid, identity: identity)
             _ = try transact(request, sequence: sequence, type: UInt8(RTM_DELETE), deadline: deadline)
-            guard try lookup(identity.destination, deadline: deadline) == nil else {
+            guard try lookup(identity.lookupKey, deadline: deadline) == nil else {
                 throw VPNDarwinRouteError.verificationFailed
             }
             return .removed
         }
     }
 
-    private func lookup(_ destination: VPNRoutePrefix,
+    private func lookup(_ key: VPNRouteLookupKey,
                         deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
         let sequence = try nextSequence()
-        let request = try VPNDarwinRouteCodec.encodeLookup(destination: destination,
+        let request = try VPNDarwinRouteCodec.encodeLookup(key: key,
                                                            sequence: sequence, pid: pid)
         do {
             let response = try transact(request, sequence: sequence, type: UInt8(RTM_GET),
                                         deadline: deadline)
-            guard response?.destination == destination else { return nil }
-            return response
+            // Preserve legacy unscoped best-match behavior. Scoped dependency
+            // custody additionally requires the exact table scope: RTM_GET can
+            // return an unscoped same-interface fallback when that key is absent.
+            // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/route.c
+            guard let scope = key.interfaceScope else {
+                return response?.destination == key.destination ? response : nil
+            }
+            // Success without a snapshot includes /0, whose family/interface
+            // metadata this legacy decoder does not retain. That cannot prove
+            // scoped absence. Neither can a wrong-interface/scoped reply.
+            guard let response,
+                  response.interfaceIndex == scope.interfaceIndex,
+                  response.interfaceName == scope.interfaceName,
+                  response.destination.family == key.destination.family,
+                  response.destination.contains(host: key.destination),
+                  response.flags & UInt32(RTF_UP) != 0,
+                  response.flags & UInt32(RTF_REJECT | RTF_BLACKHOLE | RTF_DEAD | RTF_CONDEMNED) == 0,
+                  (response.gatewayBytes != nil) == (response.flags & UInt32(RTF_GATEWAY) != 0) else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+            if response.destination == key.destination {
+                // The kernel may fall back to an unscoped route on this SAME
+                // interface. It is not the requested scoped table entry.
+                return response.flags & UInt32(RTF_IFSCOPE) == 0 ? nil : response
+            }
+            // Only a validated, strictly broader containing route on the same
+            // interface proves no exact scoped host entry won the lookup.
+            guard response.destination.prefixLength < key.destination.prefixLength else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+            return nil
         } catch VPNDarwinRouteError.kernel(let code) where code == ESRCH || code == ENOENT {
             return nil
         }

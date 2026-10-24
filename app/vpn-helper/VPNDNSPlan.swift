@@ -13,7 +13,8 @@ enum VPNDNSPlanError: Error, Equatable {
 }
 
 /// Proof carried into an inert DNS plan: the configured DNS host is covered by
-/// an exact resource route whose observed identity is bound to the proven utun.
+/// explicit configured-resource coverage or an exact interface-scoped DNS
+/// dependency identity. Neither is proof that an upstream socket is bound.
 struct VPNTunnelDNSServerEvidence: Codable, Equatable, Comparable {
     let server: VPNRoutePrefix
     let tunnelInterface: VPNTunnelRouteBinding
@@ -42,13 +43,18 @@ struct VPNTunnelDNSServerEvidence: Codable, Equatable, Comparable {
         catch { throw VPNDNSPlanError.invalidServerEvidence }
         let hostLength: UInt8 = server.family == .ipv4 ? 32 : 128
         guard server.prefixLength == hostLength,
-              verifiedRoute.role == .resource,
+              (verifiedRoute.role == .resource || verifiedRoute.role == .dnsDependency),
               verifiedRoute.destination.contains(host: server),
               verifiedRoute.gatewayBytes == nil,
               verifiedRoute.flags & UInt32(RTF_PROTO2) != 0,
               verifiedRoute.interfaceIndex == tunnelInterface.interfaceIndex,
               verifiedRoute.interfaceName == tunnelInterface.interfaceName else {
             throw VPNDNSPlanError.invalidServerEvidence
+        }
+        if verifiedRoute.role == .dnsDependency {
+            guard verifiedRoute.destination == server, verifiedRoute.interfaceScope == tunnelInterface else {
+                throw VPNDNSPlanError.invalidServerEvidence
+            }
         }
     }
 }
@@ -123,7 +129,7 @@ struct VPNDNSPlan: Codable, Equatable {
         catch { throw VPNDNSPlanError.invalidTunnelEvidence }
         let sortedEvidence = try normalizedServers.map { server -> VPNTunnelDNSServerEvidence in
             let matches = routeProof.identities.filter {
-                $0.role == .resource && $0.destination.contains(host: server)
+                ($0.role == .resource || $0.role == .dnsDependency) && $0.destination.contains(host: server)
                     && $0.gatewayBytes == nil && $0.flags & UInt32(RTF_PROTO2) != 0
                     && $0.interfaceIndex == tunnelBinding.interfaceIndex
                     && $0.interfaceName == tunnelBinding.interfaceName

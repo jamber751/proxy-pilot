@@ -67,7 +67,8 @@ func domainPlanFakeInterfaceName(_ index: UInt32, _ output: UnsafeMutablePointer
             try check(value.staticRoutes.routes.map { $0.destination.canonical } == ["198.51.100.9", "10.44.0.53", "2001:db8::53"])
             try check(value.staticRoutes.routes.first?.role == .peerBypass)
             try check(value.staticRoutes.routes.first?.interfaceIndex == 7)
-            try check(value.staticRoutes.routes.dropFirst().allSatisfy { $0.role == .resource && $0.interfaceIndex == 42 && $0.interfaceName == "utun42" })
+            try check(value.staticRoutes.schemaVersion == 3)
+            try check(value.staticRoutes.routes.dropFirst().allSatisfy { $0.role == .dnsDependency && $0.interfaceIndex == 42 && $0.interfaceName == "utun42" && $0.interfaceScope == value.staticRoutes.tunnelInterface })
             let ipv6Peer = try VPNRoutePeerEvidence(peer: ip6("2001:db8:feed::9"), gateway: ip6("2001:db8:feed::1"), interfaceIndex: 7)
             let v6 = try VPNDomainNetworkPlan(generation: 7, revision: 11, resources: resources(["portal.corp.test"]),
                 corporateDNS: ["2001:db8::53"], peer: ipv6Peer, tunnel: tunnel())
@@ -75,6 +76,7 @@ func domainPlanFakeInterfaceName(_ index: UInt32, _ output: UnsafeMutablePointer
         case "coverage":
             let value = try plan(["portal.corp.test", "10.44.0.0/16", "2001:db8::/32"], dns: ["10.44.0.53", "10.44.0.54", "2001:db8::53"])
             try check(value.staticRoutes.routes.map { $0.destination.canonical } == ["198.51.100.9", "10.44.0.0/16", "2001:db8::/32"])
+            try check(value.staticRoutes.schemaVersion == 2 && value.staticRoutes.routes.allSatisfy { $0.interfaceScope == nil })
             let dns = try value.dnsPlan(tunnel: tunnel(), routeProof: proof(value))
             try check(dns.serverEvidence.count == 3 && dns.scopes.count == 1)
             try check(dns.serverEvidence[0].verifiedRoute.destination.canonical == "10.44.0.0/16")
@@ -155,7 +157,7 @@ func domainPlanFakeInterfaceName(_ index: UInt32, _ output: UnsafeMutablePointer
             var unowned = try JSONSerialization.jsonObject(with: JSONEncoder().encode(full.identities[1])) as! [String: Any]
             unowned["flags"] = full.identities[1].flags & ~UInt32(RTF_PROTO2)
             let foreign = try JSONDecoder().decode(VPNOwnedRouteIdentity.self, from: JSONSerialization.data(withJSONObject: unowned))
-            try foreign.validate()
+            try rejects { try foreign.validate() }
             var foreignIdentities = full.identities; foreignIdentities[1] = foreign
             try rejects { _ = try value.dnsPlan(tunnel: tunnel(), routeProof: VPNRouteAppliedProof(
                 generation: 7, revision: 11, identities: foreignIdentities)) }

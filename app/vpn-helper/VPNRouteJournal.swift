@@ -66,6 +66,9 @@ struct VPNOwnedRouteIdentity: Codable, Equatable, Comparable {
     let interfaceIndex: UInt32
     let interfaceName: String
     let flags: UInt32
+    let interfaceScope: VPNTunnelRouteBinding?
+
+    var lookupKey: VPNRouteLookupKey { VPNRouteLookupKey(destination: destination, interfaceScope: interfaceScope) }
 
     init(planned: VPNPlannedRoute, evidence: VPNRouteKernelEvidence) throws {
         try planned.validate()
@@ -75,6 +78,7 @@ struct VPNOwnedRouteIdentity: Codable, Equatable, Comparable {
         role = planned.role; destination = planned.destination
         gatewayBytes = evidence.gatewayBytes; interfaceIndex = evidence.interfaceIndex
         interfaceName = evidence.interfaceName; flags = evidence.flags
+        interfaceScope = planned.interfaceScope
         if role == .peerBypass {
             guard planned.physicalGatewayBytes == gatewayBytes,
                   planned.interfaceIndex == interfaceIndex,
@@ -109,6 +113,19 @@ struct VPNOwnedRouteIdentity: Codable, Equatable, Comparable {
               interfaceName.utf8.count < IFNAMSIZ,
               !interfaceName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               flags != 0 else { throw VPNRoutePlanError.invalidKernelEvidence }
+        if role == .dnsDependency {
+            let required = UInt32(RTF_UP | RTF_STATIC | RTF_PROTO2 | RTF_HOST | RTF_IFSCOPE)
+            guard let scope = interfaceScope, flags == required, gatewayBytes == nil,
+                  destination.prefixLength == size * 8,
+                  scope.interfaceIndex == interfaceIndex, scope.interfaceName == interfaceName else {
+                throw VPNRoutePlanError.invalidKernelEvidence
+            }
+            try scope.validate()
+        } else if interfaceScope != nil || flags & UInt32(RTF_IFSCOPE) != 0 {
+            // Legacy identities never acquired a scoped routing-table entry.
+            // Do not infer new ownership from a flag or optional field alone.
+            throw VPNRoutePlanError.invalidKernelEvidence
+        }
     }
 }
 
@@ -128,6 +145,10 @@ struct VPNRouteJournalOperation: Codable, Equatable {
 /// itself never executes or observes a route command.
 struct VPNRouteJournalSnapshot: Codable, Equatable {
     static let schema = 1
+    static let scopedSchema = 2
+    static func schema(for plan: VPNRoutePlan) -> Int {
+        plan.schemaVersion == VPNRoutePlan.scopedSchema ? scopedSchema : schema
+    }
     let schemaVersion: Int
     let plan: VPNRoutePlan
     let phase: VPNRouteJournalPhase
@@ -135,7 +156,7 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
     let operation: VPNRouteJournalOperation?
 
     func validate() throws {
-        guard schemaVersion == Self.schema else { throw VPNRouteJournalError.invalidState }
+        guard schemaVersion == Self.schema(for: plan) else { throw VPNRouteJournalError.invalidState }
         try plan.validate()
         guard applied == applied.sorted(), Set(applied.map(Self.key)).count == applied.count else {
             throw VPNRouteJournalError.invalidState
@@ -176,19 +197,23 @@ struct VPNRouteJournalSnapshot: Codable, Equatable {
     fileprivate static func key(_ entry: VPNOwnedRouteIdentity) -> String {
         "\(entry.role.rawValue):\(entry.destination.family.rawValue):"
             + entry.destination.bytes.map { String(format: "%02x", $0) }.joined()
-            + "/\(entry.destination.prefixLength)"
+            + "/\(entry.destination.prefixLength)" + scopeKey(entry.interfaceScope)
     }
 
     fileprivate static func key(_ route: VPNPlannedRoute) -> String {
         "\(route.role.rawValue):\(route.destination.family.rawValue):"
             + route.destination.bytes.map { String(format: "%02x", $0) }.joined()
-            + "/\(route.destination.prefixLength)"
+            + "/\(route.destination.prefixLength)" + scopeKey(route.interfaceScope)
+    }
+
+    private static func scopeKey(_ scope: VPNTunnelRouteBinding?) -> String {
+        scope.map { ":scope:\($0.interfaceIndex):\($0.interfaceName)" } ?? ""
     }
 
     fileprivate static func match(_ entry: VPNOwnedRouteIdentity, plan: VPNRoutePlan) throws {
         try entry.validate()
         guard let planned = plan.routes.first(where: {
-            $0.role == entry.role && $0.destination == entry.destination
+            Self.key($0) == Self.key(entry)
         }) else { throw VPNRouteJournalError.invalidState }
         if entry.role == .peerBypass {
             guard planned.physicalGatewayBytes == entry.gatewayBytes,
@@ -230,7 +255,7 @@ final class VPNRouteJournal {
     func create(_ plan: VPNRoutePlan) throws -> VPNRouteJournalSnapshot {
         try plan.validate()
         guard try read() == nil else { throw VPNRouteJournalError.alreadyExists }
-        let value = VPNRouteJournalSnapshot(schemaVersion: 1, plan: plan, phase: .planned,
+        let value = VPNRouteJournalSnapshot(schemaVersion: VPNRouteJournalSnapshot.schema(for: plan), plan: plan, phase: .planned,
                                             applied: [], operation: nil)
         try write(value); return value
     }
@@ -249,7 +274,7 @@ final class VPNRouteJournal {
                   VPNRouteJournalSnapshot.key($0) == VPNRouteJournalSnapshot.key(entry)
               }) else { throw VPNRouteJournalError.invalidState }
         try VPNRouteJournalSnapshot.match(entry, plan: old.plan)
-        let next = VPNRouteJournalSnapshot(schemaVersion: 1, plan: old.plan, phase: .installing,
+        let next = VPNRouteJournalSnapshot(schemaVersion: old.schemaVersion, plan: old.plan, phase: .installing,
             applied: old.applied, operation: VPNRouteJournalOperation(action: .install, entry: entry))
         try write(next); return next
     }
@@ -267,7 +292,7 @@ final class VPNRouteJournal {
         var entries = old.applied
         if present { entries.append(entry); entries.sort() }
         let phase: VPNRouteJournalPhase = entries.count == old.plan.ownedRoutes.count ? .applied : .installing
-        let next = VPNRouteJournalSnapshot(schemaVersion: 1, plan: old.plan, phase: phase,
+        let next = VPNRouteJournalSnapshot(schemaVersion: old.schemaVersion, plan: old.plan, phase: phase,
                                            applied: entries, operation: nil)
         try write(next); return next
     }
@@ -280,7 +305,7 @@ final class VPNRouteJournal {
         let old = try bound(generation: generation, revision: revision)
         guard [.planned, .installing].contains(old.phase), old.applied.isEmpty,
               old.operation == nil else { throw VPNRouteJournalError.invalidState }
-        let next = VPNRouteJournalSnapshot(schemaVersion: VPNRouteJournalSnapshot.schema,
+        let next = VPNRouteJournalSnapshot(schemaVersion: old.schemaVersion,
             plan: old.plan, phase: .retired, applied: [], operation: nil)
         try write(next); return next
     }
@@ -291,7 +316,7 @@ final class VPNRouteJournal {
         let old = try bound(generation: generation, revision: revision)
         guard [.installing, .applied, .removing].contains(old.phase), old.operation == nil,
               old.applied.last == entry else { throw VPNRouteJournalError.invalidState }
-        let next = VPNRouteJournalSnapshot(schemaVersion: 1, plan: old.plan, phase: .removing,
+        let next = VPNRouteJournalSnapshot(schemaVersion: old.schemaVersion, plan: old.plan, phase: .removing,
             applied: old.applied, operation: VPNRouteJournalOperation(action: .remove, entry: entry))
         try write(next); return next
     }
@@ -309,7 +334,7 @@ final class VPNRouteJournal {
         var entries = old.applied
         if !present { entries.removeAll { $0 == entry } }
         let phase: VPNRouteJournalPhase = entries.isEmpty ? .retired : .removing
-        let next = VPNRouteJournalSnapshot(schemaVersion: 1, plan: old.plan, phase: phase,
+        let next = VPNRouteJournalSnapshot(schemaVersion: old.schemaVersion, plan: old.plan, phase: phase,
                                            applied: entries, operation: nil)
         try write(next); return next
     }

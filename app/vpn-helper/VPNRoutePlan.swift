@@ -204,7 +204,7 @@ struct VPNRoutePeerEvidence: Codable, Equatable {
     }
 }
 
-enum VPNPlannedRouteRole: UInt8, Codable { case peerBypass = 1, resource = 2 }
+enum VPNPlannedRouteRole: UInt8, Codable { case peerBypass = 1, resource = 2, dnsDependency = 3 }
 
 /// An interface identity may enter a route plan only through the resolver's
 /// typed evidence. The serialized copy is retained so every resource route is
@@ -235,6 +235,16 @@ struct VPNPlannedRoute: Codable, Equatable, Comparable {
     let physicalGatewayBytes: [UInt8]?
     let interfaceIndex: UInt32?
     let interfaceName: String?
+    // Nil is deliberately omitted from legacy schema-2 JSON.
+    let interfaceScope: VPNTunnelRouteBinding?
+
+    init(role: VPNPlannedRouteRole, destination: VPNRoutePrefix, physicalGatewayBytes: [UInt8]?,
+         interfaceIndex: UInt32?, interfaceName: String?, interfaceScope: VPNTunnelRouteBinding? = nil) {
+        self.role = role; self.destination = destination; self.physicalGatewayBytes = physicalGatewayBytes
+        self.interfaceIndex = interfaceIndex; self.interfaceName = interfaceName; self.interfaceScope = interfaceScope
+    }
+
+    var lookupKey: VPNRouteLookupKey { VPNRouteLookupKey(destination: destination, interfaceScope: interfaceScope) }
 
     static func < (left: Self, right: Self) -> Bool {
         if left.role.rawValue != right.role.rawValue { return left.role.rawValue < right.role.rawValue }
@@ -243,6 +253,14 @@ struct VPNPlannedRoute: Codable, Equatable, Comparable {
 
     func validate() throws {
         try destination.validate()
+        if role == .dnsDependency {
+            guard let scope = interfaceScope,
+                  destination.prefixLength == destination.bytes.count * 8,
+                  scope.interfaceIndex == interfaceIndex, scope.interfaceName == interfaceName else {
+                throw VPNRoutePlanError.invalidTunnelEvidence
+            }
+            try scope.validate()
+        } else if interfaceScope != nil { throw VPNRoutePlanError.invalidKernelEvidence }
         if role == .peerBypass {
             let size = destination.family == .ipv4 ? 4 : 16
             guard destination.prefixLength == size * 8,
@@ -269,6 +287,7 @@ struct VPNPlannedRoute: Codable, Equatable, Comparable {
 /// Pure plan only. No route is installed and `routes` is not applied evidence.
 struct VPNRoutePlan: Codable, Equatable {
     static let schema = 2
+    static let scopedSchema = 3
     let schemaVersion: Int
     let generation: UInt64
     let revision: UInt64
@@ -295,10 +314,12 @@ struct VPNRoutePlan: Codable, Equatable {
     }
 
     init(generation: UInt64, revision: UInt64, resources: [VPNResource],
-         peer: VPNRoutePeerEvidence, tunnel: VPNTunnelInterfaceEvidence) throws {
+         peer: VPNRoutePeerEvidence, tunnel: VPNTunnelInterfaceEvidence,
+         dnsDependencies: [VPNRoutePrefix] = []) throws {
         guard generation > 0 else { throw VPNRoutePlanError.invalidGeneration }
         guard revision > 0 else { throw VPNRoutePlanError.invalidRevision }
-        guard !resources.isEmpty, resources.count <= 1000 else {
+        guard !resources.isEmpty || !dnsDependencies.isEmpty,
+              resources.count + dnsDependencies.count <= 1000, dnsDependencies.count <= 4 else {
             throw VPNRoutePlanError.unsupportedResource
         }
         try peer.validate()
@@ -318,6 +339,19 @@ struct VPNRoutePlan: Codable, Equatable {
                 throw VPNRoutePlanError.peerWouldBeCaptured
             }
         }
+        let dependencies = dnsDependencies.sorted()
+        if !dependencies.isEmpty {
+            var probe = VPNConfiguration()
+            try probe.setDNS(dependencies.map(\.canonical))
+        }
+        for index in dependencies.indices {
+            let host = dependencies[index]
+            try host.validate()
+            guard host.prefixLength == host.bytes.count * 8,
+                  !prefixes.contains(where: { $0.contains(host: host) }),
+                  index == 0 || dependencies[index - 1] != host else { throw VPNRoutePlanError.overlap }
+            guard host != peer.peer else { throw VPNRoutePlanError.peerWouldBeCaptured }
+        }
         let bypass = VPNPlannedRoute(role: .peerBypass, destination: peer.peer,
             physicalGatewayBytes: peer.gatewayBytes, interfaceIndex: peer.interfaceIndex,
             interfaceName: peer.interfaceName)
@@ -325,43 +359,74 @@ struct VPNRoutePlan: Codable, Equatable {
             VPNPlannedRoute(role: .resource, destination: $0, physicalGatewayBytes: nil,
                             interfaceIndex: tunnelBinding.interfaceIndex,
                             interfaceName: tunnelBinding.interfaceName)
+        } + dependencies.map {
+            VPNPlannedRoute(role: .dnsDependency, destination: $0, physicalGatewayBytes: nil,
+                interfaceIndex: tunnelBinding.interfaceIndex, interfaceName: tunnelBinding.interfaceName,
+                interfaceScope: tunnelBinding)
         }
-        schemaVersion = Self.schema; self.generation = generation; self.revision = revision
+        schemaVersion = dependencies.isEmpty ? Self.schema : Self.scopedSchema
+        self.generation = generation; self.revision = revision
         tunnelInterface = tunnelBinding
         preservesPeerRoute = nil
         try validate()
     }
 
     func validate() throws {
-        guard schemaVersion == Self.schema, generation > 0, revision > 0,
+        let scoped = schemaVersion == Self.scopedSchema
+        guard (schemaVersion == Self.schema || scoped), generation > 0, revision > 0,
               preservesPeerRoute == nil || preservesPeerRoute == true,
               (2...1001).contains(routes.count), routes == routes.sorted(),
               routes.first?.role == .peerBypass,
-              routes.dropFirst().allSatisfy({ $0.role == .resource }) else {
+              routes.dropFirst().allSatisfy({ $0.role == .resource || (scoped && $0.role == .dnsDependency) }),
+              scoped == routes.contains(where: { $0.role == .dnsDependency }),
+              routes.filter({ $0.role == .dnsDependency }).count <= 4 else {
             throw VPNRoutePlanError.unsupportedResource
         }
         try tunnelInterface.validate()
         for route in routes { try route.validate() }
+        let dependencies = routes.filter { $0.role == .dnsDependency }
+        if !dependencies.isEmpty {
+            var probe = VPNConfiguration()
+            try probe.setDNS(dependencies.map { $0.destination.canonical })
+        }
         guard let bypass = routes.first,
               bypass.interfaceIndex != tunnelInterface.interfaceIndex,
               bypass.interfaceName != tunnelInterface.interfaceName else {
             throw VPNRoutePlanError.invalidPeerEvidence
         }
         let resources = Array(routes.dropFirst())
+        let sortedPrefixes = resources.map(\.destination).sorted()
+        for index in sortedPrefixes.indices.dropFirst() {
+            guard !sortedPrefixes[index].overlaps(sortedPrefixes[index - 1]) else {
+                throw VPNRoutePlanError.overlap
+            }
+        }
         for index in resources.indices {
             guard resources[index].interfaceIndex == tunnelInterface.interfaceIndex,
                   resources[index].interfaceName == tunnelInterface.interfaceName else {
                 throw VPNRoutePlanError.invalidTunnelEvidence
             }
-            if index > 0 {
-                guard resources[index].destination != resources[index - 1].destination,
-                      !resources[index].destination.overlaps(resources[index - 1].destination) else {
-                    throw VPNRoutePlanError.overlap
-                }
-            }
             guard !resources[index].destination.contains(host: routes[0].destination) else {
                 throw VPNRoutePlanError.peerWouldBeCaptured
             }
+        }
+    }
+}
+
+/// Routing table key, distinct from the route's egress interface. A scoped GET
+/// must set RTF_IFSCOPE and rtm_index together; rtm_index alone is not scope.
+/// Nil retains legacy unscoped best-match queries; it does not turn a returned
+/// foreign/scoped route into owned evidence. A nonnil scope is exact custody.
+/// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/rtsock.c
+struct VPNRouteLookupKey: Equatable {
+    let destination: VPNRoutePrefix
+    let interfaceScope: VPNTunnelRouteBinding?
+
+    func validate() throws {
+        try destination.validate()
+        try interfaceScope?.validate()
+        if interfaceScope != nil && destination.prefixLength != destination.bytes.count * 8 {
+            throw VPNRoutePlanError.invalidKernelEvidence
         }
     }
 }

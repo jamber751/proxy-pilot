@@ -20,8 +20,19 @@ enum VPNRouteTransactionError: VPNFlowDiagnosticError, Equatable {
 
 protocol VPNRouteKernelController: AnyObject {
     func lookupExact(_ destination: VPNRoutePrefix) throws -> VPNDarwinRouteSnapshot?
+    func lookupExact(_ key: VPNRouteLookupKey) throws -> VPNDarwinRouteSnapshot?
     func add(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult
     func delete(_ identity: VPNOwnedRouteIdentity) throws -> VPNDarwinRouteMutationResult
+}
+
+extension VPNRouteKernelController {
+    // Existing ordinary-route controllers remain source-compatible. A
+    // controller without scoped support MUST refuse, never drop the scope.
+    func lookupExact(_ key: VPNRouteLookupKey) throws -> VPNDarwinRouteSnapshot? {
+        try key.validate()
+        guard key.interfaceScope == nil else { throw VPNDarwinRouteError.invalidIdentity }
+        return try lookupExact(key.destination)
+    }
 }
 
 extension VPNDarwinRouteSocket: VPNRouteKernelController {}
@@ -49,6 +60,7 @@ enum VPNRouteIdentityFactory {
                 flags |= UInt32(RTF_HOST)
             }
             if route.physicalGatewayBytes != nil { flags |= UInt32(RTF_GATEWAY) }
+            if route.role == .dnsDependency { flags |= UInt32(RTF_IFSCOPE) }
             guard let index = route.interfaceIndex else {
                 throw VPNRouteTransactionError.invalidPlan
             }
@@ -122,7 +134,7 @@ final class VPNRouteTransaction {
             do { try checkAuthority() }
             catch { throw VPNRouteTransactionError.recoveryRequired }
             if let existing = try VPNFlowDiagnostics.run(.transactionPreflight, {
-                try kernel.lookupExact(identity.destination)
+                try kernel.lookupExact(identity.lookupKey)
             }) {
                 guard ordinal == 0, Self.canPreserve(existing, peer: plan.routes[0]) else {
                     throw VPNRouteTransactionError.preexistingRoute
@@ -209,7 +221,7 @@ final class VPNRouteTransaction {
         for identity in proof.identities {
             do { try checkAuthority() }
             catch { throw VPNRouteTransactionError.notApplied }
-            guard let observed = try kernel.lookupExact(identity.destination),
+            guard let observed = try kernel.lookupExact(identity.lookupKey),
                   observed.matches(identity) else {
                 throw VPNRouteTransactionError.notApplied
             }
@@ -233,7 +245,7 @@ final class VPNRouteTransaction {
         guard let peer else { return }
         try checkAuthority()
         guard let observed = try VPNFlowDiagnostics.run(.transactionPreservePeer, {
-            try kernel.lookupExact(peer.destination)
+            try kernel.lookupExact(peer.lookupKey)
         }),
               Self.canPreserve(observed, peer: peer) else {
             throw VPNRouteTransactionError.notApplied
@@ -292,8 +304,13 @@ final class VPNRouteTransaction {
             throw VPNRouteTransactionError.cleanupBlocked
         }
         let observed: VPNDarwinRouteSnapshot?
-        do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.destination) }
+        do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.lookupKey) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
+        if operation.entry.role == .dnsDependency, let observed, !observed.matches(operation.entry) {
+            // A foreign same-key replacement after an uncertain mutation is
+            // not absence proof and must retain the in-flight obligation.
+            throw VPNRouteTransactionError.cleanupBlocked
+        }
         let owned = observed?.matches(operation.entry) == true
         do { _ = try journal.resolveInstall(operation.entry, present: owned,
                                              generation: plan.generation,
@@ -304,7 +321,7 @@ final class VPNRouteTransaction {
     private func remove(_ identity: VPNOwnedRouteIdentity,
                         plan: VPNRoutePlan) throws {
         let observed: VPNDarwinRouteSnapshot?
-        do { try checkAuthority(); observed = try kernel.lookupExact(identity.destination) }
+        do { try checkAuthority(); observed = try kernel.lookupExact(identity.lookupKey) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         if let observed, !observed.matches(identity) {
             throw VPNRouteTransactionError.cleanupBlocked
@@ -337,7 +354,7 @@ final class VPNRouteTransaction {
             throw VPNRouteTransactionError.cleanupBlocked
         }
         let observed: VPNDarwinRouteSnapshot?
-        do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.destination) }
+        do { try checkAuthority(); observed = try kernel.lookupExact(operation.entry.lookupKey) }
         catch { throw VPNRouteTransactionError.recoveryRequired }
         if let observed, !observed.matches(operation.entry) {
             throw VPNRouteTransactionError.cleanupBlocked

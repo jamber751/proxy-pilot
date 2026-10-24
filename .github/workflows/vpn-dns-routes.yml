@@ -1,0 +1,37 @@
+name: VPN isolated scoped DNS route custody
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-dns-routes.yml'
+      - 'app/vpn-helper/VPNRoute*.swift'
+      - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
+      - 'app/vpn-helper/VPNDomainNetworkPlan.swift'
+      - 'app/vpn-helper/VPNDNSPlan.swift'
+      - 'tests/test_vpn_scoped_dns_route_custody.py'
+      - 'tests/vpn_scoped_dns_route_custody_checks.swift'
+      - 'tests/test_vpn_domain_network_plan.py'
+      - 'tests/vpn_domain_network_plan_checks.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  custody:
+    name: Pure scoped custody and helper build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Private fake interfaces and route tables; no network operations
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan -v
+      - name: Genuine universal helper compile and signature verification only
+        run: zsh app/vpn-helper/build.sh "$RUNNER_TEMP/scoped-dns-helper"
