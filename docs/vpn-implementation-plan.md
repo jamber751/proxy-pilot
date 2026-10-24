@@ -4378,3 +4378,24 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   Обычные per-user fixtures не доказывают этот сценарий. Пользователь запросил
   тестирование без повторного ввода пароля; очередная установка на основной Mac
   не заменяет такую проверку. Root/system интеграция всё равно требует авторизации.
+
+### Продолжение 1.5cy — проверки без повторных установок
+
+- [x] Пользователь просит тестировать самостоятельно и вернуться с одним
+  подготовленным пакетом. Промежуточные установки на основном Mac не запускаются;
+  пароль, sudoers и системная авторизация не меняются.
+- [x] Joint replacement после исправления ownership: **23/23 passed**.
+  Проверены disposable destination exchange/retry, журнал, drain, отказы и
+  forward recovery. Это per-user fixtures, не root-owned first-install доказательство.
+- [x] Добавлен opt-in `PROXYPILOT_READONLY_INSTALLED_CHECK=1` для staged suite:
+  фиксированный `/Applications/ProxyPilot.app`, проверка root owner, полный
+  production-parent inspection и revalidation. Тест ничего не устанавливает,
+  не запускает VPN и не пишет в Applications; pins читает из установленного app,
+  поэтому не подменяет проверку release trust по настоящему manifest.
+  Свежий прогон: **18 passed, 1 optional candidate skipped**; root-owned 137 принят.
+- [ ] Отдельного macOS VM приложения в `/Applications` не найдено. VM не создана;
+  реальные root/user exchange и system lifecycle ещё не проверены в изоляции.
+- [ ] Legacy executor 137 требует старый service-owner layout и не получает
+  исправления из нового B. Перед следующим пакетом нужен проверенный migration/
+  recovery путь для уже pending 137→139. Новый sequence сам по себе не лечит
+  committed journal. Запрещено считать per-user green suite готовностью установки.

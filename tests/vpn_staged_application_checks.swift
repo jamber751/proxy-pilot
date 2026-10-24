@@ -61,6 +61,13 @@ import Foundation
                     productionParent: false, release: candidate)
                 precondition(receipt.matchesRelease(candidate))
                 try VPNStagedApplication.revalidate(receipt, inTrustedDirectory: fd)
+            case "inspect-system-installed-update":
+                // Read-only opt-in probe: no lifecycle, helper or installation action.
+                let receipt = try VPNStagedApplication.inspectInstalledForUpdate(
+                    inApplicationsDirectory: fd, previousOwnerUserID: geteuid(),
+                    productionParent: true, release: candidate)
+                precondition(receipt.matchesRelease(candidate))
+                try VPNStagedApplication.revalidate(receipt, inTrustedDirectory: fd)
             case "inspect":
                 let receipt = try VPNStagedApplication.inspect(inTrustedDirectory: fd, release: candidate)
                 precondition(receipt.matchesRelease(candidate))

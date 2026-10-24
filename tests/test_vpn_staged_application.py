@@ -107,6 +107,26 @@ class VPNStagedApplicationTests(unittest.TestCase):
         if expected: args.append(expected)
         self.command(args)
 
+    @unittest.skipUnless(os.environ.get('PROXYPILOT_READONLY_INSTALLED_CHECK') == '1',
+                         'opt-in read-only installed app validation')
+    def test_system_installed_root_owned_update_source_readonly(self):
+        installed = Path('/Applications/ProxyPilot.app')
+        self.assertEqual(installed.lstat().st_uid, 0,
+                         'This regression requires an Installer-owned app')
+        self.assertFalse(installed.is_symlink())
+        before = installed.stat()
+        info = plistlib.loads((installed / 'Contents/Info.plist').read_bytes())
+        pins = {}
+        for arch in ('arm64', 'x86_64'):
+            output = self.command(['codesign', '-d', '--verbose=4', '--arch', arch,
+                                   str(installed)]).stderr
+            pins[arch] = next(line[7:] for line in output.splitlines() if line.startswith('CDHash='))
+        self.command([str(self.checker), 'inspect-system-installed-update', '/Applications',
+                      pins['arm64'], pins['x86_64'], info['CFBundleVersion']])
+        after = installed.stat()
+        self.assertEqual((before.st_dev, before.st_ino, before.st_uid, before.st_mtime_ns),
+                         (after.st_dev, after.st_ino, after.st_uid, after.st_mtime_ns))
+
     def rebuild(self, **options):
         shutil.rmtree(self.app); self.make_app(**options)
 
