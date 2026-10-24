@@ -29,29 +29,40 @@ struct VPNPasswordReference: Codable, Equatable, CustomDebugStringConvertible {
     }
 }
 
+enum VPNPasswordWriteState: String, Codable { case notIssued, pending, settled }
+
+struct VPNPasswordSlot: Codable, Equatable {
+    let reference: VPNPasswordReference
+    var writeState: VPNPasswordWriteState
+}
+
+/// A definite result is supplied only by a trusted, authenticated backend.
+/// Timeout, lost acknowledgement and client death are never definite failures.
+enum VPNPasswordAddOutcome: Equatable { case definiteSuccess, definiteFailure, indeterminate }
+
 struct VPNPasswordLedger: Codable, Equatable {
     static let maximumPendingDeletions = 64
-    var active: VPNPasswordReference?
-    var pendingDeletion: [VPNPasswordReference]
+    var active: VPNPasswordSlot?
+    var pendingDeletion: [VPNPasswordSlot]
 
-    init(active: VPNPasswordReference? = nil, pendingDeletion: [VPNPasswordReference] = []) {
+    init(active: VPNPasswordSlot? = nil, pendingDeletion: [VPNPasswordSlot] = []) {
         self.active = active; self.pendingDeletion = pendingDeletion
     }
 
     fileprivate func validate(saved: VPNSnapshot) throws {
         guard pendingDeletion.count <= Self.maximumPendingDeletions,
-              Set(pendingDeletion.map(\.itemID)).count == pendingDeletion.count,
-              active.map({ value in !pendingDeletion.contains(where: { $0.itemID == value.itemID }) }) ?? true
+              Set(pendingDeletion.map { $0.reference.itemID }).count == pendingDeletion.count,
+              active.map({ value in !pendingDeletion.contains(where: { $0.reference.itemID == value.reference.itemID }) }) ?? true
         else { throw VPNValidationError.invalidConfiguration }
-        for reference in pendingDeletion { try reference.validate() }
+        for slot in pendingDeletion { try slot.reference.validate() }
         if let active {
-            try active.validate()
-            guard active.matches(saved) else { throw VPNValidationError.invalidConfiguration }
+            try active.reference.validate()
+            guard active.reference.matches(saved) else { throw VPNValidationError.invalidConfiguration }
         }
     }
 
     fileprivate mutating func reconcile(saved: VPNSnapshot) throws {
-        if let previous = active, !previous.matches(saved) {
+        if let previous = active, !previous.reference.matches(saved) {
             guard pendingDeletion.count < Self.maximumPendingDeletions else {
                 throw VPNValidationError.storageUnavailable
             }
@@ -103,7 +114,7 @@ struct VPNStoredState: Codable, Equatable {
     var hasPendingChanges: Bool { applied?.configuration.revision != saved.configuration.revision }
 
     fileprivate func validate() throws {
-        guard schemaVersion == 2 else { throw VPNValidationError.invalidConfiguration }
+        guard schemaVersion == 3 else { throw VPNValidationError.invalidConfiguration }
         try saved.validate()
         try passwordLedger.validate(saved: saved)
         if let applied = applied {
@@ -116,14 +127,14 @@ struct VPNStoredState: Codable, Equatable {
     }
 
     init(saved: VPNSnapshot, applied: VPNSnapshot?, passwordLedger: VPNPasswordLedger = VPNPasswordLedger()) {
-        schemaVersion = 2; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
+        schemaVersion = 3; self.saved = saved; self.applied = applied; self.passwordLedger = passwordLedger
     }
 
     private enum CodingKeys: String, CodingKey { case schemaVersion, saved, applied, passwordLedger }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .schemaVersion)
-        guard version == 1 || version == 2 else { throw VPNValidationError.invalidConfiguration }
+        guard (1...3).contains(version) else { throw VPNValidationError.invalidConfiguration }
         saved = try container.decode(VPNSnapshot.self, forKey: .saved)
         applied = try container.decodeIfPresent(VPNSnapshot.self, forKey: .applied)
         if version == 1 {
@@ -131,10 +142,22 @@ struct VPNStoredState: Codable, Equatable {
             // not invent a credential identity or search for a legacy secret.
             guard !container.contains(.passwordLedger) else { throw VPNValidationError.invalidConfiguration }
             passwordLedger = VPNPasswordLedger()
+        } else if version == 2 {
+            // Schema2 had no durable write-once status. Never infer that a
+            // repeated/unfinished backend mutation cannot still create an item.
+            let legacy = try container.decode(LegacyPasswordLedger.self, forKey: .passwordLedger)
+            passwordLedger = VPNPasswordLedger(
+                active: legacy.active.map { VPNPasswordSlot(reference: $0, writeState: .pending) },
+                pendingDeletion: legacy.pendingDeletion.map { VPNPasswordSlot(reference: $0, writeState: .pending) })
         } else {
             passwordLedger = try container.decode(VPNPasswordLedger.self, forKey: .passwordLedger)
         }
-        schemaVersion = 2
+        schemaVersion = 3
+    }
+
+    private struct LegacyPasswordLedger: Decodable {
+        let active: VPNPasswordReference?
+        let pendingDeletion: [VPNPasswordReference]
     }
 }
 
@@ -146,6 +169,9 @@ final class VPNStore {
     let directory: URL
     private let filename = "state.json"
     private let maximumBytes = 8 * 1_048_576
+    #if VPN_PASSWORD_LEDGER_TESTING
+    var testRejectNextPendingDirectorySync = false
+    #endif
 
     init(directory: URL) { self.directory = directory }
 
@@ -231,10 +257,41 @@ final class VPNStore {
             guard let auth = snapshot.configuration.authentication, auth.mode == .password,
                   auth.credentialPersistence == .keychain, let login = auth.login,
                   let contents = snapshot.profileContents else { throw VPNValidationError.invalidConfiguration }
-            if let existing = current.passwordLedger.active { return existing }
-            let reference = VPNPasswordReference(itemID: UUID(),
-                profileSHA256: VPNPasswordReference.digest(contents), login: login)
-            var ledger = current.passwordLedger; ledger.active = reference
+            if let existing = current.passwordLedger.active {
+                guard existing.writeState == .notIssued else { throw VPNValidationError.staleRevision }
+                return existing.reference
+            }
+            let reference = VPNPasswordReference(itemID: UUID(), profileSHA256: VPNPasswordReference.digest(contents), login: login)
+            var ledger = current.passwordLedger
+            ledger.active = VPNPasswordSlot(reference: reference, writeState: .notIssued)
+            let next = VPNStoredState(saved: snapshot, applied: current.applied, passwordLedger: ledger)
+            try next.validate(); try writeState(next, directory: descriptor)
+            return reference
+        }
+    }
+
+    /// A new explicit confirmed save always uses a fresh item identity. The
+    /// expected active reference prevents a stale editor replacing a newer grant
+    /// even when configuration revision did not change between two grants.
+    func createPasswordSaveGrant(expectedRevision: UInt64,
+                                 expectedActive: VPNPasswordReference?) throws -> VPNPasswordReference {
+        try withLock(create: false) { descriptor in
+            guard let current = try readState(directory: descriptor),
+                  current.saved.configuration.revision == expectedRevision,
+                  current.passwordLedger.active?.reference == expectedActive else { throw VPNValidationError.staleRevision }
+            let snapshot = current.saved
+            guard let auth = snapshot.configuration.authentication, auth.mode == .password,
+                  auth.credentialPersistence == .keychain, let login = auth.login,
+                  let contents = snapshot.profileContents else { throw VPNValidationError.invalidConfiguration }
+            var ledger = current.passwordLedger
+            if let old = ledger.active, old.writeState != .notIssued {
+                guard ledger.pendingDeletion.count < VPNPasswordLedger.maximumPendingDeletions else {
+                    throw VPNValidationError.storageUnavailable
+                }
+                ledger.pendingDeletion.append(old)
+            }
+            let reference = VPNPasswordReference(itemID: UUID(), profileSHA256: VPNPasswordReference.digest(contents), login: login)
+            ledger.active = VPNPasswordSlot(reference: reference, writeState: .notIssued)
             let next = VPNStoredState(saved: snapshot, applied: current.applied, passwordLedger: ledger)
             try next.validate(); try writeState(next, directory: descriptor)
             return reference
@@ -242,26 +299,64 @@ final class VPNStore {
     }
 
     /// Trusted adapter seam: callback must be silent, bounded and non-reentrant.
-    /// Same file lock as revoke prevents a late write recreating a deleted item.
+    /// Reads require settled state. A pending add is not retried or inferred
+    /// settled from an item lookup, a delay, or an item-not-found result.
     /// No credential bytes enter this store or its serialized state.
     func readPassword<T>(reference: VPNPasswordReference, expectedRevision: UInt64,
                          silently read: (VPNPasswordReference) throws -> T) throws -> T {
-        try withActivePassword(reference: reference, expectedRevision: expectedRevision, read)
-    }
-
-    func savePassword(reference: VPNPasswordReference, expectedRevision: UInt64,
-                      silently save: (VPNPasswordReference) throws -> Void) throws {
-        try withActivePassword(reference: reference, expectedRevision: expectedRevision, save)
-    }
-
-    private func withActivePassword<T>(reference: VPNPasswordReference, expectedRevision: UInt64,
-                                      _ operation: (VPNPasswordReference) throws -> T) throws -> T {
         try withLock(create: false) { descriptor in
-            guard let current = try readState(directory: descriptor),
-                  current.saved.configuration.revision == expectedRevision,
-                  current.passwordLedger.active == reference,
-                  reference.matches(current.saved) else { throw VPNValidationError.staleRevision }
-            return try operation(reference)
+            let current = try requireActivePassword(reference: reference, expectedRevision: expectedRevision, directory: descriptor)
+            guard current.passwordLedger.active?.writeState == .settled else { throw VPNValidationError.staleRevision }
+            return try read(reference)
+        }
+    }
+
+    /// Persist pending BEFORE issuing the one permitted add. A crash before GO
+    /// is intentionally indistinguishable from a lost acknowledgement. The
+    /// callback must never issue Add twice, Update, or delete-and-reinsert.
+    @discardableResult
+    func addPasswordOnce(reference: VPNPasswordReference, expectedRevision: UInt64,
+                         silently add: (VPNPasswordReference) throws -> VPNPasswordAddOutcome) throws -> VPNPasswordAddOutcome {
+        try withLock(create: false) { descriptor in
+            let current = try requireActivePassword(reference: reference, expectedRevision: expectedRevision, directory: descriptor)
+            guard current.passwordLedger.active?.writeState == .notIssued else { throw VPNValidationError.staleRevision }
+            var ledger = current.passwordLedger
+            ledger.active?.writeState = .pending
+            let pending = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
+            try pending.validate()
+            try writeState(pending, directory: descriptor, requireDirectorySync: true)
+            let outcome = try add(reference)
+            if outcome != .indeterminate {
+                ledger.active?.writeState = .settled
+                try writeState(VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger), directory: descriptor)
+            }
+            return outcome
+        }
+    }
+
+    private func requireActivePassword(reference: VPNPasswordReference, expectedRevision: UInt64,
+                                       directory: Int32) throws -> VPNStoredState {
+        guard let current = try readState(directory: directory),
+              current.saved.configuration.revision == expectedRevision,
+              current.passwordLedger.active?.reference == reference,
+              reference.matches(current.saved) else { throw VPNValidationError.staleRevision }
+        return current
+    }
+
+    /// Trusted late receipt seam only. A future coordinator authenticates a
+    /// DEFINITE worker completion before calling; a read witness is insufficient.
+    /// Exact old queued identity may settle without touching the new active slot.
+    func completePasswordAdd(reference: VPNPasswordReference) throws {
+        try withLock(create: false) { descriptor in
+            guard let current = try readState(directory: descriptor) else { throw VPNValidationError.staleRevision }
+            var ledger = current.passwordLedger
+            if ledger.active?.reference == reference, ledger.active?.writeState == .pending {
+                ledger.active?.writeState = .settled
+            } else if let index = ledger.pendingDeletion.firstIndex(where: { $0.reference == reference && $0.writeState == .pending }) {
+                ledger.pendingDeletion[index].writeState = .settled
+            } else { throw VPNValidationError.staleRevision }
+            let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
+            try next.validate(); try writeState(next, directory: descriptor)
         }
     }
 
@@ -272,10 +367,11 @@ final class VPNStore {
                                silently delete: (VPNPasswordReference) throws -> Void) throws {
         try withLock(create: false) { descriptor in
             guard let current = try readState(directory: descriptor),
-                  current.passwordLedger.pendingDeletion.contains(reference) else { throw VPNValidationError.staleRevision }
-            try delete(reference)
+                  let slot = current.passwordLedger.pendingDeletion.first(where: { $0.reference == reference }),
+                  slot.writeState != .pending else { throw VPNValidationError.staleRevision }
+            if slot.writeState == .settled { try delete(reference) }
             var ledger = current.passwordLedger
-            ledger.pendingDeletion.removeAll { $0 == reference }
+            ledger.pendingDeletion.removeAll { $0.reference == reference }
             let next = VPNStoredState(saved: current.saved, applied: current.applied, passwordLedger: ledger)
             try next.validate(); try writeState(next, directory: descriptor)
         }
@@ -333,7 +429,8 @@ final class VPNStore {
         } catch { throw VPNValidationError.invalidConfiguration }
     }
 
-    private func writeState(_ state: VPNStoredState, directory: Int32) throws {
+    private func writeState(_ state: VPNStoredState, directory: Int32,
+                            requireDirectorySync: Bool = false) throws {
         let data: Data
         do { data = try JSONEncoder().encode(state) } catch { throw VPNValidationError.storageUnavailable }
         guard data.count <= maximumBytes else { throw VPNValidationError.storageUnavailable }
@@ -352,8 +449,16 @@ final class VPNStore {
             }
         }
         guard fsync(file) == 0, renameat(directory, temporary, directory, filename) == 0 else { throw VPNValidationError.storageUnavailable }
-        // Commit already happened: a directory fsync failure must not be reported
-        // as an unchanged configuration. Atomic replacement is the save boundary.
-        _ = fsync(directory)
+        // Ordinary configuration saves retain their existing rename boundary.
+        // An add may start ONLY after syncing its pending intent directory;
+        // failure can leave pending committed, but must never dispatch backend IO.
+        var directorySync = fsync(directory)
+        #if VPN_PASSWORD_LEDGER_TESTING
+        if requireDirectorySync && testRejectNextPendingDirectorySync {
+            testRejectNextPendingDirectorySync = false
+            directorySync = -1
+        }
+        #endif
+        if requireDirectorySync && directorySync != 0 { throw VPNValidationError.storageUnavailable }
     }
 }

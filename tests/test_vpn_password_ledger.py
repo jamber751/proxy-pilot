@@ -21,7 +21,7 @@ class VPNPasswordLedgerTests(unittest.TestCase):
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
         sources = [ROOT / 'app' / name for name in
                    ('VPNConfiguration.swift', 'VPNProfileImporter.swift', 'VPNStore.swift')]
-        result = subprocess.run(['swiftc', '-target', arch + '-apple-macosx11.0',
+        result = subprocess.run(['swiftc', '-D', 'VPN_PASSWORD_LEDGER_TESTING', '-target', arch + '-apple-macosx11.0',
                                  *map(str, sources), str(ROOT / 'tests/vpn_password_ledger_checks.swift'),
                                  '-o', str(cls.binary)], capture_output=True, text=True, timeout=120)
         if result.returncode: raise AssertionError(result.stderr)
@@ -44,9 +44,20 @@ class VPNPasswordLedgerTests(unittest.TestCase):
     def test_profile_replace_and_remove_queue_old_binding(self): self.run_case('profile')
     def test_acknowledgements_preserve_ledger_and_applied_never_grants(self): self.run_case('ack')
     def test_locked_callback_prevents_competing_process_store_update(self): self.run_case('lock')
-    def test_schema1_migration_and_schema2_malformed_fail_closed(self): self.run_case('schema')
+    def test_schema1_and_2_migration_and_schema3_malformed_fail_closed(self): self.run_case('schema')
     def test_full_queue_rejects_without_losing_obligations(self): self.run_case('capacity')
     def test_callback_errors_do_not_lose_durable_state(self): self.run_case('errors')
+    def test_one_add_per_uuid_and_fresh_save_rejects_stale_editor(self): self.run_case('once')
+    def test_unknown_add_retains_obligation_until_exact_definite_receipt(self): self.run_case('unknown')
+    def test_late_definite_receipt_resolves_active_after_resource_revision(self): self.run_case('late-active')
+    def test_unissued_grant_retirement_never_calls_backend(self): self.run_case('unissued')
+    def test_pending_directory_sync_error_never_dispatches_add(self): self.run_case('pending-sync')
+
+    def test_process_exit_after_pending_before_add_stays_unknown(self):
+        with tempfile.TemporaryDirectory(prefix='pp-password-ledger-') as folder:
+            self.run_case('prepare-add-crash', folder)
+            self.run_case('add-crash', folder, expected=43)
+            self.run_case('resume-add-crash', folder)
 
     def test_process_exit_after_delete_before_ack_is_retried(self):
         with tempfile.TemporaryDirectory(prefix='pp-password-ledger-') as folder:
