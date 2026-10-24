@@ -9,10 +9,13 @@ on:
       - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
       - 'app/vpn-helper/VPNDomainNetworkPlan.swift'
       - 'app/vpn-helper/VPNDNSPlan.swift'
+      - 'app/vpn-helper/VPNBoundDNSUpstreamSocket.swift'
       - 'tests/test_vpn_scoped_dns_route_custody.py'
       - 'tests/vpn_scoped_dns_route_custody_checks.swift'
       - 'tests/test_vpn_domain_network_plan.py'
       - 'tests/vpn_domain_network_plan_checks.swift'
+      - 'tests/test_vpn_bound_dns_upstream_socket.py'
+      - 'tests/vpn_bound_dns_upstream_socket_checks.swift'
   workflow_dispatch:
 
 permissions:
@@ -32,6 +35,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Private fake interfaces and route tables; no network operations
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_scoped_dns_route_custody test_vpn_domain_network_plan test_vpn_bound_dns_upstream_socket -v
       - name: Genuine universal helper compile and signature verification only
         run: zsh app/vpn-helper/build.sh "$RUNNER_TEMP/scoped-dns-helper"
