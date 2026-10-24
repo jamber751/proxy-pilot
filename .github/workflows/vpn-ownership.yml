@@ -24,6 +24,17 @@ on:
       - '!tests/vpn_live_controller_checks.swift'
       - '!tests/test_vpn_legacy_keychain_vm.py'
       - '!tests/vpn_legacy_keychain_vm_checks.swift'
+      # Dedicated ordinary-user/interface and guarded DNS workflows cover these.
+      # They do not change the privileged ownership graph.
+      - '!tests/test_vpn_password_ledger.py'
+      - '!tests/vpn_password_ledger_checks.swift'
+      - '!tests/test_vpn_password_worker.py'
+      - '!tests/vpn_password_worker_checks.swift'
+      - '!tests/test_managed_bridge_namespace.py'
+      - '!tests/test_vpn_dns_session_vm.py'
+      - '!tests/vpn_dns_session_vm_checks.swift'
+      - '!tests/test_vpn_dns_resolver_vm.py'
+      - '!tests/vpn_dns_resolver_vm_checks.swift'
   workflow_dispatch:
 
 permissions:
