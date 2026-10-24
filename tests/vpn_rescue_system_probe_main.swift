@@ -7,6 +7,12 @@ import Foundation
 @main enum VPNRescueSystemProbeMain {
     static func main() {
         let args = CommandLine.arguments
+        #if VPN_INSTALLED_UPDATE_RESULT_DIAGNOSTICS
+        VPNInstalledUpdateResultEntry.diagnostic = { stage, category in
+            FileHandle.standardError.write(Data(("ProxyPilot VPN installed result phase: "
+                + stage.rawValue + "; category: " + category.rawValue + "\n").utf8))
+        }
+        #endif
         if let status = VPNInstalledUpdateResultEntry.runIfRequested(arguments: args) { exit(status) }
         // Setup-only fixture role; never compiled into the normal frontend.
         let seedBroker = args.count == 2 && args[1] == "--vm-seed-broker"

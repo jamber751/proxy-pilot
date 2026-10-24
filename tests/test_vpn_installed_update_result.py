@@ -26,6 +26,14 @@ class VPNInstalledUpdateResultTests(unittest.TestCase):
                  'VPNActivationBudget.swift', 'VPNActivationCoordinator.swift', 'VPNLaunchdRuntime.swift',
                  'VPNStagedApplication.swift', 'VPNInstalledApplication.swift', 'VPNDirectoryProvisioner.swift',
                  'VPNInstalledUpdateResultEntry.swift', 'VPNRescueInstalledResultVerifier.swift')
+        cls.helper = cls.build / 'observation-helper'
+        shutil.copyfile(cls.universal, cls.helper); cls.helper.chmod(0o700)
+        cls.command(['codesign', '--force', '--sign', '-', '--options', 'runtime,hard,kill',
+                     '--identifier', 'kz.documentolog.proxypilot.vpn-helper', str(cls.helper)])
+        cls.helper_pins = {}
+        for arch in ('arm64', 'x86_64'):
+            result = cls.command(['codesign', '-d', '--verbose=4', '--arch', arch, str(cls.helper)])
+            cls.helper_pins[arch] = next(line[7:] for line in result.stderr.splitlines() if line.startswith('CDHash='))
         cls.driver = cls.build / 'result-checks'
         cls.command(['swiftc', '-D', 'VPN_INSTALLED_UPDATE_RESULT_TESTING', '-D', 'VPN_APPLICATION_DESTINATION_TESTING',
                      *map(str, (staged.HELPER / name for name in names)),
@@ -57,9 +65,35 @@ class VPNInstalledUpdateResultTests(unittest.TestCase):
         self.code_pins = self.pins()
 
     def invoke(self, operation='observe', desired='on', failures=0, deadline=3000):
+        extra = [str(self.helper), self.helper_pins['arm64'], self.helper_pins['x86_64']] if operation.startswith('observation-') else []
         return subprocess.run([str(self.driver), operation, str(self.stage), self.code_pins['arm64'],
-                               self.code_pins['x86_64'], desired, str(failures), str(deadline)],
+                               self.code_pins['x86_64'], desired, str(failures), str(deadline), *extra],
                               env=staged.ENV, capture_output=True, text=True, timeout=10)
+
+    def test_observation_busy_store_released_restarts_full_observation(self):
+        result = self.invoke('observation-busy-release', desired='off', deadline=1000)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'observation-complete')
+
+    def test_observation_busy_store_cannot_extend_absolute_deadline(self):
+        result = self.invoke('observation-busy-deadline', desired='off', deadline=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_observation_nonbusy_changed_unsafe_and_real_wrong_inode_are_not_retried(self):
+        for kind in ('changed', 'unsafe', 'wrong-identity'):
+            with self.subTest(kind=kind):
+                result = self.invoke('observation-' + kind, desired='off', deadline=1000)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                # Each invocation owns a fresh fixture Store.
+                shutil.rmtree(self.work / 'observation-store')
+
+    def test_observation_late_busy_discards_positive_and_repeats_full_observation(self):
+        result = self.invoke('observation-late-busy', desired='off', deadline=1000)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_observation_late_busy_cannot_reuse_earlier_identity_or_runtime_proof(self):
+        result = self.invoke('observation-late-busy-identity', desired='off', deadline=1000)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_authenticated_child_ready(self):
         result = self.invoke(); self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

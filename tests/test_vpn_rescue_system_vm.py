@@ -244,7 +244,8 @@ def build_fixtures(output, *, compile_only=False):
     probe = output / 'probe'
     probe_sources = [app / 'VPNConfiguration.swift', app / 'VPNProfileImporter.swift']
     probe_sources += [path for path in sorted(helper.glob('*.swift')) if path.name != 'ServiceMain.swift']
-    compile_universal([*probe_sources, ROOT / 'tests/vpn_rescue_system_probe_main.swift'], probe)
+    compile_universal([*probe_sources, ROOT / 'tests/vpn_rescue_system_probe_main.swift'], probe,
+                      flags=['-D', 'VPN_INSTALLED_UPDATE_RESULT_DIAGNOSTICS'])
     inert_source = output / 'inert.c'; inert_source.write_text('int main(void) { return 86; }\n')
     inert = output / 'inert'; compile_universal([inert_source], inert, compiler='/usr/bin/clang', optimize=False)
     # Compile-only mode exercises code generation without downloads or engine
@@ -355,6 +356,21 @@ def repair_tokens(text):
         elif match.group(2) in REPAIR_ERROR_CATEGORIES: events.append('failure:' + match.group(2))
         elif match.group(1) is None and match.group(2) is None: events.append('repairRejected')
     return events
+
+
+INSTALLED_RESULT_STAGES = {'openStore', 'snapshot', 'installedIdentity', 'selfIdentity',
+                           'readiness', 'offState', 'finalSnapshot', 'finalSelfIdentity',
+                           'finalInstalledIdentity'}
+INSTALLED_RESULT_CATEGORIES = {'storeBusy', 'store', 'state', 'changed', 'applicationIdentity',
+                               'selfIdentity', 'directory', 'budget', 'runtime', 'timeout', 'other'}
+
+
+def installed_result_tokens(text):
+    if isinstance(text, bytes): text = text.decode('utf-8', errors='replace')
+    if not isinstance(text, str): return []
+    return [stage + ':' + category for stage, category in re.findall(
+        r'^ProxyPilot VPN installed result phase: ([A-Za-z]+); category: ([A-Za-z]+)$', text, re.M)
+        if stage in INSTALLED_RESULT_STAGES and category in INSTALLED_RESULT_CATEGORIES]
 
 
 def launchd_diagnostics(text):
@@ -882,6 +898,18 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, str(self.state_summary()) + '\nrepair events=' + repr(events))
         return result
 
+    def _assert_installed_result(self, desired):
+        try:
+            child = subprocess.run([str(APPLICATION / 'Contents/MacOS/ProxyPilot'), '--vpn-verify-update-result'],
+                                   env=SAFE_ENV, capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError('Installed result timeout; state=' + repr(self.state_summary())
+                                 + '; resultEvents=' + repr(installed_result_tokens(error.stderr))) from None
+        events = installed_result_tokens(child.stderr)
+        if child.returncode != (40 if desired else 41):
+            self.fail('Installed result rejected; exit=' + str(child.returncode)
+                      + '; state=' + repr(self.state_summary()) + '; resultEvents=' + repr(events))
+
     def assert_clean_c(self, desired):
         return self.assert_clean_release(desired, 141, self.fixture['candidatePins'])
 
@@ -899,8 +927,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
             broker = (SYSTEM_BASE / 'Broker/update-broker-transaction.bin').read_bytes()
             self.assertEqual((len(broker), int.from_bytes(broker[10:12], 'big')), (128, 7))
         self.assertEqual(code_pins(APPLICATION), pins)
-        child = command([APPLICATION / 'Contents/MacOS/ProxyPilot', '--vpn-verify-update-result'], accepted=(40, 41), timeout=15)
-        self.assertEqual(child.returncode, 40 if desired else 41)
+        self._assert_installed_result(desired)
         budget = json.loads((service / 'activation.json').read_text()) if (service / 'activation.json').exists() else {'desired': True, 'failures': 0}
         self.assertEqual(budget['desired'], desired)
         if desired: self.assertEqual(budget['failures'], 0)

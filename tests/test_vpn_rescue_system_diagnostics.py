@@ -17,6 +17,47 @@ import test_vpn_rescue_system_vm as vm
 
 
 class RescueSystemDiagnosticTests(unittest.TestCase):
+    def test_installed_result_only_emits_closed_phase_and_category(self):
+        text = chr(10).join(['PRIVATE /path account',
+                'ProxyPilot VPN installed result phase: snapshot; category: storeBusy',
+                'ProxyPilot VPN installed result phase: finalSnapshot; category: timeout',
+                'ProxyPilot VPN installed result phase: PRIVATE; category: store',
+                'ProxyPilot VPN installed result phase: snapshot; category: SECRET',
+                'ProxyPilot VPN installed result phase: snapshot; category: storeBusy trailing secret'])
+        self.assertEqual(vm.installed_result_tokens(text), ['snapshot:storeBusy', 'finalSnapshot:timeout'])
+        self.assertEqual(vm.installed_result_tokens(None), [])
+
+    def test_installed_result_denial_keeps_failure_and_redacts_arbitrary_output(self):
+        case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_updates_repaired_c_desired_off')
+        case.state_summary = lambda: {'budget': {'desired': False}, 'installedRelease': 'D'}
+        result = SimpleNamespace(returncode=77, stdout='PRIVATE', stderr=chr(10).join([
+            'PRIVATE', 'ProxyPilot VPN installed result phase: snapshot; category: storeBusy']))
+        with patch.object(vm.subprocess, 'run', return_value=result) as run:
+            with self.assertRaises(AssertionError) as failure: case._assert_installed_result(False)
+        self.assertIn('snapshot:storeBusy', str(failure.exception))
+        self.assertIn('installedRelease', str(failure.exception))
+        self.assertNotIn('PRIVATE', str(failure.exception))
+        self.assertEqual(run.call_args.kwargs['timeout'], 15)
+        self.assertEqual(run.call_args.args[0][-1], '--vpn-verify-update-result')
+
+    def test_installed_result_success_keeps_exact_desired_outcome_without_extra_state_reads(self):
+        case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_updates_repaired_c_desired_off')
+        case.state_summary = Mock(side_effect=AssertionError('Unexpected diagnostic read'))
+        for desired, status in ((False, 41), (True, 40)):
+            with patch.object(vm.subprocess, 'run', return_value=SimpleNamespace(returncode=status, stderr='')):
+                case._assert_installed_result(desired)
+        case.state_summary.assert_not_called()
+
+    def test_installed_result_timeout_keeps_state_without_raw_stderr(self):
+        case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_updates_repaired_c_desired_off')
+        case.state_summary = lambda: {'installedRelease': 'D'}
+        timeout = subprocess.TimeoutExpired(['PRIVATE'], 15, stderr=b'PRIVATE')
+        with patch.object(vm.subprocess, 'run', side_effect=timeout):
+            with self.assertRaises(AssertionError) as failure: case._assert_installed_result(False)
+        self.assertIn('Installed result timeout', str(failure.exception))
+        self.assertIn('installedRelease', str(failure.exception))
+        self.assertNotIn('PRIVATE', str(failure.exception))
+
     def test_successor_observation_reuses_supplied_deadline_and_fixture_owner(self):
         case = vm.VPNRescueSystemVMTests('test_z_ordinary_owner_update_completes_without_ready_receiver')
         case.fixture = {'owner': 501, 'successorPins': {'synthetic': 'pin'}}
