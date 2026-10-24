@@ -4469,3 +4469,26 @@ Update package и clean package явно помечены TEST ONLY. Пока э
   Пофайловый chown живого app недопустим: crash оставляет mixed ownership.
   Отдельно решить окно между migration и resume: старый recovery daemon ожидает
   root-owned installed A. Без доказательства восстановления этот путь не готов.
+
+### Продолжение 1.5dc — воспроизведение старого executor на стенде
+
+- [x] Зафиксирован destination primitive из baseline `8519961fdf157252f195b469550f1bcebbd1878d`,
+  SHA256 `5b9b4ed417b0aca742d5c979c384e48d30aa7718741111d24ef28d2debb28d65`.
+  В fixture меняются только имя типа и UID guard тестового входа; сама старая
+  логика exchange не переписывается. Это pinned source regression, не запуск
+  всего бинарника установленного 137.
+- [x] Run 40080273654 выявил ошибку подготовки root-fixture: Git отказал читать
+  checkout runner user. Исправлено scoped `git -c safe.directory=<exact checkout>`
+  только для read-only show; global config не меняется, hash по-прежнему проверяется.
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40080384542:
+  **44 passed, без skips**, по 8 ordinary + 14 root на arm64/macOS14 и Intel/macOS15.
+  Старый primitive воспроизводимо отказывает root-owned A и успешно обменивает
+  user-owned A, включая повтор. Namespace/inode checks подтверждают направление.
+- [x] Добавлен изолированный `VPNLegacySourceClone` и 10 root-сценариев.
+  Только создание отдельной private copy, изменение UID копии, полный signature/
+  ownership check и source revalidation. Никакого swap/journal/service mutation.
+  Production prepare недоступен компилятору до durable migration/resume.
+  Локально ordinary-user refusal passed; root-сценарии локально не запускались.
+- [ ] Remote run 40080484055 (`ed502af`) проверяет clone на обеих архитектурах.
+- [ ] Durable migration record, publication/retry, recovery job и общий сценарий
+  frozen A→B с прерываниями ещё не реализованы. Host installation не выполнялась.
