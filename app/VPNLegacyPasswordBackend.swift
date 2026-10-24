@@ -123,7 +123,8 @@ final class VPNLegacyPasswordBackend: VPNPasswordWorkerBackend {
         let name = String(decoding: nameBytes.prefix(nameCount), as: UTF8.self)
         let allowed = selected == 65 ? ["first.keychain", "first.keychain-db"] : ["second.keychain", "second.keychain-db"]
         guard allowed.contains(name) else { throw VPNLegacyPasswordError.unavailable }
-        return try VPNLegacyPasswordBackend(api: VPNLegacyPasswordSecurityAPI(privateAddPath: String(cString: path) + "/" + name))
+        return try VPNLegacyPasswordBackend(api: VPNLegacyPasswordSecurityAPI(
+            privateAddPath: String(cString: path) + "/" + name, testDirectory: directory))
     }
     #endif
 
@@ -188,6 +189,26 @@ final class VPNLegacyPasswordBackend: VPNPasswordWorkerBackend {
 /// This adapter never creates/unlocks keychains or changes preferences/ACLs.
 private struct VPNLegacyPasswordSecurityAPI: VPNLegacyPasswordAPI {
     let privateAddPath: String?
+    #if VPN_LEGACY_PASSWORD_BACKEND_TESTING
+    var testDirectory: Int32 = -1
+    /// Diagnostics are never a mutation receipt. The ordinary parent still
+    /// relies solely on the authenticated worker response and Store gate.
+    private func recordDelete(_ stage: UInt8, status: OSStatus) {
+        guard testDirectory >= 0 else { return }
+        let fd = openat(testDirectory, "private-delete-diagnostic.bin",
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }; defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1, info.st_mode & 0o777 == 0o600,
+              info.st_size == 0 else { return }
+        var bytes = Data("PPDEL001".utf8)
+        bytes.append(stage)
+        var code = UInt32(bitPattern: status).bigEndian
+        withUnsafeBytes(of: &code) { bytes.append(contentsOf: $0) }
+        _ = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+    }
+    #endif
     func disableInteraction() throws {
         guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { throw VPNLegacyPasswordError.unavailable }
         var allowed: DarwinBoolean = true
@@ -238,8 +259,17 @@ private struct VPNLegacyPasswordSecurityAPI: VPNLegacyPasswordAPI {
     }
     func delete(_ item: VPNLegacyPasswordItem) -> OSStatus {
         guard let reference = item.reference, let observed = try? owner(reference), observed == item.origin,
-              (try? identity(item.origin.path)) == item.origin else { return errSecNotAvailable }
-        return SecItemDelete([kSecMatchItemList as String: [reference]] as CFDictionary)
+              (try? identity(item.origin.path)) == item.origin else {
+            #if VPN_LEGACY_PASSWORD_BACKEND_TESTING
+            recordDelete(0, status: errSecNotAvailable)
+            #endif
+            return errSecNotAvailable
+        }
+        let status = SecItemDelete([kSecMatchItemList as String: [reference]] as CFDictionary)
+        #if VPN_LEGACY_PASSWORD_BACKEND_TESTING
+        recordDelete(1, status: status)
+        #endif
+        return status
     }
     private func capture(_ value: CFTypeRef?) throws -> VPNLegacyPasswordItem {
         guard let dictionary = value as? [String: Any],

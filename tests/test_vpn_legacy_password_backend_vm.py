@@ -8,6 +8,8 @@ import os
 import platform
 import shutil
 import signal
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,32 @@ import time
 import unittest
 
 from test_vpn_legacy_password_backend import ROOT, SOURCES
+
+
+def delete_diagnostic(folder):
+    """Fixed test-only status; never an API receipt or cleanup authorization."""
+    directory = descriptor = -1
+    try:
+        directory = os.open(Path(folder) / 'Store', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        parent = os.fstat(directory)
+        if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) != 0o700:
+            return 'private-delete:unavailable'
+        descriptor = os.open('private-delete-diagnostic.bin', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size != 13):
+            return 'private-delete:unavailable'
+        data = os.read(descriptor, 14)
+        if len(data) != 13 or data[:8] != b'PPDEL001' or data[8] not in (0, 1):
+            return 'private-delete:unavailable'
+        phase = ('preflight-refused', 'api-returned')[data[8]]
+        return 'private-delete:stage=' + phase + ':status=' + str(struct.unpack('>i', data[9:])[0])
+    except OSError:
+        return 'private-delete:unavailable'
+    finally:
+        if descriptor >= 0: os.close(descriptor)
+        if directory >= 0: os.close(directory)
 
 
 def build_fixture(folder, arch):
@@ -36,6 +64,20 @@ def build_fixture(folder, arch):
 
 
 class VMFixtureDiagnosticsTests(unittest.TestCase):
+    def test_private_delete_record_never_prints_arbitrary_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='pp-delete-diagnostic-') as folder:
+            store = Path(folder) / 'Store'; store.mkdir(mode=0o700)
+            record = store / 'private-delete-diagnostic.bin'
+            for stage, code in ((0, -25291), (1, -50), (1, 0)):
+                record.write_bytes(b'PPDEL001' + bytes([stage]) + struct.pack('>i', code)); record.chmod(0o600)
+                phase = ('preflight-refused', 'api-returned')[stage]
+                self.assertEqual(delete_diagnostic(folder), 'private-delete:stage=' + phase + ':status=' + str(code))
+            for data in (b'private data', b'PPDEL001' + bytes([2]) + bytes(4), b'PPDEL001' + bytes(4)):
+                record.write_bytes(data)
+                self.assertEqual(delete_diagnostic(folder), 'private-delete:unavailable')
+            record.unlink(); record.symlink_to(store / 'absent')
+            self.assertEqual(delete_diagnostic(folder), 'private-delete:unavailable')
+
     def test_diagnostics_only_emit_closed_stage_numeric_status_and_boolean(self):
         source = (ROOT / 'tests/vpn_legacy_password_backend_vm_checks.swift').read_text()
         body = source.split('private static func evidence(', 1)[1].split('    static func check(', 1)[0]
@@ -183,6 +225,8 @@ class VPNLegacyPasswordBackendVMTests(unittest.TestCase):
         quiescent = False
         try:
             out, err = process.communicate(timeout=40)
+            if process.returncode:
+                print(delete_diagnostic(folder), flush=True)
             self.assertEqual(process.returncode, 0, out + err)
             self.assertIn('private backend checks passed', out)
             self.assertFalse((Path(folder) / 'Store/private-unknown-api').exists(),
