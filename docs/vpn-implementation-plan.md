@@ -4984,3 +4984,14 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Выполнить новый UI ARM/Intel прогон с removal cases и затем живую
   stop/delete/navigation приёмку после repair gate. Реальные CLI, VPN/helper,
   сеть, Keychain, приватные профили и системная установка локально не запускались.
+
+### Продолжение 1.5dw — удаление VPN прошло ARM/Intel
+
+- [x] Run https://github.com/jamber751/proxy-pilot/actions/runs/40092541313
+  (`245402c`): **76 passed без skips**,38 на ARM и38 на Intel.
+  Лог содержит два suite summaries38, нет FAILED/skipped.
+- [x] Новые7 сценариев подтверждают success/VPN-only возврат в app settings,
+  отсутствие перехода при cancel/failed stop/failed delete и одноразовое
+  потребление navigation request. Использованы actual ProductView/adapter и
+  temporary VPN store с fake helper и proxy content; CLI/реальная сеть не вызывались.
+- [ ] Живая системная приёмка proxy preservation и всего VPN flow остаётся открытой.
