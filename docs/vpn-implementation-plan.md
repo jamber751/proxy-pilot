@@ -7414,3 +7414,13 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   production backend/OS DNS/custody/recovery/WARP/release scope остаются открытыми.
 - [x] macOS12+ — подтверждённый пользователем product minimum; lower engine ABI11
   не означает поддержку запуска App на11. Actual macOS12 runtime ещё требуется.
+
+- [x] 1.5gw fixture committed as bebccae and pushed ONLY acceptance branch.
+  Actual UDP run40182349363 created with4 verified jobs121135852828/2988/2990/
+  3002 (full IDs121135852828,121135852988,121135852990,121135853002), all queued
+  at observation. Viability regression40182349373 also created for shared codec
+  change; ownership40182349358 triggered by its workflow exclusion update.
+  Queued is not PASS and neither production gate nor final installer is released.
+- [x] On bebccae repeated minimum macOS contract suite:7/7 PASS,0skips,.784s;
+  actual packaging/preflight metadata guards are tested. This remains distinct
+  from an actual macOS12 runtime execution, still open.
