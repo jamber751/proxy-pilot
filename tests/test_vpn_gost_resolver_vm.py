@@ -37,7 +37,7 @@ CASES = ('absent-host', 'literal', 'in-cidr', 'out-cidr', 'failure', 'empty',
          'invalid-ip', 'malformed', 'http-error', 'timeout', 'token', 'basic', 'redirect', 'unix')
 PROTOCOLS = ('http', 'socks')
 FAILURES = {'guardDenied', 'binaryRefused', 'configuration', 'startup', 'client',
-            'request', 'decision', 'plugin', 'bounds', 'cleanup', 'unexpected'}
+            'request', 'decision', 'plugin', 'bounds', 'cleanup', 'transport', 'unexpected'}
 
 
 class Refused(Exception):
@@ -160,7 +160,7 @@ def configuration(port, upstream, resolver=None):
         'chains': [{'name': 'c0', 'hops': [{'name': 'h0', 'bypass': 'b0',
                     'nodes': [{'name': 'n0', 'addr': upstream, 'connector': {'type': 'http'},
                                'dialer': {'type': 'tcp'}}]}]}],
-        'bypasses': [{'name': 'b0', 'matchers': ['127.0.0.2/32']}],
+        'bypasses': [{'name': 'b0', 'matchers': ['127.0.0.1/32']}],
     }
     if resolver is not None:
         result['services'][0]['resolver'] = 'owned-plugin'
@@ -221,7 +221,11 @@ def run_contract(lease):
             self.stop = threading.Event()
             self.lock = threading.Lock()
             self.connections, self.workers, self.errors = set(), [], []
-            self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Darwin requires an explicitly configured bind address. Use the
+            # canonical v4/v6 loopbacks; never add aliases to make a test pass.
+            # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/netinet/in_pcb.c
+            require(address in ('127.0.0.1', '::1'), 'configuration')
+            self.listener = socket.socket(socket.AF_INET6 if address == '::1' else socket.AF_INET, socket.SOCK_STREAM)
             try:
                 self.listener.bind((address, 0))
                 self.listener.listen(16)
@@ -300,8 +304,8 @@ def run_contract(lease):
                     with lock: events[kind] += 1
                     connection.sendall(marker)
                 return handle
-            inside = Server('127.0.0.2', target('in')); servers.append(inside)
-            outside = Server('127.0.0.3', target('out')); servers.append(outside)
+            inside = Server('127.0.0.1', target('in')); servers.append(inside)
+            outside = Server('::1', target('out')); servers.append(outside)
 
             def upstream(server, connection):
                 first, headers, rest = receive_header(connection)
@@ -330,7 +334,7 @@ def run_contract(lease):
                     elif name == 'failure': body = b'{"ok":false,"ips":[]}'
                     elif name == 'empty': body = b'{"ok":true,"ips":[]}'
                     elif name == 'invalid-ip': body = b'{"ok":true,"ips":["not-an-ip"]}'
-                    else: body = json.dumps({'ok': True, 'ips': ['127.0.0.3' if name == 'out-cidr' else '127.0.0.2']}).encode()
+                    else: body = json.dumps({'ok': True, 'ips': ['::1' if name == 'out-cidr' else '127.0.0.1']}).encode()
                     response(connection, body, 503 if name == 'http-error' else 200)
                 return handle
             plugin = Server('127.0.0.1', plugin_handler('plugin')); servers.append(plugin)
@@ -350,7 +354,7 @@ def run_contract(lease):
                 if name == 'unix': url = 'unix:/owned-nonexistent-canary-socket'
                 resolver = {'type': 'http', 'addr': url, 'timeout': '300ms'}
                 if name == 'token': resolver['token'] = 'synthetic-ignored-canary'
-            target_host = '127.0.0.2' if name == 'literal' else host
+            target_host = '127.0.0.1' if name == 'literal' else host
             target_port = outside.port if name == 'out-cidr' else inside.port
             target_address = target_host + ':' + str(target_port)
             with tempfile.TemporaryDirectory(prefix='gost-owned-contract-', dir=os.environ['RUNNER_TEMP']) as folder:
@@ -385,7 +389,7 @@ def run_contract(lease):
                     else:
                         client.sendall(b'\x05\x01\x00'); require(exact(client, 2, client_end) == b'\x05\x00', 'client')
                         encoded = target_host.encode('ascii')
-                        address = b'\x01' + bytes((127, 0, 0, 2)) if name == 'literal' else b'\x03' + bytes([len(encoded)]) + encoded
+                        address = b'\x01' + bytes((127, 0, 0, 1)) if name == 'literal' else b'\x03' + bytes([len(encoded)]) + encoded
                         client.sendall(b'\x05\x01\x00' + address + target_port.to_bytes(2, 'big'))
                         reply = exact(client, 4, client_end); require(reply[0] == 5 and reply[2] == 0, 'client')
                         sizes = {1: 4, 4: 16}
@@ -401,7 +405,7 @@ def run_contract(lease):
                             payload += chunk
                             require(len(payload) <= 128, 'bounds')
                         require(payload == marker, 'decision')
-                expected_proxy = [target_address] if name == 'absent-host' else ['127.0.0.3:' + str(target_port)] if name == 'out-cidr' else []
+                expected_proxy = [target_address] if name == 'absent-host' else ['[::1]:' + str(target_port)] if name == 'out-cidr' else []
                 require(events['proxy'] == expected_proxy and events['out'] == 0, 'decision')
                 require(events['in'] == (1 if name in ('literal', 'in-cidr', 'token', 'basic', 'redirect') else 0), 'decision')
                 expected_plugin = 0 if name in ('literal', 'absent-host', 'unix') else 1
@@ -435,7 +439,15 @@ def run_contract(lease):
 
     for protocol in PROTOCOLS:
         for name in CASES:
-            case(name, protocol)
+            try:
+                case(name, protocol)
+            except OSError as error:
+                number = error.errno if type(error.errno) is int and 0 <= error.errno <= 9999 else 0
+                print('DETAIL gost-resolver-' + protocol + '-' + name + ' errno=' + str(number), flush=True)
+                raise Refused('transport') from None
+            except Refused as error:
+                print('DETAIL gost-resolver-' + protocol + '-' + name + ' category=' + error.category, flush=True)
+                raise
             print('PASS gost-resolver-' + protocol + '-' + name, flush=True)
     print('PASS gost-resolver-all-28-owned-cases', flush=True)
 
@@ -476,7 +488,7 @@ class PureTests(unittest.TestCase):
         config = configuration(1234, '127.0.0.1:2345')
         self.assertNotIn('resolver', config['services'][0])
         self.assertNotIn('resolvers', config)
-        self.assertEqual(config['bypasses'][0]['matchers'], ['127.0.0.2/32'])
+        self.assertEqual(config['bypasses'][0]['matchers'], ['127.0.0.1/32'])
         plugin = {'type': 'http', 'addr': 'http://127.0.0.1:3456/resolve', 'timeout': '300ms'}
         self.assertEqual(configuration(1234, '127.0.0.1:2345', plugin)['resolvers'][0]['plugin'], plugin)
         for bad in ('example.invalid:2345', '203.0.113.1:2345', '127.0.0.2:2345'):
@@ -527,8 +539,8 @@ class PureTests(unittest.TestCase):
         for forbidden in ('getaddrinfo', 'gethostby', 'socket.AF_UNIX', 'os.killpg', 'scutil', 'networksetup', '/etc/resolver', 'sudo'):
             self.assertNotIn(forbidden, live_part)
         self.assertNotIn('vendor/', live_part)
-        self.assertIn("Server('127.0.0.2'", live_part)
-        self.assertIn("Server('127.0.0.3'", live_part)
+        self.assertIn("Server('127.0.0.1', target('in')", live_part)
+        self.assertIn("Server('::1', target('out')", live_part)
 
 
 if __name__ == '__main__':
