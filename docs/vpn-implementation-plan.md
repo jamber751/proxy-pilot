@@ -7237,3 +7237,34 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   После проверки ancestry/replacement и повторного чтения всех job statuses
   отменены только полностью queued superseded ownership40179073452/40178170670;
   оба terminal CANCELLED. f715 partial/live suites и native System jobs сохранены.
+
+
+### Продолжение 1.5gr — отделён build prerequisite failure от genuine SDK failure
+
+- [x] Source48e62b6 genuine40174280024 terminal failure разобран по полному job
+  log: Intel roundtrip121111500058 завершился в build_frontends/setUpClass,
+  curl exit6 (невозможно разрешить github.com), до сборки App и до Keychain API.
+  Ran0 actual tests; это не credential mutation failure и не unknown SDK outcome.
+  Лог /tmp/pp-genuine-48-intel-roundtrip-121111500058.log. Worker/backend/
+  custody policy, retries и enabled runtime не менялись ради зелёного статуса.
+- [x] Остальные3 actual source48 cases SUCCESS и каждый явно restored-and-clean:
+  cross-image Intel121111499871, roundtrip ARM121111500067,
+  cross-image ARM121111500091. Логи /tmp/pp-genuine-48-<job>.log.
+  Ранее genuine source0b все4 actual cases уже проходили; текущий f715bc5
+  replacement40176890840 с macOS12 ещё queued, не засчитан как PASS.
+- [x] Sourcef715bc5 transport40176890684 SUCCESS обе arch: по66 safe +4 genuine
+  frontend closed-role/private-Inbox checks, без skips. Jobs121119391633/
+  121119391753, логи /tmp/pp-acceptance-terminal-<job>.log. Это проверяет новые
+  macOS12 bundle guards, но не исполнение на самой macOS12 и не installed UX.
+- [x] Sourcef715bc5 managed bridge40176890727 SUCCESS обе arch:80 checks/arch,
+  без skips, jobs121119391756/121119391900. Default/overlay ownership tests
+  не подменяют connected domain/WARP acceptance.
+- [x] Старый sourcef4f644b System40172499522 теперь terminal SUCCESS обе arch:
+  jobs121106121253/121106121498 каждый прошёл8 actual native cases. Fast153
+  включает1 optional real-App skip, root volume/owner6 PASS, все8 native runs
+  Ran1/OK без skips. Логи /tmp/pp-acceptance-terminal-<job>.log. Этот snapshot
+  предшествует fresh route-socket lifetime, macOS12 и последующим DNS изменениям;
+  он не закрывает current-source или intermittent failure gate.
+- [ ] Sourcea6 System Intel121110535940 уже прошёл pending Off и выполняет
+  pending On. Existing handle продолжается; final current-source installer,
+  installed OTP/IP и production domain barrier остаются открыты.
