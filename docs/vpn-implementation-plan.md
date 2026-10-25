@@ -8520,3 +8520,14 @@ fixture cleanup. Все required actual markers присутствуют; это
 ОДНОЙ architecture. Другие jobs121186810273/402/403 ещё queued, не отменялись.
 Diagnostic System40196864320 Intel121179472595 перешёл к enabled repair после
 успешных phase6 иdisabled repair; полного результата восьми cases ещё нет.
+
+
+Queue audit после0cbddf7: новый candidate2/SC gate40203740315 создан на exact
+0cbddf7. Для fully queued40202641601/38f29fa отправлена cancel после ancestor
+check, совпадения всех4 job names, additions-only workflow superset иbyte-equal
+GOST recipes/pins/production worker sources. Каждая старая job повторно checked
+queued прямо передPOST. Запрос принят; terminal-state follow-up временно вернул
+GitHub Service Unavailable, поэтому completion отмены пока не утверждается.
+Живые/partial runs не отменялись. Повторное чтение того же diagnostic job
+121179472595 успешно показало in_progress наordinary C→D desired-on update;
+новая workflow вместо него не запускалась. Это всё ещё не full8-case acceptance.
