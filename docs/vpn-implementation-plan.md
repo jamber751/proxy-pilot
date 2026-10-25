@@ -7461,3 +7461,48 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   subdomains (owner decision). Internal password checklist corrected: integration
   was already enabled after genuine/private backend proofs, while current-source
   and final installed checks remain mandatory. No public notes/feed changed.
+
+### Продолжение 1.5gy — настоящий OS-resolver seam для GOST и новые terminal proofs
+
+- [x] Новый guarded4-OS workflow vpn-gost-system-resolver.yml: stock pinned
+  GOST3.2.6 HTTP/SOCKS5 ->0600 owner-private Unix gRPC -> Node dns.lookup() ->
+  системный getaddrinfo/mDNSResponder -> собственный UDP/TCP responder на127.0.0.1:53.
+  Root владеет только random session-owned supplemental DNS key; GOST, Node,
+  echo/proxy и clients запускаются как исходный ordinary runner (SUDO_UID/GID),
+  отдельно проверяется native binary pin до/после. Никакого target onward dial.
+- [x] Native Swift session owner закрывается по одному байту из private parent
+  pipe, проверяет отсутствие своего key после release. Occupied port/key — отказ,
+  без takeover/RemoveValue, чужих service/interface/default DNS/PF изменений.
+  Child timeout убивает только собственные процессы; session-scoped запись
+  исчезает с владельцем. Ни один такой API не запускается на host по default.
+- [x] Существующий fake-only Unix gRPC fixture не изменён и не делает DNS lookup.
+  Общий Python contract получил отдельный system_id+explicit flag path; обычные
+ 14 fake cases сохраняются. Новый mode проверяет4 связки HTTP/SOCKS × A-in-CIDR /
+  AAAA-out-CIDR; для AAAA responder сначала выставляет TC, затем отдаёт TCP answer.
+  Negative/error ни разу не передаются как ok=false-with-IP: используется RPC error.
+- [x] Выбор именно dns.lookup (OS facility/getaddrinfo), а не dns.resolve (raw DNS),
+  сверён с primary Node docs: https://nodejs.org/api/dns.html#implementation-considerations
+  Promise timeout ограничивает ожидание ответа, НЕ заявляет cancellation libuv
+  getaddrinfo: собственный Node worker затем завершается и дожидается parent.
+- [x]16 ordinary compile/pure/refusal tests PASS2.371s, без skips; обе arch12 target
+  нового Swift owner, pure native guards, DNS wire TC/A/AAAA loopback encoding,
+  old GOST pins/config и оба дополнительные root/ordinary gates. Node syntax и
+  YAML Ruby parser PASS. Host DNS, сети, установленные процессы и Keychain не
+  использовались. Actual new OS-resolver run ещё НЕ получен и production adapter
+  НЕ реализован этим Node canary; domain gate остаётся закрытым.
+- [x] Genuine SDK40176890840 sourcef715bc5 теперь SUCCESS все4 jobs:
+ 121119392007/121119392123 roundtrip,121119392125/121119392136 cross-image.
+  Каждый actual test Ran1/OK, без skips; все4 `outcome=restored-and-clean`.
+  Оба cross-image native results: cross-read=fallback,
+  cross-delete=unavailable-retained. Это честный manual fallback/retained custody,
+  НЕ доказательство automatic cross-image password read/delete. Логи
+  /tmp/pp-native-final-<job>.log. Installed final save/fill UX остаётся OPEN.
+- [x] System40177750145 source040d336 ARM121122023316 SUCCESS:180 fast checks
+  (179PASS+1optional real-App skip),6 root owner/volume PASS, все8 actual Installer
+  cases Ran1/OK, без skips. Включены C→D Off/On и closed reply completion. Лог
+  /tmp/pp-native-final-121122023316.log. Intel121122023088 всё ещё live; source74
+  publisher-preflight acceptance40180251651 также live/queued, не заменён этим.
+- [x] Старый ownership40180251600 source74cda2f на свежих individual APIs имел6/6
+  queued; descendant bebccae40182349358 с теми же6suite names проверен до cancel.
+  Старый run terminal CANCELLED. Live/partial ownership5b и System сохранены.
+  UDP/TCP40182604589 и shared-codec viability40182349373 всё ещё queued.

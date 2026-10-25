@@ -36,7 +36,13 @@ def resolver(path, wrong=False):
             'token': 'wrong-synthetic-token' if wrong else 'owned-synthetic-token'}
 
 
-def run_contract(lease):
+def run_contract(lease, *, system_id=None):
+    # A separate fresh-root-VM orchestrator owns the temporary OS DNS session.
+    # Standard fake contract mode never imports/calls a system resolver.
+    if system_id is not None:
+        import uuid
+        base.require(os.environ.get('PROXYPILOT_VM_GOST_SYSTEM_RESOLVER_TESTS') == '1'
+            and str(uuid.UUID(system_id)) == system_id, 'guardDenied')
     base.require(base.allowed(os.getuid(), os.geteuid(), sys.platform, os.environ), 'guardDenied')
     import secrets
     import select
@@ -58,7 +64,8 @@ def run_contract(lease):
             except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=2)
 
     def case(mode, protocol):
-        host = secrets.token_hex(12) + '.invalid'
+        host = (('udp' if mode == 'in-cidr' else 'tcp') + '.pp-' + system_id + '.test'
+                if system_id is not None else secrets.token_hex(12) + '.invalid')
         probe = ('PROBE-' + secrets.token_hex(12)).encode()
         marker = ('OWNED-' + secrets.token_hex(12) + '\n').encode()
         observed = {'in': 0, 'out': 0, 'proxy': [], 'errors': []}
@@ -106,7 +113,11 @@ def run_contract(lease):
                 try:
                     environment = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'GITHUB_ACTIONS': 'true',
                         base.FLAG: '1', 'RUNNER_TEMP': os.environ['RUNNER_TEMP']}
-                    rpc = subprocess.Popen([node, str(FIXTURE), str(config)], stdin=subprocess.DEVNULL,
+                    fixture = FIXTURE
+                    if system_id is not None:
+                        environment['PROXYPILOT_VM_GOST_SYSTEM_RESOLVER_TESTS'] = '1'
+                        fixture = ROOT / 'tests/vpn_gost_system_resolver_fixture.cjs'
+                    rpc = subprocess.Popen([node, str(fixture), str(config)], stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=node_log, env=environment); children.append(rpc)
                     ready = select.select([rpc.stdout], [], [], 3)[0]
                     base.require(bool(ready) and os.read(rpc.stdout.fileno(), 64) == b'READY\n' and rpc.poll() is None, 'startup')
@@ -152,7 +163,9 @@ def run_contract(lease):
                     base.require(observed['proxy'] == (['[::1]:' + str(outside)] if mode == 'out-cidr' else []), 'decision')
                     base.require(observed['in'] == (1 if mode in ('in-cidr', 'false-with-ip') else 0) and observed['out'] == 0 and not observed['errors'], 'decision')
                     rows = (folder / 'events.jsonl').read_text().splitlines()
-                    base.require(len(rows) == 1 and json.loads(rows[0]) == {'valid': True, 'token': mode != 'wrong-token'}, 'plugin')
+                    expected_event = {'valid': True, 'token': mode != 'wrong-token'}
+                    if system_id is not None: expected_event['resolved'] = True
+                    base.require(len(rows) == 1 and json.loads(rows[0]) == expected_event, 'plugin')
                     base.require(gost.poll() is None and rpc.poll() is None, 'decision')
                 finally:
                     for child in reversed(children): stop(child)
@@ -169,10 +182,11 @@ def run_contract(lease):
                 base.require(not thread.is_alive(), 'cleanup')
 
     for protocol in ('http', 'socks'):
-        for mode in CASES:
+        for mode in (CASES if system_id is None else ('in-cidr', 'out-cidr')):
             case(mode, protocol)
-            print('PASS gost-grpc-unix-' + protocol + '-' + mode, flush=True)
-    print('PASS gost-grpc-unix-all-14-owned-cases', flush=True)
+            prefix = 'gost-grpc-unix-' if system_id is None else 'gost-system-dns-'
+            print('PASS ' + prefix + protocol + '-' + mode, flush=True)
+    print('PASS ' + ('gost-grpc-unix-all-14-owned-cases' if system_id is None else 'gost-system-dns-all-4-owned-cases'), flush=True)
 
 
 class PureTests(unittest.TestCase):
