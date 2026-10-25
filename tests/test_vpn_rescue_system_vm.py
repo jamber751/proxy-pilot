@@ -375,7 +375,10 @@ REPAIR_ERROR_CATEGORIES = {'liveIdentity', 'preparationIdentity', 'directory', '
                            'protectedStorage', 'protectedLayout', 'protectedExecutor', 'protectedRename', 'protectedUncertain',
                            'installedResult', 'installedResultTimeout', 'installedResultChanged', 'installedResultChild',
                            'installedResultSpawn', 'installedResultState', 'installedApplication',
-                           'launchd', 'authorization', 'ownership', 'package',
+                           'launchd', 'launchdTimeout', 'launchdCommand',
+                           'brokerDeadline', 'brokerCommandTimeout', 'brokerCommand',
+                           'brokerChanged', 'brokerOwnership', 'brokerState',
+                           'authorization', 'ownership', 'package',
                            'state', 'timeout', 'other'}
 
 
@@ -507,6 +510,38 @@ def installed_result_log_diagnostics():
     # This observation window can include an earlier case in the same VM. It
     # helps explain a failure, but never proves the current attempt succeeded.
     return dict(installed_result_log_tokens(result.stdout), window='last10m')
+
+
+
+def launchd_command_log_tokens(text):
+    """VM-only fixed vocabulary; discard raw labels, args, paths and messages."""
+    if not isinstance(text,str) or len(text.encode('utf-8'))>131072:return {'record':'overBudget'}
+    try:rows=json.loads(text)
+    except (ValueError,TypeError):return {'record':'unreadable'}
+    if not isinstance(rows,list) or len(rows)>512:return {'record':'overBudget'}
+    events=[]
+    pattern=r'ProxyPilot VPN launchd role: (recovery|broker); command: (bootout|bootstrap|print|other); outcome: (enter|exit|timeout|signal|spawn|submitted); status: (-1|0|[1-9][0-9]{0,2})'
+    for row in rows:
+        if not isinstance(row,dict):continue
+        value=row.get('eventMessage')
+        if not isinstance(value,str):continue
+        match=re.fullmatch(pattern,value)
+        if not match:continue
+        role,operation,outcome,code=match.groups();code=int(code)
+        if code>255 or ((outcome in ('exit','signal')) != (code>=0)):continue
+        events.append(':'.join((role,operation,outcome,str(code))))
+    return {'record':'valid','events':events[-96:],'truncated':len(events)>96}
+
+
+def launchd_command_log_diagnostics():
+    if not root_vm_enabled():return {'record':'refused'}
+    try:
+        result=subprocess.run(['/usr/bin/log','show','--style','json','--last','10m','--predicate',
+            'subsystem == "kz.documentolog.proxypilot.vm" AND category == "launchd-command"'],
+            env=SAFE_ENV,capture_output=True,text=True,timeout=5)
+    except (OSError,UnicodeError,subprocess.TimeoutExpired):return {'record':'unavailable'}
+    if result.returncode!=0:return {'record':'unavailable'}
+    return dict(launchd_command_log_tokens(result.stdout),window='last10m')
 
 
 def launchd_diagnostics(text):
@@ -1178,6 +1213,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
         service = SYSTEM_BASE / 'VPN'
         result = {'activationEvents': activation_log_diagnostics(identity=self.activation_log_identity),
                   'installedResultEvents': installed_result_log_diagnostics(),
+                  'launchdCommands': launchd_command_log_diagnostics(),
                   'helperHistory': getattr(self, 'helper_history', {'status': 'notStarted'})}
         for name in ('preparation.json', 'update.json', 'cleanup.json'):
             path = service / name

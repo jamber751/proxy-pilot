@@ -11,6 +11,13 @@ import Foundation
         guard condition() else { throw Failure.check }
     }
     static func main() throws {
+        let command=VPNActivationDiagnostics.launchdRecord(role:.recovery,command:.bootout,outcome:.exit,status:113)
+        try check(command?.line=="ProxyPilot VPN launchd role: recovery; command: bootout; outcome: exit; status: 113")
+        try check(VPNActivationDiagnostics.launchdRecord(role:.broker,command:.bootstrap,outcome:.timeout)?.status == -1)
+        try check(VPNActivationDiagnostics.launchdRecord(role:.recovery,command:.bootout,outcome:.submitted)?.status == -1)
+        try check(VPNActivationDiagnostics.launchdRecord(role:.broker,command:.other,outcome:.exit,status:-1) == nil)
+        try check(VPNActivationDiagnostics.launchdRecord(role:.broker,command:.print,outcome:.timeout,status:0) == nil)
+        try check(VPNActivationDiagnostics.launchdRecord(role:.broker,command:.print,outcome:.exit,status:256) == nil)
         try check(VPNActivationDiagnostics.category(VPNReleaseStoreError.busy) == .storeBusy)
         try check(VPNActivationDiagnostics.category(VPNReleaseStoreError.invalidState) == .storeState)
         try check(VPNActivationDiagnostics.category(VPNActivationBudgetError.exhausted) == .activationExhausted)

@@ -39,6 +39,12 @@
 [○ DNS/жизненный цикл] → [○ выпуск]**.
 Это ориентир по ближайшим контрольным точкам, не процент завершения семи этапов.
 
+Последние проверки сузили сбой Intel до завершающих действий после запуска C:
+137→139→C доходит до выбранной141, рабочей helperC и нулевого failure budget,
+но возвращает ошибку при согласовании broker либо снятии recovery job. Это
+отдельно от прежних отказов frozen139. Добавлены закрытые command-status/
+timeout diagnostics; актуальный завершающий системный сценарий ещё не принят.
+
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
 | 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый040d336 также8/8 на ARM | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
@@ -8129,3 +8135,35 @@ removeCurrent асинхронно. Нужны точные закрытые com
 отключения signature checks, правки frozen139 или повышения таймаутов не сделано.
 Live ebb System40190565165 и scoped40190565138 сохранены. Очередь имеет реальные
 занятые runners; observation queued не означает остановку процесса.
+
+
+### Продолжение 1.5ho — exact launchd command diagnostics for the two Intel failures
+
+- [x] Debug-only observer в VPNActivationDiagnostics: closed recovery/broker,
+  bootout/bootstrap/print/other, enter/exit/timeout/signal/spawn/submitted и
+  числовой status -1 либо0..255 с согласованной семантикой. Не попадают аргументы,
+  job labels, пути, stderr или arbitrary Error descriptions. Process cap64,
+  успешные polling-print0/113 подавлены. Нормальные production builds не пишут
+  этот VM namespace; SDK helper/rescue диагностика включена существующим macro.
+- [x] Инструментированы recovery/broker launchctl wrappers, отдельный captured
+  broker PID-query и asynchronous self-bootout. Submitted не называется успешным
+  bootout: новый log позволяет отличить self-request от подтверждённого exit.
+  Вызовы, допустимые statuses, порядок mutation/ownership, deadlines20s/300s
+  и правила cleanup НЕ менялись.
+- [x] Rescue failure categories дополнительно различают coordinator deadline/
+  changed/ownership/state, broker command timeout/rejection и launchd timeout/
+  rejection. Исходные unknown ошибки не интерполируются.
+- [x] Fresh-root-GHA-only log query читает только synthetic VM launchd-command
+  namespace. Python projection сохраняет только закрытые поля, input<=128KiB,
+  rows<=512, последние96events, timeout5s. Host отказывает до log query. Это
+  наблюдение last10m, не доказательство успеха/ownership текущей попытки.
+- [x] Native SDK compile всех production helper/rescue sources с debug macro,
+  настоящий classifier и pure/injected logger/parser tests:47 PASS44.959s,
+  /tmp/pp-launchd-command-diagnostics-verified-parent.log. Никакие host launchd/
+  root services, Installer, VPN/network, Keychain или пользовательские settings
+  не запускались/не менялись. Frozen139 manifest/source не изменялись.
+- [ ] Нужны новые actual Intel System cases с этой диагностикой. Утверждать,
+  что прежние failures исправлены, пока нельзя. Также открыт audit потенциального
+  blocking wait-before-read в broker launchedProcessID; гипотеза pipe-pressure
+  ещё не проверена и не объявляется причиной CI failures.
+  Исходный7-stage scope, production DNS/bridge wiring и финальный release OPEN.

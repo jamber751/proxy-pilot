@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class RescueCategoryParserTests(unittest.TestCase):
     def test_distinct_failures_survive_redaction_without_private_error_text(self):
         categories = ('installedResultTimeout', 'installedResultChanged', 'installedResultChild',
-                      'installedResultSpawn', 'installedResultState', 'installedApplication')
+                      'installedResultSpawn', 'installedResultState', 'installedApplication',
+                      'brokerDeadline','brokerCommandTimeout','brokerCommand','launchdTimeout','launchdCommand',
+                      'brokerChanged','brokerOwnership','brokerState')
         rows = ['ProxyPilot VPN repair failure category: ' + name for name in categories]
         rows += ['PRIVATE ERROR /private/path', 'ProxyPilot VPN repair failure category: PRIVATE']
         self.assertEqual(vm.repair_tokens('\n'.join(rows)), ['failure:' + name for name in categories])
@@ -83,7 +85,7 @@ class RescueFailureCategoryTests(unittest.TestCase):
         arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
         result = subprocess.run(['/usr/bin/swiftc', '-parse-as-library', '-target', arch + '-apple-macosx11.0',
             '-D', 'VPN_RESCUE_SYSTEM_ENTRY', '-D', 'VPN_EXPLICIT_RESCUE', '-D', 'VPN_RESCUE_PREPARATION',
-            '-D', 'VPN_RESCUE_DIAGNOSTICS_TESTING', *captured, '-o', str(cls.binary)],
+            '-D', 'VPN_RESCUE_DIAGNOSTICS_TESTING', '-D', 'VPN_SYSTEM_ACTIVATION_DIAGNOSTICS', *captured, '-o', str(cls.binary)],
             capture_output=True, text=True, timeout=180)
         if result.returncode: raise AssertionError(result.stderr)
 
@@ -96,6 +98,41 @@ class RescueFailureCategoryTests(unittest.TestCase):
     def test_result_failures_remain_distinct(self): self.case('result')
     def test_application_identity_has_its_own_category(self): self.case('application')
     def test_unknown_error_never_evaluates_private_description(self): self.case('unknown')
+    def test_launchd_deadlines_and_rejections_are_distinct(self): self.case('launchd')
 
+
+
+
+class LaunchdCommandParserTests(unittest.TestCase):
+    def test_only_closed_roles_commands_outcomes_and_bounded_statuses_survive(self):
+        line='ProxyPilot VPN launchd role: recovery; command: bootout; outcome: exit; status: 113'
+        rows=[{'eventMessage':line,'private':'SECRET /path'},
+              {'eventMessage':line.replace('recovery','PRIVATE')},
+              {'eventMessage':line.replace('bootout','/private/secret')},
+              {'eventMessage':line.replace('113','256')},
+              {'eventMessage':line.replace('113','-1')},
+              {'eventMessage':line+' SECRET'},
+              {'eventMessage':line.replace('exit; status: 113','submitted; status: -1')}]
+        self.assertEqual(vm.launchd_command_log_tokens(json.dumps(rows)),
+            {'record':'valid','events':['recovery:bootout:exit:113','recovery:bootout:submitted:-1'],'truncated':False})
+    def test_limits_and_no_raw_content(self):
+        row={'eventMessage':'ProxyPilot VPN launchd role: broker; command: bootstrap; outcome: timeout; status: -1'}
+        result=vm.launchd_command_log_tokens(json.dumps([row]*100))
+        self.assertEqual(len(result['events']),96);self.assertTrue(result['truncated'])
+        for raw,expected in [('SECRET','unreadable'),('{}','overBudget'),('x'*131073,'overBudget'),(json.dumps([{}]*513),'overBudget')]:
+            self.assertEqual(vm.launchd_command_log_tokens(raw),{'record':expected})
+    def test_host_refused_before_log_query(self):
+        with patch.object(vm,'root_vm_enabled',return_value=False),patch.object(vm.subprocess,'run') as run:
+            self.assertEqual(vm.launchd_command_log_diagnostics(),{'record':'refused'})
+        run.assert_not_called()
+    def test_vm_fixed_namespace_query_and_closed_failure(self):
+        with patch.object(vm,'root_vm_enabled',return_value=True),patch.object(vm.subprocess,'run') as run:
+            run.return_value=SimpleNamespace(returncode=0,stdout='[]',stderr='PRIVATE')
+            self.assertEqual(vm.launchd_command_log_diagnostics(),{'record':'valid','events':[],'truncated':False,'window':'last10m'})
+            args,kwargs=run.call_args
+            self.assertEqual(args[0][-1],'subsystem == "kz.documentolog.proxypilot.vm" AND category == "launchd-command"')
+            self.assertEqual(kwargs['timeout'],5);self.assertEqual(kwargs['env'],vm.SAFE_ENV)
+            run.side_effect=subprocess.TimeoutExpired('PRIVATE',5,output='SECRET')
+            self.assertEqual(vm.launchd_command_log_diagnostics(),{'record':'unavailable'})
 
 if __name__ == '__main__': unittest.main()

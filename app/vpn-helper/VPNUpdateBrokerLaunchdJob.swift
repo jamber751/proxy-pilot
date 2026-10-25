@@ -263,6 +263,11 @@ final class VPNUpdateBrokerLaunchdJob {
     }
 
     private func launchedProcessID(deadline: UInt64) throws -> pid_t {
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        func observe(_ outcome: VPNActivationDiagnostics.LaunchdOutcome, status: Int32 = -1) {
+            VPNActivationDiagnostics.observeLaunchd(role:.broker,command:.print,outcome:outcome,status:status)
+        }
+        #endif
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: Self.launchctlPath)
@@ -272,17 +277,26 @@ final class VPNUpdateBrokerLaunchdJob {
         process.standardError = FileHandle.nullDevice
         process.environment = [:]
         guard (try? process.run()) != nil else {
+            #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+            observe(.spawn)
+            #endif
             throw VPNUpdateBrokerLaunchdJobError.launchFailed
         }
         while process.isRunning {
             guard DispatchTime.now().uptimeNanoseconds < deadline else {
                 kill(process.processIdentifier, SIGKILL)
                 process.waitUntilExit()
+                #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+                observe(.timeout)
+                #endif
                 throw VPNUpdateBrokerLaunchdJobError.timeout
             }
             usleep(20_000)
         }
         process.waitUntilExit()
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        observe(process.terminationReason == .exit ? .exit:.signal,status:process.terminationStatus)
+        #endif
         guard process.terminationReason == .exit,
               process.terminationStatus == 0,
               let text = String(data: output.fileHandleForReading.readDataToEndOfFile(),
@@ -525,6 +539,13 @@ final class VPNUpdateBrokerLaunchdJob {
     }
 
     private func launchctl(_ arguments: [String], deadline: UInt64) throws -> Int32 {
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        let operation=VPNActivationDiagnostics.LaunchdCommand(rawValue:arguments.first ?? "") ?? .other
+        func observe(_ outcome: VPNActivationDiagnostics.LaunchdOutcome, status: Int32 = -1) {
+            VPNActivationDiagnostics.observeLaunchd(role:.broker,command:operation,outcome:outcome,status:status)
+        }
+        observe(.enter)
+        #endif
         let process = Process()
         process.executableURL = URL(fileURLWithPath: Self.launchctlPath)
         process.arguments = arguments
@@ -532,19 +553,33 @@ final class VPNUpdateBrokerLaunchdJob {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         process.environment = [:]
-        guard (try? process.run()) != nil else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+        guard (try? process.run()) != nil else {
+            #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+            observe(.spawn)
+            #endif
+            throw VPNUpdateBrokerLaunchdJobError.launchFailed
+        }
         while process.isRunning {
             guard DispatchTime.now().uptimeNanoseconds < deadline else {
                 kill(process.processIdentifier, SIGKILL)
                 process.waitUntilExit()
+                #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+                observe(.timeout)
+                #endif
                 throw VPNUpdateBrokerLaunchdJobError.timeout
             }
             usleep(20_000)
         }
         process.waitUntilExit()
         guard process.terminationReason == .exit else {
+            #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+            observe(.signal,status:process.terminationStatus)
+            #endif
             throw VPNUpdateBrokerLaunchdJobError.launchFailed
         }
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        observe(.exit,status:process.terminationStatus)
+        #endif
         return process.terminationStatus
     }
 

@@ -6,6 +6,42 @@ import os.log
 /// Closed, credential-free lifecycle breadcrumbs. These are observations only:
 /// a logged stage or elapsed bucket never authorizes a release or operation.
 enum VPNActivationDiagnostics {
+    enum LaunchdRole: String { case recovery, broker }
+    enum LaunchdCommand: String { case bootout, bootstrap, print, other }
+    enum LaunchdOutcome: String { case enter, exit, timeout, signal, spawn, submitted }
+    struct LaunchdRecord {
+        let role: LaunchdRole
+        let command: LaunchdCommand
+        let outcome: LaunchdOutcome
+        let status: Int32
+        var line: String {
+            "ProxyPilot VPN launchd role: \(role.rawValue); command: \(command.rawValue); outcome: \(outcome.rawValue); status: \(status)"
+        }
+    }
+    /// Pure closed projection. No command arguments, labels, paths, stderr or
+    /// arbitrary Error descriptions enter this diagnostic vocabulary.
+    static func launchdRecord(role: LaunchdRole, command: LaunchdCommand,
+                              outcome: LaunchdOutcome, status: Int32 = -1) -> LaunchdRecord? {
+        guard (-1...255).contains(status) else { return nil }
+        if outcome == .exit || outcome == .signal { guard status >= 0 else { return nil } }
+        else { guard status == -1 else { return nil } }
+        return LaunchdRecord(role:role,command:command,outcome:outcome,status:status)
+    }
+    private static var launchdEmitted = 0
+    static func observeLaunchd(role: LaunchdRole, command: LaunchdCommand,
+                               outcome: LaunchdOutcome, status: Int32 = -1) {
+        #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        // Successful polling would obscure the failing command and exhaust
+        // the bounded record budget. Keep only unexpected print failures.
+        if command == .print && (outcome == .enter || (outcome == .exit && (status == 0 || status == 113))) { return }
+        guard let record=launchdRecord(role:role,command:command,outcome:outcome,status:status) else { return }
+        outputLock.lock()
+        guard launchdEmitted < 64 else { outputLock.unlock();return }
+        launchdEmitted += 1;outputLock.unlock()
+        let sink=OSLog(subsystem:"kz.documentolog.proxypilot.vm",category:"launchd-command")
+        os_log("%{public}@",log:sink,type:.error,record.line)
+        #endif
+    }
     enum Role: String, CaseIterable { case helper, finalizer, runtime, journal, readinessPolicy }
     enum Stage: String, CaseIterable {
         case openStore, selection, journal, identity, runtime, budget, receipt, endpoint, listener, ready

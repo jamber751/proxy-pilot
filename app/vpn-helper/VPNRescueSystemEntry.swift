@@ -28,6 +28,8 @@ enum VPNRescueSystemEntry {
         case installedResult, launchd, authorization, ownership, package, state, timeout, other
         case installedResultTimeout, installedResultChanged, installedResultChild
         case installedResultSpawn, installedResultState, installedApplication
+        case brokerDeadline, brokerCommandTimeout, brokerCommand, launchdTimeout, launchdCommand
+        case brokerChanged, brokerOwnership, brokerState
     }
     private static func category(for error: Error) -> ErrorCategory {
         switch error {
@@ -35,6 +37,12 @@ enum VPNRescueSystemEntry {
         case is VPNRescuePreparationContextError, is VPNRescuePreparationAuthorizationError: return .preparationIdentity
         case is VPNDirectoryError, is VPNEndpointError: return .directory
         case is VPNReleaseStoreError, is VPNActivationBudgetError: return .store
+        case VPNRescueBrokerCoordinator.Failure.deadlineExceeded: return .brokerDeadline
+        case VPNRescueBrokerCoordinator.Failure.changed: return .brokerChanged
+        case VPNRescueBrokerCoordinator.Failure.ownershipLost: return .brokerOwnership
+        case VPNRescueBrokerCoordinator.Failure.invalidState: return .brokerState
+        case VPNUpdateBrokerLaunchdJobError.timeout: return .brokerCommandTimeout
+        case VPNUpdateBrokerLaunchdJobError.launchFailed: return .brokerCommand
         case is VPNRescueBrokerCoordinator.Failure, is VPNUpdateBrokerError,
              is VPNUpdateBrokerTransactionStoreError, is VPNUpdateBrokerInboxError,
              is VPNUpdateBrokerLaunchdJobError, is VPNUpdateBrokerRotationError,
@@ -63,6 +71,8 @@ enum VPNRescueSystemEntry {
         case VPNInstalledUpdateResultError.spawnFailed: return .installedResultSpawn
         case is VPNInstalledUpdateResultError: return .installedResultState
         case is VPNInstalledApplicationError: return .installedApplication
+        case VPNLaunchdError.timeout: return .launchdTimeout
+        case VPNLaunchdError.launchFailed: return .launchdCommand
         case is VPNLaunchdError: return .launchd
         case is VPNReleaseAuthorizationError, is VPNRescueAuthorizationError: return .authorization
         case is VPNLifecycleOwnershipError: return .ownership

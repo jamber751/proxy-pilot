@@ -20,6 +20,16 @@ import Foundation
                      (VPNInstalledApplicationError.unsafeStorage, "installedApplication"),
                      (VPNInstalledApplicationError.wrongProcess, "installedApplication")]
         case "unknown": cases = [(PrivateError(), "other")]
+        case "launchd":
+            cases = [(VPNRescueBrokerCoordinator.Failure.deadlineExceeded,"brokerDeadline"),
+                     (VPNRescueBrokerCoordinator.Failure.changed,"brokerChanged"),
+                     (VPNRescueBrokerCoordinator.Failure.ownershipLost,"brokerOwnership"),
+                     (VPNRescueBrokerCoordinator.Failure.invalidState,"brokerState"),
+                     (VPNUpdateBrokerLaunchdJobError.timeout,"brokerCommandTimeout"),
+                     (VPNUpdateBrokerLaunchdJobError.launchFailed,"brokerCommand"),
+                     (VPNLaunchdError.timeout,"launchdTimeout"),
+                     (VPNLaunchdError.launchFailed,"launchdCommand"),
+                     (VPNLaunchdError.unsafeStorage,"launchd")]
         default: exit(64)
         }
         for (error, expected) in cases {
