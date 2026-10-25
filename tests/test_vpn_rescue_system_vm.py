@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -496,6 +497,82 @@ def launchd_diagnostics(text):
         signal_number = re.search(r'^\s*last terminating signal = (?:Killed|Terminated|Abort trap|Broken pipe): ([0-9]{1,3})\s*$', text, re.M)
         if signal_number: result['terminatingSignal'] = int(signal_number[1])
     return result
+
+
+
+class HelperLaunchHistory:
+    """VM-only read observer; never changes a launchd job or frozen139 image.
+
+    Keep exit/spawn evidence BEFORE the coordinator boots out its failed job.
+    Program classification is only a hint, never signing/custody authority.
+    """
+    maximum_records = 96
+    maximum_queries = 840
+
+    def __init__(self, known):
+        self.known = dict(known)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._records = []
+        self._queries = 0
+        self._truncated = False
+        self._status = 'notStarted'
+
+    def record(self, status, text, elapsed):
+        if not isinstance(text, str) or len(text) > 65536:
+            observation = {'queryStatus': 'overBudget'}
+        else:
+            observation = {'queryStatus': status if type(status) is int and -128 <= status <= 255 else 'unavailable'}
+            if observation['queryStatus'] == 0:
+                observation.update(launchd_diagnostics(text))
+                program = re.search(r'^\s*program = (.+?)\s*$', text, re.M)
+                known = self.known.get(program[1] if program else None)
+                hint = known[0] if isinstance(known, tuple) and known else None
+                observation['programReleaseHint'] = hint if hint in ('B', 'C') else 'unknown'
+        elapsed = elapsed if type(elapsed) is int and 0 <= elapsed <= 600000 else 0
+        with self._lock:
+            self._queries += 1
+            if self._records and self._records[-1]['job'] == observation:
+                return
+            if len(self._records) == self.maximum_records:
+                self._records.pop(0); self._truncated = True
+            self._records.append({'elapsedMs': elapsed, 'job': observation})
+
+    def snapshot(self):
+        with self._lock:
+            return {'status': self._status, 'queries': self._queries,
+                    'truncated': self._truncated,
+                    'records': [{'elapsedMs': row['elapsedMs'], 'job': dict(row['job'])} for row in self._records]}
+
+    def start(self):
+        # Refuse BEFORE any thread, process, job query or namespace access.
+        if not root_vm_enabled(): raise AssertionError('Helper history requires disposable system VM')
+        if self._thread is not None: raise AssertionError('Helper history already started')
+        self._status = 'observing'
+        self._thread = threading.Thread(target=self._observe, daemon=True)
+        self._thread.start()
+
+    def _observe(self):
+        began = time.monotonic()
+        for _ in range(self.maximum_queries):
+            if self._stop.is_set(): break
+            try:
+                query = subprocess.run(['/bin/launchctl', 'print', 'system/' + LABELS[0]],
+                    env=SAFE_ENV, capture_output=True, text=True, timeout=1)
+                status, text = query.returncode, query.stdout
+            except (OSError, UnicodeError, subprocess.TimeoutExpired):
+                status, text = 'unavailable', ''
+            self.record(status, text, int((time.monotonic() - began) * 1000))
+            if self._stop.wait(0.5): break
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            # Incomplete observation grants no authority and must be explicit.
+            self._status = 'stopPending' if self._thread.is_alive() else 'stopped'
+        return self.snapshot()
 
 
 def broker_record_projection(data, kind):
@@ -1064,7 +1141,8 @@ class VPNRescueSystemVMTests(unittest.TestCase):
 
     def state_summary(self):
         service = SYSTEM_BASE / 'VPN'
-        result = {'activationEvents': activation_log_diagnostics(identity=self.activation_log_identity)}
+        result = {'activationEvents': activation_log_diagnostics(identity=self.activation_log_identity),
+                  'helperHistory': getattr(self, 'helper_history', {'status': 'notStarted'})}
         for name in ('preparation.json', 'update.json', 'cleanup.json'):
             path = service / name
             if not path.exists(): result[name] = 'absent'; continue
@@ -1130,8 +1208,16 @@ class VPNRescueSystemVMTests(unittest.TestCase):
 
     def install(self):
         cursor = install_log_cursor()
-        result = subprocess.run(['/usr/sbin/installer', '-dumplog', '-pkg', str(self.package), '-target', '/'],
-                                env=SAFE_ENV, capture_output=True, text=True, timeout=420)
+        history = HelperLaunchHistory(self.known_helpers)
+        history.start()
+        result = None
+        try:
+            result = subprocess.run(['/usr/sbin/installer', '-dumplog', '-pkg', str(self.package), '-target', '/'],
+                                    env=SAFE_ENV, capture_output=True, text=True, timeout=420)
+        finally:
+            self.helper_history = history.stop()
+            if result is None:
+                print('System rescue helper history: ' + repr(self.helper_history), flush=True)
         events = {'command': repair_tokens(result.stdout + result.stderr),
                   'installLog': install_log_tokens(cursor)}
         print('System rescue Installer diagnostics: ' + repr(events), flush=True)

@@ -17,6 +17,82 @@ import test_vpn_rescue_system_vm as vm
 
 
 class RescueSystemDiagnosticTests(unittest.TestCase):
+    def test_helper_history_preserves_exit_before_failed_job_is_removed(self):
+        history = vm.HelperLaunchHistory({'/owned/helper': ('B', {})})
+        history.record(0, 'state = running\npid = 123\nprogram = /owned/helper\n', 10)
+        history.record(0, 'state = not running\nlast exit code = 77\nprogram = /owned/helper\n', 20)
+        history.record(113, '', 30)
+        result = history.snapshot()
+        self.assertEqual(result['records'][1]['job']['lastExitCode'], 77)
+        self.assertEqual(result['records'][1]['job']['programReleaseHint'], 'B')
+        self.assertEqual(result['records'][-1]['job'], {'queryStatus': 113})
+
+    def test_helper_history_redacts_unknown_program_and_environment_without_following_paths(self):
+        history = vm.HelperLaunchHistory({})
+        with patch.object(vm.os, 'lstat', side_effect=AssertionError('path followed')), \
+             patch.object(vm.subprocess, 'run', side_effect=AssertionError('process launched')):
+            history.record(0, 'state = running\nprogram = /private/SECRET\nenvironment = SECRET\npid = 123\n', 1)
+        self.assertNotIn('SECRET', repr(history.snapshot()))
+        self.assertEqual(history.snapshot()['records'][0]['job']['programReleaseHint'], 'unknown')
+
+    def test_helper_history_deduplicates_states_but_bounds_changes_and_copies_output(self):
+        history = vm.HelperLaunchHistory({})
+        history.record(113, '', 1); history.record(113, '', 2)
+        self.assertEqual(len(history.snapshot()['records']), 1)
+        for pid in range(120): history.record(0, 'pid = ' + str(pid) + '\n', pid)
+        result = history.snapshot()
+        self.assertEqual(len(result['records']), history.maximum_records)
+        self.assertTrue(result['truncated'])
+        result['records'][-1]['job']['pid'] = 'SECRET'
+        self.assertNotIn('SECRET', repr(history.snapshot()))
+
+    def test_helper_history_refuses_host_before_thread_or_job_query(self):
+        history = vm.HelperLaunchHistory({})
+        with patch.object(vm, 'root_vm_enabled', return_value=False), \
+             patch.object(vm.threading, 'Thread') as thread, patch.object(vm.subprocess, 'run') as query:
+            with self.assertRaises(AssertionError): history.start()
+        thread.assert_not_called(); query.assert_not_called()
+
+    def test_helper_history_suppresses_over_budget_input_and_arbitrary_status(self):
+        history = vm.HelperLaunchHistory({})
+        history.record(0, 'SECRET' * 12000, 1)
+        history.record('SECRET', 'SECRET', 'SECRET')
+        result = history.snapshot()
+        self.assertEqual(result['records'][0]['job'], {'queryStatus': 'overBudget'})
+        self.assertNotIn('SECRET', repr(result))
+
+    def test_installer_stops_observer_before_failure_snapshot_and_preserves_deadline(self):
+        case = vm.VPNRescueSystemVMTests('test_real_installer_repairs_pending137_through139_to_c_desired_on')
+        case.known_helpers = {}; case.package = Path('/synthetic/package.pkg')
+        observer = Mock(); observer.stop.return_value = {'records': [{'job': {'lastExitCode': 77}}]}
+        def state():
+            observer.stop.assert_called_once()
+            return {'helperHistory': case.helper_history}
+        case.state_summary = state
+        failed = SimpleNamespace(returncode=1, stdout='SECRET', stderr='SECRET')
+        with patch.object(vm, 'install_log_cursor', return_value=None), \
+             patch.object(vm, 'install_log_tokens', return_value=[]), \
+             patch.object(vm, 'HelperLaunchHistory', return_value=observer), \
+             patch.object(vm.subprocess, 'run', return_value=failed) as install:
+            with self.assertRaises(AssertionError) as error: case.install()
+        self.assertIn('lastExitCode', str(error.exception)); self.assertNotIn('SECRET', str(error.exception))
+        self.assertEqual(install.call_args.kwargs['timeout'], 420)
+        self.assertEqual(install.call_args.args[0][0], '/usr/sbin/installer')
+
+    def test_installer_timeout_stops_and_reports_observer_without_retry_or_raw_output(self):
+        case = vm.VPNRescueSystemVMTests('test_real_installer_repairs_pending137_through139_to_c_desired_on')
+        case.known_helpers = {}; case.package = Path('/synthetic/package.pkg')
+        observer = Mock(); observer.stop.return_value = {'records': [{'job': {'lastExitCode': 77}}]}
+        timeout = subprocess.TimeoutExpired(['/usr/sbin/installer'], 420, stderr=b'SECRET')
+        with patch.object(vm, 'install_log_cursor', return_value=None), \
+             patch.object(vm, 'HelperLaunchHistory', return_value=observer), \
+             patch.object(vm.subprocess, 'run', side_effect=timeout) as install, \
+             patch('builtins.print') as output:
+            with self.assertRaises(subprocess.TimeoutExpired): case.install()
+        observer.stop.assert_called_once(); self.assertEqual(install.call_count, 1)
+        self.assertIn('lastExitCode', repr(output.call_args_list))
+        self.assertNotIn('SECRET', repr(output.call_args_list))
+
     def test_installed_result_only_emits_closed_phase_and_category(self):
         text = chr(10).join(['PRIVATE /path account',
                 'ProxyPilot VPN installed result phase: snapshot; category: storeBusy',
