@@ -12,6 +12,7 @@ on:
       - 'tests/vpn_gost_system_dns_owner.swift'
       - 'tests/test_vpn_dns_resolver_vm.py'
       - 'tests/test_vpn_system_resolver_worker.py'
+      - 'tests/test_vpn_signed_bridge_candidate.py'
       - 'tests/test_vpn_gost_atomic_preparation.py'
       - 'tests/test_vpn_gost_atomic_vm.py'
       - 'tests/test_vpn_bridge_gost_vm.py'
@@ -45,7 +46,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_signed_bridge_candidate test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -83,6 +84,17 @@ jobs:
           python3 app/vpn-bridge/build_atomic_gost.py \
             "$RUNNER_TEMP/proxypilot-atomic-source/build" \
             --cache-root "$RUNNER_TEMP/proxypilot-atomic-source"
+      - name: Reproducible signed Universal worker candidate without execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-universal"
+          first="$RUNNER_TEMP/proxypilot-atomic-source/signed-first"
+          second="$RUNNER_TEMP/proxypilot-atomic-source/signed-second"
+          python3 app/vpn-bridge/sign_atomic_gost.py "$source" "$first"
+          python3 app/vpn-bridge/sign_atomic_gost.py "$source" "$second"
+          cmp "$first/gost" "$second/gost"
+          cmp "$first/verification.json" "$second/verification.json"
       - name: Real HTTP and SOCKS through owned endpoints and private Unix API
         shell: bash
         env:

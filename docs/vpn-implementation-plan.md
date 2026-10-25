@@ -8730,3 +8730,36 @@ runtime, WARP иодна финальная host-установка/приёмк
   Новая App cache/preparation не включена вместо существующего CLI bridge.
   Domain/answer authority, static CIDR backend, WARP, macOS12 runtime, current
   full acceptance иисходные7 этапов остаются OPEN.
+
+### Продолжение 1.5ia — fixed signed Universal GOST worker candidate
+
+- [x] Новый build-only `sign_atomic_gost.py` принимает ТОЛЬКО exact unsigned
+  Universal candidate2:70287474 bytes/SHA bfa76e74d54de90e7facd54b9ea86555cf407c004db823af10e3834f088c3992.
+  Ordinary macOS, NOFOLLOW/nonblocking FD, owner/nlink/type/size checks, bounded
+  whole input SHA, named/open inode/metadata rechecks до/после copy. Output новый
+  private700 directory, EXCL files; source не меняется, destination не переиспользуется.
+- [x] Ad-hoc hardened signature сfixed production worker identifier
+  `kz.documentolog.proxypilot.bridge.gost`, runtime12.0.0, no timestamp, SHA256,
+  runtime/hard/kill. Strict all-architecture verification, fixed signed byte/hash
+  Иоба CDHash обязательны. Это позволяет будущей factory проверять live audit
+  peer по настоящему signed code identity, а неUID/PID илиunsigned GOST image.
+- [x] Два независимых final paths c/d дали byte-identical artifacts Иproofs с
+  exact current recipe hash; source unsigned прежний. Signed Universal70437264
+  SHA d8951461a89fc6a4685d9440095be8b17aabda9d9ed7d4c4b237c056692b0e02;
+  arm64 CDHash055936ed28ac6b392602daa670a98f3b09ec8117,
+  x86_64 CDHasha29dc60b0d6ffb7de83e24cbaa91528c6aef7fb0.
+  Обе minos/sdk12.0 подтверждены. Proofs /tmp/pp-gost-signed-final-c-20261026/
+  verification.json иfinal-d-20261026/verification.json;
+  path pointer /tmp/pp-gost-signed-candidate-path.txt. Host GOST НЕ исполнялся.
+- [x]5 inert guard cases PASS0.046s, без skips: platform/root/relative refusals
+  до IO, malformed/symlink/hardlink/bad-hash sources до output/signing, отказ
+  existing destination иполные immutable pins. /tmp/pp-signed-candidate-guards.log.
+  Два реальных sign/verify-only runs выше — положительная проверка инструмента.
+- [x] Existing candidate4OS workflow дополнен guard cases идвумя независимыми
+  sign-only outputs+cmp после pinned source build; actual API/traffic/native SC
+  steps не заменены ине пропущены. Новых matrix jobs нет. Workflow syntax
+  проверен Ruby YAML; Python PyYAML здесь отсутствует. Stock bundled GOST assets,
+  make-dmg pins ивыбранная production bridge version не изменялись.
+- [ ] Signed transform ещё должен пройти new4OS CI. Actual owned supervisor,
+  parent-death cleanup, factory initial policy before listen иApp entry wiring
+  остаются OPEN. Sign-only result не выдаётся за runtime/lifecycle proof.
