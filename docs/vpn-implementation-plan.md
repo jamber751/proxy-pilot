@@ -6723,9 +6723,58 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   userinfo может дать Basic auth, поэтому утверждение «вообще без auth» неверно.
   Сам по себе этот plugin не доказывает authenticated managed relay, TTL/custody
   или exact-host OS policy; production DNS capability по-прежнему закрыта.
-- [ ] Exact-host semantics сохранены: ответ владельца на вопрос о поддоменах
-  пока не получен. Supplemental resolver macOS сопоставляет suffix; нельзя
-  молча расширять выбранное имя на все поддомены либо ломать обычный DNS/WARP.
+- [x] 25 октября владелец явно выбрал «Домен и все поддомены». Для будущей
+  domain capability добавленный company.com включает mail.company.com и более
+  глубокие имена на границе DNS-label; unrelatedcompany.com не включается.
+  Это согласованное изменение прежнего exact-host требования, не доказательство
+  готового backend. Runtime остаётся закрытым до адаптации query/resource seals,
+  suffix selection и проверки crash/route custody. Обычный DNS/WARP сохраняется.
 - [x] Устаревший transport40135758289 отменён только после проверки, что оба
   jobs120996807570/120996807726 ещё queued и replacement40138409899 существует.
   Выполняющиеся System/genuine jobs не отменялись.
+
+
+### Согласованное уточнение 25 октября: домен включает поддомены
+
+Владелец ответил на архитектурный вопрос: **«Домен и все поддомены»**.
+Это заменяет прежнее exact-host требование в будущей VPN domain capability;
+исторические результаты exact-host tests выше не считать suffix acceptance.
+
+- [ ] Модель и интерфейс: явно объяснить «Домен и поддомены», не требовать
+  wildcard; canonical DNS-label matching, без захвата похожего suffix имени.
+- [ ] Codec: сохранить исходный configured resource UUID/address отдельно от
+  конкретного client question name. Ответ должен совпадать именно с запрошенным
+  поддоменом, а не с любым именем внутри разрешённого suffix. Не подменять resource
+  фиктивным VPNResource ради прохождения существующего exact-host decoder.
+- [ ] Перекрывающиеся domain resources: определить deterministic selection и
+  сохранность original UUID; не расширять IP/network prefixes или global scope.
+- [ ] Backend: persistent per-domain resolver к owned relay вместо temporary
+  session как единственной crash защиты. Подтвердить UDP/TCP/IPv6, остановку relay,
+  смену сети/WARP и восстановление, прежде чем публиковать resolver state.
+- [ ] Сохранить старые known-IP deny obligations при TTL/revoke/crash; suffix DNS
+  selection само по себе не даёт IP route custody и не включает runtime.
+
+
+### Продолжение 1.5gb — собственный GOST contract gate и диагностика frontend build
+
+- [x] fd88298 добавляет отдельный disposable VM workflow и unchanged-binary
+  canary для GOST3.2.6: official archive SHA совпадает с make-dmg.sh, а native
+  executable size/SHA — с байтами соответствующего slice текущего Universal.
+  Default запуск выполняет только pure/source/owned-file/refusal guards:
+  parent9 PASS0.007s, без sockets/GOST/GUI/root/DNS API execution.
+- [ ] Actual gate ожидает28 loopback-only сценариев: HTTP CONNECT и SOCKS5,
+  hostname без resolver против numeric CIDR, in/out CIDR plugin answers,
+  failure/empty/invalid/malformed/HTTP error/timeout, token/URL Basic,
+  redirect replay и Unix refusal. Это ещё не фактические PASS и не VPN/DNS
+  privacy или authenticated production relay acceptance. Server endpoints
+  собственные127.x, fake proxy не делает onward lookup/connect; hard opt-in
+  и проверка pinned binary выполняются до live операций.
+- [ ] Fresh genuine frontend after bf01d1f: setUpClass compilation FAILED,
+  UpdateWorker.swift import Sparkle сообщил no such module;1 contract PASS,
+  actual native cases не выполнялись. Не считать прежний4-green build новым
+  подтверждением Panel fix. Archive SHA pinned, build/fetch recipes не менялись.
+  Новая isolated extraction/tiny import typecheck прошла ARM/Intel, но причина
+  первой ошибки ещё не доказана. Host SDK/cache/permissions не менялись.
+- [x] Subagents остановились по внешнему usage limit. Root продолжает работу
+  с сохранёнными файлами и доказательствами; незавершённые процессы требуют
+  проверки точных handles, а не слепого повторного запуска.
