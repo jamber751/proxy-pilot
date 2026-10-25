@@ -19,6 +19,7 @@ on:
       - 'tests/test_vpn_bridge*.py'
       - 'tests/vpn_bridge_bypass_checks.swift'
       - 'tests/vpn_bridge_protection_checks.swift'
+      - 'tests/vpn_bridge_protection_api_checks.swift'
       - 'tests/test_cli_selection.py'
       - 'tests/test_vpn_joint_release_builder.py'
       - 'tests/test_update_quiescence.py'
@@ -48,4 +49,4 @@ jobs:
           /bin/zsh -n bin/proxypilot
           /bin/zsh -n app/build.sh
       - name: Private bridge processes, handoff, CLI selection and update retention
-        run: PYTHONPATH=tests python3 -m unittest test_managed_bridge_namespace test_power test_vpn_bridge_handoff test_cli_selection test_vpn_joint_release_builder test_vpn_bridge_bypass test_vpn_bridge_protection test_update_quiescence -v
+        run: PYTHONPATH=tests python3 -m unittest test_managed_bridge_namespace test_power test_vpn_bridge_handoff test_cli_selection test_vpn_joint_release_builder test_vpn_bridge_bypass test_vpn_bridge_protection test_vpn_bridge_protection_api test_update_quiescence -v

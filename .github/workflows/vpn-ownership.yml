@@ -44,6 +44,8 @@ on:
       - '!tests/test_managed_bridge_namespace.py'
       - '!tests/test_vpn_bridge_protection.py'
       - '!tests/vpn_bridge_protection_checks.swift'
+      - '!tests/test_vpn_bridge_protection_api.py'
+      - '!tests/vpn_bridge_protection_api_checks.swift'
       - '!tests/test_vpn_dns_session_vm.py'
       - '!tests/vpn_dns_session_vm_checks.swift'
       - '!tests/test_vpn_dns_resolver_vm.py'

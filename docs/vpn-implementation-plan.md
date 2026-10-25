@@ -8034,3 +8034,38 @@ https://github.com/go-gost/x/blob/v0.8.1/registry/registry.go.
   gate остаётся CLOSED. Candidate GOST565cdb7 actual runtime40192825189 freshly
   observed4queued jobs121167287117/244/283/301; это НЕ actual passing proof.
   Full original7-stage acceptance/release scope остаётся незавершённым.
+
+
+### Продолжение 1.5hm — concrete private Unix API transport for protected policy
+
+- [x] Production VPNBridgeProtectionAPI реализует один fixed PUT к отдельной
+  proxypilot-protected-v1 positive group. User-owned b0 не переписывается.
+  Только snapshot canonical numeric union, reverse/whitelist=false, без plugin/
+  file/http/redis loader fields. Ephemeral64-hex credential: fixed Basic username,
+  не Codable/URL/debug output. Один connection, без redirects и automatic retry.
+- [x] Strict bounded HTTP1.1 response:200OK, единственный Content-Length12,
+  JSON content type, exact msg:OK body и EOF. Duplicate headers, chunked/encoded,
+  appended/truncated/error body, unauthorized и redirect не дают acknowledgement.
+  Partial writes/read fragmentation сохраняют исходный continuous deadline.
+  Смена epoch/cancel/late/backwards clock закрывает owned connection без replay.
+- [x] Concrete ordinary-user AF_UNIX factory: trusted owner-private directory FD,
+  fixed api.sock, FD/path/socket UID/type/nlink/permissions/inode checks,
+  nonblocking/CLOEXEC/SO_NOSIGPIPE. Getpeereid плюс ОБЯЗАТЕЛЬНЫЙ caller authenticator
+  для kernel LOCAL_PEERTOKEN перед IO. Он должен связать audit token с owned,
+  pinned child incarnation; UID/PID/path сами по себе НЕ заменяют эту проверку.
+  No default-success authenticator или production epoch factory добавлены.
+  Poll slices<=100ms проверяют исходный continuous deadline/current; это не
+  hard latency bound на scheduler/caller authenticator execution.
+- [x]28fake-connection tests покрывают framing/auth/epoch/deadline/failure paths,
+  включая настоящий publisher +real private files: cache записан до open/API,
+  unknown write сохраняет cache и не вызывает output. С store/projection/joint
+  builder проверками63 PASS7.828s без skips,
+  /tmp/pp-bridge-api-integration-parent.log. Локальных socket/GOST/DNS/VPN/Keychain
+  операций эти тесты не делали; native factory компилируется в том же graph.
+- [x] API source включён в VPN frontend build и dedicated managed-bridge tests
+  ARM14/Intel15; production factory не подключена к текущему IP-only flow.
+- [ ] Нужен actual private Unix exchange с pinned GOST candidate через этот
+  конкретный Swift transport, затем boot/owned child authenticator/helper handoff.
+  Старый Python API canary не считается такой проверкой. System DNS relay,
+  continuous resource/output lease и full7-stage acceptance/release scope OPEN.
+  Domain runtime gate CLOSED; stock production GOST и установленный App не менялись.
