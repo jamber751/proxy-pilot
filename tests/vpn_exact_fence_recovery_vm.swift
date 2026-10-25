@@ -20,7 +20,9 @@ import Foundation
             let socket = try VPNDarwinRouteSocket.production()
             let transaction = VPNExactFenceTransaction(store:store,kernel:socket)
             let deadline = DispatchTime.now()+5
-            let restored = try transaction.restoreRetained(deadline:deadline,checkOwner:{})
+            guard let runtime=NativeStore.value else { throw VPNExactFenceStoreError.invalidState }
+            let restored = try runtime.restore(deadline:deadline,checkCurrent:{})
+            try runtime.check()
             guard restored.count == 1, restored[0].active == nil,
                   restored[0].installationID == previous[0].installationID,
                   restored[0].identity == previous[0].identity,

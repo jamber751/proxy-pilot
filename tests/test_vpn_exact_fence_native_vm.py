@@ -25,7 +25,8 @@ RECOVERY = ROOT/'tests/vpn_exact_fence_recovery_vm.swift'
 
 def compile_probe(folder):
     folder = Path(folder)
-    sources = list(pure.SOURCES)+[BRIDGE,RECOVERY]+[ROOT/'tests'/name for name in packets.SOURCES]
+    runtime = [ROOT/'app/vpn-helper/VPNDirectoryProvisioner.swift',ROOT/'app/vpn-helper/VPNRetainedFenceRuntime.swift']
+    sources = list(pure.SOURCES)+runtime+[BRIDGE,RECOVERY]+[ROOT/'tests'/name for name in packets.SOURCES]
     captured = {source:source.read_bytes() for source in sources}
     for source,data in captured.items(): (folder/source.name).write_bytes(data)
     outputs = []; recoveries = []
@@ -37,13 +38,13 @@ def compile_probe(folder):
             if r.returncode: raise AssertionError(r.stderr)
         output = folder/arch
         r = subprocess.run(['/usr/bin/swiftc','-parse-as-library','-target',arch+'-apple-macosx12.0',
-            *[str(folder/source.name) for source in list(pure.SOURCES)+[BRIDGE]],str(c),str(support),'-o',str(output)],
+            *[str(folder/source.name) for source in list(pure.SOURCES)+runtime+[BRIDGE]],str(c),str(support),'-o',str(output)],
             capture_output=True,text=True,timeout=90)
         if r.returncode: raise AssertionError(r.stderr)
         outputs.append(str(output))
         recovery = folder/('recovery-'+arch)
         r = subprocess.run(['/usr/bin/swiftc','-parse-as-library','-target',arch+'-apple-macosx12.0',
-            *[str(folder/source.name) for source in list(pure.SOURCES)+[BRIDGE,RECOVERY]],'-o',str(recovery)],
+            *[str(folder/source.name) for source in list(pure.SOURCES)+runtime+[BRIDGE,RECOVERY]],'-o',str(recovery)],
             capture_output=True,text=True,timeout=90)
         if r.returncode: raise AssertionError(r.stderr)
         recoveries.append(str(recovery))

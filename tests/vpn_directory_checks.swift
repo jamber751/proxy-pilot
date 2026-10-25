@@ -6,20 +6,32 @@ enum VPNDirectoryChecks {
         do {
             guard CommandLine.arguments.count == 3 else { exit(64) }
             let operation = CommandLine.arguments[1]
-            if operation == "root-guard" || operation == "root-update-guard" {
+            if operation == "root-guard" || operation == "root-update-guard" || operation == "root-fences-guard" {
                 // Never enter production provisioning from an elevated test.
                 guard geteuid() != 0 else { exit(64) }
-                _ = try operation == "root-guard"
-                    ? VPNDirectoryProvisioner.openSystemDirectory(create: true)
-                    : VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true)
+                if operation == "root-fences-guard" { _ = try VPNDirectoryProvisioner.openSystemFenceDirectory(create:true) }
+                else {
+                    _ = try operation == "root-guard"
+                        ? VPNDirectoryProvisioner.openSystemDirectory(create: true)
+                        : VPNDirectoryProvisioner.openSystemUpdateDirectory(create: true)
+                }
                 exit(70)
             }
             guard ["create", "read", "create-update", "read-update", "remove-vpn",
-                   "validate-update", "validate-vpn-as-update"].contains(operation) else { exit(64) }
+                   "validate-update", "validate-vpn-as-update", "create-fences", "read-fences",
+                   "validate-fences", "validate-vpn-as-fences"].contains(operation) else { exit(64) }
             let base = open(CommandLine.arguments[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard base >= 0 else { exit(77) }
             defer { close(base) }
             if operation.hasPrefix("validate-") {
+                if operation.hasSuffix("fences") {
+                    let supplied = try operation == "validate-fences"
+                        ? VPNDirectoryProvisioner.testOpenFencesBelowTrustedBase(base,create:false)
+                        : VPNDirectoryProvisioner.openBelowTrustedBase(base,create:false)
+                    defer { close(supplied) }
+                    try VPNDirectoryProvisioner.testRequireFenceDirectory(supplied,belowTrustedBase:base)
+                    print("private-directory-ready");return
+                }
                 let supplied = try operation == "validate-update"
                     ? VPNDirectoryProvisioner.testOpenUpdateBelowTrustedBase(base, create: false)
                     : VPNDirectoryProvisioner.openBelowTrustedBase(base, create: false)
@@ -33,6 +45,12 @@ enum VPNDirectoryChecks {
                 try VPNDirectoryProvisioner.removeBelowTrustedBase(base)
                 print("private-directory-ready")
                 return
+            }
+            if operation.hasSuffix("fences") {
+                let directory=try VPNDirectoryProvisioner.testOpenFencesBelowTrustedBase(base,create:operation=="create-fences")
+                defer { close(directory) }
+                guard fcntl(directory,F_GETFD)&FD_CLOEXEC != 0 else { exit(70) }
+                print("private-directory-ready");return
             }
             let directory = try operation.hasSuffix("update")
                 ? VPNDirectoryProvisioner.testOpenUpdateBelowTrustedBase(base, create: operation == "create-update")

@@ -8282,3 +8282,57 @@ user-launchd module не включался в новый fast step. После�
   существующий System40191352570 обе jobs in_progress, не перезапускались.
   Production domain backend/answer authority, static CIDR protection, WARP,
   финальная installed приёмка и исходные семь этапов остаются OPEN.
+
+
+### Продолжение 1.5hs — persistent root namespace and daemon startup integration
+
+- [x] `VPNDirectoryProvisioner` получил фиксированный private sibling
+  `/Library/Application Support/ProxyPilot/Fences`, отдельный отVPN/Update/
+  generations. Production entry требует real/effective UID0 до filesystem IO;
+  binding повторно сверяет supplied FD с fixed namespace через прежние private,
+  local-FS, ownership/ACL и inode checks. IPC-путь не принимается. Update или
+  удаление пустого VPN component не удаляетFences и retained obligations.
+- [x] Новый production `VPNRetainedFenceRuntime` удерживает namespace descriptor,
+  store lifetime lock и transaction на всё время жизни службы. One-shot startup
+  restore всех denies и withdrawal старых active HOST обязаны завершиться до
+  состоянияready. Failure/cancellation/expiry необратимо оставляют этот object
+  failed; namespace/lock custody loss послеready также инвалидирует его.
+  Повторное restore этого же object не служит retry неизвестной mutation.
+- [x] Root `VPNHelperDaemon.runSystem` подключает runtime обязательной factory;
+  восстановление стоит после activation-budget accounting, до public receipt,
+  endpoint preparation и listener. Runtime продолжает проверяться из
+  stillSelected/readiness. Только user-domain test entry допускает nil/injected
+  fixture runtime. Это не включает tunnel/DNS и не выдаёт answer permits.
+- [x] 13 PASS78.525s без skips: /tmp/pp-retained-runtime-verified.log. Включены
+  snapshot compile всего current helper/rescue source graph в ordinary-user
+  dylibs дляARM/Intel (ничего не запускалось), guard/order и11 private-file/fake
+  kernel cases: before-ready, empty/retained restore, active withdrawal, foreign
+  state, namespace loss, lifetime lock, deadline, cancellation иone-shot.
+  Первый synthetic foreign test ожидал recoveryRequired вместо правильного
+  missingOrForeign; исправлено ожидание, production check не ослаблялся.
+- [x] Final namespace/native-fixture scope27 PASS32.086s без skips:
+  /tmp/pp-retained-runtime-native-compile.log. Fences fixed binding, wrong VPN FD,
+  no-create read, no permission repair, retained sibling наremoveVPN и root guard;
+  native packet/death/crash-reopen fixtures собраны для обеих arch и ordinary
+  host отказал до live IO. Теперь их startup/reopen вызывает этот же runtime,
+  сохраняя старые actual packet/death/cleanup expectations.
+- [x] Native CI добавляет private runtime/directory cases; тяжёлый full daemon
+  two-arch compile остаётся вSystem fast suite, не дублируется в5min native job.
+  Current explicit daemon/recovery compile lists дополнены dependencies;
+  frozen139 graph/manifest/source не менялись. Host launchd/root services,
+  sysctl/PF_ROUTE, Installer, VPN/network иKeychain этими прогонами не трогались.
+- [ ] Actual persistent root startup + real native death/reopen на новом source
+  ещё требуется подтвердить. Root namespace не удаляется автоматически приOff,
+  TTL или update: explicit resource release/uninstall cleanup и App boot/root
+  inventory reconciliation остаются будущими отдельными транзакциями.
+  Domain runtime gate по-прежнему CLOSED: production relay/answer authority,
+  static CIDR custody, WARP и полный исходный7-stage acceptance/release OPEN.
+
+CI audit: полностью queued System40197748323/d7d3f79 отменён после проверки
+ancestor9683876, byte-identical System workflow и совпадающих двух job names
+нового run40198447923; обе старые individual jobs повторно checked queued прямо
+перед cancel. API подтвердилterminal cancelled. Partial native runs40190780529,
+40190565139 и40188528916 уже содержали successes — сохранены целиком. Diagnostic
+System40196864320 Intel121179472595 сейчас действительноin_progress: fast checks
+иordinary/root broker ownership passed, production artifact build ещё идёт;
+actual Installer cases ещё pending. Это verified wait, не новая попытка.

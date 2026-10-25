@@ -33,9 +33,9 @@ private final class ObservedTransport: VPNRouteSocketTransport {
     }
 }
 enum NativeStore {
-    static var value: VPNExactFenceStore?
+    static var value: VPNRetainedFenceRuntime?
     static func get() throws -> VPNExactFenceStore {
-        if let value { return value }
+        if let value { return value.store }
         let env = ProcessInfo.processInfo.environment
         guard let path = env["PROXYPILOT_VM_NATIVE_FENCE_DIRECTORY"], let root = env["RUNNER_TEMP"],
               path.hasPrefix(root+"/"), URL(fileURLWithPath:path).standardizedFileURL.path == path else {
@@ -44,8 +44,14 @@ enum NativeStore {
         let fd = open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
         guard fd >= 0 else { throw VPNExactFenceStoreError.unsafeStorage }
         defer { close(fd) }
-        let store = try VPNExactFenceStore(trustedDirectoryDescriptor:fd)
-        value = store; return store
+        let runtime = try VPNRetainedFenceRuntime(trustedDirectoryDescriptor:fd,
+            kernel:VPNDarwinRouteSocket.production(),checkNamespace: { owned in
+                var a=stat(),b=stat()
+                guard fstat(owned,&a)==0, lstat(path,&b)==0, a.st_dev==b.st_dev,
+                      a.st_ino==b.st_ino, b.st_mode&S_IFMT==S_IFDIR,
+                      b.st_uid==0,b.st_mode&0o7777==0o700 else { throw VPNExactFenceStoreError.unsafeStorage }
+            })
+        value = runtime; return runtime.store
     }
 }
 @_cdecl("pp_exact_fence_startup")
@@ -56,9 +62,10 @@ func exactFenceStartup() -> Int32 {
           env["PROXYPILOT_VM_EXACT_ROUTE_PACKETS"] == "1",
           env["PROXYPILOT_VM_DNS_UTUN_TESTS"] == "1" else { return 77 }
     do {
-        let store = try NativeStore.get()
-        let socket = try VPNDarwinRouteSocket.production()
-        _ = try VPNExactFenceTransaction(store:store,kernel:socket).restoreRetained(deadline:.now()+2,checkOwner:{})
+        _ = try NativeStore.get()
+        guard let runtime=NativeStore.value else { throw VPNExactFenceStoreError.invalidState }
+        _ = try runtime.restore(deadline:.now()+2,checkCurrent:{})
+        try runtime.check()
         print("PASS native-exact-fence-startup-ready"); fflush(stdout)
         return 0
     } catch {

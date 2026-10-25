@@ -31,6 +31,20 @@ enum VPNDirectoryProvisioner {
         try openSystemComponent(name: "Broker", create: create)
     }
 
+    /// Persistent resource custody survives helper/tunnel generations and updates.
+    /// This fixed root-private sibling is never opened from an IPC-supplied path.
+    static func openSystemFenceDirectory(create: Bool) throws -> Int32 {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
+        return try openSystemComponent(name: "Fences", create: create)
+    }
+
+    static func requireSystemFenceDirectory(_ descriptor: Int32) throws {
+        guard getuid() == 0, geteuid() == 0 else { throw VPNDirectoryError.requiresRoot }
+        let expected = try openSystemFenceDirectory(create: false)
+        defer { close(expected) }
+        try requireSameDirectory(descriptor, expected)
+    }
+
     /// Temporary, separately authorized rescue executable and signed inputs.
     /// The installer retires this fixed component only after rescue succeeds.
     static func openSystemRescueDirectory(create: Bool) throws -> Int32 {
@@ -82,6 +96,16 @@ enum VPNDirectoryProvisioner {
         try openComponentBelowTrustedBase(base, name: "Update", create: create)
     }
 
+    static func testOpenFencesBelowTrustedBase(_ base: Int32, create: Bool) throws -> Int32 {
+        try openComponentBelowTrustedBase(base, name: "Fences", create: create)
+    }
+
+    static func testRequireFenceDirectory(_ descriptor: Int32, belowTrustedBase base: Int32) throws {
+        let expected = try testOpenFencesBelowTrustedBase(base, create: false)
+        defer { close(expected) }
+        try requireSameDirectory(descriptor, expected)
+    }
+
     static func testOpenRetirementBelowTrustedBase(_ base: Int32, create: Bool) throws -> Int32 {
         try openComponentBelowTrustedBase(base, name: "Retired", create: create)
     }
@@ -106,7 +130,7 @@ enum VPNDirectoryProvisioner {
     private static func openComponentBelowTrustedBase(_ base: Int32, name: String,
                                                        create: Bool) throws -> Int32 {
         guard name == "VPN" || name == "Update" || name == "Retired"
-                || name == "Broker" || name == "Rescue" else {
+                || name == "Broker" || name == "Rescue" || name == "Fences" else {
             throw VPNDirectoryError.unsafeDirectory
         }
         try check(base, privateDirectory: false)

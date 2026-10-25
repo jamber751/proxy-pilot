@@ -13,6 +13,12 @@ on:
       - 'app/vpn-helper/VPNRoute*.swift'
       - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
       - 'app/vpn-helper/VPNExactFence*.swift'
+      - 'app/vpn-helper/VPNRetainedFenceRuntime.swift'
+      - 'app/vpn-helper/VPNDirectoryProvisioner.swift'
+      - 'tests/test_vpn_directory.py'
+      - 'tests/vpn_directory_checks.swift'
+      - 'tests/test_vpn_retained_fence_runtime.py'
+      - 'tests/vpn_retained_fence_runtime_checks.swift'
       - 'tests/test_vpn_exact_fence_store.py'
       - 'tests/vpn_exact_fence_store_checks.swift'
       - 'tests/test_vpn_exact_fence_adapter.py'
@@ -45,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Both architectures compile; ordinary host refuses all live calls
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_fence_store test_vpn_exact_fence_adapter test_vpn_fenced_host test_vpn_exact_fence_native_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_fence_store test_vpn_exact_fence_adapter test_vpn_fenced_host test_vpn_retained_fence_runtime.RetainedRuntimeTests test_vpn_directory test_vpn_exact_fence_native_vm -v
       - name: Actual production fence plus UDP/TCP packets in disposable root VM only
         run: |
           sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_NATIVE_EXACT_FENCE=1 \

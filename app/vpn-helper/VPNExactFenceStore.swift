@@ -127,6 +127,8 @@ final class VPNExactFenceStore {
     fileprivate func exclusive<T>(_ body: () throws -> T) rethrows -> T {
         mutex.lock(); defer { mutex.unlock() }; return try body()
     }
+    /// Namespace/lock custody only; this is not live kernel route verification.
+    func validateOwner() throws { try exclusive { try checkOwner() } }
     func load(_ address: VPNRoutePrefix) throws -> VPNExactFenceEntry? {
         try exclusive { try read(name: Self.name(address)) }
     }

@@ -58,6 +58,30 @@ class VPNDirectoryTests(unittest.TestCase):
         self.expect('read', 'rejected:unavailable')
         self.assertFalse(self.app.exists())
 
+    def test_persistent_fence_namespace_is_fixed_private_and_survives_vpn_directory_removal(self):
+        self.expect('create','private-directory-ready')
+        self.expect('create-fences','private-directory-ready')
+        retained=self.app/'Fences'/'retained-custody'
+        retained.write_bytes(b'owned retained route obligations')
+        self.assertEqual(stat.S_IMODE(retained.parent.stat().st_mode),0o700)
+        self.expect('read-fences','private-directory-ready')
+        self.expect('validate-fences','private-directory-ready')
+        self.expect('validate-vpn-as-fences','rejected:unsafeDirectory')
+        self.expect('remove-vpn','private-directory-ready')
+        self.assertEqual(retained.read_bytes(),b'owned retained route obligations')
+        self.assertFalse((self.app/'VPN').exists())
+
+    def test_fence_read_does_not_create_and_unsafe_existing_directory_is_not_repaired(self):
+        self.expect('read-fences','rejected:unavailable')
+        self.assertFalse(self.app.exists())
+        self.expect('create-fences','private-directory-ready')
+        (self.app/'Fences').chmod(0o750)
+        self.expect('create-fences','rejected:unsafeDirectory')
+        self.assertEqual(stat.S_IMODE((self.app/'Fences').stat().st_mode),0o750)
+
+    def test_root_fence_guard_refuses_before_production_paths(self):
+        self.expect('root-fences-guard','rejected:requiresRoot')
+
     def test_update_namespace_is_a_separate_fixed_private_sibling(self):
         self.expect('create', 'private-directory-ready')
         self.expect('create-update', 'private-directory-ready')

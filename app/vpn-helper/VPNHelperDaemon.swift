@@ -5,6 +5,7 @@ enum VPNHelperDaemonError: Error { case requiresRoot, invalidArguments, selectio
 
 enum VPNHelperDaemon {
     static let storagePath = "/Library/Application Support/ProxyPilot/VPN"
+    typealias ProtectionFactory = (DispatchTime, () throws -> Void) throws -> VPNRetainedFenceRuntime
 
     static func runSystem(arguments: [String]) throws {
         guard getuid() == 0, geteuid() == 0 else { throw VPNHelperDaemonError.requiresRoot }
@@ -19,6 +20,9 @@ enum VPNHelperDaemon {
                   authority: VPNReleaseTrust.authority(), policy: { try $0.helperPolicy() },
                   recoveryReadinessPolicies: nil,
                   recoveryFixtureInstaller: false,
+                  restoreProtection: { deadline, current in
+                      try VPNRetainedFenceRuntime.system(deadline:deadline,checkCurrent:current)
+                  },
                   recoveryCleanup: { lease in
                       try VPNJointUpdateCleanup.completeSystem(
                         service: directory, lease: lease,
@@ -36,12 +40,14 @@ enum VPNHelperDaemon {
                           recoveryReadinessPolicies: ((VPNUpdateJournalSnapshot,
                               VPNAuthorizedDeployment) throws -> [VPNPeerPolicy])? = nil,
                           recoveryFixtureInstaller: Bool = false,
+                          restoreProtection: ProtectionFactory? = nil,
                           recoveryCleanup: (VPNLifecycleLease) throws -> Void = { _ in }) throws {
         guard getuid() != 0, getuid() == geteuid() else { throw VPNPeerAuthenticationError.denied }
         try serve(directory: directory, endpoint: endpoint, shared: shared,
                   authority: authority, policy: { try $0.testHelperPolicy() },
                   recoveryReadinessPolicies: recoveryReadinessPolicies,
                   recoveryFixtureInstaller: recoveryFixtureInstaller,
+                  restoreProtection:restoreProtection,
                   recoveryCleanup: recoveryCleanup)
     }
     #endif
@@ -52,6 +58,7 @@ enum VPNHelperDaemon {
                               recoveryReadinessPolicies: ((VPNUpdateJournalSnapshot,
                                   VPNAuthorizedDeployment) throws -> [VPNPeerPolicy])?,
                               recoveryFixtureInstaller: Bool,
+                              restoreProtection: ProtectionFactory?,
                               recoveryCleanup: (VPNLifecycleLease) throws -> Void) throws {
         try VPNActivationDiagnostics.run(role: .helper, stage: .openStore) { trace in
             let store = try VPNReleaseStore(trustedDirectoryDescriptor: directory, authority: authority)
@@ -109,6 +116,13 @@ enum VPNHelperDaemon {
                 // acquisition: journal preparation can legitimately win that race.
                 try budget.beginAttempt(intent: .automatic)
             }
+            // Keep persistent deny/active custody alive for the daemon lifetime.
+            // A failed restore exits before publishing any endpoint or readiness.
+            // User-domain fixtures supply only their own private/injected runtime.
+            let protection = try restoreProtection?(.now()+20) {
+                try runtime.check()
+                guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
+            }
             trace.mark(.receipt)
             if shared {
                 let publicReceipt = try store.loadDeploymentReceipt()
@@ -158,6 +172,7 @@ enum VPNHelperDaemon {
             defer { listener.close() }
             func stillSelected() throws {
                 try runtime.check()
+                try protection?.check()
                 // Selection was authenticated before binding. A legal replacement
                 // stops this daemon first. Watch the protected atomic record without
                 // acquiring its writer lock: repeatedly loading it here races the

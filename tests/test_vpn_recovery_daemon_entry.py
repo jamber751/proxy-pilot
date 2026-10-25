@@ -57,7 +57,11 @@ class VPNRecoveryDaemonEntryTests(unittest.TestCase):
             'VPNRecoveryLaunchdJob.swift', 'VPNStagedApplication.swift', 'VPNInstalledApplication.swift',
             'VPNSelectedCandidateFinalizer.swift', 'VPNSelectedCandidateRecovery.swift',
             'VPNJointUpdateCleanup.swift', 'VPNHelperRuntime.swift', 'VPNHelperDaemon.swift',
-            'VPNPublicReleaseReceipt.swift',
+            'VPNPublicReleaseReceipt.swift', 'VPNRetainedFenceRuntime.swift',
+            'OpenVPNManagementEvent.swift', 'OpenVPNStateEvidence.swift',
+            'VPNKernelInterfaceSnapshot.swift', 'VPNTunnelInterfaceResolver.swift',
+            'VPNRoutePlan.swift', 'VPNRouteJournal.swift', 'VPNDarwinRouteSocket.swift',
+            'VPNExactFenceStore.swift',
             'VPNSelectedCandidateRecoveryDaemonEntry.swift', 'ServiceMain.swift',
         ]
         sources = [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
