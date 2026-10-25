@@ -76,6 +76,10 @@ class VPNHelperListenerTests(unittest.TestCase):
                         'VPNHelperReadiness.swift', 'VPNHelperSession.swift', 'VPNApplicationSpec.swift',
                         'VPNTunnelStateStore.swift', 'VPNHelperTunnelSession.swift'],
              ['-D', 'VPN_HELPER_READINESS_TESTING']),
+            ('boot-client', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
+                        'VPNHelperReadiness.swift', 'VPNHelperSession.swift', 'VPNApplicationSpec.swift',
+                        'VPNTunnelStateStore.swift', 'VPNHelperTunnelSession.swift', 'VPNDNSContinuousClock.swift'],
+             ['-D', 'VPN_HELPER_READINESS_TESTING', '-D', 'VPN_BRIDGE_BOOTSTRAP_TESTING']),
             ('previous', ['VPNPeerAuthentication.swift', 'VPNReleaseAuthorization.swift', 'VPNHelperProtocol.swift',
                           'VPNHelperReadiness.swift', 'VPNHelperSession.swift', 'VPNApplicationSpec.swift',
                           'VPNTunnelStateStore.swift', 'VPNHelperTunnelSession.swift'],
@@ -83,9 +87,11 @@ class VPNHelperListenerTests(unittest.TestCase):
         ]:
             main = 'vpn_helper_service.swift' if name == 'service' else 'vpn_readiness_checks.swift'
             files = [HELPER / source for source in sources] + [ROOT / 'tests' / main]
-            if name in ('service', 'client', 'previous'):
+            if name in ('service', 'client', 'previous', 'boot-client'):
                 # The helper re-validates profiles with the application's own importer.
                 files += [ROOT / 'app/VPNConfiguration.swift', ROOT / 'app/VPNProfileImporter.swift']
+            if name=='boot-client':
+                files += [ROOT/'app/VPNBridgeProtection.swift',ROOT/'app/VPNBridgeBootstrap.swift']
             slices = []
             for arch in ('arm64', 'x86_64'):
                 output = cls.work / f'{name}-{arch}'
@@ -100,6 +106,7 @@ class VPNHelperListenerTests(unittest.TestCase):
         cls.pins = {}
         for name, identifier in [('service', 'kz.documentolog.proxypilot.vpn-helper'),
                                  ('client', 'kz.documentolog.proxypilot'),
+                                 ('boot-client', 'kz.documentolog.proxypilot'),
                                  ('previous', 'kz.documentolog.proxypilot'),
                                  ('helper-owner', 'kz.documentolog.proxypilot.vpn-helper'),
                                  ('stranger', 'kz.documentolog.proxypilot.other')]:
@@ -231,6 +238,23 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.seed()
         self.serve()
         self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
+
+    def test_boot_cache_union_is_durable_before_activation(self):
+        marker=self.base/'custody'
+        self.seed(application='boot-client');self.serve(extra=['bridge-bootstrap-test','success',str(marker)])
+        self.assertEqual(self.session('boot-cache=success:'+str(self.base),client='boot-client'),
+                         ['boot-cache:ok retired:0 protected:4'])
+        self.assertEqual(marker.read_text(),'released')
+
+    def test_boot_cache_survives_final_root_refusal_and_runtime_is_retired_once(self):
+        self.seed(application='boot-client');self.serve(extra=['bridge-bootstrap-test','changed'])
+        self.assertEqual(self.session('boot-cache=success:'+str(self.base),client='boot-client'),
+                         ['boot-cache:failed retired:1 protected:4'])
+
+    def test_boot_cache_configuration_change_retires_once_before_return(self):
+        self.seed(application='boot-client');self.serve(extra=['bridge-bootstrap-test','success'])
+        self.assertEqual(self.session('boot-cache=config-change:'+str(self.base),client='boot-client'),
+                         ['boot-cache:failed retired:1 protected:4'])
 
     def test_bridge_bootstrap_activation_happens_under_root_custody(self):
         marker=self.base/'bootstrap-custody'

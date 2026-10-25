@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
-MODES=('order','union','reopen','unknown-api','expired','late-api','backwards','cancelled','epoch-changed',
+MODES=('boot-growth','boot-disk-change','order','union','reopen','unknown-api','expired','late-api','backwards','cancelled','epoch-changed',
        'missing-after-use','corrupt-after-use','lock','lock-replaced','invalid','capacity','reentrant','concurrent',
        'symlink','hardlink','bad-mode')
 @unittest.skipUnless(sys.platform=='darwin' and shutil.which('swiftc') and os.getuid()==os.geteuid()!=0,'ordinary macOS Swift required')

@@ -113,6 +113,9 @@ jobs:
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: |
           PYTHONPATH=tests python3 -m unittest \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_boot_cache_union_is_durable_before_activation \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_boot_cache_survives_final_root_refusal_and_runtime_is_retired_once \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_boot_cache_configuration_change_retires_once_before_return \
             test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_activation_happens_under_root_custody \
             test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_final_refusal_retires_only_returned_runtime \
             test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_missing_failed_malformed_or_aborted_activation \

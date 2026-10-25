@@ -11,7 +11,9 @@ struct VPNBridgeProtectedSnapshot: Codable, Equatable {
     let schemaVersion: Int
     let revision: UInt64
     let matchers: [String]
-    static let maximumMatchers = 5096 // 4096 retained IPs + 1000 static resources.
+    // Root retained/configured/legacy union + App intent + prior boot cache.
+    // The independent 512 KiB encoded limit still applies; never truncate.
+    static let maximumMatchers = 16384
     static func canonical(_ value: String) throws -> String {
         let resource = try VPNResource(address:value)
         switch resource.kind {
@@ -80,6 +82,30 @@ final class VPNBridgeProtectionStore {
             let value = try read()
             guard value == observed else { throw VPNBridgeProtectionError.stale }
             return value
+        }
+    }
+    /// Persist the entire monotonic union BEFORE creating a new bridge. Keep
+    /// the same publication lock through activation/verification. The caller
+    /// already owns root bootstrap custody; this method cannot grant it.
+    func withPreparedBoot<T: AnyObject>(_ addresses: [String],
+        checkCurrent: () throws -> Void,
+        activate: (VPNBridgeProtectedSnapshot) throws -> T,
+        retire: (T) -> Void) throws -> T {
+        try publishing {
+            try checkCurrent()
+            let prepared=try merge(addresses,checkCurrent:checkCurrent)
+            var owned: T?
+            do {
+                try checkCurrent()
+                owned=try activate(prepared)
+                try checkCurrent()
+                guard try snapshot()==prepared else { throw VPNBridgeProtectionError.stale }
+                try checkCurrent()
+                return owned!
+            } catch {
+                if let owned { retire(owned) }
+                throw error
+            }
         }
     }
     fileprivate func merge(_ addresses: [String], checkCurrent: () throws -> Void) throws -> VPNBridgeProtectedSnapshot {

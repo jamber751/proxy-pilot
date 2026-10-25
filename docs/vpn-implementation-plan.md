@@ -8694,3 +8694,39 @@ arch без skips, полные mode600 /tmp/pp-installer-<job>.log провер
 544e6d5 Intel121186810479 также8/8 подтверждён полным логом. Новые bootstrap
 исходники этими историческими result не покрыты. Изначальные7 этапов, macOS12
 runtime, WARP иодна финальная host-установка/приёмка остаются OPEN.
+
+
+### Продолжение 1.5hz — App boot union before activation
+
+- [x] `VPNBridgeBootstrap.start` получает root custody через настоящий typed
+  session ДО App publication lock. Объединяет root catalogue, App numeric
+  resources/corporate DNS ипрежний cache; domain names не попадают в matcher list.
+  Configuration checker обязателен; исходный deadline проверяется до/после него.
+- [x] `withPreparedBoot` сохраняет fsync/rename union ДО activation callback,
+  удерживает publication lock ипроверяет тот же snapshot после activation.
+  Returned runtime retire вызывается ровно1 раз при local post-check failure
+  либо final root refusal; cache не откатывается ине очищается. Partial failed
+  activation по-прежнему обязана сама убрать незавершённый child.
+- [x] Count limit увеличен с5096 до16384, чтобы вместить root retained+legacy+
+  active/pending, App intent иprior cache. Независимый512KiB byte limit сохранён;
+  переполнение даёт отказ без truncation. Реальный6000-prefix test подтверждает
+  запись всех адресов до callback; corrupt-after-activation вызывает retirement.
+- [x]66 signed listener/client cases +20 store cases PASS66.613s:
+  /tmp/pp-boot-cache-wire.log. Новый отдельно подписанный boot-client исполняет
+  production coordinator через реальный authenticated Unix channel, повторно
+  читает durable cache ДО simulated listen, проверяет prior/root/App union,
+  final root refusal иconfiguration change сexactly-once retirement. Final22
+  store cases PASS3.126s: /tmp/pp-boot-cache-store-final.log. Без skips.
+- [x] App source включён в реальный frontend build. Полный Universal frontend
+  со вложенным isolated updater собран/sign-only, lipo обе arch иdeep/strict
+  signature verified. /tmp/pp-boot-cache-frontend.log;
+  path /tmp/pp-bridge-boot-frontend-path.txt. Compile-only sequence141 не является
+  новым release/installed package. Existing Keychain deprecation warnings есть,
+  build errors отсутствуют; Keychain/GUI/VPN/Installer не запускались.
+- [x] Три wire/cache cases включены в existing ownership/contracts иmanaged
+  bridge matrix; App/fixture source filters поддерживают последующие изменения.
+- [ ] Actual GOST activation factory, parent-death retirement иподключение entry
+  ещё OPEN. Current callback tests используют owned in-memory runtime, не GOST.
+  Новая App cache/preparation не включена вместо существующего CLI bridge.
+  Domain/answer authority, static CIDR backend, WARP, macOS12 runtime, current
+  full acceptance иисходные7 этапов остаются OPEN.

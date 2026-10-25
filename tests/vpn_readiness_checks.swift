@@ -8,6 +8,13 @@ private final class VPNFixtureBridgeRuntime: VPNBridgeBootstrapOwnedRuntime {
     func retire() { retired=true }
 }
 
+#if VPN_BRIDGE_BOOTSTRAP_TESTING
+private final class VPNFixtureBootRuntime: VPNBridgeBootstrapOwnedRuntime {
+    var retired=0
+    func retire() { retired+=1 }
+}
+#endif
+
 // Inert local server and probe client; no launchd, root, VPN or real keys.
 @main
 enum VPNReadinessChecks {
@@ -110,6 +117,48 @@ enum VPNReadinessChecks {
         let fd = connect(path)
         do {
             let release = try fixtureRelease(pin: pin)
+            #if VPN_BRIDGE_BOOTSTRAP_TESTING
+            if scenario.hasPrefix("boot-cache=") {
+                let parts=String(scenario.dropFirst(11)).split(separator:":",maxSplits:1).map(String.init)
+                guard parts.count==2 else { throw VPNHelperSessionError.invalidResponse }
+                let mode=parts[0],directory=parts[1]
+                let cacheFD=open(directory,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
+                guard cacheFD>=0 else { throw VPNHelperSessionError.invalidResponse };defer { close(cacheFD) }
+                let store=try VPNBridgeProtectionStore(trustedDirectoryDescriptor:cacheFD)
+                // Simulate protection left by a previous owned epoch, no process/listen.
+                let previous=try store.withPreparedBoot(["203.0.113.77"],checkCurrent:{},
+                    activate:{ _ in VPNFixtureBootRuntime() },retire:{ $0.retire() })
+                previous.retire()
+                var configuration=VPNConfiguration()
+                try configuration.saveResource(VPNResource(address:"198.51.100.7"))
+                try configuration.saveResource(VPNResource(address:"corp.example"))
+                try configuration.setDNS(["10.77.0.53"])
+                let expected=["10.44.0.0/16","10.77.0.53/32","198.51.100.7/32","203.0.113.77/32"]
+                let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
+                defer { session.close() }
+                let owned=VPNFixtureBootRuntime();var configurationChanged=false
+                do {
+                    let result: VPNFixtureBootRuntime = try VPNBridgeBootstrap.start(session:session,store:store,
+                        configuration:configuration,checkConfiguration:{ value in
+                            guard !configurationChanged,value==configuration else { throw VPNBridgeProtectionError.stale }
+                        },activate:{ protected,deadline in
+                            guard DispatchTime.now()<deadline,protected.matchers==expected,
+                                  try store.snapshot()==protected else { throw VPNHelperSessionError.invalidResponse }
+                            // Re-read the actual durable file before simulated first listen.
+                            let data=try Data(contentsOf:URL(fileURLWithPath:directory+"/"+VPNBridgeProtectionStore.filename))
+                            let disk=try JSONDecoder().decode(VPNBridgeProtectedSnapshot.self,from:data)
+                            guard disk==protected else { throw VPNHelperSessionError.invalidResponse }
+                            if mode=="config-change" { configurationChanged=true }
+                            return owned
+                        })
+                    print("boot-cache:ok retired:\(result.retired) protected:\(try store.snapshot()?.matchers.count ?? -1)")
+                    result.retire()
+                } catch {
+                    print("boot-cache:failed retired:\(owned.retired) protected:\(try store.snapshot()?.matchers.count ?? -1)")
+                }
+                return
+            }
+            #endif
             if scenario.hasPrefix("bootstrap=") {
                 let parts=String(scenario.dropFirst(10)).split(separator:":",maxSplits:1).map(String.init)
                 let mode=parts[0],marker=parts.count==2 ? parts[1]:nil

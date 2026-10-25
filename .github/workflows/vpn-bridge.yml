@@ -17,6 +17,9 @@ on:
       - 'tests/test_managed_bridge_namespace.py'
       - 'tests/test_power.py'
       - 'tests/test_vpn_bridge*.py'
+      - 'tests/test_vpn_helper_listener.py'
+      - 'tests/vpn_helper_service.swift'
+      - 'tests/vpn_readiness_checks.swift'
       - 'tests/vpn_bridge_bypass_checks.swift'
       - 'tests/vpn_bridge_protection_checks.swift'
       - 'tests/vpn_bridge_protection_api_checks.swift'
@@ -51,3 +54,9 @@ jobs:
           /bin/zsh -n app/build.sh
       - name: Private bridge processes, handoff, CLI selection and update retention
         run: PYTHONPATH=tests python3 -m unittest test_managed_bridge_namespace test_power test_vpn_bridge_handoff test_cli_selection test_vpn_joint_release_builder test_vpn_bridge_bypass test_vpn_bridge_protection test_vpn_bridge_protection_api test_vpn_bridge_api_native test_update_quiescence -v
+      - name: Authenticated root bootstrap and durable App cache
+        run: |
+          PYTHONPATH=tests python3 -m unittest \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_boot_cache_union_is_durable_before_activation \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_boot_cache_survives_final_root_refusal_and_runtime_is_retired_once \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_boot_cache_configuration_change_retires_once_before_return -v

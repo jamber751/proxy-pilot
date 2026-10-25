@@ -14,6 +14,7 @@ private final class Transport: VPNBridgeProtectionTransport {
         try checkCurrent()
     }
 }
+private final class BootRuntime { var retired=0 }
 @main private enum Checks {
     static func run() throws {
         let mode = CommandLine.arguments[1],path = CommandLine.arguments[2]
@@ -117,8 +118,27 @@ private final class Transport: VPNBridgeProtectionTransport {
                     catch is VPNValidationError {} catch is VPNBridgeProtectionError {}
                 }
                 try check(outputs == 0 && transport.sent.isEmpty && store.snapshot() == nil)
+            case "boot-growth":
+                let addresses=(0..<6000).map { "198.18.\($0/256).\($0%256)" }
+                let runtime=try store.withPreparedBoot(addresses,checkCurrent:{},activate:{ prepared in
+                    try check(prepared.matchers.count==6000 && store.snapshot()==prepared)
+                    let disk=try Data(contentsOf:URL(fileURLWithPath:path+"/"+VPNBridgeProtectionStore.filename))
+                    try check(JSONDecoder().decode(VPNBridgeProtectedSnapshot.self,from:disk)==prepared)
+                    return BootRuntime()
+                },retire:{ $0.retired+=1 })
+                try check(runtime.retired==0 && store.snapshot()?.matchers.count==6000)
+            case "boot-disk-change":
+                let runtime=BootRuntime()
+                try refused(.invalidState) {
+                    _=try store.withPreparedBoot(["198.19.253.201"],checkCurrent:{},activate:{ _ in
+                        try Data("{}".utf8).write(to:URL(fileURLWithPath:path+"/"+VPNBridgeProtectionStore.filename),options:.atomic)
+                        _=chmod(path+"/"+VPNBridgeProtectionStore.filename,0o600)
+                        return runtime
+                    },retire:{ $0.retired+=1 })
+                }
+                try check(runtime.retired==1)
             case "capacity":
-                try refused(.capacity) { _ = try publish([String](repeating:"198.19.253.201",count:5097)) }
+                try refused(.capacity) { _ = try publish([String](repeating:"198.19.253.201",count:VPNBridgeProtectedSnapshot.maximumMatchers+1)) }
                 try check(transport.sent.isEmpty && store.snapshot() == nil)
             case "reentrant":
                 let other = create(store)
