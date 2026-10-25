@@ -549,7 +549,10 @@ enum VPNDarwinRouteCodec {
         guard data.count >= 2 else { throw VPNDarwinRouteError.malformedMessage }
         if data[0] == 0 { return [UInt8](repeating: 0, count: family == .ipv4 ? 4 : 16) }
         let expectedFamily = family == .ipv4 ? AF_INET : AF_INET6
-        guard Int32(data[1]) == AF_UNSPEC || Int32(data[1]) == expectedFamily else {
+        // rn_addmask() canonicalizes skipped leading bytes (including this
+        // opaque mask's sa_family byte) to ff. It is not an IP sockaddr family.
+        // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/net/radix.c
+        guard data[1] == 0xff || Int32(data[1]) == AF_UNSPEC || Int32(data[1]) == expectedFamily else {
             throw VPNDarwinRouteError.malformedMessage
         }
         // Kernel netmasks may use AF_UNSPEC and/or omit trailing zero bytes.

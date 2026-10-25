@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = [ROOT/'app/VPNConfiguration.swift'] + [ROOT/'app/vpn-helper'/n for n in (
     'OpenVPNManagementEvent.swift','OpenVPNStateEvidence.swift','VPNKernelInterfaceSnapshot.swift',
     'VPNTunnelInterfaceResolver.swift','VPNRoutePlan.swift','VPNRouteJournal.swift','VPNDarwinRouteSocket.swift')]
-MODES = ['codec','sparse-ack','ack-without-state','install-delete','host-distinction','no-adoption','foreign','scope','wrong-address',
+MODES = ['codec','darwin-mask','sparse-ack','ack-without-state','install-delete','host-distinction','no-adoption','foreign','scope','wrong-address',
          'echo-miss','down','wrong-type-error','stale-error','shared-sequence','unknown-add','race','expired','late','validation']
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'),'macOS Swift required')

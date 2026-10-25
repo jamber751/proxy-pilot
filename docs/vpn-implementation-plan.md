@@ -7705,3 +7705,30 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   integration и финальная installed/WARP/UX/release приёмка. Никакого сокращения
   согласованного scope или объявления готовности по числу pure checks. Дальнейшая
   контрольная точка — рабочий domain route, а не новый отдельный прототип.
+
+### Продолжение 1.5he — точная причина malformed: canonical radix mask family ff
+
+- [x] Corrected-profile d0ff02a native40185898592 Intel15 job121146487661 FAILED:
+  flags уже совпадают88067; closed ABI diagnostics type4/index1/addrs7,
+  maskLength8/maskFamily255/gatewayFamily2. Значит это не ownership/flags отказ,
+  decoder ошибочно считал canonical mask byte255 недопустимой IP family.
+  Лог /tmp/pp-native-fence-d0-intel-121146487661.log. Native PASS не заявлен.
+- [x] Primary XNU radix.c rn_addmask(): skipped leading bytes (включая byte1)
+  canonicalize вff, затем trailing zeroes удаляются. Источник и SHA добавлены в
+  /tmp/pp-exact-fence-xnu-20261025/sources.json:
+  https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/net/radix.c
+- [x] maskBytes теперь принимает именно этот kernel mask metadata value255,
+  сохраняя все length/prefix-contiguity/family/ownership ограничения. Destination
+  и gateway по-прежнему требуют настоящую IP family; ff там остаётся malformed.
+  Это исправляет и декодирование обычных CIDR ответов; actual resource NET
+  predicted PRCLONING profile/legacy journal compatibility ещё надо проверить
+  отдельно при подключении active routes, не считать весь CIDR flow закрытым.
+- [x] Regression RED на прежнем коде:1 native pure test FAILED5.843s, лог
+  /tmp/pp-darwin-mask-red-parent.log. Fake kernel теперь выдаёт записанную Darwin
+  форму: opaque leading ff, compact mask length,32-bit padding. Проверены full
+  /32,/128, partial /24,/64 и отказ ff в destination family. Green44 methods
+  (20fence+1native compile/guards+23legacy route/sequence/write-miss) PASS31.785s,
+  без skips: /tmp/pp-darwin-mask-green-parent.log. Harness ошибки теперь closed
+  exit1 без deliberate Swift fatal/crash trace. Host root/network не использован.
+- [ ] Actual Swift native proof после этого точного decoder fix всё ещё нужен;
+  domain gate закрыт до него и persistent custody/working integration.

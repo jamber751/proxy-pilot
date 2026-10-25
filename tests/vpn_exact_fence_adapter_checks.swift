@@ -11,6 +11,32 @@ private func change(_ data: Data, _ body: (inout rt_msghdr) -> Void) -> Data {
     withUnsafeBytes(of:&header) { output.replaceSubrange(0..<$0.count,with:$0) }
     return output
 }
+// Recorded Darwin rn_addmask shape: leading opaque mask bytes are ff,
+// trailing zeros are trimmed, then sockaddrs are rounded to 32-bit alignment.
+private func canonicalMask(_ data: Data, family: VPNRouteAddressFamily, bits: Int? = nil) throws -> Data {
+    let h = try VPNDarwinRouteCodec.identify(data), offset = family == .ipv4 ? 4 : 8
+    let width = family == .ipv4 ? 4 : 16, prefix = bits ?? (family == .ipv4 ? 32 : 128)
+    var output = data, at = MemoryLayout<rt_msghdr>.size
+    for i in 0..<Int(RTAX_MAX) where h.rtm_addrs & (1 << i) != 0 {
+        let length = Int(output[at]), step = (length+3) & ~3
+        if i == RTAX_DST, bits != nil {
+            for j in (prefix/8)..<width { output[at+offset+j] = 0 }
+        }
+        if i == RTAX_NETMASK {
+            var mask = [UInt8](repeating:255,count:offset+width)
+            for j in 0..<width { mask[offset+j] = j < prefix/8 ? 255 : 0 }
+            while mask.last == 0 { mask.removeLast() }
+            mask[0] = UInt8(mask.count)
+            let size = (mask.count+3) & ~3
+            mask += [UInt8](repeating:0,count:size-mask.count)
+            output.replaceSubrange(at..<(at+step),with:mask)
+            let total = output.count
+            return change(output) { $0.rtm_msglen = UInt16(total) }
+        }
+        at += step
+    }
+    throw NSError(domain:"missing-mask",code:1)
+}
 private final class Kernel: VPNRouteSocketTransport {
     let identity: VPNExactRouteFenceIdentity
     var installed = false, hostFallback = false, scoped = false, wrongIP = false, wrongGateway = false
@@ -50,7 +76,7 @@ private final class Kernel: VPNRouteSocketTransport {
         let at = MemoryLayout<rt_msghdr>.size
         if wrongIP { reply[at+(identity.address.family == .ipv4 ? 7 : 23)] ^= 1 }
         if wrongGateway { reply[at+(identity.address.family == .ipv4 ? 16+7 : 28+23)] ^= 1 }
-        return reply
+        return try canonicalMask(reply,family:identity.address.family)
     }
 }
 private func identity(_ family: Int) throws -> VPNExactRouteFenceIdentity {
@@ -63,7 +89,11 @@ private func expect(_ expected: VPNDarwinRouteError, _ body: () throws -> Void) 
     catch let error as VPNDarwinRouteError { try require(error == expected) }
 }
 @main private enum Main {
-    static func main() throws {
+    static func main() {
+        do { try run() }
+        catch { fputs("FAIL exact-fence-check\n",stderr); exit(1) }
+    }
+    private static func run() throws {
         let mode = CommandLine.arguments[1]
         for family in [4,6] {
             let id = try identity(family), fake = Kernel(try identity(family))
@@ -89,6 +119,18 @@ private func expect(_ expected: VPNDarwinRouteError, _ body: () throws -> Void) 
                 try require(fake.deadlines.allSatisfy { $0 <= original.uptimeNanoseconds } && Set(fake.deadlines).count == 1)
                 try socket.deleteExactFence(id,deadline:original)
                 try require(!fake.installed && fake.sent.last?.rtm_type == UInt8(RTM_GET))
+            case "darwin-mask":
+                let raw = try VPNDarwinRouteCodec.encodeExactFence(type:UInt8(RTM_ADD),sequence:1,pid:7654,identity:id)
+                let kernel = change(raw) { $0.rtm_type = UInt8(RTM_GET); $0.rtm_flags = Int32(bitPattern:id.flags) }
+                let full = try canonicalMask(kernel,family:id.address.family)
+                try require(try VPNDarwinRouteCodec.decode(full).snapshot.map(id.matches) == true)
+                let partial = try canonicalMask(kernel,family:id.address.family,bits:family == 4 ? 24 : 64)
+                let snapshot = try VPNDarwinRouteCodec.decode(partial).snapshot
+                try require(snapshot?.destination.canonical == (family == 4 ? "198.19.253.0/24" : "2001:db8:fff:fd::/64"))
+                try require(snapshot != nil && !id.matches(snapshot!))
+                var wrongDestination = full
+                wrongDestination[MemoryLayout<rt_msghdr>.size+1] = 255
+                try expect(.malformedMessage) { _ = try VPNDarwinRouteCodec.decode(wrongDestination) }
             case "sparse-ack":
                 fake.sparseAck = true
                 try socket.installExactFence(id,deadline:end())
