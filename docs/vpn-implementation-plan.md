@@ -6843,3 +6843,33 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   не выдавать client-first pass за полную проверку произвольного CONNECT stream.
 - [ ] System failure причины и поздний utun timeout ещё не исправлены. Native
   current-source acceptance обязателен, final Installer не собран/не установлен.
+
+
+### Продолжение 1.5ge — finite idle route queues и настоящий GOST contract
+
+- [x] GOST40172499420 sourcef4f644b SUCCESS обе arch:
+  121106121118/121106121217. В каждом логе28 exact closed case PASS и
+  all-28 marker, всего56 actual loopback cases +safe guards. Source nil-resolver
+  hostname/CIDR ambiguity теперь закрыта actual pinned binary: plugin выбирает
+  IP до chain/bypass; failure/empty/malformed/timeout не даёт hostname fallback.
+  Проверены оба ingress протокола, token/Basic,307 replay,Unix refusal.
+  Это client-first traffic, не server-first CONNECT или live VPN/DNS privacy.
+- [x] Новый fake finite-broadcast counterexample показывает: долгоживущий
+  PF_ROUTE socket может иметь полную очередь до отправки GET. Успешный write
+  не гарантирует сохранение нового reply. Прозрачное выделение native IO boundary
+  с прежним lifetime дало runtime RED /tmp/pp-route-epoch-red.log.
+- [x] Теперь transport открывает/настраивает свежий socket перед КАЖДЫМ request,
+  затем закрывает предыдущий owned FD. При open failure нет write/утечки;
+  при write failure нет повторной отправки. Исходный absolute deadline,
+  receive bound, full correlation/identity checks и128-message limit сохранены.
+  Новая7-case fake suite включает idle/between-request full queues и lifetime.
+- [x] Related55 PASS22.316s; полный актуальный safe DNS/route graph379
+  PASS67.722s без skips. Native PF_ROUTE и interface APIs локально не запускались.
+  Whole production helper typechecks ARM/Intel без TESTING, exit0/0 иstale=[]:
+  /tmp/pp-route-epoch-helper-proof-6cp6vw94/verification.json.
+- [ ] Связь очереди с actual late baselineVerify timeout ещё требует следующего
+  owned-utun VM gate; наличие fake counterexample не выдаётся за kernel trace.
+  Fresh socket не гарантирует доставку при flood ВО ВРЕМЯ request: отказ остаётся
+  консервативным, unknown mutation receipt не превращается в success.
+- [ ] System139 recovery и fresh genuine frontend build остаются OPEN; весь
+  VPN feature и final joint Installer ещё не готовы.
