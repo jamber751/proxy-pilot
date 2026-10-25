@@ -8347,3 +8347,64 @@ workflow additions-only superset и повторного чтения каждо
 body/старые packet/death expectations сохранены. API подтвердил terminal
 cancelled всех4+2 старых jobs. Live/partial runs не отменялись. Это сокращение
 дубликатов в очереди, не замена недостающих actual результатов зелёными статусами.
+
+
+### Продолжение 1.5ht — native macOS system-resolver worker, not yet wired
+
+- [x] Аудит текущего `bin/proxypilot.write_gost_config`: r0 действительно
+  flatten'ит scutil nameservers и добавляет1.1.1.1/8.8.8.8. Новый domain path
+  не должен копировать этот механизм: он не сохраняет macOS/WARP resolver scopes.
+  Legacy CLI/installed App здесь не менялись; новый backend ещё закрыт.
+- [x] Добавлен собственный ordinary-user `app/vpn-system-resolver` (Go stdlib +
+  Cgo): прямой Darwin getaddrinfo, без Go pure resolver, собственных nameserver
+  lists/default/public fallback. Native вызов синхронный:16 admission slots
+  удерживаются до его настоящего завершения, даже после HTTP cancellation;
+  accepted connections<=32, header/body deadlines/limits, result<=64IPs.
+- [x] Только loopback TLS1.3 endpoint, per-process fresh self-signed certificate/
+  private key in memory. Startup64hex credential поступает через owned stdin
+  pipe, не argv/env. READY содержит только public cert/port; parent всё равно
+  ОБЯЗАН аутентифицировать exact signed child, pin этот cert и владеть epoch.
+  POST /resolve, exact Host/Content-Type, one Basic authorization, bounded strict
+  duplicate/unknown/trailing JSON refusal, exact networkip/ip4/ip6 и bounded DNS
+  labels. Failure/cancellation возвращают только пустой отказ; raw hostname,
+  credential, native error или client data не логируются. Worker не root,
+  не tunnel/domain authority и не DNS answer permit.
+- [x]7 pure Go handler/crypto/admission tests под-race PASS4.245s:
+  /tmp/pp-system-resolver-final-pure.log. Injected lookup + in-memory recorder;
+  getaddrinfo/listener/system DNS не вызывались. Wrapper3 PASS3.356s без skips:
+  /tmp/pp-system-resolver-wrapper.log, включает root/platform builder guards и
+  проверку точного набора Go tests. Race linker дал LC_DYSYMTAB warning в test
+  instrumentation; production build log warnings0, подписи strict verified.
+- [x] Compile-only builder с Go1.25.4, source snapshots + before/after bytes,
+  readonly module graph, fixed clang/arch/min12, ad-hoc sign-only. Обе slices
+  иUniversal собраны, Mach-O minos12.0 подтверждён, ничего не исполнялось:
+  /tmp/pp-native-system-resolver-build-parent.log; private verification.json
+  в папке из/tmp/pp-native-system-resolver-build-path.txt.
+  arm64 bytes5750512 SHA1d81d9106c65731e6141ba304575adb83ced06f4cc63c21112a9c731d3b9c742;
+  x86_64 bytes6269680 SHA9ba30d5ee4e127981bb605fe20a6260150b4d55e07ac9de366c199e96fadd9eb.
+  Это конкретные local SDK builds, НЕ обещание CGO cross-SDK reproducibility
+  или actual macOS12 runtime. Первый build отказал: GOSUMDB=off запрещал даже
+  проверку pinned Go toolchain; исправлено на checksum DB + readonly modules.
+- [x] В existing four-OS system-DNS workflow добавлены pure worker tests и
+  build-only. Старый actual Node/GOST/SC canary остаётся прежним, НЕ выдаётся за
+  исполнение нового worker. Production app/build/bundle и shipped GOST assets
+  пока не заменены. Host network/DNS/SC/Keychain/root services не трогались.
+- [ ] Новый найденный integration gate: pinned x0.8.1
+  config/parsing/resolver/parse.go приPlugin.TLS создаёт только ServerName и
+  InsecureSkipVerify=!Secure; CAFile изTLSConfig НЕ загружается. Поэтому простое
+  secure:true+caFile с ephemeral worker CA не работает. Нельзя обходить это
+  secure:false или добавлять CA в системный Keychain. Нужна отдельная audited
+  candidate source correction + fresh binary pins и genuine GOST→TLS worker→
+  system DNS/SC four-OS canary перед подключением к production epoch/bootstrap.
+  Не переносим успешный Node surrogate proof на этот worker.
+- [ ] Root inventory/App boot reconciliation, relay/output authority, static
+  CIDR custody, WARP, current-source installer acceptance и исходный7-stage
+  scope остаются OPEN; domain runtime gate CLOSED.
+
+Новый authoritative integration result: candidate run40197947787/source44d21f5,
+macOS26Intel job121182768626 SUCCESS. Полный private log mode600
+/tmp/pp-swift-gost-121182768626.log содержит ровно по одному marker auth-refusal-
+retains-cache, actual Swift publisher ACK + independent user policy, reopened
+cache republication иowned cleanup. Это первая genuine Swift protection API→
+GOST проверка; остальные threeOS этого run ещё не приняты. TLS native resolver,
+DNS answer authority и конечная App интеграция этим результатом не закрыты.
