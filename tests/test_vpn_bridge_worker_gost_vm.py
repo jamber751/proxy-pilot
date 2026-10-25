@@ -24,6 +24,7 @@ BINARY='PROXYPILOT_VM_GOST_SIGNED_BINARY'
 spec=importlib.util.spec_from_file_location('pp_worker_signed_pin',ROOT/'app/vpn-bridge/sign_atomic_gost.py')
 signed=importlib.util.module_from_spec(spec);spec.loader.exec_module(signed)
 MARKERS=['PASS owned-gost-worker-'+mode for mode in ('initial-policy-and-live-code','normal-stop','parent-death','all-owned-cleanup')]
+CONFIG_MARKERS=['PASS owned-gost-configuration-'+mode for mode in ('initial-policy-and-live-code','normal-stop','parent-death','all-owned-cleanup')]
 
 
 def enabled():
@@ -35,7 +36,7 @@ def build_client(folder,architecture=None):
     sources=[ROOT/'app/VPNConfiguration.swift',ROOT/'app/vpn-helper/VPNDNSContinuousClock.swift',
              ROOT/'app/VPNBridgeProtection.swift',ROOT/'app/VPNBridgeProtectionAPI.swift',
              ROOT/'app/VPNBridgeWorkerProcess.swift',ROOT/'app/VPNBridgeWorkerSupervisor.swift',
-             ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'tests/vpn_bridge_worker_gost_vm.swift']
+             ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNBridgeGOSTConfiguration.swift',ROOT/'tests/vpn_bridge_worker_gost_vm.swift']
     captured={path:path.read_bytes() for path in sources};inputs=[]
     for path,data in captured.items():
         target=folder/path.name;target.write_bytes(data);inputs.append(str(target))
@@ -75,16 +76,33 @@ def run_contract(lease):
         return result.decode('ascii').strip()
     with tempfile.TemporaryDirectory(prefix='pp-owned-gost-vm-',dir=os.environ['RUNNER_TEMP']) as directory:
         folder=Path(directory);folder.chmod(0o700);client=build_client(folder)
-        for mode in ('normal','crash'):
-            epoch=folder/mode;epoch.mkdir(mode=0o700);endpoint=epoch/'api.sock'
+        for mode,production in (('normal',False),('crash',False),('normal',True),('crash',True)):
+            markers=CONFIG_MARKERS if production else MARKERS
+            epoch=folder/(('config-' if production else '')+mode);epoch.mkdir(mode=0o700);endpoint=epoch/'api.sock'
             base.require(len(os.fsencode(endpoint))<100,'configuration')
             password=secrets.token_hex(32)
             config=api.configuration(1,'127.0.0.1:1',endpoint,password)
             config['services'][0]['addr']='127.0.0.1:0'
             expected=['198.19.253.201/32','2001:db8:fff:fd::c9/128']
             config['bypasses'][1]['matchers']=expected
-            path=epoch/'gost.json';path.write_text(json.dumps(config));path.chmod(0o600)
-            lease.validate();process=subprocess.Popen([str(client),str(epoch),str(lease.path)],
+            arguments=[str(client),str(epoch),str(lease.path)]
+            if production:
+                # No resolver/resource lookup is requested by this lifecycle gate.
+                # The production recipe still has to parse its explicit secure
+                # resolver and initial policy in actual signed GOST.
+                with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as reservation:
+                    reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
+                base.require(1024<=port<=65535,'configuration')
+                api.command(['/usr/bin/openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1',
+                    '-subj','/CN=127.0.0.1','-keyout',str(epoch/'key.pem'),'-out',str(epoch/'ca.pem')],20)
+                for name in ('key.pem','ca.pem'):(epoch/name).chmod(0o600)
+                path=epoch/'recipe.json'
+                path.write_text(json.dumps({'port':port,'apiPassword':password,'resolverPassword':secrets.token_hex(32)}))
+                arguments.append('--production-configuration')
+            else:
+                path=epoch/'gost.json';path.write_text(json.dumps(config))
+            path.chmod(0o600)
+            lease.validate();process=subprocess.Popen(arguments,
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
             try:
                 ready=line(process,time.monotonic()+8).split()
@@ -114,7 +132,7 @@ def run_contract(lease):
                 process.stdin.write(b'A');process.stdin.flush()
                 base.require(line(process,time.monotonic()+4)=='AUTHENTICATED','decision')
                 if mode=='normal':
-                    print(MARKERS[0],flush=True)
+                    print(markers[0],flush=True)
                     process.stdin.write(b'S');process.stdin.flush()
                     base.require(line(process,time.monotonic()+4)=='STOPPED','decision')
                     base.require(process.wait(timeout=4)==0,'cleanup')
@@ -132,7 +150,7 @@ def run_contract(lease):
                     except OSError:pass
                     else:raise base.Refused('cleanup')
                 lease.validate()
-                print(MARKERS[1 if mode=='normal' else 2],flush=True)
+                print(markers[1 if mode=='normal' else 2],flush=True)
             finally:
                 # Close the owner's capability, never signal a remembered GOST PID.
                 if process.stdin is not None:process.stdin.close()
@@ -147,6 +165,7 @@ def run_contract(lease):
                             print(row,flush=True)
                     if process.returncode==0:raise base.Refused('decision')
     print(MARKERS[3],flush=True)
+    print(CONFIG_MARKERS[3],flush=True)
 
 
 class PureTests(unittest.TestCase):
@@ -161,6 +180,7 @@ class PureTests(unittest.TestCase):
         self.assertEqual(signed.SIGNED_BYTES,70633296)
         self.assertEqual(signed.SIGNED_SHA256,'28666449b54ac0e63c70073bb75844fca6471488b745240dbe401ec2cfa405e7')
         self.assertEqual(len(MARKERS),4)
+        self.assertEqual(len(CONFIG_MARKERS),4)
 
 @unittest.skipUnless(sys.platform=='darwin' and os.getuid()==os.geteuid()>=500,'ordinary macOS compiler required')
 class CompileOnlyTests(unittest.TestCase):
@@ -170,9 +190,10 @@ class CompileOnlyTests(unittest.TestCase):
             for architecture in ('arm64','x86_64'):
                 binary=build_client(folder,architecture)
                 if architecture==platform.machine():
-                    result=subprocess.run([str(binary),'/must-not-open','/must-not-open'],env={},capture_output=True,timeout=5)
-                    self.assertEqual(result.returncode,77)
-                    self.assertEqual(result.stdout,b'');self.assertEqual(result.stderr,b'')
+                    for extra in ([],['--production-configuration']):
+                        result=subprocess.run([str(binary),'/must-not-open','/must-not-open',*extra],env={},capture_output=True,timeout=5)
+                        self.assertEqual(result.returncode,77)
+                        self.assertEqual(result.stdout,b'');self.assertEqual(result.stderr,b'')
 
 if __name__=='__main__':
     if sys.argv[1:]==['--acceptance']:

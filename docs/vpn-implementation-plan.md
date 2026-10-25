@@ -8865,7 +8865,8 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   filesystem errno; ни raw stderr, ниpaths/bytes/credentials не печатаются.
 - [x] Inert signer guards иcurrent owned-worker/CLI compile suites24 PASS14.642s,
   без skips: /tmp/pp-owned-gost-pagesize-final.log. Наhost GOST не исполнялся.
-- [ ] Нужен новый4OS signed transform result иactual lifecycle gate. Это исправляет
+- [x] Новый4OS signed transform иactual lifecycle gate подтверждены на5b1934f,
+  run40235996579; полные логи и граница результата приведены в1.5if. Это исправляет
   воспроизведённую signature-format нестабильность, но не объявляет macOS14
   runtime илиполную поддержкуmacOS12 закрытыми. Stock assets/normal CLI unchanged.
 
@@ -8904,10 +8905,61 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   canonical signing. Все прежниеactual traffic/Swift publisher/native TLS/SC
   steps сохранены. Workflow/source filters updated; новых matrix jobs нет.
   Closed diagnostic category/stage сохраняются безraw stderr илиcredentials.
-- [ ] Actual real-GOST supervisor gate ещё НЕ выполнен; нужен current CI result.
-  Ни actual positive live Go-code auth, ни real Go parent-death не объявляются
-  подтверждёнными поC fake. Current App normal bridge entry по-прежнему старый:
+- [x] Actual real-GOST supervisor gate выполнен на5b1934f на4OS, полные логи
+  проверены в1.5if: positive live Go-code auth иreal Go parent-death подтверждены
+  настоящим signed GOST, не C fake.
+- [ ] Current App normal bridge entry по-прежнему старый:
   closed typed config/factory, root boot callback wiring иdomain/answer authority
   ещёOPEN. Full frontend proof1.5ic предшествуетnew identity extension; здесь
   проверены component/VM CLI graphs обеих arch, не новый installed bundle.
   Изначальные7 stages, macOS12 runtime/WARP ифинальная single host install OPEN.
+
+### Продолжение 1.5if — closed GOST configuration and verified owned-worker VM results
+
+- [x] `VPNBridgeGOSTConfiguration` собирает закрытую production JSON recipe для
+  direct/HTTP/SOCKS5. Один auto HTTP/SOCKS5 listener остаётся на `127.0.0.1:3129`;
+  адрес существующих клиентов не меняется. Upstream принимает отдельные host/port,
+  включая single-label office host, FQDN и remote IPv6. URL/userinfo, loopback,
+  control characters и неоднозначные старые numeric spellings отклоняются.
+- [x] Начальная numeric protection берётся из валидированного полного snapshot;
+  имя policy общее с production API. Пользовательский b0 остаётся отдельным,
+  hop задаёт оба bypass references. Native resolver r0 явно указан у service,
+  hop и node: нет списка public/default DNS. HTTPS plugin требует secure TLS,
+  fixed `127.0.0.1` serverName, epoch-local ca.pem и отдельный 64hex secret.
+  Unix API использует другой 64hex secret и epoch-local api.sock.
+- [x] Recipe не выдаёт JSON наружу: материализуется в 600 regular FD, unlink
+  выполняется ДО записи любых secret bytes. Проверяются owner-private 700 directory
+  FD и его named inode, nlink0, CLOEXEC, общий deadline/configuration checker,
+  bounded writes и повторная directory check. FD владеет отдельный lifetime object;
+  description/debug redacted. Main-process umask не меняется.
+- [x] 59 local cases PASS 9.634s, без skips:
+  `/tmp/pp-bridge-configuration-regression.log`. Включают 9 новых cases: три route
+  variations, direct, invalid inputs, 6000 prefixes, expiry/cancellation,
+  wrong/changed directory и закрытие anonymous FD. Существующие 22 cache и 28 API
+  checks также успешны. New fixture компилируется для обеих архитектур.
+- [x] 5b1934f candidate run40235996579 завершён success на 4 OS: macos14
+  job121297582831, macos15Intel121297582989, macos26ARM121297583014,
+  macos26Intel121297582973. В полных private mode600 logs каждый из 4 обязательных
+  owned-gost-worker markers встречается один раз: initial-policy-and-live-code,
+  normal-stop, parent-death, all-owned-cleanup. Intel log:
+  `/tmp/pp-owned-gost-vm-intel-121297582973.log`; остальные:
+  `/tmp/pp-owned-gost-vm-<job>.log`. Это доказывает canonical4096 signing и реальный
+  owned process lifecycle; не является полной VPN/domain приёмкой.
+- [x] VM gate расширен двумя отдельными production-recipe normal/crash сценариями,
+  сохраняя прежние 4 markers и все actual traffic/TLS/SC steps. Дополнительные
+  owned-gost-configuration markers проверяют парсинг новой recipe настоящим GOST,
+  начальную policy, native live-code authentication и оба cleanup сценария.
+  В этом gate резолвер/ресурсы не вызываются: private CA проверяется парсером,
+  resolver runtime/answer authority этим не доказываются. Новый CLI guard
+  отклоняет оба variant на host ДО live операций. Guard/packaging 9 PASS 8.645s:
+  `/tmp/pp-bridge-config-packaging-guards.log`.
+- [ ] Новый production-recipe actual VM result ещё нужен. Normal App entry не
+  переключён: нужны owned native resolver factory, root boot activation wiring,
+  ongoing root/bridge ACK и domain answer authority. Новая recipe — конфигурация,
+  не разрешение стартовать listener. Исходные 7 этапов остаются полным объёмом работы.
+- [x] Current-source Universal frontend собран из неизменяемого снимка исходников;
+  обе архитектуры и deep strict signature проверены. Proof manifest:
+  `/tmp/pp-config-frontend-d4mdcwk8/verification.json`, build log:
+  `/tmp/pp-config-frontend-build.log`. Scope — build/sign, без запуска App/GOST,
+  установки или изменения сети. Это покрывает новую recipe и live-code identity
+  extension; macOS 12 runtime и установленный комплект этим не проверены.

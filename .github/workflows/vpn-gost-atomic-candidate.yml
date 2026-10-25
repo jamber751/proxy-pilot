@@ -19,6 +19,7 @@ on:
       - 'tests/vpn_bridge_api_native_worker.swift'
       - 'app/VPNBridgeProtection.swift'
       - 'app/VPNBridgeProtectionAPI.swift'
+      - 'app/VPNBridgeGOSTConfiguration.swift'
       - 'app/VPNBridgeWorker*.swift'
       - 'tests/test_vpn_bridge_worker_gost_vm.py'
       - 'tests/vpn_bridge_worker_gost_vm.swift'
