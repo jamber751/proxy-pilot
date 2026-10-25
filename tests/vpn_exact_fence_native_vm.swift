@@ -32,6 +32,22 @@ private final class ObservedTransport: VPNRouteSocketTransport {
         return data
     }
 }
+private enum NativeStore {
+    static var value: VPNExactFenceStore?
+    static func get() throws -> VPNExactFenceStore {
+        if let value { return value }
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["PROXYPILOT_VM_NATIVE_FENCE_DIRECTORY"], let root = env["RUNNER_TEMP"],
+              path.hasPrefix(root+"/"), URL(fileURLWithPath:path).standardizedFileURL.path == path else {
+            throw VPNExactFenceStoreError.unsafeStorage
+        }
+        let fd = open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
+        guard fd >= 0 else { throw VPNExactFenceStoreError.unsafeStorage }
+        defer { close(fd) }
+        let store = try VPNExactFenceStore(trustedDirectoryDescriptor:fd)
+        value = store; return store
+    }
+}
 @_cdecl("pp_exact_fence_control")
 func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<UInt8>?) -> Int32 {
     let env = ProcessInfo.processInfo.environment
@@ -47,11 +63,20 @@ func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<
         // Never accept an arbitrary root caller's destination in this VM hook.
         guard prefix.canonical == (family == 4 ? "198.19.253.201" : "2001:db8:fff:fd::c9") else { return 77 }
         let identity = try VPNExactRouteFenceIdentity(address:prefix,loopbackIndex:if_nametoindex("lo0"))
+        let store = try NativeStore.get()
         let transport = try ObservedTransport(); observer = transport
         let socket = VPNDarwinRouteSocket(transport:transport)
+        let transaction = VPNExactFenceTransaction(store:store,kernel:socket)
         let deadline = DispatchTime.now() + 2
-        if action == RTM_ADD { try socket.installExactFence(identity,deadline:deadline) }
-        else { try socket.deleteExactFence(identity,deadline:deadline) }
+        if action == RTM_ADD {
+            let claim = VPNExactFenceClaim(resourceID:UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,profileSHA256:String(repeating:"a",count:64),generation:1,revision:1)
+            let entry = try transaction.ensure(identity,claim:claim,deadline:deadline,checkCurrent:{})
+            guard entry.phase == .applied, try store.load(prefix) == entry else { throw VPNExactFenceStoreError.invalidState }
+        } else {
+            guard let entry = try store.load(prefix) else { throw VPNExactFenceStoreError.invalidState }
+            let retired = try transaction.retire(entry,deadline:deadline,checkCurrent:{})
+            guard retired.phase == .retired, try store.load(prefix) == retired else { throw VPNExactFenceStoreError.invalidState }
+        }
         print("PASS native-exact-fence-"+(action == RTM_ADD ? "add" : "delete")+"-"+String(family)); fflush(stdout)
         return 0
     } catch {

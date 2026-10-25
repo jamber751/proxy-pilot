@@ -7771,3 +7771,24 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   ordinary OS resolver/GOST production transport и DNS answer authority ещё
   требуют интеграции. Нет публичного IPC или удаления fences по обычному Stop;
   domain gate остаётся закрытым. Все7 этапов и final installed/WARP UX сохраняются.
+
+### Продолжение 1.5hg — native integration persistent custody + transport
+
+- [x] Core store/transaction отдельно committed9ed1f7c. Native VM bridge теперь
+  вызывает production ensure/retire с реальным persistent store, вместо прямого
+  low-level ADD/DELETE. Callback проверяет applied/retired checkpoint по повторному
+  чтению. Namespace одна для двух последовательных native процессов; оба порядка
+  fence/HOST и обе family, UDP/TCP/SIGKILL/cleanup остаются обязательными.
+- [x] Parent проверяет2 retired records mode600/root/nlink1, profile digest и
+  разные installation IDs после повторной установки, затем выдаёт отдельный
+  durable-two-processes marker. Actual root namespace больше НЕ удаляется
+  TemporaryDirectory на ошибке или успехе: custody records сохраняются до
+  уничтожения disposable VM. Timeout убивает только собственную process group.
+- [x]22store methods +1native Universal compile/pure/ordinary-denial PASS16.808s,
+  без skips, лог /tmp/pp-exact-fence-durable-references-parent.log. Current component
+  обе arch compiled с real Store + native bridge; default host не выполнял
+  native route, interface, DNS или Keychain API. Два workflow YAML проверены.
+- [ ] Actual persistent store/native run требуется после push. Прежние6cab18-marker
+  proofs относятся только к low-level transport, не к этой transaction/FS связке.
+  Настоящие crash/reopen applied-state/recovery, boot restore-all, pair-aware
+  active routes, relay/answer authority и full7-stage release scope ещё OPEN.

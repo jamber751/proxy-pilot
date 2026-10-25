@@ -1,7 +1,8 @@
 """Actual production Swift fence boundary in the owned UDP/TCP death VM fixture.
 Default compiles both architectures, runs pure checks and ordinary-user denial.
 No host root/socket/SC/network/Keychain APIs. Actual mode is fresh-root-GHA only.
-No durable journal or production DNS integration proof is claimed here.
+Durable fences are retained until disposable VM destruction, including failure.
+No production DNS integration proof is claimed here.
 """
 from pathlib import Path
 import hashlib
@@ -60,16 +61,46 @@ class PureTests(unittest.TestCase):
 def acceptance():
     if not (sys.platform=='darwin' and os.getuid()==os.geteuid()==0 and os.environ.get('GITHUB_ACTIONS')=='true'
             and all(os.environ.get(flag)=='1' for flag in (FLAG,packets.FLAG,packets.SUPPORT_FLAG))): raise SystemExit(77)
-    with tempfile.TemporaryDirectory(prefix='pp-native-fence-vm-',dir=os.environ['RUNNER_TEMP']) as folder:
-        binary = compile_probe(folder)
-        for order in (0,1):
-            run_probe(binary,order)
-            print('PASS native-exact-fence-order-'+('after-active' if order else 'before-active'),flush=True)
+    # Never recursively remove a namespace containing kernel-route custody.
+    folder = Path(tempfile.mkdtemp(prefix='pp-native-fence-vm-',dir=os.environ['RUNNER_TEMP']))
+    binary = compile_probe(folder)
+    journal = Path(folder)/'persistent-fences'; journal.mkdir(mode=0o700)
+    previous = None
+    for order in (0,1):
+        run_probe(binary,order,journal)
+        identities = retired_ids(journal)
+        if previous is not None and not identities.isdisjoint(previous): raise RuntimeError('reusedRetiredInstallation')
+        previous = identities
+        print('PASS native-exact-fence-order-'+('after-active' if order else 'before-active'),flush=True)
+    print('PASS native-exact-fence-durable-two-processes',flush=True)
 
 
-def run_probe(binary,order):
+def retired_ids(journal):
+    import json
+    import stat
+    files = sorted(journal.glob('fence-v1-*.json'))
+    if len(files) != 2: raise RuntimeError('durableEntryCount')
+    ids = set()
+    for path in files:
+        fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not (stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600): raise RuntimeError('durableEntryIdentity')
+            data = os.read(fd,256*1024+1)
+            if len(data)>256*1024: raise RuntimeError('durableEntryCapacity')
+            row = json.loads(data)
+            if row['schemaVersion'] != 1 or row['phase'] != 'retired' or len(row['claims']) != 1 or row['claims'][0]['profileSHA256'] != 'a'*64: raise RuntimeError('durableEntryState')
+            ids.add(row['installationID'])
+        finally: os.close(fd)
+    if len(ids) != 2: raise RuntimeError('durableInstallationIdentity')
+    return ids
+
+
+
+def run_probe(binary,order,journal):
     process = subprocess.Popen([str(binary)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True,
-        env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','GITHUB_ACTIONS':'true',FLAG:'1',packets.FLAG:'1',packets.SUPPORT_FLAG:'1','PROXYPILOT_VM_NATIVE_FENCE_AFTER_ACTIVE':str(order)})
+        env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','GITHUB_ACTIONS':'true',FLAG:'1',packets.FLAG:'1',packets.SUPPORT_FLAG:'1','PROXYPILOT_VM_NATIVE_FENCE_AFTER_ACTIVE':str(order),
+             'RUNNER_TEMP':os.environ['RUNNER_TEMP'],'PROXYPILOT_VM_NATIVE_FENCE_DIRECTORY':str(journal)})
     try: out,err = process.communicate(timeout=60)
     except subprocess.TimeoutExpired:
         os.killpg(process.pid,signal.SIGKILL); process.communicate(timeout=5)

@@ -12,6 +12,9 @@ on:
       - 'app/vpn-helper/VPNTunnelInterfaceResolver.swift'
       - 'app/vpn-helper/VPNRoute*.swift'
       - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
+      - 'app/vpn-helper/VPNExactFence*.swift'
+      - 'tests/test_vpn_exact_fence_store.py'
+      - 'tests/vpn_exact_fence_store_checks.swift'
       - 'tests/test_vpn_exact_fence_adapter.py'
       - 'tests/vpn_exact_fence_adapter_checks.swift'
       - 'tests/test_vpn_exact_fence_native_vm.py'
@@ -39,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Both architectures compile; ordinary host refuses all live calls
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_fence_adapter test_vpn_exact_fence_native_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_fence_store test_vpn_exact_fence_adapter test_vpn_exact_fence_native_vm -v
       - name: Actual production fence plus UDP/TCP packets in disposable root VM only
         run: |
           sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_NATIVE_EXACT_FENCE=1 \
