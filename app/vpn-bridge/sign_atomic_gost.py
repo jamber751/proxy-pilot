@@ -27,7 +27,10 @@ def identity(info):
 
 def run(arguments):
     result=subprocess.run(arguments,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=60)
-    if result.returncode:raise ValueError('signingRefused')
+    if result.returncode:
+        stage='verify' if '--verify' in arguments else 'inspect' if '--display' in arguments else 'sign'
+        print(json.dumps({'event':'signingToolRefused','stage':stage,'exit':result.returncode}),file=sys.stderr)
+        raise ValueError('signingRefused')
     return result
 
 
@@ -80,7 +83,11 @@ def prepare(source,destination):
                  '--timestamp=none','--digest-algorithm=sha256',str(target)])
             run(['/usr/bin/codesign','--verify','--strict','--all-architectures',str(target)])
             signed=target.read_bytes();sha=hashlib.sha256(signed).hexdigest()
-            if len(signed)!=SIGNED_BYTES or sha!=SIGNED_SHA256:raise ValueError('signedPinMismatch')
+            if len(signed)!=SIGNED_BYTES or sha!=SIGNED_SHA256:
+                # Public artifact metadata only: never executable bytes, paths,
+                # credentials or raw tool output. The fixed pin still rejects it.
+                print(json.dumps({'event':'signedPinMismatch','bytes':len(signed),'sha256':sha}),file=sys.stderr)
+                raise ValueError('signedPinMismatch')
             hashes={}
             for arch in ('arm64','x86_64'):
                 display=run(['/usr/bin/codesign','--display','--verbose=4','--arch',arch,str(target)])
@@ -114,5 +121,10 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('source');parser.add_argument('destination')
     arguments=parser.parse_args();os.umask(0o077)
     try:result=prepare(arguments.source,arguments.destination)
-    except Exception:raise SystemExit('Signed bridge candidate preparation refused')
+    except Exception as error:
+        known={'ordinaryMacOSBuilderRequired','absolutePathsRequired','sourceRefused','sourceChanged',
+               'destinationRefused','writeRefused','signingRefused','signedPinMismatch','codeIdentityRefused',
+               'signedFileRefused','recipeChanged'}
+        reason=str(error) if isinstance(error,ValueError) and str(error) in known else 'other'
+        raise SystemExit('Signed bridge candidate preparation refused: '+reason)
     print(json.dumps(result))

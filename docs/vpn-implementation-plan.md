@@ -8763,3 +8763,28 @@ runtime, WARP иодна финальная host-установка/приёмк
 - [ ] Signed transform ещё должен пройти new4OS CI. Actual owned supervisor,
   parent-death cleanup, factory initial policy before listen иApp entry wiring
   остаются OPEN. Sign-only result не выдаётся за runtime/lifecycle proof.
+
+
+### Продолжение 1.5ib — signing refusal diagnostics before worker activation
+
+- [x] New candidate2 signing gate f613840/run40231277670: macOS26ARM
+  121283335254 и26Intel121283335274 SUCCESS, втом числе signed transform.
+  macOS14ARM121283335036 завершился failure именно вnew sign/verify step;
+  unsigned Universal bytes/SHA совпали сfixed source pin. Generic refusal log
+  пока НЕ различает tool failure от signed-byte mismatch, поэтому причина ещё
+  не установлена.15Intel121283335318 был live, не отменялся/не перезапускался.
+- [x] Sign tool теперь выдаёт только closed refusal reason, stage/exit для
+  неуспешного codesign иpublic artifact size/SHA при pin mismatch. Raw stderr,
+  paths, executable bytes иsecret payloads не печатаются; fixed checks не
+  ослаблены, alternate images понаблюдению автоматически не принимаются.
+ 5 inert guard cases PASS0.047s без skips (точная длительность влоге):
+  /tmp/pp-signed-candidate-diagnostics.log. Нужен новый macOS14 log.
+- [ ] Не считать signing portability илиactual worker activation закрытыми.
+  Production assets/selected bridge unchanged; installer/release не выпускался.
+
+Отдельный закрытый regression: root/bridge bootstrap4bf8172 ownership Intel
+contracts job121280118233 SUCCESS. Полный mode600 log
+/tmp/pp-bootstrap-intel-121280118233.log:15 selected authenticated bootstrap/
+inventory cases PASS66.945s, без skips. Это подтверждает universal fixture pin
+fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes не переносятся
+нановый worker source автоматически.
