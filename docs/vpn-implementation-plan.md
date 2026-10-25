@@ -41,7 +41,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; новый macOS12-комплект f715bc5 прошёл8/8 на ARM | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
+| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый040d336 также8/8 на ARM | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -7506,3 +7506,32 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   queued; descendant bebccae40182349358 с теми же6suite names проверен до cancel.
   Старый run terminal CANCELLED. Live/partial ownership5b и System сохранены.
   UDP/TCP40182604589 и shared-codec viability40182349373 всё ещё queued.
+
+
+### Продолжение 1.5gz — первый реальный GOST → macOS DNS результат
+
+- [x] Snapshot ae6a6d8 pushed ONLY acceptance branch. New OS resolver run
+ 40183440175:26 ARM121139131324 terminal SUCCESS.16 pure/native compile checks
+  PASS10.922s, без skips, затем все4 actual GOST HTTP/SOCKS A/AAAA in/out-CIDR
+  cases, exact aggregate marker, owner-session-cleanup и actual-A-AAAA-UDP-TCP.
+  Полный лог /tmp/pp-native-final-121139131324.log. Значит unchanged pinned GOST
+  действительно работает через authenticated Unix gRPC → OS getaddrinfo →
+  temporary supplemental SC scope/собственный DNS responder. Никакого proxy
+  target onward dial: in-CIDR own loopback echo и out-CIDR own fake CONNECT only.
+- [ ] Это только26 ARM, НЕ production Swift adapter, corporate DNS over utun,
+  route-before-answer custody, WARP или macOS12 runtime. Остальные3 jobs:
+ 121139131007 (15 Intel),121139131235 (26 Intel),121139131357 (14 ARM) ещё queued.
+  Старый fake contract после refactor40183440105 имеет4 jobs121139130708/894/
+  914/936 (full:121139130708,121139130894,121139130914,121139130936), ещё queued.
+- [x] f715bc5 System40176890683 теперь SUCCESS обе arch: Intel121119391716 также
+  завершил все8 actual cases Ran1/OK без skips;160 fast checks включают1optional
+  real-App skip,6root volume/owner PASS. Лог /tmp/pp-native-final-121119391716.log.
+  Более поздний040 ARM SUCCESS уже подтверждён в1.5gy;040 Intel и74 current
+  System ещё live/queued. Финальный комплект этими историческими snapshot не
+  заменяется, old host137 power-on failure по-прежнему не объяснён.
+- [x] Ownership replacement40183440116 verified all6 jobs121139130890,
+ 121139131090/1134/1136/1175/1247 (full:121139131090,121139131134,121139131136,
+ 121139131175,121139131247), suite names совпадают. Old bebccae40182349358
+  rechecked each individual job:6/6 wholly queued + ancestry/source confirmed
+  BEFORE cancel; terminal CANCELLED проверен. Live/partial5b и System не трогались.
+  Actual packet/death40182604589 и shared-codec40182349373 пока queued.
