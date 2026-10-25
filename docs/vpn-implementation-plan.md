@@ -6755,8 +6755,10 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   конкретного client question name. Ответ должен совпадать именно с запрошенным
   поддоменом, а не с любым именем внутри разрешённого suffix. Не подменять resource
   фиктивным VPNResource ради прохождения существующего exact-host decoder.
-- [ ] Перекрывающиеся domain resources: определить deterministic selection и
-  сохранность original UUID; не расширять IP/network prefixes или global scope.
+- [x] Перекрывающиеся domain resources: deterministic most-specific DNS-label
+  selection и original UUID реализованы fa23e2c; coalescing только OS scopes,
+  без расширения IP/network prefixes/global scope.312 parent и389/arch scoped
+  checks пройдены; это модель выбора, не готовый production DNS backend.
 - [ ] Backend: persistent per-domain resolver к owned relay вместо temporary
   session как единственной crash защиты. Подтвердить UDP/TCP/IPv6, остановку relay,
   смену сети/WARP и восстановление, прежде чем публиковать resolver state.
@@ -7535,3 +7537,36 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   rechecked each individual job:6/6 wholly queued + ancestry/source confirmed
   BEFORE cancel; terminal CANCELLED проверен. Live/partial5b и System не трогались.
   Actual packet/death40182604589 и shared-codec40182349373 пока queued.
+
+
+### Продолжение 1.5ha — actual UDP/TCP owner-death proof и следующий native adapter
+
+- [x] d486f88 packet/death40182604589 macOS26 ARM121136636554 terminal SUCCESS:
+  обе IPv4/IPv6 UDP active/cached/fresh/death/positive-neighbor и TCP established
+  bidirectional exchange/cached/fresh/death markers.2 ordinary compile/pure tests
+  PASS2.713s без skips; затем actual root VM probe прошёл все4 exact markers.
+  Полный лог /tmp/pp-native-final-121136636554.log. Это unbound sockets + actual
+  SIGKILL последнего control-FD owner, исчезновение utun, unscoped blackhole
+  selection, bounded2s own-escape observation и cleanup. Не general no-leak,
+  не production journal/custody/boot/WARP. Три другие OS rows ещё queued.
+- [x] Shared-codec viability bebccae40182349373 дополнительно SUCCESS14 ARM
+ 121135853216 и26 Intel121135853068: обе family markers; логи
+  /tmp/pp-native-final-<job>.log.26 ARM/15 Intel этого snapshot ещё queued.
+  Все4 OS прежнего388 snapshot были green до refactor; не подменять ими новые.
+- [x] ae6a6d8 OS resolver40183440175 теперь также SUCCESS14 ARM121139131357:
+ 16 pure checks11.982s, без skips,4actual GOST HTTP/SOCKS cases+3aggregate/cleanup/
+  DNS witness markers. Лог /tmp/pp-native-final-121139131357.log. Теперь это два
+  actual ARM OS14/26; оба Intel rows по-прежнему queued.
+- [x] Primary domain/subdomain checklist выше reconciled: most-specific resource
+  selection/coalescing уже реализованы fa23e2c и имеют явную проверку originalID;
+  checkbox исправлен, historical exact-host results не переименовывались.
+- [ ] Следующий production increment должен добавить отдельную full-mask fence
+  identity/lookup/receipt. Текущий VPNDarwinRouteCodec.encode() отвергает /32,/128
+  без RTF_HOST, а VPNRouteLookupKey различает prefix/scope, но не HOST/nil-mask
+  против NET/full-mask. Нельзя ослабить общий validate() или переинтерпретировать
+  старые canonical journal139. Нужен явный pair-aware adapter с точными own
+  identities обоих rules, durable add-intent/unknown result, повторным live GET
+  до answer release и отдельным сохранением known-IP deny obligations.
+- [ ] Persistent DNS relay/OS record, ordinary GOST resolver adapter, TTL/refcounts,
+  resource/generation revocation, crash/reboot/foreign/WARP и все7 этапов/final
+  installed package остаются OPEN. Native canaries не активируют domain runtime.
