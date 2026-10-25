@@ -8839,3 +8839,32 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   Production DNS/answer authority, static CIDR, WARP/macOS12 runtime ивесь
   первоначальный7-stage acceptance остаются OPEN. Host network/root services и
   установленная137 не менялись; публичный release не выполнялся.
+
+
+### Продолжение 1.5id — canonical code-signing page granularity
+
+- [x] Диагностика64b821e показала конкретный refusal на15Intel121289487371:
+  strict-signing output70633296/SHA28666449b54ac0e63c70073bb75844fca6471488b745240dbe401ec2cfa405e7,
+  тогда как прежний local26 pin был70437264/d8951461…. Полный mode600 log:
+  /tmp/pp-gost-signing-intel-121289487371.log. Unsigned candidate совпадает.
+- [x] Причина воспроизведена локально: old local arm64 CodeDirectory использовал
+  page16384, x86_644096; явный `codesign --pagesize 4096` дал ТОЧНО теже bytes/SHA,
+  что наблюдались в15Intel. Это не принятие произвольного unknown image поCI log:
+  fixed unsigned source проверен, independent local sign/strict verify reproduced
+  exact artifact. Опция documented вlocal codesign(1). MacOS14 ещё требует new gate.
+- [x] Теперь tool явно задаёт4096 для обеих arch, runtime12.0.0, SHA256/no timestamp.
+  Два independent final paths /tmp/pp-gost-pagesize-final-a-20261026 и-b-20261026
+  дали byte-identical binary+proof/current recipe. Signed Universal70633296,
+  SHA28666449b54ac0e63c70073bb75844fca6471488b745240dbe401ec2cfa405e7;
+  arm64 CDHashf853a72a626e8b59dd768dc3b011b3d617626602,
+  x86_64 CDHasha29dc60b0d6ffb7de83e24cbaa91528c6aef7fb0.
+  Output manifest явно фиксирует pageSize4096/runtimeVersion12.0.0.
+- [x] Production descriptor selector pin обновлён наединственный canonical image;
+  older16KiB image не принимается запасным вариантом. Diagnostics дополнительно
+  различают verified signature/pins/file sync, public both-arch CDHashes иnumeric
+  filesystem errno; ни raw stderr, ниpaths/bytes/credentials не печатаются.
+- [x] Inert signer guards иcurrent owned-worker/CLI compile suites24 PASS14.642s,
+  без skips: /tmp/pp-owned-gost-pagesize-final.log. Наhost GOST не исполнялся.
+- [ ] Нужен новый4OS signed transform result иactual lifecycle gate. Это исправляет
+  воспроизведённую signature-format нестабильность, но не объявляет macOS14
+  runtime илиполную поддержкуmacOS12 закрытыми. Stock assets/normal CLI unchanged.

@@ -56,7 +56,7 @@ class SignedCandidateGuards(unittest.TestCase):
 
     def test_complete_fixed_signed_and_unsigned_pins(self):
         self.assertEqual(signer.UNSIGNED_BYTES,70287474)
-        self.assertEqual(signer.SIGNED_BYTES,70437264)
+        self.assertEqual(signer.SIGNED_BYTES,70633296)
         self.assertRegex(signer.UNSIGNED_SHA256,r'^[a-f0-9]{64}$')
         self.assertRegex(signer.SIGNED_SHA256,r'^[a-f0-9]{64}$')
         self.assertEqual(set(signer.SIGNED_CDHASH),{'arm64','x86_64'})

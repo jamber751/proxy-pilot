@@ -14,9 +14,9 @@ import sys
 UNSIGNED_BYTES=70287474
 UNSIGNED_SHA256='bfa76e74d54de90e7facd54b9ea86555cf407c004db823af10e3834f088c3992'
 IDENTIFIER='kz.documentolog.proxypilot.bridge.gost'
-SIGNED_BYTES=70437264
-SIGNED_SHA256='d8951461a89fc6a4685d9440095be8b17aabda9d9ed7d4c4b237c056692b0e02'
-SIGNED_CDHASH={'arm64':'055936ed28ac6b392602daa670a98f3b09ec8117',
+SIGNED_BYTES=70633296
+SIGNED_SHA256='28666449b54ac0e63c70073bb75844fca6471488b745240dbe401ec2cfa405e7'
+SIGNED_CDHASH={'arm64':'f853a72a626e8b59dd768dc3b011b3d617626602',
                'x86_64':'a29dc60b0d6ffb7de83e24cbaa91528c6aef7fb0'}
 
 
@@ -80,21 +80,24 @@ def prepare(source,destination):
             if identity(os.fstat(fd))!=identity(before) or identity(os.lstat(source))!=identity(before):raise ValueError('sourceChanged')
             run(['/usr/bin/codesign','--force','--sign','-','--identifier',IDENTIFIER,
                  '--options','runtime,hard,kill','--runtime-version','12.0.0',
-                 '--timestamp=none','--digest-algorithm=sha256',str(target)])
+                 '--timestamp=none','--digest-algorithm=sha256','--pagesize','4096',str(target)])
             run(['/usr/bin/codesign','--verify','--strict','--all-architectures',str(target)])
+            print(json.dumps({'event':'signingVerified'}),file=sys.stderr)
             signed=target.read_bytes();sha=hashlib.sha256(signed).hexdigest()
-            if len(signed)!=SIGNED_BYTES or sha!=SIGNED_SHA256:
-                # Public artifact metadata only: never executable bytes, paths,
-                # credentials or raw tool output. The fixed pin still rejects it.
-                print(json.dumps({'event':'signedPinMismatch','bytes':len(signed),'sha256':sha}),file=sys.stderr)
-                raise ValueError('signedPinMismatch')
             hashes={}
             for arch in ('arm64','x86_64'):
                 display=run(['/usr/bin/codesign','--display','--verbose=4','--arch',arch,str(target)])
                 values=re.findall(rb'^CDHash=([a-f0-9]{40})$',display.stderr,re.M)
                 if len(values)!=1:raise ValueError('codeIdentityRefused')
                 hashes[arch]=values[0].decode()
-                if hashes[arch]!=SIGNED_CDHASH[arch]:raise ValueError('codeIdentityRefused')
+            if len(signed)!=SIGNED_BYTES or sha!=SIGNED_SHA256:
+                # Public artifact metadata only; fixed image acceptance unchanged.
+                print(json.dumps({'event':'signedPinMismatch','bytes':len(signed),'sha256':sha,'cdhash':hashes}),file=sys.stderr)
+                raise ValueError('signedPinMismatch')
+            if hashes!=SIGNED_CDHASH:
+                print(json.dumps({'event':'signedCodeIdentityMismatch','cdhash':hashes}),file=sys.stderr)
+                raise ValueError('codeIdentityRefused')
+            print(json.dumps({'event':'signedPinsVerified'}),file=sys.stderr)
             final=os.open('gost',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=directory)
             try:
                 info=os.fstat(final)
@@ -102,11 +105,13 @@ def prepare(source,destination):
                         and info.st_size==SIGNED_BYTES and stat.S_IMODE(info.st_mode)==0o700):raise ValueError('signedFileRefused')
                 os.fsync(final)
             finally:os.close(final)
+            print(json.dumps({'event':'signedFileSynced'}),file=sys.stderr)
             if recipe!=Path(__file__).read_bytes():raise ValueError('recipeChanged')
             if identity(os.fstat(fd))!=identity(before) or identity(os.lstat(source))!=identity(before):raise ValueError('sourceChanged')
             proof={'schema':1,'unsignedSHA256':UNSIGNED_SHA256,'identifier':IDENTIFIER,
                    'bytes':len(signed),'sha256':sha,'cdhash':hashes,
                    'recipeSHA256':hashlib.sha256(recipe).hexdigest(),
+                   'pageSize':4096,'runtimeVersion':'12.0.0',
                    'scope':'sign/verify only; no worker execution or installation'}
             record=os.open('verification.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=directory)
             with os.fdopen(record,'w') as stream:
@@ -122,6 +127,7 @@ if __name__=='__main__':
     arguments=parser.parse_args();os.umask(0o077)
     try:result=prepare(arguments.source,arguments.destination)
     except Exception as error:
+        if isinstance(error,OSError):print(json.dumps({'event':'candidateFileIORefused','errno':error.errno}),file=sys.stderr)
         known={'ordinaryMacOSBuilderRequired','absolutePathsRequired','sourceRefused','sourceChanged',
                'destinationRefused','writeRefused','signingRefused','signedPinMismatch','codeIdentityRefused',
                'signedFileRefused','recipeChanged'}
