@@ -295,6 +295,7 @@ def run_contract(lease):
         events = {'proxy': [], 'in': 0, 'out': 0, 'plugin': [], 'redirect': []}
         lock = threading.Lock()
         marker = b'OWNED-' + secrets.token_hex(12).encode('ascii') + b'\n'
+        probe = b'PROBE-' + secrets.token_hex(12).encode('ascii') + b'\n'
         host = secrets.token_hex(12) + '.invalid'
         servers, process, log = [], None, None
         started = False
@@ -302,6 +303,7 @@ def run_contract(lease):
             def target(kind):
                 def handle(server, connection):
                     with lock: events[kind] += 1
+                    require(exact(connection, len(probe)) == probe, 'request')
                     connection.sendall(marker)
                 return handle
             inside = Server('127.0.0.1', target('in')); servers.append(inside)
@@ -313,7 +315,11 @@ def run_contract(lease):
                 require(len(words) == 3 and words[0] == 'CONNECT' and words[2] == 'HTTP/1.1', 'request')
                 # Never resolve or connect to words[1], even on failure.
                 with lock: events['proxy'].append(words[1])
-                connection.sendall(b'HTTP/1.1 200 Owned\r\n\r\n' + marker)
+                # Probe only after CONNECT has completed; this contract checks
+                # routing and bidirectional client-first traffic, not banners.
+                connection.sendall(b'HTTP/1.1 200 Owned\r\n\r\n')
+                require(exact(connection, len(probe)) == probe, 'request')
+                connection.sendall(marker)
             proxy = Server('127.0.0.1', upstream); servers.append(proxy)
 
             def plugin_handler(role):
@@ -398,6 +404,7 @@ def run_contract(lease):
                         ok, rest = reply[1] == 0, b''
                     require(ok == successful, 'decision')
                     if successful:
+                        client.sendall(probe)
                         payload = rest
                         while not payload.endswith(b'\n'):
                             chunk = receive(client, 128, client_end)
