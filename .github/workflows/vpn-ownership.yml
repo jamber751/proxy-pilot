@@ -109,10 +109,16 @@ jobs:
       - name: Recovery takes lifecycle ownership before store metadata
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_recovery_service_lock_order -v
-      - name: Authenticated retained protection inventory
+      - name: Authenticated bridge bootstrap and protection inventories
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: |
           PYTHONPATH=tests python3 -m unittest \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_activation_happens_under_root_custody \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_final_refusal_retires_only_returned_runtime \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_missing_failed_malformed_or_aborted_activation \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_payload_and_wrong_ack_are_refused \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_never_renews_deadline_after_activation \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_bridge_bootstrap_wrong_signed_peer_never_enters_custody \
             test_vpn_helper_listener.VPNHelperListenerTests.test_root_inventory_authenticated_and_empty_request_only \
             test_vpn_helper_listener.VPNHelperListenerTests.test_root_inventory_absent_provider_and_failed_reads_are_not_empty_success \
             test_vpn_helper_listener.VPNHelperListenerTests.test_root_inventory_wrong_signed_peer_never_calls_provider \

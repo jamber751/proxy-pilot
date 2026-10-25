@@ -3,7 +3,7 @@
 Дата: 7 сентября 2026. База: ProxyPilot 1.5.1, commit `0518754`.
 
 Реализация начата 7 сентября после согласования макета. Текущий статус — в таблице
-«Актуальная граница на 25 октября» ниже. Следующие два абзаца описывают историческую
+«Актуальная граница на 26 октября» ниже. Следующие два абзаца описывают историческую
 приёмку 7–8 сентября, а не нынешнее состояние приложения.
 
 На 8 сентября были готовы слой конфигурации с проверкой профиля и хранением, безопасная миграция старых маршрутов и привилегированный слой: межпроцессное владение службой, launchd-адаптер с подтверждённой очисткой, аутентифицированный канал с типизированными запросами, установка и удаление службы. Пройдена системная приёмка рабочей idle-службы без движка; тот компонент был удалён. В следующем прогоне комплекта с движком подтверждены установка 4, повтор 4, обновление 4 → 5 и полное удаление 5. Тестовая root-служба и движок после того прогона были удалены. На тот момент подключение VPN и новый интерфейс не были активированы: туннель не поднимался, сетевые настройки пользователя не изменялись.
@@ -23,7 +23,7 @@
 настоящую системную установку или изменение сети. При необходимости новых прав
 или существенного решения вне согласованного плана остановиться на этой границе.
 
-### Актуальная граница на 25 октября
+### Актуальная граница на 26 октября
 
 **Системные требования согласованы владельцем: macOS 12 и новее.** Это явное
 изменение прежней границы macOS 11: фактический bundled GOST 3.2.6 уже требует macOS 12
@@ -39,25 +39,24 @@
 [○ DNS/жизненный цикл] → [○ выпуск]**.
 Это ориентир по ближайшим контрольным точкам, не процент завершения семи этапов.
 
-Диагностический комплект2dce4c5 теперь прошёл все8 настоящих системных
-сценариев на обеих архитектурах: run40196864320, jobs121179472470/121179472595.
-Полные логи проверены: каждый из8 cases выполнен, ни один из них не skipped.
-Это закрывает прежний наблюдаемый Intel отказ завершающих действий для2dce4c5.
-Более новый комплект с persistent runtime544e6d5 также прошёл8/8 наARM
-(полный job121186810255 log проверен); Intel ещё проверяется. Последние inventory-изменения этим
-результатом не покрыты; итоговая host-установка ещё не разрешена к выполнению.
+Комплект7b12b25 с root catalogue теперь прошёл8 настоящих системных сценариев
+на обеих архитектурах: run40207626091, jobs121211865616/121211865794.
+Полные mode600 logs проверены: каждый case выполнен без skips. Более ранний
+544e6d5 также8/8 на обеих arch. Новые изменения bootstrap11 ещё требуют отдельного
+current-source CI; финальная host-установка не выполнялась.
 
-Новая native граница: current544e6d5 прошёл actual packet/death/crash-reopen
-на macOS26Intel (40199287851/job121186810446), включая retained runtime startup
-и exact global HOST observation. Это первая подтверждённая architecture для
-нового persistent runtime; остальные три и current-source Installer ещё OPEN.
+Native route/fence7b12b25 run40207575620 прошёл все4OS: реальные IPv4/IPv6
+UDPcached/fresh/establishedTCP, owner death, process-group crash иruntime
+restore/reopen. Candidate2/native worker0cbddf7 run40203740315 также прошёл4/4OS,
+включая mutual TLS refusal controls иactual macOS SC A/AAAA UDP→TCP witness.
+Это отдельные необходимые gates, не production domain/backend или WARP acceptance.
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый2dce4c5 также8/8 на обеих arch | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
+| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый7b12b25 также8/8 на обеих arch | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
-| 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
+| 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session/system DNS canaries; candidate2 native worker и retained route/death recovery на4OS | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
 | 6. Интерфейс | Installed settings137;538 isolated interface checks ARM/Intel наf715bc5, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Installed-приёмка сохранения/подстановки пароля, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты; английский непубликуемый черновик notes | Полный acceptance, английские notes, публичная поставка |
@@ -8633,3 +8632,65 @@ Current544e6d5 System Intel121186810479 остаётся live на production ar
 build; ARM8/8 подтверждён в1.5hw. Latest b7315f0 gates созданы: System40206553516,
 ownership40206553546, interface40206553518, native-fence40206553551,
 DNS40206553503, bridge40206553647; initial authoritative status — queued.
+
+
+### Продолжение 1.5hy — bounded first-listen custody (26 октября)
+
+- [x] Request11 `bootstrapBridge` — один bounded authenticated conversation:
+  root выдаёт canonical offer с новым nonce иcurrent root catalogue, затем ждёт
+  ровно40-byte nonce-bound acknowledgement ивозвращает final empty OK. Обе
+  стороны сохраняют исходный deadline5s, прежние8 requests/30s conversation
+  budgets, re-authentication, unsupported для старой/nil реализации. Invalid
+  payload отвергается до provider; partial offer/final failures не вызывают
+  второй ответ или повтор unknown write. Stale/wrong ACK закрывает stream.
+- [x] Production source держит существующий retained-store mutation lock через
+  offer, App activation, recheck полного source catalogue иfinal reply. Текущий
+  listener сериализует configuration edits; kernel/static/answer writers нового
+  backend обязаны сохранить эту границу перед включением. Замена source/epoch,
+  readiness, timeout, EOF иошибки не дают успешный завершённый bootstrap.
+- [x] Typed App client декодирует offer иготовит ACK ДО создания runtime;
+  callback получает исходный deadline. Повторные requests внутри activation
+  отклоняются как busy. Любая ошибка после возврата owned runtime синхронно
+  вызывает его retire; failed partial activation обязан убирать собственные
+  children. Raw transport остаётся независимым от ApplicationSpec/route types,
+  чтобы не ломать installer/coordinator minimal source graphs.
+- [x]15 private-file/fake-kernel cases PASS9.001s:
+  /tmp/pp-bootstrap-source.log. Дополнены actual store-lock exclusion для другого
+  потока, освобождение после throw, changed/expired custody иfresh offer nonce.
+  Final signed IPC/readiness77 PASS74.839s: /tmp/pp-bootstrap-final-ipc-readiness.log;
+  includes activation-under-held-marker, post-activation change/revocation,
+  malformed/absent/failed provider, wrong peer/ACK/request payload, late activation
+  retirement без deadline renewal ипоследующий нормальный status.
+  Narrow coordinator36 PASS28.310s: /tmp/pp-bootstrap-core-activation.log;
+  full helper graph2arch/source-immutability2 PASS81.865s:
+  /tmp/pp-bootstrap-daemon-final.log. Без skips. Шесть bootstrap IPC tests
+  включены в existing ownership/contracts step; новых matrix jobs нет.
+- [ ] Это ещё НЕ actual GOST activation factory/production App entry. Callback
+  обязан сначала durable-merge root+App configured/cache protection, затем
+  выбрать signed owned epoch изапустить initial protected policy BEFORE listen.
+  Нужны actual factory, crash/parent retirement иcurrent-source VM integration.
+  Ongoing DNS answers требуют отдельного synchronous bridge ACK/answer lease;
+  request11 не выдаёт DNS/route permit иdomain gate остаётся CLOSED.
+
+CI failure found and corrected separately in e32f062: ownership40207575594
+contracts15Intel/job121211707432 дошёл до9 inventory cases, но13 subcases получили
+rejected:denied ДО provider. Причина в самом signed fixture: Python всегда
+передавал ARM helper CDHash, а fixture записывал его для ОБЕИХ arch. Исправлена
+передача/parse двух independently extracted slice pins; одно значение по-прежнему
+поддерживается остальными narrow fixtures. Production authentication не ослаблена.
+ARM contracts иостальные5 ownership jobs прошли; новый Intel result ещё требуется.
+Полный private log: /tmp/pp-ownership-inventory-121211707432.log.
+
+Native fence exact7b12b25 run40207575620, jobs121211707166/276/279/406:
+полные mode600 logs /tmp/pp-retained-native-<job>.log проверены. На каждой OS119
+fast cases иобе family/order, twice mandatory packet witnesses, add/delete/cycle,
+whole-group SIGKILL, reopened runtime иcleanup markers. Это4/4 native gate.
+Candidate2/native worker exact0cbddf7 run40203740315 теперь4/4 SUCCESS;
+все полные mode600 logs /tmp/pp-native-sc-121200159135/225/263/271.log проверены:
+HTTP/SOCKS positive/wrong-password/wrong-CA, native SC A/AAAA UDP→TCP witness
+иcleanup. Это resolver-selection/TLS proof, не connected corporate utun relay.
+System exact7b12b25 run40207626091 jobs121211865616/794:8/8 actual cases на каждой
+arch без skips, полные mode600 /tmp/pp-installer-<job>.log проверены. Более ранний
+544e6d5 Intel121186810479 также8/8 подтверждён полным логом. Новые bootstrap
+исходники этими историческими result не покрыты. Изначальные7 этапов, macOS12
+runtime, WARP иодна финальная host-установка/приёмка остаются OPEN.

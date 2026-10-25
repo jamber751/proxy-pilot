@@ -41,6 +41,17 @@ extension VPNHelperSession {
         catch { close();throw VPNHelperSessionError.invalidResponse }
     }
 
+    /// Decode before activation; calculate the nonce-bound ACK before creating
+    /// any child, so a local codec failure cannot orphan a returned runtime.
+    func bootstrapBridge<T: VPNBridgeBootstrapOwnedRuntime>(
+        activate: (VPNBridgeRootInventory, DispatchTime) throws -> T) throws -> T {
+        try bootstrapBridgeTransaction { data,deadline in
+            let offer=try VPNBridgeBootstrapOffer.decodeCanonical(data)
+            let acknowledgement=try offer.acknowledgement()
+            return (try activate(offer.inventory,deadline),acknowledgement)
+        }
+    }
+
     func tunnelStatus() throws -> (VPNHelperStatus, VPNTunnelSnapshot?) {
         let (status, body) = try request(.tunnelStatus)
         guard status == .ok else { return (status, nil) }

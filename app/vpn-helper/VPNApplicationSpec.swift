@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum VPNApplicationSpecError: Error { case invalid, tooLarge }
@@ -93,6 +94,36 @@ struct VPNBridgeRootInventory: Codable, Equatable {
         let value=try JSONDecoder().decode(Self.self,from:data)
         guard try value.encoded()==data else { throw VPNApplicationSpecError.invalid };return value
     }
+}
+
+/// One bounded first-listen conversation. The nonce binds its acknowledgement
+/// to this offer, even when the catalogue is identical to a previous boot.
+struct VPNBridgeBootstrapOffer: Codable, Equatable {
+    let nonce: UUID
+    let inventory: VPNBridgeRootInventory
+    init(inventory: VPNBridgeRootInventory) { nonce=UUID();self.inventory=inventory }
+    func encoded() throws -> Data {
+        try inventory.validate()
+        let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+        let data=try encoder.encode(self)
+        guard data.count<=VPNBridgeRootInventory.maximumBytes+256 else { throw VPNApplicationSpecError.tooLarge };return data
+    }
+    static func decodeCanonical(_ data: Data) throws -> Self {
+        guard !data.isEmpty,data.count<=VPNBridgeRootInventory.maximumBytes+256 else { throw VPNApplicationSpecError.tooLarge }
+        let value=try JSONDecoder().decode(Self.self,from:data)
+        guard try value.encoded()==data else { throw VPNApplicationSpecError.invalid };return value
+    }
+    func acknowledgement() throws -> [UInt8] {
+        Array("PPVNBR01".utf8)+Array(SHA256.hash(data:try encoded()))
+    }
+}
+
+/// Root must hold its retained journal mutation lock throughout body, including
+/// the final reply. verify checks this exact source catalogue inside that lock.
+/// This is first-listen custody, not ongoing DNS answer/route authority.
+protocol VPNBridgeBootstrapSource: AnyObject {
+    func withInventory(deadline: DispatchTime,
+                       body: (Data, () throws -> Void) throws -> Void) throws
 }
 
 /// Capabilities implemented by the currently shipped, route-only helper.

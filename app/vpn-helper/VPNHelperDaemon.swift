@@ -125,11 +125,12 @@ enum VPNHelperDaemon {
             }
             var readProtection: ((DispatchTime) throws -> Data)?
             var readBridgeInventory: ((DispatchTime) throws -> Data)?
+            var bridgeBootstrap: VPNBridgeBootstrapSource?
             if let protection {
                 readProtection = { deadline in try protection.inventory(deadline:deadline).encoded() }
                 let inventoryState = try VPNTunnelStateStore(trustedDirectoryDescriptor:directory)
                 let inventoryJournal = try VPNRouteJournal(trustedDirectoryDescriptor:directory)
-                readBridgeInventory = { deadline in
+                let readInventory: (DispatchTime) throws -> Data = { deadline in
                     try VPNBridgeRootInventoryReader.read(deadline:deadline,
                         retained:{ try protection.inventory(deadline:deadline) },
                         state:{ try inventoryState.load() },journal:{ try inventoryJournal.loadIfPresent() },
@@ -138,6 +139,8 @@ enum VPNHelperDaemon {
                             guard try selectionStamp(directory)==stamp else { throw VPNHelperDaemonError.selectionChanged }
                         }).encoded()
                 }
+                readBridgeInventory=readInventory
+                bridgeBootstrap=VPNRootBridgeBootstrapSource(runtime:protection,read:readInventory)
             }
             trace.mark(.receipt)
             if shared {
@@ -170,7 +173,8 @@ enum VPNHelperDaemon {
                     ownerUserID: selected.ownerUserID,
                     additionalReadinessPolicies: readinessPolicies,
                     readRetainedProtection:readProtection,
-                    readBridgeRootInventory:readBridgeInventory)
+                    readBridgeRootInventory:readBridgeInventory,
+                    bridgeBootstrap:bridgeBootstrap)
             } else {
                 listener = try VPNHelperListener.bind(
                     inTrustedDirectory: directory, release: selected.release,
@@ -178,7 +182,8 @@ enum VPNHelperDaemon {
                     endpointDirectory: shared ? endpoint : nil,
                     additionalReadinessPolicies: readinessPolicies,
                     readRetainedProtection:readProtection,
-                    readBridgeRootInventory:readBridgeInventory)
+                    readBridgeRootInventory:readBridgeInventory,
+                    bridgeBootstrap:bridgeBootstrap)
             }
             #else
             _ = recoveryFixtureInstaller
@@ -189,7 +194,8 @@ enum VPNHelperDaemon {
                 runtimeLease: runtime.tunnelLifecycleLease,
                 additionalReadinessPolicies: readinessPolicies,
                 readRetainedProtection:readProtection,
-                    readBridgeRootInventory:readBridgeInventory)
+                    readBridgeRootInventory:readBridgeInventory,
+                    bridgeBootstrap:bridgeBootstrap)
             #endif
             defer { listener.close() }
             func stillSelected() throws {

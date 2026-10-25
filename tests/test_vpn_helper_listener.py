@@ -232,6 +232,52 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.serve()
         self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
 
+    def test_bridge_bootstrap_activation_happens_under_root_custody(self):
+        marker=self.base/'bootstrap-custody'
+        self.seed();self.serve(extra=['bridge-bootstrap-test','success',str(marker)])
+        self.assertEqual(self.session('bootstrap=success:'+str(marker)),['bootstrap:ok retired:false'])
+        self.assertEqual(marker.read_text(),'released')
+        self.assertEqual(self.session('status'),['answer:ok sequence:10 protocol:1'])
+
+    def test_bridge_bootstrap_final_refusal_retires_only_returned_runtime(self):
+        for mode in ('changed','revoke'):
+            with self.subTest(mode=mode):
+                case=type(self)('runTest');case.setUp();case.seed();marker=case.base/'custody'
+                try:
+                    case.serve(extra=['bridge-bootstrap-test',mode,str(marker)])
+                    self.assertEqual(case.session('bootstrap=success:'+str(marker)),['bootstrap:failed retired:true'])
+                    self.assertEqual(marker.read_text(),'released')
+                finally:case.doCleanups()
+
+    def test_bridge_bootstrap_missing_failed_malformed_or_aborted_activation(self):
+        for mode,activation,retired in (('absent','success',False),('failure','success',False),
+                                        ('malformed','success',False),('success','activation-fails',True)):
+            with self.subTest(mode=mode,activation=activation):
+                case=type(self)('runTest');case.setUp();case.seed()
+                try:
+                    case.serve(extra=[] if mode=='absent' else ['bridge-bootstrap-test',mode])
+                    self.assertEqual(case.session('bootstrap='+activation),['bootstrap:failed retired:'+str(retired).lower()])
+                finally:case.doCleanups()
+
+    def test_bridge_bootstrap_payload_and_wrong_ack_are_refused(self):
+        marker=self.base/'custody'
+        self.seed();self.serve(extra=['bridge-bootstrap-test','success',str(marker)])
+        self.assertEqual(self.session('bootstrap-payload'),['bootstrap:payload-refused'])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.session('bootstrap-bad-ack'),['bootstrap:bad-ack-refused'])
+        self.assertEqual(marker.read_text(),'released')
+
+    def test_bridge_bootstrap_never_renews_deadline_after_activation(self):
+        self.seed();self.serve(extra=['bridge-bootstrap-test','success'])
+        self.assertEqual(self.session('bootstrap=activation-late'),['bootstrap:failed retired:true'])
+        self.assertEqual(self.session('status'),['answer:ok sequence:10 protocol:1'])
+
+    def test_bridge_bootstrap_wrong_signed_peer_never_enters_custody(self):
+        marker=self.base/'custody'
+        self.seed();self.serve(extra=['bridge-bootstrap-test','success',str(marker)])
+        self.assertTrue(self.session('bootstrap=success',client='stranger')[0].startswith('rejected:'))
+        self.assertFalse(marker.exists())
+
     def test_root_inventory_authenticated_and_empty_request_only(self):
         marker=self.base/'root-inventory-read'
         self.seed();self.serve(extra=['root-inventory-test','success',str(marker)])

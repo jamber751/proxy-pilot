@@ -48,3 +48,33 @@ enum VPNBridgeRootInventoryReader {
         try current();return result
     }
 }
+
+/// Same store lock as retained-host mutations; the listener serializes static
+/// configuration edits. Future dynamic/static writers must use this custody
+/// boundary before their backend is enabled. No upstream DNS wait is allowed.
+final class VPNRootBridgeBootstrapSource: VPNBridgeBootstrapSource {
+    private let runtime: VPNRetainedFenceRuntime
+    private let read: (DispatchTime) throws -> Data
+    init(runtime: VPNRetainedFenceRuntime, read: @escaping (DispatchTime) throws -> Data) {
+        self.runtime=runtime;self.read=read
+    }
+    func withInventory(deadline: DispatchTime,
+                       body: (Data, () throws -> Void) throws -> Void) throws {
+        func current() throws {
+            guard DispatchTime.now()<deadline else { throw VPNBridgeRootInventoryError.expired }
+            try runtime.check()
+            guard DispatchTime.now()<deadline else { throw VPNBridgeRootInventoryError.expired }
+        }
+        try current()
+        try runtime.store.withEntries { _ in
+            try current()
+            let before=try read(deadline)
+            _=try VPNBridgeRootInventory.decodeCanonical(before)
+            try current()
+            try body(before,{
+                try current()
+                guard try self.read(deadline)==before else { throw VPNBridgeRootInventoryError.changed }
+            })
+        }
+    }
+}

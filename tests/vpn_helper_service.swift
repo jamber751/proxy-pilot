@@ -4,6 +4,29 @@ import Foundation
 
 final class VPNHelperFixtureOwnership { var owns = false }
 
+private final class VPNFixtureBridgeBootstrap: VPNBridgeBootstrapSource {
+    let mode: String, marker: String?
+    let revoke: () -> Void
+    init(mode: String,marker: String?,revoke: @escaping () -> Void) { self.mode=mode;self.marker=marker;self.revoke=revoke }
+    func write(_ value: String) throws {
+        if let marker { try Data(value.utf8).write(to:URL(fileURLWithPath:marker),options:.atomic);_=chmod(marker,0o600) }
+    }
+    func withInventory(deadline: DispatchTime,body: (Data, () throws -> Void) throws -> Void) throws {
+        if mode=="failure" { throw VPNHelperListenerError.unavailable }
+        try write("held");defer { try? write("released") }
+        let inventory=try VPNBridgeRootInventory(bootID:UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
+            stateSHA256:String(repeating:"a",count:64),routeJournalSHA256:nil,matchers:["10.44.0.0/16"])
+        let data=mode=="malformed" ? Data("{}".utf8):try inventory.encoded()
+        var checks=0
+        try body(data,{
+            checks+=1
+            guard DispatchTime.now()<deadline else { throw VPNHelperListenerError.unavailable }
+            if checks>1 && self.mode=="changed" { throw VPNHelperListenerError.unavailable }
+            if checks>1 && self.mode=="revoke" { self.revoke() }
+        })
+    }
+}
+
 // Thin launcher around the production listener, used both by the listener tests
 // and by launchd. It reads the authenticated selection from protected storage,
 // serves the readiness handshake and does nothing else: no privileged operation,
@@ -158,11 +181,14 @@ enum VPNHelperService {
                             prefixes:["198.19.253.201/32","2001:db8:fff:fd::c9/128"]).encoded()
                     }
                 }
+                let bootstrap: VPNBridgeBootstrapSource? = args.count>=5 && args[3]=="bridge-bootstrap-test"
+                    ? VPNFixtureBridgeBootstrap(mode:args[4],marker:args.count==6 ? args[5]:nil,revoke:{ ready=false }):nil
                 listener = try VPNHelperListener.bind(inTrustedDirectory: directory,
                     release: deployment.release, ownerUserID: deployment.ownerUserID,
                     endpointDirectory: endpoint,
                     readRetainedProtection:args.count>=5 && args[3]=="inventory-test" ? inventory:nil,
                     readBridgeRootInventory:args.count>=5 && args[3]=="root-inventory-test" ? inventory:nil,
+                    bridgeBootstrap:bootstrap,
                     startTunnel: { try appendTrace("start-held"); return true },
                     startManagedTunnel: managed ? { binding, state in
                         if managedMode == "managed-connected-test" {

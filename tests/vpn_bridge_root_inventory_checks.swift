@@ -6,6 +6,11 @@ func inventoryInterface(_ index: UInt32,_ output: UnsafeMutablePointer<CChar>?) 
     guard let output,let name=[7:"en7",42:"utun42"][index] else { return nil }
     for (i,c) in name.utf8CString.enumerated() { output[i]=c };return output
 }
+private final class NoBootstrapKernel: VPNExactFenceKernel {
+    func lookupExactFence(_ identity: VPNExactRouteFenceIdentity,deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? { throw Checks.Failure.injected }
+    func installExactFence(_ identity: VPNExactRouteFenceIdentity,deadline: DispatchTime) throws { throw Checks.Failure.injected }
+    func deleteExactFence(_ identity: VPNExactRouteFenceIdentity,deadline: DispatchTime) throws { throw Checks.Failure.injected }
+}
 @main private enum Checks {
     enum Failure: Error { case assertion, injected }
     static func check(_ value: @autoclosure () throws -> Bool) throws { if try !value() { throw Failure.assertion } }
@@ -70,6 +75,42 @@ func inventoryInterface(_ index: UInt32,_ output: UnsafeMutablePointer<CChar>?) 
                     return mode=="journal-race" && journalReads==2 ? nil:journal
                 },checkCurrent:{ if mode=="cancelled" { throw Failure.injected } })
         }
+        if mode.hasPrefix("custody-") {
+            let fd=open(CommandLine.arguments[2],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
+            try check(fd>=0);defer { close(fd) }
+            let fences=try VPNDirectoryProvisioner.testOpenFencesBelowTrustedBase(fd,create:true)
+            defer { close(fences) }
+            let runtime=try VPNRetainedFenceRuntime(trustedDirectoryDescriptor:fences,kernel:NoBootstrapKernel(),
+                checkNamespace:{ try VPNDirectoryProvisioner.testRequireFenceDirectory($0,belowTrustedBase:fd) })
+            _=try runtime.restore(deadline:.now()+2,checkCurrent:{})
+            let initial=try read(),different=try VPNBridgeRootInventory(bootID:initial.bootID,
+                stateSHA256:String(repeating:"b",count:64),routeJournalSHA256:initial.routeJournalSHA256,matchers:initial.matchers)
+            var changed=false,called=false
+            let source=VPNRootBridgeBootstrapSource(runtime:runtime,read:{ _ in try (changed ? different:initial).encoded() })
+            if mode=="custody-expired" {
+                try refused { try source.withInventory(deadline:.now()-1) { _,_ in called=true } }
+                try check(!called);return
+            }
+            if mode=="custody-changed" {
+                try refused { try source.withInventory(deadline:.now()+2) { _,verify in changed=true;try verify() } };return
+            }
+            if mode=="custody-throw" {
+                try refused { try source.withInventory(deadline:.now()+2) { _,_ in throw Failure.injected } }
+                try runtime.store.withEntries { _ in };return
+            }
+            let attempted=DispatchSemaphore(value:0),finished=DispatchSemaphore(value:0)
+            try source.withInventory(deadline:.now()+2) { data,verify in
+                try check(try VPNBridgeRootInventory.decodeCanonical(data)==initial)
+                DispatchQueue.global().async {
+                    attempted.signal()
+                    _=try? runtime.store.withEntries { _ in finished.signal() }
+                }
+                try check(attempted.wait(timeout:.now()+1) == .success)
+                try check(finished.wait(timeout:.now()+0.05) == .timedOut)
+                try verify()
+            }
+            try check(finished.wait(timeout:.now()+1) == .success);return
+        }
         switch mode {
         case "union":
             let value=try read()
@@ -90,6 +131,10 @@ func inventoryInterface(_ index: UInt32,_ output: UnsafeMutablePointer<CChar>?) 
             let file=openat(fd,VPNRouteJournal.name,O_WRONLY|O_TRUNC|O_NOFOLLOW|O_CLOEXEC)
             try check(file>=0);try check(write(file,"{}",2)==2);close(file)
             try refused { _=try store.loadIfPresent() }
+        case "offer":
+            let value=try read(),a=VPNBridgeBootstrapOffer(inventory:value),b=VPNBridgeBootstrapOffer(inventory:value)
+            try check(a.nonce != b.nonce && (try a.acknowledgement()) != (try b.acknowledgement()))
+            try check(try VPNBridgeBootstrapOffer.decodeCanonical(a.encoded())==a)
         case "codec":
             let value=try read(),bytes=try value.encoded()
             let object=try JSONSerialization.jsonObject(with:bytes) as! [String:Any]

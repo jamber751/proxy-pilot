@@ -3,6 +3,11 @@ import Darwin
 import Dispatch
 import Foundation
 
+private final class VPNFixtureBridgeRuntime: VPNBridgeBootstrapOwnedRuntime {
+    var retired=false
+    func retire() { retired=true }
+}
+
 // Inert local server and probe client; no launchd, root, VPN or real keys.
 @main
 enum VPNReadinessChecks {
@@ -105,6 +110,47 @@ enum VPNReadinessChecks {
         let fd = connect(path)
         do {
             let release = try fixtureRelease(pin: pin)
+            if scenario.hasPrefix("bootstrap=") {
+                let parts=String(scenario.dropFirst(10)).split(separator:":",maxSplits:1).map(String.init)
+                let mode=parts[0],marker=parts.count==2 ? parts[1]:nil
+                let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
+                defer { session.close() }
+                let runtime=VPNFixtureBridgeRuntime()
+                do {
+                    let result: VPNFixtureBridgeRuntime = try session.bootstrapBridge { inventory,deadline in
+                        guard DispatchTime.now()<deadline,inventory.matchers==["10.44.0.0/16"] else { throw VPNHelperSessionError.invalidResponse }
+                        if let marker {
+                            guard try String(contentsOfFile:marker,encoding:.utf8)=="held" else { throw VPNHelperSessionError.invalidResponse }
+                        }
+                        do { _=try session.request(.status);throw VPNHelperSessionError.invalidResponse }
+                        catch VPNHelperSessionError.busy {}
+                        if mode=="activation-fails" { runtime.retire();throw VPNHelperSessionError.invalidResponse }
+                        if mode=="activation-late" { usleep(5_200_000) }
+                        return runtime
+                    }
+                    print("bootstrap:ok retired:\(result.retired)");result.retire()
+                } catch { print("bootstrap:failed retired:\(runtime.retired)") }
+                return
+            }
+            if scenario=="bootstrap-payload" || scenario=="bootstrap-bad-ack" {
+                let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
+                defer { session.close() }
+                let deadline=DispatchTime.now().uptimeNanoseconds+2_000_000_000
+                try VPNHelperProtocol.write(VPNHelperProtocol.request(.bootstrapBridge,revision:release.sequence,
+                    payload:scenario=="bootstrap-payload" ? [42]:[]),socket:fd,deadline:deadline)
+                let header=try VPNHelperProtocol.read(count:14,socket:fd,deadline:deadline)
+                let status=VPNHelperProtocol.number(header[8..<10]),length=Int(VPNHelperProtocol.number(header[10..<14]))
+                if scenario=="bootstrap-payload" {
+                    guard status==UInt64(VPNHelperStatus.invalidRequest.rawValue),length==0 else { throw VPNHelperSessionError.invalidResponse }
+                    print("bootstrap:payload-refused");return
+                }
+                guard status==0,length>0,length<600_000 else { throw VPNHelperSessionError.invalidResponse }
+                _=try VPNHelperProtocol.read(count:length,socket:fd,deadline:deadline)
+                try VPNHelperProtocol.write([UInt8](repeating:0,count:40),socket:fd,deadline:deadline)
+                let final=try VPNHelperProtocol.read(count:1,socket:fd,deadline:deadline,allowingClose:true)
+                guard final==nil else { throw VPNHelperSessionError.invalidResponse }
+                print("bootstrap:bad-ack-refused");return
+            }
             if scenario=="root-inventory" || scenario=="root-inventory-payload" {
                 let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
                 defer { session.close() }

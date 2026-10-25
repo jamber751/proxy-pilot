@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import test_vpn_exact_fence_adapter as adapter
 ROOT=adapter.ROOT
-MODES=('union','state-race','journal-race','boot-race','expired','failure','cancelled','invalid-retained','journal-read','codec')
+MODES=('custody-lock','custody-throw','custody-changed','custody-expired','offer','union','state-race','journal-race','boot-race','expired','failure','cancelled','invalid-retained','journal-read','codec')
 @unittest.skipUnless(adapter.sys.platform=='darwin' and adapter.shutil.which('swiftc') and os.getuid()==os.geteuid()!=0,'ordinary macOS Swift required')
 class RootInventoryTests(unittest.TestCase):
     @classmethod
@@ -14,8 +14,9 @@ class RootInventoryTests(unittest.TestCase):
         cls.temp=tempfile.TemporaryDirectory(prefix='pp-root-inventory-build-');cls.addClassCleanup(cls.temp.cleanup)
         cls.binary=Path(cls.temp.name)/'checks'
         sources=adapter.SOURCES+[ROOT/'app/vpn-helper'/name for name in
-            ('VPNApplicationSpec.swift','VPNTunnelStateStore.swift','VPNBridgeRootInventory.swift')]
-        result=subprocess.run(['/usr/bin/swiftc','-parse-as-library',*map(str,sources),
+            ('VPNApplicationSpec.swift','VPNTunnelStateStore.swift','VPNDirectoryProvisioner.swift',
+             'VPNRetainedFenceRuntime.swift','VPNBridgeRootInventory.swift')]
+        result=subprocess.run(['/usr/bin/swiftc','-parse-as-library','-D','VPN_DIRECTORY_TESTING',*map(str,sources),
             str(ROOT/'tests/vpn_bridge_root_inventory_checks.swift'),'-o',str(cls.binary)],capture_output=True,text=True,timeout=90)
         if result.returncode:raise AssertionError(result.stderr)
     def case(self,mode):

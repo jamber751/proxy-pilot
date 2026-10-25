@@ -22,6 +22,8 @@ enum VPNHelperOperation: UInt16 {
     case retainedProtectionInventory = 9
     /// Current root bridge sources, including static/legacy prefixes.
     case bridgeRootInventory = 10
+    /// Two replies around a fixed acknowledgement, one original deadline.
+    case bootstrapBridge = 11
 }
 
 enum VPNHelperStatus: UInt16 {
