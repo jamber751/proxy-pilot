@@ -6873,3 +6873,23 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   консервативным, unknown mutation receipt не превращается в success.
 - [ ] System139 recovery и fresh genuine frontend build остаются OPEN; весь
   VPN feature и final joint Installer ещё не готовы.
+
+
+### Продолжение 1.5gf — первый полный actual utun19 после socket lifetime fix
+
+- [x] Source7402f01 owned-utun40173045216 Intel121107762722 SUCCESS:
+  все19 exact PASS markers, включая12 UDP/TCP IPv4/IPv6 scope cases,
+  live route cleanup, actual child SIGKILL recovery, A interface death refusal,
+  pending receipt retention и exact B baseline cleanup. Старый late GET timeout
+  в этом реальном прогоне устранён без увеличения deadlines/limits или replay.
+  Лог /tmp/pp-utun-740-intel-121107762722.log.
+- [ ] ARM121107762860 того же run ещё queued: обе архитектуры пока не закрыты.
+- [ ] Current scoped40173045236, System40173045218 и ownership40173045217
+  — handles snapshot7402f01. System jobs121107762708/121107762835 queued;
+  старый System40172499522 sourcef4f644b продолжает собственные live jobs.
+  Живые jobs не отменяли, новые прогоны запущены изменёнными исходниками.
+- [ ] Genuine frontend one-build diagnostic wrapper сейчас выполняет исходный
+  suite из4 cases, сохраняя own Source/Build и shell trace при failure вместо
+  удаления критичных свидетельств. Trace-only zsh flag не меняет compile flags
+  и не активирует GUI/helper/credential/network roles. Live37200, proof folder
+  /tmp/pp-current-frontend-traced-1ky2h3oo. Результат ещё не подтверждён.
