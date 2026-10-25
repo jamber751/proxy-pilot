@@ -1,4 +1,4 @@
-name: VPN GOST atomic policy candidate source checks
+name: VPN GOST atomic policy candidate
 
 on:
   push:
@@ -7,6 +7,8 @@ on:
       - '.github/workflows/vpn-gost-atomic-candidate.yml'
       - 'app/vpn-bridge/**'
       - 'tests/test_vpn_gost_atomic_preparation.py'
+      - 'tests/test_vpn_gost_atomic_vm.py'
+      - 'tests/test_vpn_gost_resolver_vm.py'
   workflow_dispatch:
 
 permissions:
@@ -14,13 +16,14 @@ permissions:
 
 jobs:
   source:
-    name: Atomic positive bypass source regression (${{ matrix.os }})
+    name: Atomic positive bypass source and runtime (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Includes two cold Go cross-architecture builds and the real proxy canary.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15-intel]
+        os: [macos-14, macos-15-intel, macos-26, macos-26-intel]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +33,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: python3 -m unittest discover -s tests -p test_vpn_gost_atomic_preparation.py -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -61,3 +64,20 @@ jobs:
           test "$(id -u)" -ge 500
           cd "$RUNNER_TEMP/proxypilot-atomic-source/candidate/x"
           go test -race ./registry ./api -run '^TestProxyPilot' -count=1 -v
+      - name: Build pinned candidate without installing or running it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 app/vpn-bridge/build_atomic_gost.py \
+            "$RUNNER_TEMP/proxypilot-atomic-source/build" \
+            --cache-root "$RUNNER_TEMP/proxypilot-atomic-source"
+      - name: Real HTTP and SOCKS through owned endpoints and private Unix API
+        shell: bash
+        env:
+          PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
+          PROXYPILOT_VM_GOST_ATOMIC_TESTS: '1'
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ge 500
+          export PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)"
+          python3 tests/test_vpn_gost_atomic_vm.py --acceptance

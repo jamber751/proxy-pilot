@@ -7959,3 +7959,42 @@ wrapper при отсутствующей записи возвращает fals
 Primary sources: https://github.com/go-gost/x/blob/v0.8.1/api/config_bypass.go,
 https://github.com/go-gost/x/blob/v0.8.1/bypass/bypass.go,
 https://github.com/go-gost/x/blob/v0.8.1/registry/registry.go.
+
+
+### Продолжение 1.5hk — reproducible candidate binary and guarded runtime canary
+
+- [x] app/vpn-bridge/build_atomic_gost.py собирает отдельный3.2.6-proxypilot.1.
+  Upstream main module340ba32ef0be pinned через pseudoversion и GoSumDB h1:
+  khdl4fk9Q7vyDvFxiAsUcUnsZBmle4xdxGKNyrJYfjU=. Dependency x/v0.8.1 и три
+  source preimages остаются pinned1.5hj. Go toolchain ровно1.25.4, CGO0,
+  -trimpath/-buildvcs=false, relative replacement ../x; module cache не патчится.
+  Оба prepared module trees проверяются до/после build, go mod verify обязателен,
+  recipe+Go fixture bytes также проверяются на изменение. Никакого GOST execution.
+- [x] Две независимые output folders build-1/build-2 дали одинаковые535source
+  inputs и одинаковые native/Universal artifacts. Окончательный recipe proof:
+  /var/folders/zz/5wvv0n3915jc5t2283_x8zgw0000gn/T/pp-gost-candidate-build-i44gfmsj/build-2/verification.json.
+  Parent logs /tmp/pp-gost-candidate-build-parent.log и
+  /tmp/pp-gost-candidate-repro-parent.log. Обе сборки exit0. Otool подтвердил
+  LC_BUILD_VERSION/minos12.0 для обеих slices; actual macOS12 runtime ещё OPEN.
+- [x] Candidate pins (старые stock pins НЕ менялись):
+  arm64 size33718386 sha256 a6b84fa7a5fe9267468bafbe9c5db984f6f3cc17c9a5dd11380fb52ccc830aa8;
+  x86_64 size36564192 sha256 5d767d607dfc58f5a06beb8c0bbb33b5082aaa5c7b11af423f743795f74a7e9f;
+  Universal size70287474 sha256 6a6433f320ef6a6295270f6d8fb16964806c70bc6f024f63519a6515525fa276.
+- [x] Новая guarded ordinary-user VM fixture: fixed candidate pins до execution,
+  собственные127.0.0.1/::1 echoes и fake HTTP proxy без onward dial, private
+  Unix API + random Basic credential. Обязательны direct/proxy controls,
+  unauthorized update401 с сохранением защиты, обе family готовы при ACK,
+  48 updates параллельно4 clients по24 literal connections (ровно96), затем
+  restart с boot union до первого клиентского запроса и own-process cleanup.
+  Успех требует107 direct witnesses,2 negative-control proxy witnesses и0errors.
+  Fixtures не меняют системные proxy/DNS/VPN settings и не ходят к corporate IP.
+- [x] Default8preparation/refusal checks PASS0.007s: никаких sockets/GOST processes
+  на host. Workflow YAML valid. Source/race + candidate cold two-arch builds +
+  actual canary объединены в4OS matrix14ARM/15Intel/26ARM/26Intel. Новый20min
+  budget обусловлен добавленными cold Go builds, не лечит прежние root timeout.
+- [ ] Actual candidate runtime six-marker proof ещё НЕ PASS; нужен результат
+  нового workflow. Предыдущий source-only126b run40192233839 был queued при
+  проверке и не служит native proof. Старые stock GOST/system-DNS proofs не
+  переносятся на новый binary автоматически. Обновлённый мост ещё не выбран
+  production app/build. DNS relay, persistent boot cache, synchronous App update
+  client/answer lease, static CIDR protection и первоначальный7-stage scope OPEN.

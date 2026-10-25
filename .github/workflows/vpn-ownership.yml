@@ -57,6 +57,7 @@ on:
       - '!tests/test_vpn_gost_grpc_resolver_vm.py'
       # Candidate GOST source preparation is checked by its own ordinary-user job.
       - '!tests/test_vpn_gost_atomic_preparation.py'
+      - '!tests/test_vpn_gost_atomic_vm.py'
       - '!tests/vpn_gost_grpc_resolver_fixture.cjs'
       - '!tests/test_vpn_gost_system_resolver_vm.py'
       - '!tests/vpn_gost_system_resolver_fixture.cjs'
