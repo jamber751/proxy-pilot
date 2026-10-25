@@ -41,12 +41,12 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40129583883 прошёл все8 реальных Installer cases на каждой архитектуре ARM/Intel на b327ab6 | Свежий комплект после context/route/clock fixes ещё проверяется; минимальная поддерживаемая macOS 12; исполнение на 12 остаётся OPEN |
+| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; новый macOS12-комплект f715bc5 прошёл8/8 на ARM | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137;520 isolated interface checks ARM/Intel на2e159b6, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Installed-приёмка сохранения/подстановки пароля, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;538 isolated interface checks ARM/Intel наf715bc5, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Installed-приёмка сохранения/подстановки пароля, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты; английский непубликуемый черновик notes | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -7328,4 +7328,54 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Actual Unix gRPC и host/full-mask route viability результатов ещё нет.
   До них production relay/deny выбор и runtime splitDNSUnavailable gate остаются
   открытыми; весь7-stage scope, один final host installer и release acceptance
-  не заменяются этими isolated эксперимен­тами.
+  не заменяются этими isolated экспериментами.
+
+
+### Продолжение 1.5gu — первые actual Unix RPC и exact-route-pair результаты
+
+- [x] Source388a2a7 GOST40181013257 macOS26 Intel121131886298 SUCCESS:
+  все28 прежних HTTP-plugin cases и14 новых Unix gRPC cases, точные aggregate
+  PASS markers проверены. Передача token/отказ wrong-token, CIDR selection,
+  RPC error/empty/invalid-IP без fallback и ignored false-with-IP подтвердились
+  в неизменённом pinned stock3.2.6. Лог
+  /tmp/pp-gost-uds-388-mac26-intel-121131886298.log. Это42 actual fake-endpoint
+  cases, а не corporate DNS, OS resolver policy или production adapter.
+- [x] Source388a2a7 route-pair40181013260 macOS26 Intel121131886506 SUCCESS:
+  обе IPv4/IPv6 пары HOST/nil-mask + NET/full-mask blackhole действительно
+  сосуществуют. Unscoped lookup выбирает HOST; после его DELETE возвращается
+  оставшийся exact blackhole; baseline restored. Лог
+  /tmp/pp-route-pair-388-mac26-intel-121131886506.log. Пакеты в этом experiment
+  не передавались, оба gateway loopback: forwarding/death proof ещё отсутствует.
+- [ ] Остальные3 OS rows обоих новых runs queued. GOST jobs121131886115/390/755;
+  route-pair121131886243/343/397. Перед включением backend нужны результаты
+  именно поддерживаемых систем, не предположение по одной macOS26 Intel.
+- [x] Старые двух-OS experiments40178170671/40179073555 после проверки ancestry,
+  четырёх replacement jobs и каждого old job status отменены ТОЛЬКО целиком
+  queued. Оба terminal CANCELLED; живые/partial runs не трогались.
+- [x] a6eff55 System40173952879 теперь terminal SUCCESS обе arch: Intel121110535940
+  завершил все8 actual cases, как ARM121110535770 ранее. Intel fast160 включает
+  1 optional real-App skip; root owner/volume6 PASS; все8 native Ran1/OK без skips.
+  Лог /tmp/pp-system-a6-intel-121110535940.log. Это16 actual cases, source до
+  minOS12/DNS-selection изменений; current74 acceptance остаётся обязательной.
+
+### Следующий инкремент 1.5gv — реальная передача и исчезновение owner interface
+
+- [ ] Отдельный root-VM-only packet experiment: exclusively allocated active и
+  escape utuns. Никакого использования/перенастройки чужих интерфейсов, DNS, PF,
+  default routes, Keychain или установленных сервисов.
+- [ ] Synthetic cover prefix на собственном escape interface должен удерживать
+  любой ошибочный fallback внутри VM. Это test guard, НЕ более широкий
+  production deny. Exact-address backup соответствует только выбранному IP.
+- [ ] Через обычные unbound UDP/TCP sockets доказать выход по активному HOST route;
+  TCP установить synthetic SYN/SYN-ACK/ACK через собственный utun, чтобы проверить
+  именно established cached flow, а не только новый SYN или bound socket.
+- [ ] Отдельный child удерживает последний active control FD. Actual SIGKILL этого
+  собственного child удаляет интерфейс; parent проверяет исчезновение и unscoped
+  selection exact backup. Fresh/cached UDP/TCP не должны появиться на escape.
+  Positive neighboring-IP packet должен продолжать выходить по test guard.
+- [ ] Бounded nonce packet parser/real checksums, общий deadline и closed markers.
+  До удаления guard закрыть собственные TCP abortively и UDP, чтобы не оставить
+  поздних retransmits в synthetic prefix; cleanup требует точных own identities.
+- [ ] После packet proof остаются production custody/journal/recovery, bridge
+  adapter/OS DNS/TTL/revocation, foreign state, reboot и WARP. Gate domain runtime
+  до этого не снимать. Все7 этапов и полная финальная приёмка сохраняются.
