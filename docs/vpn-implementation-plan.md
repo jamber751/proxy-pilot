@@ -7225,3 +7225,15 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   выполняет real completed-service/broker-phase6 recovery (started09:00:19UTC).
   Handle живой; никакой установки/остановки на host не выполнялось. До полного
   Intel результата и current-source System verdict приёмка остаётся открытой.
+
+- [x] fa23e2c scoped40177188948 теперь terminal SUCCESS ОБЕ arch: Intel121120324835
+  тоже389 PASS204.949s без skips + genuine Universal helper compile/signature.
+  Суммарно778 checks (не unique scenarios), source fa23e2c.
+  Intel log /tmp/pp-scoped-fa23-intel-121120324835.log.
+- [x] Source-a6 System Intel121110535940 прошёл completed-service/broker-phase6
+  case и перешёл к pending update Off (started09:04:23UTC). Это live continuation
+  того же job, не новый прогон и не завершение всей Intel matrix.
+- [x] Current ownership40179159970 source5b7204d подтверждён с6 queued jobs.
+  После проверки ancestry/replacement и повторного чтения всех job statuses
+  отменены только полностью queued superseded ownership40179073452/40178170670;
+  оба terminal CANCELLED. f715 partial/live suites и native System jobs сохранены.
