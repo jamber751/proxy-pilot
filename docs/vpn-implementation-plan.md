@@ -6778,3 +6778,39 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [x] Subagents остановились по внешнему usage limit. Root продолжает работу
   с сохранёнными файлами и доказательствами; незавершённые процессы требуют
   проверки точных handles, а не слепого повторного запуска.
+
+
+### Продолжение 1.5gc — терминальные VM результаты после согласования suffix
+
+- [x] Genuine default40138409792 source0b44158 terminal SUCCESS на всех4 jobs:
+  121004771414/121004771581/121004771588/121004771638. Каждый прошёл38 safe
+  checks и actual case; во ВСЕХ логах outcome=restored-and-clean, не только
+  retained-unknown success. Canary ownership proof теперь подтверждён SDK
+  ARM/Intel roundtrip/cross-image. Password runtime пока не включали.
+- [x] Source0b44158 scoped40138409955 и password transport40138409899 SUCCESS
+  обе архитектуры; interface40138989554 source1d92645 тоже SUCCESS обе arch,
+  включая certificate recovery. Это isolated interface, не installed VoiceOver.
+- [ ] System40138409802: Intel121004772052 SUCCESS, ARM121004771881 FAIL в
+  pending137→139→C desiredOn. installed/selected B139, desired=true/failures3,
+  helper отсутствует после cleanup, recovery/BrokerB pinned valid. Source9ac
+  System40135758259: ARM120996807377 SUCCESS, Intel120996807601 FAIL в
+  completed-service-and-broker-phase6 desiredOn с похожим failures3.
+  Причина ещё не доказана; отсутствие activationEvents не считать диагнозом.
+- [ ] Utun40138409864 оба FAIL, но global sequence fix продвинул gate:
+  baseline Verify IPv4/IPv6 теперь успешны и получены собственные UDP/TCP
+  markers. После tcp6a baselineVerify GET timeout. Логи
+  /tmp/pp-utun-0b-{first-121004771943,second-121004772298}.log.
+  Возможный idle PF_ROUTE backlog требует доказательства; не увеличивать
+  таймер/пределы, не повторять native mutation для получения green.
+- [x] Fresh private Sparkle extraction tiny import и точные -O/link flags
+  с пробелами в пути прошли обе архитектуры, без запуска binaries:
+  pp password frontend sparkle triage g1ufldre/exact-verification.json.
+  Это не доказывает причину прежнего no-module failure и не заменяет новый
+  genuine Universal frontend run с сохранённой диагностикой на failure.
+- [ ] GOST40170540219 source44823d3: Intel121100297365 FAIL unexpected до
+  первого PASS; ARM121100297508 queued. b6daa21 устраняет неверное допущение
+  fixture о bind к не настроенным127.0.0.2/.3: используются существующие
+  canonical127.0.0.1/::1, и добавлена закрытая case/category/errno диагностика.
+  Подтверждение ограничения: Apple xnu bsd/netinet/in_pcb.c in_pcbbind требует
+  ifa_ifwithaddr для bind. Точная причина прежнего unexpected по старому логу
+  ещё не доказана. Parent9 safe PASS0.006s, actual28 остаются OPEN.
