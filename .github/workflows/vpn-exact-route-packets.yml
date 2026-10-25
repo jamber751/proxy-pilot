@@ -1,4 +1,4 @@
-name: VPN exact-address UDP forwarding and owner death
+name: VPN exact-address UDP/TCP forwarding and owner death
 
 on:
   push:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   packets:
-    name: Unbound UDP and owned interface SIGKILL (${{ matrix.os }})
+    name: Unbound UDP/TCP and owned interface SIGKILL (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:
@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - name: Both architectures compile; ordinary host refuses all live calls
         run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_route_packet_vm test_vpn_exact_route_pair_vm -v
-      - name: Actual UDP packets in exclusive utuns in disposable root VM only
+      - name: Actual UDP/TCP packets in exclusive utuns in disposable root VM only
         run: |
           sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_EXACT_ROUTE_PACKETS=1 \
             PROXYPILOT_VM_DNS_UTUN_TESTS=1 RUNNER_TEMP="$RUNNER_TEMP" \

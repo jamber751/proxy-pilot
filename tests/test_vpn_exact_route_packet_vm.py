@@ -1,6 +1,6 @@
 """Default compile/ordinary-user denial only: NO local network or root calls.
-Actual unbound UDP packet/death proof requires explicit fresh root GHA VM flags.
-TCP, boot, WARP, production custody and release acceptance remain separate gates.
+Actual unbound UDP/TCP packet/death proof requires explicit fresh root GHA VM flags.
+Boot, WARP, production custody and release acceptance remain separate gates.
 """
 from pathlib import Path
 import hashlib
@@ -16,7 +16,9 @@ FLAG = 'PROXYPILOT_VM_EXACT_ROUTE_PACKETS'
 SUPPORT_FLAG = 'PROXYPILOT_VM_DNS_UTUN_TESTS'
 SOURCES = ['vpn_exact_route_packet_vm.c', 'vpn_exact_route_pair_vm.c', 'vpn_dns_utun_vm_support.c']
 MARKERS = ['PASS exact-route-udp-ipv4-active-cached-fresh-death-neighbor',
-           'PASS exact-route-udp-ipv6-active-cached-fresh-death-neighbor']
+           'PASS exact-route-tcp-ipv4-established-exchange-cached-fresh-death',
+           'PASS exact-route-udp-ipv6-active-cached-fresh-death-neighbor',
+           'PASS exact-route-tcp-ipv6-established-exchange-cached-fresh-death']
 
 
 def compile_probe(folder):

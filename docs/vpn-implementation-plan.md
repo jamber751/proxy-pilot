@@ -7424,3 +7424,29 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [x] On bebccae repeated minimum macOS contract suite:7/7 PASS,0skips,.784s;
   actual packaging/preflight metadata guards are tested. This remains distinct
   from an actual macOS12 runtime execution, still open.
+
+### Продолжение 1.5gx — established TCP в том же guarded packet/death experiment
+
+- [x] UDP-only fixture расширен до TCP: обычный unbound nonblocking socket,
+  собственный SYN на active utun, корректный synthetic SYN/ACK с IPv4/IPv6
+  pseudo-header checksum, ACK клиента, передача nonce и обратный payload,
+  фактически прочитанный через recv(). Только после этого child получает
+  последний active control FD и завершается actual SIGKILL.
+- [x] После disappearance + exact-blackhole selection отправка через established
+  cached TCP и fresh connect. Тот же2s escape observation проверяет UDP nonce и
+  TCP destination/port, поэтому чтение одного протокола не поглощает незаметно
+  утечку другого. Positive neighbor UDP до/после остаётся обязательным.
+- [x] TCP sockets изначально SO_LINGER{1,0}/SO_NOSIGPIPE; child закрывает inherited
+  TCP copy, parent закрывает все собственные UDP/TCP ДО удаления backup/cover.
+  Более широкий VM cover — только containment эксперимента, не production rule.
+- [x] Pure проверки: RFC1071 checksum vector; обе IP checksum/pseudo-header формы;
+  reverse tuple/seq/ack/payload; все truncations, неверные IP protocol, TCP data
+  offset и длины. Обе arch компилируются Wall/Wextra/Werror, ordinary-user guards
+  и native pure проверки PASS:2 Python tests1.722s без skips. Отдельный native
+  pure запуск с AddressSanitizer+UndefinedBehaviorSanitizer PASS, без network I/O.
+  Добавлены закрытые phase diagnostics каждого шага TCP, без nonce/адресов/logs.
+- [ ] Actual UDP+TCP VM proof ещё отсутствует: прежний UDP-only40182349363 и
+  shared-codec viability40182349373 по fresh API все queued, не отменены и не
+  засчитаны success. Replacement4-OS run для нового snapshot требуется после push.
+  Остальные1.5gv production custody/OS DNS/TTL/foreign/reboot/WARP и полный
+ 7-stage scope сохраняются, runtime domain gate не изменялся.
