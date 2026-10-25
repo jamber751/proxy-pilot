@@ -100,7 +100,7 @@ def retired_ids(journal):
             data = os.read(fd,256*1024+1)
             if len(data)>256*1024: raise RuntimeError('durableEntryCapacity')
             row = json.loads(data)
-            if row['schemaVersion'] != 1 or row['phase'] != 'retired' or len(row['claims']) != 1 or row['claims'][0]['profileSHA256'] != 'a'*64: raise RuntimeError('durableEntryState')
+            if row['schemaVersion'] not in (1,2) or row.get('active') is not None or row['phase'] != 'retired' or len(row['claims']) != 1 or row['claims'][0]['profileSHA256'] != 'a'*64: raise RuntimeError('durableEntryState')
             ids.add(row['installationID'])
         finally: os.close(fd)
     if len(ids) != 2: raise RuntimeError('durableInstallationIdentity')
@@ -156,7 +156,7 @@ def crash_recovery(binary,recovery,journal):
         files=list(journal.glob('fence-v1-*.json'))
         if len(files)!=1:raise RuntimeError('crashCheckpointCount')
         before=json.loads(files[0].read_bytes())
-        if before['phase']!='applied':raise RuntimeError('crashCheckpointState')
+        if before['phase']!='applied' or before['schemaVersion']!=2 or before.get('active',{}).get('phase')!='applied':raise RuntimeError('crashCheckpointState')
         os.killpg(process.pid,signal.SIGKILL)
         out,err=process.communicate(timeout=5)
         if process.returncode!=-signal.SIGKILL or out or err:raise RuntimeError('crashExit')
@@ -168,7 +168,7 @@ def crash_recovery(binary,recovery,journal):
             print(line,flush=True)
         if result.returncode or result.stdout.splitlines()!=expected or result.stderr:raise RuntimeError('crashRecovery')
         after=json.loads(files[0].read_bytes())
-        if after['phase']!='retired' or before['installationID']!=after['installationID']:raise RuntimeError('crashRecoveryCustody')
+        if after['phase']!='retired' or after.get('active') is not None or before['installationID']!=after['installationID']:raise RuntimeError('crashRecoveryCustody')
         print('PASS native-exact-fence-crash-recovery',flush=True)
     finally:
         if process.poll() is None:

@@ -716,20 +716,48 @@ final class VPNDarwinRouteSocket {
                           deadline: DispatchTime, checkCurrent: () throws -> Void) throws {
         try mutateFencedHost(identity,fence:fence,install:false,deadline:deadline,checkCurrent:checkCurrent)
     }
+    /// Nil means the verified NET deny is selected instead of a HOST. Other
+    /// same-key entries are returned for exact comparison, never hidden.
+    func lookupFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                          deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
+        try serialized(until:deadline) { end in
+            try validateFencedHost(identity,fence:fence)
+            guard let deny = try exactFenceLookup(fence,deadline:end), fence.matches(deny) else {
+                throw VPNDarwinRouteError.missingOrForeign
+            }
+            let observed = try fencedHostLookup(identity,deadline:end)
+            guard let observed, observed.destination == identity.destination else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+            guard let after = try exactFenceLookup(fence,deadline:end), fence.matches(after) else {
+                throw VPNDarwinRouteError.missingOrForeign
+            }
+            return fence.matches(observed) ? nil : observed
+        }
+    }
+    private func validateFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity) throws {
+        try identity.validate(); try fence.validate()
+        let planned = VPNPlannedRoute(role:identity.role,destination:identity.destination,
+            physicalGatewayBytes:identity.gatewayBytes,interfaceIndex:identity.interfaceIndex,
+            interfaceName:identity.interfaceName,interfaceScope:identity.interfaceScope)
+        try planned.validate()
+        guard identity.role == .resource, identity.destination == fence.address,
+              identity.interfaceScope == nil, identity.gatewayBytes == nil,
+              identity.flags == VPNManagedIPv6HostRoute.flags(for:planned) else {
+            throw VPNDarwinRouteError.invalidIdentity
+        }
+    }
+    private func fencedHostLookup(_ identity: VPNOwnedRouteIdentity, deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
+        let sequence = try nextSequence()
+        let request = try VPNDarwinRouteCodec.encodeLookup(key:identity.lookupKey,sequence:sequence,pid:pid)
+        return try exactFenceTransact(request,sequence:sequence,type:UInt8(RTM_GET),
+                                       deadline:deadline,family:identity.destination.family)
+    }
     private func mutateFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
                                   install: Bool, deadline: DispatchTime,
                                   checkCurrent: () throws -> Void) throws {
         try serialized(until:deadline) { end in
-            try identity.validate(); try fence.validate()
-            let planned = VPNPlannedRoute(role:identity.role,destination:identity.destination,
-                physicalGatewayBytes:identity.gatewayBytes,interfaceIndex:identity.interfaceIndex,
-                interfaceName:identity.interfaceName,interfaceScope:identity.interfaceScope)
-            try planned.validate()
-            guard identity.role == .resource, identity.destination == fence.address,
-                  identity.interfaceScope == nil, identity.gatewayBytes == nil,
-                  identity.flags == VPNManagedIPv6HostRoute.flags(for:planned) else {
-                throw VPNDarwinRouteError.invalidIdentity
-            }
+            try validateFencedHost(identity,fence:fence)
             func current() throws {
                 guard DispatchTime.now().uptimeNanoseconds < end.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
                 try checkCurrent()
@@ -743,12 +771,9 @@ final class VPNDarwinRouteSocket {
                 try current()
             }
             func host() throws -> VPNDarwinRouteSnapshot? {
-                let sequence = try nextSequence()
-                let request = try VPNDarwinRouteCodec.encodeLookup(key:identity.lookupKey,sequence:sequence,pid:pid)
                 // HOST GET may return the same-prefix NET deny. Validate the
                 // global live reply, then distinguish the two radix key shapes.
-                return try exactFenceTransact(request,sequence:sequence,type:UInt8(RTM_GET),
-                                               deadline:end,family:identity.destination.family)
+                return try fencedHostLookup(identity,deadline:end)
             }
             try protected()
             let before = try host(); try current()

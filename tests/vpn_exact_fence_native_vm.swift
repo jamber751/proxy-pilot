@@ -93,7 +93,8 @@ func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<
             guard entry.phase == .applied, try store.load(prefix) == entry else { throw VPNExactFenceStoreError.invalidState }
         } else {
             guard let entry = try store.load(prefix) else { throw VPNExactFenceStoreError.invalidState }
-            let retired = try transaction.retire(entry,deadline:deadline,checkCurrent:{})
+            let cleared = try transaction.withdrawHost(entry,deadline:deadline,checkCurrent:{})
+            let retired = try transaction.retire(cleared,deadline:deadline,checkCurrent:{})
             guard retired.phase == .retired, try store.load(prefix) == retired else { throw VPNExactFenceStoreError.invalidState }
         }
         print("PASS native-exact-fence-"+(action == RTM_ADD ? "add" : "delete")+"-"+String(family)); fflush(stdout)
@@ -110,7 +111,7 @@ func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<
 }
 
 // VM packet fixture owns the active interface/clients. This exercises the real
-// pair boundary, not a production active-route journal or DNS answer permit.
+// pair boundary with its production journal, not a DNS answer permit.
 @_cdecl("pp_fenced_host_cycle")
 func fencedHostCycle(_ family: Int32, _ bytes: UnsafePointer<UInt8>?, _ index: UInt32) -> Int32 {
     let env = ProcessInfo.processInfo.environment
@@ -133,12 +134,15 @@ func fencedHostCycle(_ family: Int32, _ bytes: UnsafePointer<UInt8>?, _ index: U
         else { evidence = try VPNRouteKernelEvidence(gateway:Optional<in6_addr>.none,interfaceIndex:index,flags:flags) }
         let identity = try VPNOwnedRouteIdentity(planned:route,evidence:evidence)
         let socket = try VPNDarwinRouteSocket.production(), deadline = DispatchTime.now()+5
+        let transaction = VPNExactFenceTransaction(store:store,kernel:socket)
         func current() throws {
-            guard try store.load(prefix) == receipt else { throw VPNExactFenceStoreError.stale }
+            guard let value = try store.load(prefix), value.installationID == receipt.installationID,
+                  value.claims == receipt.claims, value.phase == .applied else { throw VPNExactFenceStoreError.stale }
         }
-        try socket.installFencedHost(identity,fence:receipt.identity,deadline:deadline,checkCurrent:current)
-        try socket.deleteFencedHost(identity,fence:receipt.identity,deadline:deadline,checkCurrent:current)
-        try socket.installFencedHost(identity,fence:receipt.identity,deadline:deadline,checkCurrent:current)
+        let first = try transaction.activateHost(receipt,identity:identity,claim:receipt.claims[0],deadline:deadline,checkCurrent:current)
+        let cleared = try transaction.withdrawHost(first,deadline:deadline,checkCurrent:current)
+        let second = try transaction.activateHost(cleared,identity:identity,claim:receipt.claims[0],deadline:deadline,checkCurrent:current)
+        try transaction.verifyHost(second,deadline:deadline,checkCurrent:current)
         print("PASS native-fenced-host-cycle-"+String(family)); fflush(stdout)
         return 0
     } catch {

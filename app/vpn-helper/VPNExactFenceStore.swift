@@ -29,28 +29,65 @@ struct VPNExactFenceClaim: Codable, Equatable, Comparable {
 }
 
 enum VPNExactFencePhase: String, Codable { case adding, applied, releasing, retired }
+enum VPNFencedHostPhase: String, Codable { case installing, applied, removing }
+struct VPNFencedHostEntry: Codable, Equatable {
+    let identity: VPNOwnedRouteIdentity
+    let claim: VPNExactFenceClaim
+    let phase: VPNFencedHostPhase
+    func validate(address: VPNRoutePrefix) throws {
+        try identity.validate(); try claim.validate()
+        let route = VPNPlannedRoute(role:identity.role,destination:identity.destination,
+            physicalGatewayBytes:identity.gatewayBytes,interfaceIndex:identity.interfaceIndex,
+            interfaceName:identity.interfaceName,interfaceScope:identity.interfaceScope)
+        try route.validate()
+        guard identity.role == .resource, identity.destination == address,
+              address.prefixLength == address.bytes.count * 8,
+              identity.gatewayBytes == nil, identity.interfaceScope == nil,
+              identity.flags == VPNManagedIPv6HostRoute.flags(for:route) else {
+            throw VPNExactFenceStoreError.invalidState
+        }
+    }
+}
 
 /// Historical durable custody, not a current kernel/answer permit. No TTL field:
 /// expiration, negative DNS answers and generation changes cannot erase claims.
 struct VPNExactFenceEntry: Codable, Equatable {
     static let schema = 1
+    static let activeSchema = 2
     let schemaVersion: Int
     let installationID: UUID
     let identity: VPNExactRouteFenceIdentity
     let phase: VPNExactFencePhase
     let claims: [VPNExactFenceClaim]
+    let active: VPNFencedHostEntry?
+    init(schemaVersion: Int, installationID: UUID, identity: VPNExactRouteFenceIdentity,
+         phase: VPNExactFencePhase, claims: [VPNExactFenceClaim], active: VPNFencedHostEntry? = nil) {
+        self.schemaVersion=schemaVersion;self.installationID=installationID;self.identity=identity
+        self.phase=phase;self.claims=claims;self.active=active
+    }
     func validate() throws {
         try identity.validate()
-        guard schemaVersion == Self.schema, !claims.isEmpty, claims.count <= 1000,
+        guard (schemaVersion == Self.schema && active == nil) || schemaVersion == Self.activeSchema else {
+            throw VPNExactFenceStoreError.invalidState
+        }
+        guard !claims.isEmpty, claims.count <= 1000,
               claims == claims.sorted(), Set(claims.map(\.resourceID)).count == claims.count else {
             throw VPNExactFenceStoreError.invalidState
         }
         for claim in claims { try claim.validate() }
+        if let active {
+            guard phase == .applied || phase == .adding, claims.contains(active.claim) else { throw VPNExactFenceStoreError.invalidState }
+            try active.validate(address:identity.address)
+        }
     }
     fileprivate func changing(phase: VPNExactFencePhase, claims: [VPNExactFenceClaim]? = nil,
                               installationID: UUID? = nil) -> Self {
         Self(schemaVersion: schemaVersion, installationID: installationID ?? self.installationID,
-             identity: identity, phase: phase, claims: claims ?? self.claims)
+             identity: identity, phase: phase, claims: claims ?? self.claims, active:active)
+    }
+    fileprivate func changingActive(_ active: VPNFencedHostEntry?) -> Self {
+        Self(schemaVersion:Self.activeSchema,installationID:installationID,identity:identity,
+             phase:phase,claims:claims,active:active)
     }
 }
 
@@ -231,6 +268,15 @@ protocol VPNExactFenceKernel: AnyObject {
     func deleteExactFence(_ identity: VPNExactRouteFenceIdentity, deadline: DispatchTime) throws
 }
 extension VPNDarwinRouteSocket: VPNExactFenceKernel {}
+protocol VPNFencedHostKernel: VPNExactFenceKernel {
+    func lookupFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                          deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot?
+    func installFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                           deadline: DispatchTime, checkCurrent: () throws -> Void) throws
+    func deleteFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                          deadline: DispatchTime, checkCurrent: () throws -> Void) throws
+}
+extension VPNDarwinRouteSocket: VPNFencedHostKernel {}
 
 /// Synchronous custody transaction, NOT a DNS answer authority. Caller must hold
 /// its resource/generation/lifecycle lease through the final answer transaction.
@@ -265,7 +311,8 @@ final class VPNExactFenceTransaction {
             }
             // Equal-looking foreign or indeterminate ADD results are not adopted.
             guard observed == nil else { throw VPNExactFenceStoreError.recoveryRequired }
-            let intent = VPNExactFenceEntry(schemaVersion:VPNExactFenceEntry.schema, installationID:UUID(),identity:identity,phase:.adding,claims:claims)
+            let intent = VPNExactFenceEntry(schemaVersion:old?.schemaVersion ?? VPNExactFenceEntry.schema,
+                installationID:UUID(),identity:identity,phase:.adding,claims:claims,active:old?.active)
             try current(deadline,checkCurrent); try store.save(intent,replacing:old)
             try current(deadline,checkCurrent)
             try kernel.installExactFence(identity,deadline:deadline)
@@ -295,7 +342,7 @@ final class VPNExactFenceTransaction {
                         _ = try retire(entry,deadline:deadline,checkCurrent:checkOwner)
                     } else {
                         let value = try ensure(entry.identity,claim:entry.claims[0],deadline:deadline,checkCurrent:checkOwner)
-                        restored.append(value)
+                        restored.append(try withdrawHost(value,deadline:deadline,checkCurrent:checkOwner))
                     }
                 } catch { if failure == nil { failure = error } }
                 // Owner/cancellation/deadline failure aborts immediately. A
@@ -313,6 +360,94 @@ final class VPNExactFenceTransaction {
         }
     }
 
+    /// Active HOST custody is independent from the retained deny. The same
+    /// private store lock orders journal and native operations; callbacks must
+    /// not acquire a route socket before this store (no inverse lock ordering).
+    func activateHost(_ expected: VPNExactFenceEntry, identity: VPNOwnedRouteIdentity,
+                      claim: VPNExactFenceClaim, deadline: DispatchTime,
+                      checkCurrent: () throws -> Void) throws -> VPNExactFenceEntry {
+        try store.exclusive {
+            try current(deadline,checkCurrent); try expected.validate()
+            guard try store.load(expected.identity.address) == expected,
+                  expected.phase == .applied, expected.claims.contains(claim),
+                  let native = kernel as? VPNFencedHostKernel else { throw VPNExactFenceStoreError.stale }
+            let proposed = VPNFencedHostEntry(identity:identity,claim:claim,phase:.applied)
+            try proposed.validate(address:expected.identity.address)
+            if let active = expected.active {
+                guard active == proposed else { throw VPNExactFenceStoreError.recoveryRequired }
+                try verifyHost(expected,deadline:deadline,checkCurrent:checkCurrent)
+                return expected
+            }
+            guard try native.lookupFencedHost(identity,fence:expected.identity,deadline:deadline) == nil else {
+                throw VPNDarwinRouteError.preexistingNonIdentical
+            }
+            try current(deadline,checkCurrent)
+            let intent = expected.changingActive(VPNFencedHostEntry(identity:identity,claim:claim,phase:.installing))
+            try store.save(intent,replacing:expected)
+            try current(deadline,checkCurrent)
+            try native.installFencedHost(identity,fence:expected.identity,deadline:deadline,
+                checkCurrent:{ try self.current(deadline,checkCurrent) })
+            try current(deadline,checkCurrent)
+            guard let observed = try native.lookupFencedHost(identity,fence:expected.identity,deadline:deadline),
+                  observed.matches(identity) else { throw VPNDarwinRouteError.verificationFailed }
+            try current(deadline,checkCurrent)
+            let applied = intent.changingActive(proposed)
+            try store.save(applied,replacing:intent)
+            try current(deadline,checkCurrent); return applied
+        }
+    }
+
+    func verifyHost(_ expected: VPNExactFenceEntry, deadline: DispatchTime,
+                    checkCurrent: () throws -> Void) throws {
+        try store.exclusive {
+            try current(deadline,checkCurrent); try expected.validate()
+            guard try store.load(expected.identity.address) == expected,
+                  expected.phase == .applied, let active = expected.active, active.phase == .applied,
+                  let native = kernel as? VPNFencedHostKernel else { throw VPNExactFenceStoreError.stale }
+            guard let observed = try native.lookupFencedHost(active.identity,fence:expected.identity,deadline:deadline),
+                  observed.matches(active.identity) else { throw VPNDarwinRouteError.verificationFailed }
+            try current(deadline,checkCurrent)
+        }
+    }
+
+    /// Disconnect/recovery withdraws only confirmed active custody; it NEVER
+    /// releases claims or the NET deny. Unknown writes can finish from proved
+    /// absence only. A matching-looking unknown present route is not adopted.
+    func withdrawHost(_ expected: VPNExactFenceEntry, deadline: DispatchTime,
+                      checkCurrent: () throws -> Void) throws -> VPNExactFenceEntry {
+        try store.exclusive {
+            try current(deadline,checkCurrent); try expected.validate()
+            guard try store.load(expected.identity.address) == expected, expected.phase == .applied else {
+                throw VPNExactFenceStoreError.stale
+            }
+            guard let deny = try kernel.lookupExactFence(expected.identity,deadline:deadline),
+                  expected.identity.matches(deny) else { throw VPNDarwinRouteError.missingOrForeign }
+            try current(deadline,checkCurrent)
+            guard let active = expected.active else { return expected }
+            guard let native = kernel as? VPNFencedHostKernel else { throw VPNExactFenceStoreError.recoveryRequired }
+            let observed = try native.lookupFencedHost(active.identity,fence:expected.identity,deadline:deadline)
+            try current(deadline,checkCurrent)
+            var intent = expected
+            if let observed {
+                guard observed.matches(active.identity) else { throw VPNDarwinRouteError.missingOrForeign }
+                guard active.phase == .applied else { throw VPNExactFenceStoreError.recoveryRequired }
+                intent = expected.changingActive(VPNFencedHostEntry(identity:active.identity,claim:active.claim,phase:.removing))
+                try store.save(intent,replacing:expected)
+                try current(deadline,checkCurrent)
+                try native.deleteFencedHost(active.identity,fence:expected.identity,deadline:deadline,
+                    checkCurrent:{ try self.current(deadline,checkCurrent) })
+                try current(deadline,checkCurrent)
+            }
+            guard try native.lookupFencedHost(active.identity,fence:expected.identity,deadline:deadline) == nil else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+            try current(deadline,checkCurrent)
+            let cleared = intent.changingActive(nil)
+            try store.save(cleared,replacing:intent)
+            try current(deadline,checkCurrent); return cleared
+        }
+    }
+
     /// Remove only explicitly released references. Shared addresses stay fenced
     /// until their LAST exact claim is released under the caller's policy lease.
     func releaseClaims(_ expected: VPNExactFenceEntry, removing: [VPNExactFenceClaim],
@@ -323,6 +458,9 @@ final class VPNExactFenceTransaction {
                   removing.allSatisfy(expected.claims.contains) else { throw VPNExactFenceStoreError.invalidState }
             guard try store.load(expected.identity.address) == expected,
                   expected.phase == .applied else { throw VPNExactFenceStoreError.stale }
+            if let active = expected.active, removing.contains(active.claim) {
+                throw VPNExactFenceStoreError.recoveryRequired
+            }
             let remaining = expected.claims.filter { !removing.contains($0) }
             if remaining.isEmpty { return try retire(expected,deadline:deadline,checkCurrent:checkCurrent) }
             guard let observed = try kernel.lookupExactFence(expected.identity,deadline:deadline),
@@ -343,6 +481,7 @@ final class VPNExactFenceTransaction {
             try current(deadline,checkCurrent); try expected.validate()
             guard let old = try store.load(expected.identity.address), old == expected,
                   old.phase == .applied || old.phase == .releasing else { throw VPNExactFenceStoreError.stale }
+            guard old.active == nil else { throw VPNExactFenceStoreError.recoveryRequired }
             let observed = try kernel.lookupExactFence(old.identity,deadline:deadline)
             try current(deadline,checkCurrent)
             if old.phase == .releasing {

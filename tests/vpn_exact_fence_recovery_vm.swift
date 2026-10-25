@@ -11,6 +11,7 @@ import Foundation
         do {
             let store = try NativeStore.get(), previous = try store.entries()
             guard previous.count == 1, previous[0].phase == .applied,
+                  previous[0].active?.phase == .applied,
                   previous[0].identity.address.canonical == "198.19.253.201",
                   previous[0].claims.count == 1,
                   previous[0].claims[0].profileSHA256 == String(repeating:"a",count:64) else {
@@ -20,7 +21,11 @@ import Foundation
             let transaction = VPNExactFenceTransaction(store:store,kernel:socket)
             let deadline = DispatchTime.now()+5
             let restored = try transaction.restoreRetained(deadline:deadline,checkOwner:{})
-            guard restored == previous else { throw VPNExactFenceStoreError.invalidState }
+            guard restored.count == 1, restored[0].active == nil,
+                  restored[0].installationID == previous[0].installationID,
+                  restored[0].identity == previous[0].identity,
+                  restored[0].claims == previous[0].claims,
+                  restored[0].phase == .applied else { throw VPNExactFenceStoreError.invalidState }
             print("PASS native-exact-fence-crash-reopen-applied"); fflush(stdout)
             // The first process group and every owned client/utun FD are gone.
             // Only its proved global fence remains; explicitly release the VM fixture.

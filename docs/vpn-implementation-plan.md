@@ -7862,3 +7862,57 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   run40188528916 также queued при проверке. Queue не приравнивается к успешной
   проверке. Production active journal adapter/recovery, static CIDR deny layout,
   persistent DNS relay и synchronous GOST bypass/answer path ещё OPEN.
+
+
+### Продолжение 1.5hi — durable active HOST custody beside retained deny
+
+- [x] Exact-fence records v2 добавляют отдельную active HOST запись с exact
+  identity, исходным profile/resource/generation/revision claim и фазами
+  installing/applied/removing. Старые canonical v1 записи без active читаются
+  без изменения смысла; v1+active/неизвестная schema/неверный claim/retired+active
+  отвергаются. Legacy VPNRouteJournal schemas1/2/3 не переинтерпретируются.
+- [x] Production activateHost сохраняет intent ДО ADD, сверяет обе radix keys,
+  затем сохраняет applied; повторный вызов с подтверждённым тем же receipt
+  только проверяет live state. Withdraw сохраняет removing ДО DELETE и очищает
+  active только после доказанного отсутствия HOST при сохранённой NET fence.
+  Общий private store lock задаёт порядок store -> socket; callbacks не могут
+  брать socket перед store. Current/deadline/owner checks остаются на границах.
+- [x] Unknown ADD/DELETE с present active блокирует readiness/повторную mutation,
+  matching shape не принимается во владение. Подтверждённое отсутствие завершает
+  recovery без повторного native write. RestoreRetained теперь после deny
+  восстановления убирает только подтверждённое старое active custody и не выдаёт
+  successful ready с незавершённым present active. Claims и deny при этом остаются.
+- [x] Explicit retire запрещён до active withdrawal. Для shared IP можно снять
+  чужую неактивную ссылку без отключения маршрута; active claim удалять до
+  withdrawal нельзя. Проверено сохранение остальных ссылок и immutable ID.
+- [x] Current component:28pair/journal+27store+20adapter+1Universal native
+  compile/ordinary-denial =76 PASS41.400s без skips,
+  /tmp/pp-active-host-custody-verified-parent.log. Включены реальные private files,
+  повторное открытие store, запись intent перед native operation, отмена,
+  stale/foreign, обе family, unknown ADD/DELETE, shared IP и schema compatibility.
+- [x] Whole helper graph snapshot117inputs: arm64/x86_64 typecheck оба0,
+  /var/folders/zz/5wvv0n3915jc5t2283_x8zgw0000gn/T/pp-active-host-helper-typecheck-rxocz8xz/verification.json.
+  Во время этого прогона добавлен последний3-line active-claim release guard;
+  proof честно содержит stale=[VPNExactFenceStore.swift] и НЕ является exact
+  current-source full-helper proof. Сам final guard компилируется/проверен в
+  current76-method и Universal component прогоне выше. Полный current helper
+  остаётся обязательным в dedicated scoped/helper CI перед release.
+- [x] Native fixture before-active cycle теперь использует production
+  activateHost/withdrawHost/verifyHost с durable active ledger. После SIGKILL
+  второй процесс требует applied active v2 checkpoint, вызывает restoreRetained,
+  подтверждает исчезновение active при прежнем fence installationID/claims и
+  затем явно retire-ит fixture. Normal cleanup сначала withdraw-ит host journal.
+- [ ] Actual native нового v2 журнала ещё НЕ PASS. Предыдущий29d1a94 run
+ 40190780529 rechecked:121161134940/135078/135095/135144 все queued. Это прежний
+  low-level pair boundary, не v2 custody proof. Root listener persistent namespace,
+  domain answer authority/relay и GOST integration ещё не wired; domain gate CLOSED.
+
+Дальнейший обязательный bridge стык подтверждён pinned primary source x/v0.8.1:
+https://github.com/go-gost/x/blob/v0.8.1/api/config_bypass.go updateBypass сначала
+Unregister, потом Register; https://github.com/go-gost/x/blob/v0.8.1/registry/bypass.go
+wrapper при отсутствующей записи возвращает false. Один обновляемый bypass
+оставляет окно отправки cached corporate public IP upstream proxy, которое
+одна kernel fence не перекрывает. Нужны минимум две положительные группы с
+сохранением всех известных IP в неизменяемой группе при обновлении другой,
+подтверждение runtime update и persistent ordinary-App boot configuration ДО
+выдачи DNS ответа. Это ещё не реализовано и не подтверждено canary.
