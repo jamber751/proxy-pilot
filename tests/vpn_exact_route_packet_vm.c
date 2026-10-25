@@ -25,6 +25,8 @@ static const unsigned short port = 49317;
 static unsigned char nonce[16];
 #ifdef PP_NATIVE_EXACT_FENCE
 static int native_fence_after_active;
+static int native_hold_applied;
+extern int pp_exact_fence_startup(void);
 #endif
 
 static int interface_owned(int fd, const char *name, unsigned index) {
@@ -452,9 +454,13 @@ int main(int argc, char **argv) {
     const char *after = getenv("PROXYPILOT_VM_NATIVE_FENCE_AFTER_ACTIVE");
     if (!after || (strcmp(after,"0") && strcmp(after,"1"))) return 77;
     native_fence_after_active = !strcmp(after,"1");
+    const char *hold = getenv("PROXYPILOT_VM_NATIVE_FENCE_HOLD_APPLIED");
+    if (hold && strcmp(hold,"0") && strcmp(hold,"1")) return 77;
+    native_hold_applied = hold && !strcmp(hold,"1");
     /* The C fixture and Swift controller share this PID. Reserve disjoint
      * sequence ranges here; production Swift uses its shared allocator. */
     sequence = 1000000;
+    if (pp_exact_fence_startup()) return 1;
 #endif
     if (!addresses_free()) return 1;
     lo_index = if_nametoindex("lo0"); if (!lo_index) return 1;
@@ -473,6 +479,14 @@ int main(int argc, char **argv) {
             configure_one(escape_fd,escape_name,escape_index,0,"192.0.2.5","192.0.2.6") &&
             configure_one(escape_fd,escape_name,escape_index,1,"fd00:7070:2::1",NULL);
         if (!check(ok) || packet_probe()) { (void)cleanup(); fputs("FAIL exact-route-udp-unresolved-VM-disposal\n",stderr); return 1; }
+#ifdef PP_NATIVE_EXACT_FENCE
+        if (native_hold_applied) {
+            /* The VM parent kills this OWN process group. Do not clean its
+             * confirmed global fence or durable applied receipt first. */
+            puts("READY native-exact-fence-applied"); fflush(stdout);
+            for (;;) pause();
+        }
+#endif
         stage = "packetCleanup"; if (!check(cleanup())) return 1;
         puts(i ? "PASS exact-route-udp-ipv6-active-cached-fresh-death-neighbor" : "PASS exact-route-udp-ipv4-active-cached-fresh-death-neighbor");
         puts(i ? "PASS exact-route-tcp-ipv6-established-exchange-cached-fresh-death" : "PASS exact-route-tcp-ipv4-established-exchange-cached-fresh-death"); fflush(stdout);

@@ -32,7 +32,7 @@ private final class ObservedTransport: VPNRouteSocketTransport {
         return data
     }
 }
-private enum NativeStore {
+enum NativeStore {
     static var value: VPNExactFenceStore?
     static func get() throws -> VPNExactFenceStore {
         if let value { return value }
@@ -46,6 +46,25 @@ private enum NativeStore {
         defer { close(fd) }
         let store = try VPNExactFenceStore(trustedDirectoryDescriptor:fd)
         value = store; return store
+    }
+}
+@_cdecl("pp_exact_fence_startup")
+func exactFenceStartup() -> Int32 {
+    let env = ProcessInfo.processInfo.environment
+    guard getuid() == 0, geteuid() == 0, env["GITHUB_ACTIONS"] == "true",
+          env["PROXYPILOT_VM_NATIVE_EXACT_FENCE"] == "1",
+          env["PROXYPILOT_VM_EXACT_ROUTE_PACKETS"] == "1",
+          env["PROXYPILOT_VM_DNS_UTUN_TESTS"] == "1" else { return 77 }
+    do {
+        let store = try NativeStore.get()
+        let socket = try VPNDarwinRouteSocket.production()
+        _ = try VPNExactFenceTransaction(store:store,kernel:socket).restoreRetained(deadline:.now()+2,checkOwner:{})
+        print("PASS native-exact-fence-startup-ready"); fflush(stdout)
+        return 0
+    } catch {
+        let code = (error as? VPNFlowDiagnosticError)?.vpnFlowFailureCode.rawValue ?? "unknown"
+        print("FAIL native-exact-fence-startup category="+code); fflush(stdout)
+        return 1
     }
 }
 @_cdecl("pp_exact_fence_control")

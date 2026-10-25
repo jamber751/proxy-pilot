@@ -7805,3 +7805,26 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   и live System6cab не отменялись. Следующие production пункты: restore-all и
   pair-aware active routes (включая NET PRCLONING/legacy schema), затем DNS relay
   + answer authority. Новый low-level/file proof не заменяет рабочий domain flow.
+
+
+### Продолжение 1.5hg — восстановление retained fences до готовности сервиса
+
+- [x] Production restoreRetained восстанавливает все сохранённые защиты до
+  публикации resolver/bridge. Ошибка отдельного адреса не мешает защитить остальные,
+  но блокирует успешную готовность. Отмена владельца/дедлайн прерывает проход;
+  окончание проверяет все восстановленные записи повторно. Active routes и DNS
+  answer permits этот метод не создаёт. Retired не восстанавливаются; releasing
+  завершается только через существующую проверенную процедуру explicit release.
+- [x] 27 store tests + Universal native compile/ordinary denial: 28 PASS27.695s,
+  /tmp/pp-fence-startup-native-compile-parent.log. Отдельно 20 adapter +1 default
+  packet compile/pure/denial: 21 PASS7.207s,
+  /tmp/pp-fence-startup-adapter-packet-parent.log. Host network не изменялась.
+- [x] Disposable VM fixture расширен: startup перед интерфейсами; отдельный
+  процесс сохраняет applied receipt и держит живую global fence. Parent убивает
+  только собственную process group через SIGKILL. Новый Universal Swift процесс
+  открывает тот же store, вызывает production restoreRetained и обязан сохранить
+  прежний installationID, затем явно освобождает fixture. Namespace не удаляется.
+- [ ] Actual SIGKILL/reopen acceptance нового fixture пока НЕ подтверждён.
+  Предыдущий persistent native40188528916 повторно проверен: все4jobs queued.
+  Это ожидание runner, не passing proof. Pair-aware active routes, static NET
+  profile, production DNS/GOST wiring и полный первоначальный scope остаются OPEN.

@@ -59,6 +59,45 @@ private func store(_ fd: Int32) throws -> VPNExactFenceStore { try VPNExactFence
             let s = try store(fd), kernel = Kernel(), tx = VPNExactFenceTransaction(store:s,kernel:kernel)
             let identity = try id(4)
             switch mode {
+            case "startup-restore":
+                var old = [VPNExactFenceEntry]()
+                for f in [4,6] { old.append(try tx.ensure(id(f),claim:claim(),deadline:until(),checkCurrent:{})) }
+                kernel.present.removeAll()
+                let restored = try tx.restoreRetained(deadline:until(),checkOwner:{})
+                try check(restored.count == 2 && kernel.adds == 4)
+                try check(restored.map(\.claims) == old.map(\.claims))
+                try check(zip(restored,old).allSatisfy { $0.installationID != $1.installationID })
+                try check(try tx.restoreRetained(deadline:until(),checkOwner:{}) == restored && kernel.adds == 4)
+            case "startup-partial":
+                kernel.unknownAdd = true
+                do { _ = try tx.ensure(identity,claim:claim(),deadline:until(),checkCurrent:{}); throw NSError(domain:"missing",code:1) }
+                catch VPNDarwinRouteError.timeout {}
+                kernel.unknownAdd = false
+                let v6 = try id(6)
+                _ = try tx.ensure(v6,claim:claim(),deadline:until(),checkCurrent:{})
+                kernel.present.removeValue(forKey:v6.address.canonical)
+                try expect(.recoveryRequired) { _ = try tx.restoreRetained(deadline:until(),checkOwner:{}) }
+                try check(kernel.present[v6.address.canonical] != nil && kernel.adds == 3 && kernel.deletes == 0)
+                try check(try s.load(identity.address)?.phase == .adding)
+            case "startup-release":
+                let entry = try tx.ensure(identity,claim:claim(),deadline:until(),checkCurrent:{})
+                kernel.unknownDelete = true
+                do { _ = try tx.retire(entry,deadline:until(),checkCurrent:{}); throw NSError(domain:"missing",code:1) }
+                catch VPNDarwinRouteError.timeout {}
+                try check(try s.load(identity.address)?.phase == .releasing)
+                try check(try tx.restoreRetained(deadline:until(),checkOwner:{}).isEmpty)
+                try check(try s.load(identity.address)?.phase == .retired)
+                try check(kernel.deletes == 1)
+            case "startup-retired":
+                let entry = try tx.ensure(identity,claim:claim(),deadline:until(),checkCurrent:{})
+                _ = try tx.retire(entry,deadline:until(),checkCurrent:{})
+                try check(try tx.restoreRetained(deadline:until(),checkOwner:{}).isEmpty)
+                try check(kernel.adds == 1 && kernel.deletes == 1)
+            case "startup-cancelled":
+                _ = try tx.ensure(identity,claim:claim(),deadline:until(),checkCurrent:{})
+                kernel.present.removeAll()
+                try expect(.stale) { _ = try tx.restoreRetained(deadline:until(),checkOwner:{ throw VPNExactFenceStoreError.stale }) }
+                try check(kernel.adds == 1)
             case "write-order":
                 kernel.beforeAdd = { try check(try s.load(identity.address)?.phase == .adding) }
                 let entry = try tx.ensure(identity,claim:claim(),deadline:until(),checkCurrent:{})

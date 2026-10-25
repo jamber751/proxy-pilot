@@ -65,6 +65,7 @@ on:
       - '!tests/vpn_exact_route_packet_vm.c'
       - '!tests/test_vpn_exact_fence_native_vm.py'
       - '!tests/vpn_exact_fence_native_vm.swift'
+      - '!tests/vpn_exact_fence_recovery_vm.swift'
   workflow_dispatch:
 
 permissions:

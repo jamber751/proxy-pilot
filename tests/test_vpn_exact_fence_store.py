@@ -9,7 +9,7 @@ import tempfile
 import unittest
 import test_vpn_exact_fence_adapter as adapter
 ROOT=adapter.ROOT
-MODES=['write-order','reopen','claims','release-shared','generation','unknown-add','absent-recovery','restore-applied',
+MODES=['startup-restore','startup-partial','startup-release','startup-retired','startup-cancelled','write-order','reopen','claims','release-shared','generation','unknown-add','absent-recovery','restore-applied',
        'foreign','foreign-release','cancel-before-write','retire','unknown-delete','cancel-after-intent','expired','lock','concurrent','canonical','symlink','hardlink','lock-replaced','families']
 @unittest.skipUnless(sys.platform=='darwin' and shutil.which('swiftc'),'macOS Swift required')
 class FenceStoreTests(unittest.TestCase):

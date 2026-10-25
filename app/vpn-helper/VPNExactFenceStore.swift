@@ -278,6 +278,41 @@ final class VPNExactFenceTransaction {
         }
     }
 
+    /// Restore ALL retained denies before publishing any resolver/bridge listener.
+    /// This restores protection only, never active routes or DNS answer permits.
+    /// A blocked entry does not prevent protecting other known addresses, but
+    /// any failure prevents a successful startup result. Unknown present ADDs
+    /// are retained and blocked; they are never adopted as confirmed custody.
+    func restoreRetained(deadline: DispatchTime, checkOwner: () throws -> Void) throws -> [VPNExactFenceEntry] {
+        try store.exclusive {
+            try current(deadline,checkOwner)
+            let entries = try store.entries()
+            var restored = [VPNExactFenceEntry](), failure: Error?
+            for entry in entries where entry.phase != .retired {
+                try current(deadline,checkOwner)
+                do {
+                    if entry.phase == .releasing {
+                        _ = try retire(entry,deadline:deadline,checkCurrent:checkOwner)
+                    } else {
+                        let value = try ensure(entry.identity,claim:entry.claims[0],deadline:deadline,checkCurrent:checkOwner)
+                        restored.append(value)
+                    }
+                } catch { if failure == nil { failure = error } }
+                // Owner/cancellation/deadline failure aborts immediately. A
+                // route-specific failure may still leave other denies missing.
+                try current(deadline,checkOwner)
+            }
+            if let failure { throw failure }
+            // Earlier entries must still be live after the whole recovery pass.
+            for entry in restored {
+                try current(deadline,checkOwner)
+                guard let observed = try kernel.lookupExactFence(entry.identity,deadline:deadline),
+                      entry.identity.matches(observed) else { throw VPNDarwinRouteError.verificationFailed }
+            }
+            try current(deadline,checkOwner); return restored
+        }
+    }
+
     /// Remove only explicitly released references. Shared addresses stay fenced
     /// until their LAST exact claim is released under the caller's policy lease.
     func releaseClaims(_ expected: VPNExactFenceEntry, removing: [VPNExactFenceClaim],
