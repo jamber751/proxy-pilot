@@ -1,0 +1,33 @@
+name: VPN exact-address route pair viability
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-exact-route-pair.yml'
+      - 'tests/test_vpn_exact_route_pair_vm.py'
+      - 'tests/vpn_exact_route_pair_vm.c'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pair:
+    name: Exact host versus full-mask route (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile both architectures and prove ordinary-user denial
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_route_pair_vm -v
+      - name: Viability only in this fresh root VM; no network packet transmission
+        run: |
+          sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_EXACT_ROUTE_PAIR=1 \
+            RUNNER_TEMP="$RUNNER_TEMP" /usr/bin/python3 tests/test_vpn_exact_route_pair_vm.py --acceptance

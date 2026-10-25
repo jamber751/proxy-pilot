@@ -7173,3 +7173,36 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Root System и actual Unix gRPC current results ещё ожидаются. Отсутствие
   результата/ошибки не засчитывается как PASS. Все7 этапов остаются в полном
   объёме; host install и публичный выпуск не выполнялись.
+
+
+### Продолжение 1.5gp — проверка кандидата exact-IP route barrier без PF
+
+- [x] В public XNU route.c RTF_HOST использует nil netmask; network route сохраняет
+  явную маску. Это основание проверить отдельную гипотезу: могут ли host route и
+  net/full-length blackhole coexist для одного точного IP с нужным приоритетом.
+  Наличие разных форм в исходнике НЕ доказывает native coexistence/защиту.
+  Pinned primary source:
+  https://raw.githubusercontent.com/apple-oss-distributions/xnu/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/net/route.c
+  Read-only audit /tmp/pp-route-backup-primary-source-20261025/evidence.json.
+- [x] Добавлен самостоятельный guarded root GHA VM эксперимент для IPv4/IPv6.
+  Он проверяет только lookup/add/coexist/select/delete/reselect/restore для двух
+  точных synthetic documentation/benchmark адресов. Оба варианта используют
+  loopback gateway, без передачи пакетов, смены интерфейсов, default routes,
+  DNS, PF, installed App или VPN-service. Production codec/policy не изменены.
+- [x] Перед ADD отказывается от preexisting exact key. Каждая операция использует
+  свежий route socket, pid/sequence/type binding и общий2s deadline/128messages.
+  Zero-length route masks и interface notifications разобраны по public ABI.
+  Cleanup удаляет лишь подтверждённую точную форму с собственным ожидаемым
+  gateway/index/flags/mask; uncertain/rebound оставляется до VM disposal и
+  завершается FAIL. Numeric stage/errno/flags не содержат адресов/секретов.
+- [x] Ordinary local Universal C compile с Wall/Wextra/Werror и guard-only run
+  PASS1.037s: и без opt-in, и при env opt-in nonroot возвращает77 до route IO.
+  Workflow syntax PASS. Лог /tmp/pp-exact-route-pair-final-compile-parent.log.
+- [ ] Actual native viability ещё не подтверждена. Даже её успех не закроет
+  forwarding через utun, cached sockets, interface/helper death, unrelated IP,
+  foreign-state custody или reboot. До этих доказательств это не выбранный
+  production deny backend; splitDNSUnavailable gate остаётся закрытым.
+- [x] fa23e2c scoped40177188948 ARM121120324677 SUCCESS:389 related checks
+  PASS60.308s без skips и genuine Universal helper build/signature verification.
+  Лог /tmp/pp-scoped-fa23-arm-121120324677.log. Intel121120324835 ещё live на
+  helper compile; System Intel121110535940 продолжает свой source-a6 build.
