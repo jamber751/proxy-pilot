@@ -45,6 +45,11 @@
 отдельно от прежних отказов frozen139. Добавлены закрытые command-status/
 timeout diagnostics; актуальный завершающий системный сценарий ещё не принят.
 
+Новая native граница: current544e6d5 прошёл actual packet/death/crash-reopen
+на macOS26Intel (40199287851/job121186810446), включая retained runtime startup
+и exact global HOST observation. Это первая подтверждённая architecture для
+нового persistent runtime; остальные три и current-source Installer ещё OPEN.
+
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
 | 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый040d336 также8/8 на ARM | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
@@ -8466,3 +8471,52 @@ Diagnostic System40196864320 Intel121179472595 прошёл build/materials/root
 и capsule refusal. Последний individual step check уже показал disabled repair
 in_progress после phase6; полный восьмисценарный результат ещё не принят.
 ARM также in_progress. Ни один такой live/partial прогон не отменялся/не перезапускался.
+
+
+### Продолжение 1.5hv — native worker through a real per-domain macOS DNS scope
+
+- [x] Existing fresh-root SC owner canary расширен отдельным native mode;
+  старый Node/stock-GOST режим сохранён. Root владеет только random per-session
+  suffix и loopback UDP/TCP53 responder; candidate GOST/production Cgo worker/
+  clients обязательно запускаются с original ordinary runner UID/GID и без
+  дополнительных groups. Требуются прежний root opt-in и новые atomic/native
+  opt-ins ДО compiler/socket/owner/worker operations.
+- [x] Positive HTTP/SOCKS questions теперь могут быть udp.pp-UUID.test и
+  tcp.pp-UUID.test, а неlocalhost. Настоящий getaddrinfo должен выбрать temporary
+  macOS SC scope; независимый responder witness требует A/UDP иAAAA/UDP→TCP.
+  Negative wrong-CA/password cases намеренно остаютсяlocalhost: fallback не
+  сможет спрятаться заNXDOMAIN synthetic name и обязан провалить echo/proxy
+  controls. Public CA pinning, private epoch keys, wrong credentials и прежние
+  no-upstream-hit checks сохранены. Actual native SC path ещё не запускался.
+- [x] Ordinary probe теперь создаёт собственную process session; timeout
+  завершает только её verified same-PGID group до снятия DNS scope. Другой PGID
+  не сигналится; допускается завершить лишь exact Popen child. Это важно для
+  синхронного native lookup, который нельзя отменить одним HTTP context.
+  Pure injected process tests подтверждают group ownership и отказ чужой group.
+- [x]22 pure regression cases PASS2.092s до process cleanup дополнения;
+  final native/root suite12 PASS5.008s без skips, включая compile SC-owner на
+  обе архитектуры и ordinary-host refusal до live IO:
+  /tmp/pp-native-sc-resolver-regressions.log,
+  /tmp/pp-native-sc-resolver-final.log. Host DNS/SC/network/Keychain/root services
+  не менялись; никаких actual hostname lookups на host не делалось.
+- [x] Root SC native step и source filters добавлены в existing four-OS
+  candidate workflow ПОСЛЕ обычного TLS native-worker gate. Matrix jobs не
+  добавлены; candidate2 pins и production worker sources не изменялись.
+- [ ] Нужно получить actual six TLS cases + SC witness/cleanup на всех4OS.
+  Это resolver-selection proof, не root relay/output authority, не connected
+  utun corporate upstream и не WARP coexistence. Production domain gate CLOSED;
+  helper/App root inventory bootstrap, static CIDR custody, final installed
+  lifecycle/macOS12 runtime и исходный7-stage acceptance остаются OPEN.
+
+Authoritative native result: current544e6d5 run40199287851,
+macOS26Intel job121186810446 SUCCESS. Полный mode600 log
+/tmp/pp-retained-native-121186810446.log проверен:113 fast cases PASS139.281s;
+обе IPv4/IPv6, UDPcached/fresh иestablished TCP послеowned utun-owner SIGKILL,
+before-active/after-active fence orders, production add/delete/add HOST cycle,
+separate persistent processes, whole first process-group SIGKILL иновый runtime
+restore/reopen с тем же installationID, cleared active/retained deny, explicit
+fixture cleanup. Все required actual markers присутствуют; это подтверждает
+новый table-based global HOST fix против scoped clones иruntime recovery на
+ОДНОЙ architecture. Другие jobs121186810273/402/403 ещё queued, не отменялись.
+Diagnostic System40196864320 Intel121179472595 перешёл к enabled repair после
+успешных phase6 иdisabled repair; полного результата восьми cases ещё нет.

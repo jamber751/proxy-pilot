@@ -1,6 +1,7 @@
 """Default inert. Fresh opted-in ordinary macOS VM only: candidate GOST ->
 TLS-pinned production Cgo worker -> native localhost lookup -> owned echoes.
-No system DNS/SC/proxy/VPN settings change. Scoped corporate DNS is a later gate.
+No system DNS/SC/proxy/VPN settings change. Optional system mode is driven only
+by the separate fresh-root SC owner.
 """
 from pathlib import Path
 import hashlib
@@ -18,6 +19,8 @@ import test_vpn_gost_atomic_vm as atomic
 ROOT=Path(__file__).resolve().parents[1]
 FLAG='PROXYPILOT_VM_NATIVE_SYSTEM_RESOLVER_TESTS'
 WORKER='PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY'
+MARKERS=['PASS gost-native-resolver-'+protocol+'-'+mode for protocol in ('http','socks')
+         for mode in ('success','wrong-password','wrong-ca')]+['PASS gost-native-resolver-owned-cleanup']
 
 
 def enabled():
@@ -50,20 +53,39 @@ def verified_worker():
     return base.verify_binary(os.environ['RUNNER_TEMP'],str(path),os.getuid(),entry['bytes'],entry['sha256'])
 
 
-def live():
+def check_scope(system_id):
+    if system_id is not None:
+        import uuid
+        base.require(os.environ.get('PROXYPILOT_VM_GOST_SYSTEM_RESOLVER_TESTS')=='1'
+                     and str(uuid.UUID(system_id))==system_id,'guardDenied')
+
+
+def question_host(system_id,protocol,mode):
+    base.require(protocol in ('http','socks') and mode in ('success','wrong-password','wrong-ca'),'configuration')
+    # An accidental fallback can resolve localhost, so negative controls must
+    # not hide behind NXDOMAIN of a synthetic scoped name.
+    if system_id is None or mode!='success':return 'localhost'
+    import uuid
+    base.require(str(uuid.UUID(system_id))==system_id,'configuration')
+    return ('udp' if protocol=='http' else 'tcp')+'.pp-'+system_id+'.test'
+
+
+def live(system_id=None):
     base.require(enabled(),'guardDenied')
+    check_scope(system_id)
     base.require(platform.machine() in atomic.NATIVE and bool(os.environ.get('RUNNER_TEMP')) and bool(os.environ.get(atomic.BINARY)),'binaryRefused')
     size,digest=atomic.NATIVE[platform.machine()]
     gost=base.verify_binary(os.environ['RUNNER_TEMP'],os.environ[atomic.BINARY],os.getuid(),size,digest)
     try:
         worker=verified_worker()
-        try:run_contract(gost,worker)
+        try:run_contract(gost,worker,system_id=system_id)
         finally:worker.close()
     finally:gost.close()
 
 
-def run_contract(gost_lease,worker_lease):
+def run_contract(gost_lease,worker_lease,system_id=None):
     base.require(enabled(),'guardDenied')
+    check_scope(system_id)
     import secrets
     import select
     import socket
@@ -127,6 +149,7 @@ def run_contract(gost_lease,worker_lease):
             worker,ready=launch_worker(0);other,foreign=launch_worker(1);stop(other)
             for protocol in ('http','socks'):
                 for mode in ('success','wrong-password','wrong-ca'):
+                    hostname=question_host(system_id,protocol,mode)
                     ca=folder/'ca.pem';ca.write_text(foreign['certificate'] if mode=='wrong-ca' else ready['certificate']);ca.chmod(0o600)
                     supplied=(('b' if password!='b'*64 else 'a')*64 if mode=='wrong-password' else password)
                     with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as reserved:
@@ -148,7 +171,7 @@ def run_contract(gost_lease,worker_lease):
                         with socket.create_connection(('127.0.0.1',port),timeout=3) as client:
                             client.settimeout(3)
                             if protocol=='http':
-                                dest='localhost:'+str(target)
+                                dest=hostname+':'+str(target)
                                 client.sendall(('CONNECT '+dest+' HTTP/1.1\r\nHost: '+dest+'\r\n\r\n').encode())
                                 data=b''
                                 while b'\r\n\r\n' not in data:
@@ -160,7 +183,7 @@ def run_contract(gost_lease,worker_lease):
                                     base.require(not success or not rest,'client')
                             else:
                                 client.sendall(b'\x05\x01\x00');base.require(exact(client,2)==b'\x05\x00','client')
-                                host=b'localhost';client.sendall(b'\x05\x01\x00\x03'+bytes([len(host)])+host+target.to_bytes(2,'big'))
+                                host=hostname.encode('ascii');client.sendall(b'\x05\x01\x00\x03'+bytes([len(host)])+host+target.to_bytes(2,'big'))
                                 result=b''
                                 while len(result)<4:
                                     part=client.recv(4-len(result))
@@ -190,6 +213,17 @@ def run_contract(gost_lease,worker_lease):
     print('PASS gost-native-resolver-owned-cleanup',flush=True)
 
 class PureTests(unittest.TestCase):
+    def test_scope_opt_in_precedes_binary_or_worker_reads(self):
+        with patch(__name__+'.enabled',return_value=True),patch.dict(os.environ,{},clear=True),patch.object(base,'verify_binary') as binary,patch(__name__+'.verified_worker') as worker:
+            with self.assertRaisesRegex(base.Refused,'guardDenied'):live('12345678-1234-1234-1234-123456789abc')
+        binary.assert_not_called();worker.assert_not_called()
+    def test_scope_questions_and_localhost_negative_controls(self):
+        run='12345678-1234-1234-1234-123456789abc'
+        self.assertEqual(question_host(run,'http','success'),'udp.pp-'+run+'.test')
+        self.assertEqual(question_host(run,'socks','success'),'tcp.pp-'+run+'.test')
+        for mode in ('wrong-password','wrong-ca'):
+            for protocol in ('http','socks'):self.assertEqual(question_host(run,protocol,mode),'localhost')
+        self.assertEqual(len(MARKERS),7)
     def test_host_refuses_before_binary_or_worker_reads_or_process(self):
         with patch.dict(os.environ,{},clear=True),patch.object(base,'verify_binary') as binary,patch(__name__+'.verified_worker') as worker,patch('subprocess.Popen') as spawn:
             with self.assertRaisesRegex(base.Refused,'guardDenied'):live()
@@ -203,8 +237,8 @@ class PureTests(unittest.TestCase):
         for port,password,path in ((80,'a'*64,Path('/tmp/ca.pem')),(12345,'a'*48,Path('/tmp/ca.pem')),(12345,'a'*64,Path('ca.pem'))):
             with self.assertRaises(base.Refused):resolver(port,password,path)
 if __name__=='__main__':
-    if sys.argv[1:]==['--acceptance']:
-        try:live()
+    if sys.argv[1:]==['--acceptance'] or (len(sys.argv)==3 and sys.argv[1]=='--system'):
+        try:live(sys.argv[2] if sys.argv[1]=='--system' else None)
         except base.Refused as error:print('FAIL gost-native-resolver category='+error.category,flush=True);raise SystemExit(1)
         except Exception:print('FAIL gost-native-resolver category=unexpected',flush=True);raise SystemExit(1)
     else:unittest.main()

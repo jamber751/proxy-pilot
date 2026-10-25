@@ -1,6 +1,6 @@
 """Compile/pure guards ONLY by default; no local SC/network/DNS/Keychain calls.
 Opted-in fresh-root-GHA orchestration temporarily owns one random OS DNS scope;
-GOST/Node/client endpoints run as the ordinary invoking runner, never root.
+GOST/Node/native-worker/client endpoints run as the ordinary runner, never root.
 This proves the resolver seam, NOT production integration or WARP acceptance.
 """
 from pathlib import Path
@@ -24,6 +24,8 @@ import uuid
 import test_vpn_gost_resolver_vm as base
 import test_vpn_gost_grpc_resolver_vm as grpc
 import test_vpn_dns_resolver_vm as dns
+import test_vpn_gost_native_resolver_vm as native
+import test_vpn_gost_atomic_vm as atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 FLAG = 'PROXYPILOT_VM_GOST_SYSTEM_RESOLVER_TESTS'
@@ -75,9 +77,35 @@ def ordinary(run):
     finally: lease.close()
 
 
-def live():
+def ordinary_probe(arguments,uid,gid,environment):
+    # Own a new session before spawning any native worker/GOST descendants.
+    # On timeout terminate this exact owned group before removing its DNS scope;
+    # killing only the Python probe could leave a blocked native lookup alive.
+    import signal
+    child=subprocess.Popen(arguments,user=uid,group=gid,extra_groups=[],
+        env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+        start_new_session=True)
+    try:
+        out,err=child.communicate(timeout=40)
+        return subprocess.CompletedProcess(arguments,child.returncode,out,err)
+    except subprocess.TimeoutExpired:
+        if child.poll() is None:
+            try:
+                if os.getpgid(child.pid)==child.pid:os.killpg(child.pid,signal.SIGKILL)
+                else:child.kill() # Never signal a group whose ownership differs.
+            except ProcessLookupError:pass
+        child.communicate(timeout=5)
+        raise
+
+
+def live(mode='node'):
     # Must precede sockets, temp files, SC helper, ordinary worker or getaddrinfo.
-    if not root_allowed(): raise RuntimeError('guardDenied')
+    if mode not in ('node','native') or not root_allowed(): raise RuntimeError('guardDenied')
+    if mode=='native' and not (os.environ.get(native.FLAG)=='1' and os.environ.get(atomic.FLAG)=='1'
+            and os.environ.get(native.WORKER) and os.environ.get(atomic.BINARY)):
+        raise RuntimeError('guardDenied')
+    expected_markers=native.MARKERS if mode=='native' else MARKERS
+    failure_prefix='FAIL gost-native-resolver category=' if mode=='native' else 'FAIL gost-system-dns category='
     import pwd
     uid,gid = int(os.environ['SUDO_UID']),int(os.environ['SUDO_GID'])
     if uid < 500 or gid < 0 or pwd.getpwuid(uid).pw_gid != gid: raise RuntimeError('runnerIdentity')
@@ -111,26 +139,28 @@ def live():
                 thread = threading.Thread(target=serve); thread.start(); owner = None
                 try:
                     environment = {'PATH':os.environ['PATH'],'GITHUB_ACTIONS':'true',FLAG:'1',base.FLAG:'1',
-                                   'RUNNER_TEMP':os.environ['RUNNER_TEMP'],base.BINARY:os.environ[base.BINARY]}
+                                   'RUNNER_TEMP':os.environ['RUNNER_TEMP'],base.BINARY:os.environ[atomic.BINARY] if mode=='native' else os.environ[base.BINARY]}
+                    if mode=='native':
+                        environment.update({native.FLAG:'1',atomic.FLAG:'1',native.WORKER:os.environ[native.WORKER],atomic.BINARY:os.environ[atomic.BINARY]})
                     owner = subprocess.Popen([str(binary),'--hold',run],stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=environment)
                     if not select.select([owner.stdout],[],[],8)[0] or os.read(owner.stdout.fileno(),64) != b'READY\n':
                         raise RuntimeError('ownerStartup')
-                    result = subprocess.run([sys.executable,str(Path(__file__).resolve()),'--ordinary',run],
-                        user=uid,group=gid,extra_groups=[],env=environment,capture_output=True,text=True,timeout=40)
+                    probe=[sys.executable,str(ROOT/'tests/test_vpn_gost_native_resolver_vm.py'),'--system',run] if mode=='native' else [sys.executable,str(Path(__file__).resolve()),'--ordinary',run]
+                    result = ordinary_probe(probe,uid,gid,environment)
                     out,_ = owner.communicate(input=b'R',timeout=8)
                     if owner.returncode or out != (CLEANUP+'\n').encode(): raise RuntimeError('ownerCleanup')
                     for line in result.stdout.splitlines():
-                        if line not in MARKERS and line not in {'FAIL gost-system-dns category='+c for c in base.FAILURES}:
+                        if line not in expected_markers and line not in {failure_prefix+c for c in base.FAILURES}:
                             raise RuntimeError('outputProtocol')
-                    if result.returncode or result.stdout.splitlines() != MARKERS:
+                    if result.returncode or result.stdout.splitlines() != expected_markers:
                         for line in result.stdout.splitlines(): print(line,flush=True)
                         raise RuntimeError('ordinaryProbe')
                     needed = {('udp',1,'udp'),('tcp',28,'udp'),('tcp',28,'tcp')}
                     if not needed.issubset(responder.seen): raise RuntimeError('dnsWitness')
-                    for marker in MARKERS: print(marker,flush=True)
+                    for marker in expected_markers: print(marker,flush=True)
                     print(CLEANUP,flush=True)
-                    print('PASS gost-system-dns-actual-A-AAAA-UDP-TCP',flush=True)
+                    print('PASS '+('gost-native-system-dns' if mode=='native' else 'gost-system-dns')+'-actual-A-AAAA-UDP-TCP',flush=True)
                 finally:
                     if owner is not None:
                         if owner.poll() is None:
@@ -142,6 +172,28 @@ def live():
 
 
 class PureTests(unittest.TestCase):
+    def test_timeout_retires_only_the_owned_probe_session(self):
+        import signal
+        child=unittest.mock.Mock(pid=7654)
+        child.poll.return_value=None
+        child.communicate.side_effect=[subprocess.TimeoutExpired('owned',40),('','')]
+        with patch('subprocess.Popen',return_value=child) as spawn,patch('os.getpgid',return_value=7654),patch('os.killpg') as kill:
+            with self.assertRaises(subprocess.TimeoutExpired):ordinary_probe(['owned'],501,20,{})
+        self.assertTrue(spawn.call_args.kwargs['start_new_session'])
+        kill.assert_called_once_with(7654,signal.SIGKILL);child.kill.assert_not_called()
+
+    def test_timeout_never_signals_a_different_process_group(self):
+        child=unittest.mock.Mock(pid=7654)
+        child.poll.return_value=None
+        child.communicate.side_effect=[subprocess.TimeoutExpired('owned',40),('','')]
+        with patch('subprocess.Popen',return_value=child),patch('os.getpgid',return_value=9999),patch('os.killpg') as kill:
+            with self.assertRaises(subprocess.TimeoutExpired):ordinary_probe(['owned'],501,20,{})
+        kill.assert_not_called();child.kill.assert_called_once_with()
+
+    def test_native_root_opt_in_precedes_owner_compile_or_network(self):
+        with patch(__name__+'.root_allowed',return_value=True),patch.dict(os.environ,{},clear=True),patch('socket.socket') as network,patch(__name__+'.compile_owner') as compiler,patch('subprocess.Popen') as child:
+            with self.assertRaisesRegex(RuntimeError,'^guardDenied$'):live('native')
+        network.assert_not_called();compiler.assert_not_called();child.assert_not_called()
     def test_root_guard_denies_before_network_or_compile_or_process(self):
         with patch.dict(os.environ,{},clear=True),patch('socket.socket') as network,patch(__name__+'.compile_owner') as compiler,patch('subprocess.Popen') as child:
             with self.assertRaisesRegex(RuntimeError,'^guardDenied$'): live()
@@ -173,9 +225,9 @@ class PureTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    if sys.argv[1:] == ['--acceptance'] or (len(sys.argv) == 3 and sys.argv[1] == '--ordinary'):
+    if sys.argv[1:] in (['--acceptance'],['--native-acceptance']) or (len(sys.argv) == 3 and sys.argv[1] == '--ordinary'):
         try:
-            if sys.argv[1] == '--acceptance': live()
+            if sys.argv[1] in ('--acceptance','--native-acceptance'): live('native' if sys.argv[1]=='--native-acceptance' else 'node')
             else: ordinary(sys.argv[2])
         except Exception as error:
             # Closed categories only: no raw child output, query names or paths.

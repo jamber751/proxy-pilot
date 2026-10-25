@@ -8,6 +8,9 @@ on:
       - 'app/vpn-bridge/**'
       - 'app/vpn-system-resolver/**'
       - 'tests/test_vpn_gost_native_resolver_vm.py'
+      - 'tests/test_vpn_gost_system_resolver_vm.py'
+      - 'tests/vpn_gost_system_dns_owner.swift'
+      - 'tests/test_vpn_dns_resolver_vm.py'
       - 'tests/test_vpn_system_resolver_worker.py'
       - 'tests/test_vpn_gost_atomic_preparation.py'
       - 'tests/test_vpn_gost_atomic_vm.py'
@@ -42,7 +45,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -117,3 +120,11 @@ jobs:
           export PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)"
           export PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY="$RUNNER_TEMP/native-system-resolver/system-resolver-$(uname -m)"
           python3 tests/test_vpn_gost_native_resolver_vm.py --acceptance
+      - name: Native worker follows an owned macOS DNS scope for A and AAAA over UDP and TCP
+        run: |
+          sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_GOST_SYSTEM_RESOLVER_TESTS=1 \
+            PROXYPILOT_VM_GOST_RESOLVER_TESTS=1 PROXYPILOT_VM_GOST_ATOMIC_TESTS=1 \
+            PROXYPILOT_VM_NATIVE_SYSTEM_RESOLVER_TESTS=1 RUNNER_TEMP="$RUNNER_TEMP" PATH="$PATH" \
+            PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)" \
+            PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY="$RUNNER_TEMP/native-system-resolver/system-resolver-$(uname -m)" \
+            /usr/bin/python3 tests/test_vpn_gost_system_resolver_vm.py --native-acceptance
