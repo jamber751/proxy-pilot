@@ -8909,7 +8909,7 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   проверены в1.5if: positive live Go-code auth иreal Go parent-death подтверждены
   настоящим signed GOST, не C fake.
 - [ ] Current App normal bridge entry по-прежнему старый:
-  closed typed config/factory, root boot callback wiring иdomain/answer authority
+  owned runtime factory, root boot callback wiring иdomain/answer authority
   ещёOPEN. Full frontend proof1.5ic предшествуетnew identity extension; здесь
   проверены component/VM CLI graphs обеих arch, не новый installed bundle.
   Изначальные7 stages, macOS12 runtime/WARP ифинальная single host install OPEN.
@@ -8953,8 +8953,14 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   resolver runtime/answer authority этим не доказываются. Новый CLI guard
   отклоняет оба variant на host ДО live операций. Guard/packaging 9 PASS 8.645s:
   `/tmp/pp-bridge-config-packaging-guards.log`.
-- [ ] Новый production-recipe actual VM result ещё нужен. Normal App entry не
-  переключён: нужны owned native resolver factory, root boot activation wiring,
+- [x] Production-recipe actual gate прошёл на всех 4 OS на dc83e02:
+  run40240870096, jobs121312156644/121312156841/121312156895/121312156933.
+  Полные mode600 logs `/tmp/pp-production-recipe-<job>.log` проверены:
+  каждый из 8 markers (4 прежних owned-worker + 4 новых production-recipe)
+  встретился ровно один раз в каждом job. Пять сопутствующих suites не следует
+  автоматически считать зелёными: ownership run40240870138 содержит отдельный
+  failure наблюдения custody на Intel, см. 1.5ig.
+- [ ] Normal App entry не переключён: нужны owned native resolver factory, root boot activation wiring,
   ongoing root/bridge ACK и domain answer authority. Новая recipe — конфигурация,
   не разрешение стартовать listener. Исходные 7 этапов остаются полным объёмом работы.
 - [x] Current-source Universal frontend собран из неизменяемого снимка исходников;
@@ -8963,3 +8969,25 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   `/tmp/pp-config-frontend-build.log`. Scope — build/sign, без запуска App/GOST,
   установки или изменения сети. Это покрывает новую recipe и live-code identity
   extension; macOS 12 runtime и установленный комплект этим не проверены.
+
+### Продолжение 1.5ig — bootstrap custody observation ordering
+
+- [x] В полном логе Intel job121312156852 run40240870138 обнаружен один failure:
+  после успешного bootstrap клиентский тест прочитал `held` вместо `released`.
+  Остальные 17 выбранных inventory/bootstrap cases прошли. Private log:
+  `/tmp/pp-ownership-recipe-121312156852.log`.
+- [x] Исходники production listener подтверждают порядок: final OK записывается
+  ВНУТРИ `withInventory`, затем происходит возврат из callback и освобождение
+  custody. Получение ответа другим процессом не доказывает завершение более
+  позднего server-side defer. Клиент по-прежнему проверяет `held` непосредственно
+  внутри activation; эта проверка не ослаблена.
+- [x] Только test fixture: отдельный `success-delayed-release` mode задерживает
+  post-reply defer на 100ms, делая допустимое окно воспроизводимым. Python test
+  отдельно ожидает release не дольше 2s, допускает только `held`/`released`;
+  missing/corrupt marker либо отсутствие release остаются ошибками. Production
+  listener, wire protocol, custody и deadlines не изменены.
+- [x] Local targeted 3 tests PASS 43.292s, без skips: delayed successful
+  custody release, durable boot cache, final refusal changed/revoke. Log:
+  `/tmp/pp-bootstrap-custody-observation.log`. Это signed ordinary-user Unix IPC,
+  без root/VPN/сетевых настроек; fixture компилирует обе архитектуры.
+- [ ] Повторная Intel CI-проверка этой test-only коррекции ещё нужна.

@@ -168,6 +168,18 @@ class VPNHelperListenerTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=60)
         return result.stdout.strip()
 
+    def assert_custody_released(self, marker):
+        # The wire reply is deliberately sent under custody. Its receipt cannot
+        # order the server's later defer/unlock against the client process.
+        # Observe that separate event, boundedly; unknown/missing state fails.
+        deadline=time.monotonic()+2
+        while True:
+            value=marker.read_text()
+            self.assertIn(value,('held','released'))
+            if value=='released':return
+            self.assertLess(time.monotonic(),deadline,'root custody was not released')
+            time.sleep(.005)
+
     def test_authenticated_client_receives_a_receipt(self):
         self.seed()
         self.serve()
@@ -244,7 +256,7 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.seed(application='boot-client');self.serve(extra=['bridge-bootstrap-test','success',str(marker)])
         self.assertEqual(self.session('boot-cache=success:'+str(self.base),client='boot-client'),
                          ['boot-cache:ok retired:0 protected:4'])
-        self.assertEqual(marker.read_text(),'released')
+        self.assert_custody_released(marker)
 
     def test_boot_cache_survives_final_root_refusal_and_runtime_is_retired_once(self):
         self.seed(application='boot-client');self.serve(extra=['bridge-bootstrap-test','changed'])
@@ -258,9 +270,9 @@ class VPNHelperListenerTests(unittest.TestCase):
 
     def test_bridge_bootstrap_activation_happens_under_root_custody(self):
         marker=self.base/'bootstrap-custody'
-        self.seed();self.serve(extra=['bridge-bootstrap-test','success',str(marker)])
+        self.seed();self.serve(extra=['bridge-bootstrap-test','success-delayed-release',str(marker)])
         self.assertEqual(self.session('bootstrap=success:'+str(marker)),['bootstrap:ok retired:false'])
-        self.assertEqual(marker.read_text(),'released')
+        self.assert_custody_released(marker)
         self.assertEqual(self.session('status'),['answer:ok sequence:10 protocol:1'])
 
     def test_bridge_bootstrap_final_refusal_retires_only_returned_runtime(self):
@@ -270,7 +282,7 @@ class VPNHelperListenerTests(unittest.TestCase):
                 try:
                     case.serve(extra=['bridge-bootstrap-test',mode,str(marker)])
                     self.assertEqual(case.session('bootstrap=success:'+str(marker)),['bootstrap:failed retired:true'])
-                    self.assertEqual(marker.read_text(),'released')
+                    case.assert_custody_released(marker)
                 finally:case.doCleanups()
 
     def test_bridge_bootstrap_missing_failed_malformed_or_aborted_activation(self):

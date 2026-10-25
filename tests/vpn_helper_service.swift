@@ -13,7 +13,13 @@ private final class VPNFixtureBridgeBootstrap: VPNBridgeBootstrapSource {
     }
     func withInventory(deadline: DispatchTime,body: (Data, () throws -> Void) throws -> Void) throws {
         if mode=="failure" { throw VPNHelperListenerError.unavailable }
-        try write("held");defer { try? write("released") }
+        try write("held")
+        defer {
+            // The final reply is sent inside body, before custody unwinds.
+            // Make that legitimate scheduling window deterministic in one test.
+            if mode=="success-delayed-release" { usleep(100_000) }
+            try? write("released")
+        }
         let inventory=try VPNBridgeRootInventory(bootID:UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
             stateSHA256:String(repeating:"a",count:64),routeJournalSHA256:nil,matchers:["10.44.0.0/16"])
         let data=mode=="malformed" ? Data("{}".utf8):try inventory.encoded()
