@@ -232,6 +232,40 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.serve()
         self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
 
+    def test_retained_inventory_authenticated_roundtrip(self):
+        self.seed();self.serve(extra=['inventory-test','success'])
+        self.assertEqual(self.session('inventory'),['inventory:0:2'])
+        self.assertEqual(self.session('inventory'),['inventory:0:2'])
+
+    def test_retained_inventory_missing_provider_is_unsupported(self):
+        self.seed();self.serve()
+        self.assertEqual(self.session('inventory'),['inventory:1:0'])
+
+    def test_retained_inventory_payload_refused_before_provider(self):
+        marker=self.base/'inventory-read'
+        self.seed();self.serve(extra=['inventory-test','success',str(marker)])
+        self.assertEqual(self.session('inventory-payload'),['inventory:2:0'])
+        self.assertFalse(marker.exists())
+
+    def test_retained_inventory_failures_never_return_empty_success(self):
+        for mode in ('failure','oversized','revoke'):
+            with self.subTest(mode=mode):
+                case=type(self)('runTest');case.setUp();case.seed()
+                try:
+                    case.serve(extra=['inventory-test',mode])
+                    self.assertEqual(case.session('inventory'),['inventory:3:0'])
+                finally:case.doCleanups()
+
+    def test_retained_inventory_malformed_response_is_rejected(self):
+        self.seed();self.serve(extra=['inventory-test','malformed'])
+        self.assertEqual(self.session('inventory'),['rejected:invalidResponse'])
+
+    def test_retained_inventory_wrong_signed_peer_is_refused_before_provider(self):
+        marker=self.base/'inventory-read'
+        self.seed();self.serve(extra=['inventory-test','success',str(marker)])
+        self.assertTrue(self.session('inventory',client='stranger')[0].startswith('rejected:'))
+        self.assertFalse(marker.exists())
+
     def test_several_requests_share_one_authenticated_connection(self):
         self.seed()
         self.serve()

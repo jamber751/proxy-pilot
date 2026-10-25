@@ -2,10 +2,55 @@ import Foundation
 
 enum VPNApplicationSpecError: Error { case invalid, tooLarge }
 
+/// Complete listing of this ONE retained exact-host namespace. It is not the
+/// inventory of legacy/static CIDR routes, an active-route proof, or permission
+/// to start a bridge/release DNS answers. A new daemon has a different bootID.
+struct VPNRetainedProtectionInventory: Codable, Equatable {
+    static let maximumBytes = 256 * 1024
+    static let maximumPrefixes = 4096
+    static let namespace = "retained-exact-hosts-v1"
+    let schemaVersion: Int
+    let scope: String
+    let bootID: UUID
+    let prefixes: [String]
+
+    init(bootID: UUID, prefixes: [String]) throws {
+        schemaVersion=1;scope=Self.namespace;self.bootID=bootID;self.prefixes=prefixes
+        try validate()
+    }
+    func validate() throws {
+        guard schemaVersion==1,scope==Self.namespace,prefixes.count<=Self.maximumPrefixes,
+              prefixes==prefixes.sorted(),Set(prefixes).count==prefixes.count else { throw VPNApplicationSpecError.invalid }
+        for value in prefixes {
+            let parts=value.split(separator:"/",omittingEmptySubsequences:false)
+            guard parts.count==2 else { throw VPNApplicationSpecError.invalid }
+            let resource=try VPNResource(address:String(parts[0]))
+            guard resource.address==parts[0],
+                  (resource.kind == .ipv4 && parts[1]=="32") || (resource.kind == .ipv6 && parts[1]=="128") else {
+                throw VPNApplicationSpecError.invalid
+            }
+        }
+    }
+    func encoded() throws -> Data {
+        try validate()
+        let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+        let data=try encoder.encode(self)
+        guard data.count<=Self.maximumBytes else { throw VPNApplicationSpecError.tooLarge }
+        return data
+    }
+    static func decodeCanonical(_ data: Data) throws -> Self {
+        guard !data.isEmpty,data.count<=maximumBytes else { throw VPNApplicationSpecError.tooLarge }
+        let value=try JSONDecoder().decode(Self.self,from:data)
+        try value.validate()
+        guard try value.encoded()==data else { throw VPNApplicationSpecError.invalid }
+        return value
+    }
+}
+
 /// Capabilities implemented by the currently shipped, route-only helper.
-/// Domain resources require per-domain DNS selection. macOS exposes that
-/// safely through Network Extension split DNS, which this Developer ID-free
-/// helper does not claim to provide.
+/// Domain resources require per-domain DNS selection and the complete protected
+/// answer/route handoff. The native DNS building blocks are not yet wired into
+/// that runtime, so domain configuration remains unavailable here.
 enum VPNRuntimeCapabilityError: Error, Equatable {
     case splitDNSUnavailable
 }

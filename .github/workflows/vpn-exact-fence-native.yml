@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/vpn-exact-fence-native.yml'
       - 'app/VPNConfiguration.swift'
+      - 'app/vpn-helper/VPNApplicationSpec.swift'
       - 'app/vpn-helper/OpenVPNManagementEvent.swift'
       - 'app/vpn-helper/OpenVPNStateEvidence.swift'
       - 'app/vpn-helper/VPNKernelInterfaceSnapshot.swift'

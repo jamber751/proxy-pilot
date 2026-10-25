@@ -24,7 +24,7 @@ enum VPNHelperService {
             exit(0)
         }
         guard (3...7).contains(args.count), ["serve", "seed"].contains(args[1]) else { exit(64) }
-        let ready = args.count < 4 || args[3] != "not-ready"
+        var ready = args.count < 4 || args[3] != "not-ready"
         let directory = open(args[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { exit(70) }
         do {
@@ -136,9 +136,27 @@ enum VPNHelperService {
                 let managedMode = args.count == 5 ? args[3] : ""
                 let managed = managedMode == "managed-tunnel-test"
                     || managedMode == "managed-connected-test"
+                var inventory: ((DispatchTime) throws -> Data)?
+                if args.count>=5,args[3]=="inventory-test" {
+                    let mode=args[4]
+                    inventory = { deadline in
+                        guard DispatchTime.now().uptimeNanoseconds<deadline.uptimeNanoseconds else { throw VPNHelperListenerError.unavailable }
+                        if args.count==6 {
+                            try Data("read".utf8).write(to:URL(fileURLWithPath:args[5]),options:.atomic)
+                            _=chmod(args[5],0o600)
+                        }
+                        if mode=="failure" { throw VPNHelperListenerError.unavailable }
+                        if mode=="oversized" { return Data(repeating:0,count:VPNHelperProtocol.maximumPayloadBytes+1) }
+                        if mode=="malformed" { return Data("{}".utf8) }
+                        if mode=="revoke" { ready=false }
+                        return try VPNRetainedProtectionInventory(bootID:UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
+                            prefixes:["198.19.253.201/32","2001:db8:fff:fd::c9/128"]).encoded()
+                    }
+                }
                 listener = try VPNHelperListener.bind(inTrustedDirectory: directory,
                     release: deployment.release, ownerUserID: deployment.ownerUserID,
                     endpointDirectory: endpoint,
+                    readRetainedProtection:inventory,
                     startTunnel: { try appendTrace("start-held"); return true },
                     startManagedTunnel: managed ? { binding, state in
                         if managedMode == "managed-connected-test" {

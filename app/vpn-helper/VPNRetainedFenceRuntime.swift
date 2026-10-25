@@ -12,6 +12,7 @@ final class VPNRetainedFenceRuntime {
     private let checkNamespace: (Int32) throws -> Void
     private let lock = NSRecursiveLock()
     private var state = State.fresh
+    private let bootID = UUID()
 
     init(trustedDirectoryDescriptor: Int32, kernel: VPNExactFenceKernel,
          checkNamespace: @escaping (Int32) throws -> Void) throws {
@@ -60,9 +61,39 @@ final class VPNRetainedFenceRuntime {
     /// Successful boot plus continued filesystem custody, NOT an answer/route
     /// permit. Each future output transaction still needs live full proof.
     func check() throws {
-        lock.lock(); defer { lock.unlock() }
+        try requireReady()
+        // Do not hold the state lock while acquiring the store lock: a journal
+        // transaction may legitimately check runtime custody while owning it.
+        do { try namespace();try requireReady() }
+        catch { lock.lock();state = .failed;lock.unlock();throw error }
+    }
+    func inventory(deadline: DispatchTime) throws -> VPNRetainedProtectionInventory {
+        try requireReady()
+        func current() throws {
+            guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+            try check()
+            guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+        }
+        do {
+            try current()
+            return try store.withEntries { entries in
+                try current()
+                let prefixes=entries.filter { $0.phase != .retired }.map {
+                    $0.identity.address.canonical+($0.identity.address.family == .ipv4 ? "/32":"/128")
+                }.sorted()
+                let value=try VPNRetainedProtectionInventory(bootID:bootID,prefixes:prefixes)
+                try current();return value
+            }
+        } catch {
+            // A read-only deadline miss can be retried by a new request. An
+            // observed corrupt/changed namespace cannot keep claiming ready.
+            if case VPNDarwinRouteError.timeout = error { throw error }
+            lock.lock();state = .failed;lock.unlock();throw error
+        }
+    }
+    private func requireReady() throws {
+        lock.lock();defer { lock.unlock() }
         guard state == .ready else { throw VPNExactFenceStoreError.recoveryRequired }
-        do { try namespace() } catch { state = .failed; throw error }
     }
     private func namespace() throws {
         guard directory >= 0 else { throw VPNExactFenceStoreError.unsafeStorage }

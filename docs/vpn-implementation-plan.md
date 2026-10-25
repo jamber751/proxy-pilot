@@ -39,11 +39,13 @@
 [○ DNS/жизненный цикл] → [○ выпуск]**.
 Это ориентир по ближайшим контрольным точкам, не процент завершения семи этапов.
 
-Последние проверки сузили сбой Intel до завершающих действий после запуска C:
-137→139→C доходит до выбранной141, рабочей helperC и нулевого failure budget,
-но возвращает ошибку при согласовании broker либо снятии recovery job. Это
-отдельно от прежних отказов frozen139. Добавлены закрытые command-status/
-timeout diagnostics; актуальный завершающий системный сценарий ещё не принят.
+Диагностический комплект2dce4c5 теперь прошёл все8 настоящих системных
+сценариев на обеих архитектурах: run40196864320, jobs121179472470/121179472595.
+Полные логи проверены: каждый из8 cases выполнен, ни один из них не skipped.
+Это закрывает прежний наблюдаемый Intel отказ завершающих действий для2dce4c5.
+Более новый комплект с persistent runtime544e6d5 пока принят только по API-статусу
+ARM; его полный лог и Intel ещё проверяются. Последние inventory-изменения этим
+результатом не покрыты; итоговая host-установка ещё не разрешена к выполнению.
 
 Новая native граница: current544e6d5 прошёл actual packet/death/crash-reopen
 на macOS26Intel (40199287851/job121186810446), включая retained runtime startup
@@ -52,7 +54,7 @@ timeout diagnostics; актуальный завершающий системн�
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый040d336 также8/8 на ARM | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
+| 1. Установка и разрешения | Локальные clean install/repair137; System40173952879 наa6eff55 прошёл8 реальных cases на каждой архитектуре; macOS12-комплект f715bc5 прошёл8/8 на каждой arch; более новый2dce4c5 также8/8 на обеих arch | Финальный current-source комплект ещё проверяется; одно итоговое host-восстановление; исполнение именно на macOS 12 остаётся OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -8531,3 +8533,50 @@ GitHub Service Unavailable, поэтому completion отмены пока не
 Живые/partial runs не отменялись. Повторное чтение того же diagnostic job
 121179472595 успешно показало in_progress наordinary C→D desired-on update;
 новая workflow вместо него не запускалась. Это всё ещё не full8-case acceptance.
+
+### Продолжение 1.5hw — authenticated retained-host inventory
+
+- [x] Добавлена read-only operation9 в существующий authenticated helper channel.
+  App client строго декодирует bounded canonical response: schema1, явный scope
+  `retained-exact-hosts-v1`, per-daemon bootID, sorted unique remote numeric
+  /32 и /128. Старый helper отвечает unsupported; nil provider, unreadable или
+  malformed state не превращаются в успешный пустой список. Непустой request
+  отвергается до вызова provider; reply write никогда не повторяется вторым frame.
+- [x] Production daemon передаёт provider только после startup restore и сохраняет
+  runtime до завершения listener. Полный журнал читается под тем же store lock,
+  что mutations, с проверкой namespace до/после и исходного request deadline.
+  Corruption отзывает runtime readiness; простой expired read можно повторить
+  новым запросом. Устранён state/store lock inversion, проверен двумя потоками.
+- [x] Final source checks:54 signed Unix listener/client cases PASS43.566s;
+  retained runtime17 cases плюс full helper graph both-arch compile/source
+  immutability —19 PASS87.177s; native fixture both-arch compile/pure/ordinary
+  denial —1 PASS30.351s. Ни один тест не skipped. Логи:
+  /tmp/pp-inventory-listener-final.log, /tmp/pp-inventory-final-compile.log,
+  /tmp/pp-inventory-native-compile.log. Первые параллельные build attempts были
+  корректно отвергнуты source-change guard после изменения комментария; результаты
+  выше получены повторно на неизменных финальных production sources.
+- [x] Шесть IPC inventory cases включены в existing ownership/contracts CI;
+  native workflow учитывает новый shared DTO source. Новых matrix jobs нет.
+- [ ] Это inventory только retained exact-host namespace, НЕ всех static/legacy
+  ресурсов, НЕ live route proof и НЕ разрешение слушать мост/выдавать DNS answers.
+  Boot-time root/App union, owned bridge epoch factory и first-listen ordering
+  пока не подключены. Domain gate остаётся CLOSED; исходные7 этапов не сужены.
+
+System evidence: exact2dce4c5 run40196864320 завершён SUCCESS на обеих arch,
+121179472470/macOS14 и121179472595/macOS15Intel. Полные логи mode600
+/tmp/pp-installer-121179472470.log и/tmp/pp-installer-121179472595.log:
+все8 настоящих cases на каждой arch имеют Ran1/OK, без skips. Это включает
+137→139→C desired-off/on, completed phase6, retained-capsule refusal/idempotent
+resume, ordinary C→D off/on и завершение при закрытом reply socket. В fast suite
+есть отдельный явно skipped opt-in signed-app test;8 системных cases не skipped.
+Current544e6d5 System40199287852 ARM121186810255 API-success, full log pending;
+Intel121186810479 всё ещё in_progress. Это НЕ latest inventory-source acceptance.
+
+Native544e6d5 run40199287851 теперь также SUCCESS macOS26ARM121186810403;
+полный log /tmp/pp-retained-native-121186810403.log mode600 проверен:113 fast
+PASS76.716s, обе family/order, actual packets/owner death, whole-group crash,
+restore/reopen и explicit cleanup markers. Вместе с ранее подтверждённым
+26Intel это2/4OS;15Intel121186810273 и14ARM121186810402 ещё queued.
+Candidate2/SC40203740315 по индивидуальному check: все4 jobs queued.
+Старая fully queued40202641601 теперь terminal cancelled на всех4 jobs;
+новый run не перезапускался, live/partial jobs не отменялись.

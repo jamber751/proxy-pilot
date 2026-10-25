@@ -129,6 +129,15 @@ final class VPNExactFenceStore {
     }
     /// Namespace/lock custody only; this is not live kernel route verification.
     func validateOwner() throws { try exclusive { try checkOwner() } }
+    /// A complete namespace read under the same lock as journal mutations.
+    /// Never truncate or silently omit an unreadable entry.
+    func withEntries<T>(_ body: ([VPNExactFenceEntry]) throws -> T) throws -> T {
+        try exclusive {
+            try checkOwner()
+            let result=try body(entries())
+            try checkOwner();return result
+        }
+    }
     func load(_ address: VPNRoutePrefix) throws -> VPNExactFenceEntry? {
         try exclusive { try read(name: Self.name(address)) }
     }

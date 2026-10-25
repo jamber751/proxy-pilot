@@ -103,6 +103,20 @@ enum VPNReadinessChecks {
         let fd = connect(path)
         do {
             let release = try fixtureRelease(pin: pin)
+            if scenario=="inventory" || scenario=="inventory-payload" {
+                let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
+                defer { session.close() }
+                if scenario=="inventory-payload" {
+                    let (status,_)=try session.request(.retainedProtectionInventory,payload:[42])
+                    print("inventory:\(status.rawValue):0");return
+                }
+                let (status,value)=try session.retainedProtectionInventory()
+                if let value {
+                    guard value.bootID==UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
+                          value.prefixes==["198.19.253.201/32","2001:db8:fff:fd::c9/128"] else { throw VPNHelperSessionError.invalidResponse }
+                }
+                print("inventory:\(status.rawValue):\(value?.prefixes.count ?? 0)");return
+            }
             if scenario.hasPrefix("certificate=") || scenario.hasPrefix("certificate-once=") {
                 let prefix = scenario.hasPrefix("certificate-once=") ? "certificate-once=" : "certificate="
                 let path = String(scenario.dropFirst(prefix.count))

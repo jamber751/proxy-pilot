@@ -109,6 +109,16 @@ jobs:
       - name: Recovery takes lifecycle ownership before store metadata
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_recovery_service_lock_order -v
+      - name: Authenticated retained protection inventory
+        if: ${{ !cancelled() && matrix.suite == 'contracts' }}
+        run: |
+          PYTHONPATH=tests python3 -m unittest \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_authenticated_roundtrip \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_missing_provider_is_unsupported \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_payload_refused_before_provider \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_failures_never_return_empty_success \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_malformed_response_is_rejected \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_wrong_signed_peer_is_refused_before_provider -v
       - name: Rescue authorization and pending journal boundaries
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: PYTHONPATH=tests python3 -m unittest test_vpn_release_authorization test_vpn_rescue_authorization test_vpn_rescue_preparation_authorization test_vpn_rescue_journal_context test_vpn_rescue_preparation_context test_vpn_rescue_cleanup_context -v

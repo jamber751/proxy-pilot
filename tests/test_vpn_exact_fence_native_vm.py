@@ -25,7 +25,7 @@ RECOVERY = ROOT/'tests/vpn_exact_fence_recovery_vm.swift'
 
 def compile_probe(folder):
     folder = Path(folder)
-    runtime = [ROOT/'app/vpn-helper/VPNDirectoryProvisioner.swift',ROOT/'app/vpn-helper/VPNRetainedFenceRuntime.swift']
+    runtime = [ROOT/'app/vpn-helper/VPNApplicationSpec.swift',ROOT/'app/vpn-helper/VPNDirectoryProvisioner.swift',ROOT/'app/vpn-helper/VPNRetainedFenceRuntime.swift']
     sources = list(pure.SOURCES)+runtime+[BRIDGE,RECOVERY]+[ROOT/'tests'/name for name in packets.SOURCES]
     captured = {source:source.read_bytes() for source in sources}
     for source,data in captured.items(): (folder/source.name).write_bytes(data)

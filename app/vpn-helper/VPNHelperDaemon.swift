@@ -123,6 +123,10 @@ enum VPNHelperDaemon {
                 try runtime.check()
                 guard try selectionStamp(directory) == stamp else { throw VPNHelperDaemonError.selectionChanged }
             }
+            var readProtection: ((DispatchTime) throws -> Data)?
+            if let protection {
+                readProtection = { deadline in try protection.inventory(deadline:deadline).encoded() }
+            }
             trace.mark(.receipt)
             if shared {
                 let publicReceipt = try store.loadDeploymentReceipt()
@@ -152,13 +156,15 @@ enum VPNHelperDaemon {
                 listener = try VPNHelperListener.testBindInstaller(
                     inTrustedDirectory: directory, release: selected.release,
                     ownerUserID: selected.ownerUserID,
-                    additionalReadinessPolicies: readinessPolicies)
+                    additionalReadinessPolicies: readinessPolicies,
+                    readRetainedProtection:readProtection)
             } else {
                 listener = try VPNHelperListener.bind(
                     inTrustedDirectory: directory, release: selected.release,
                     ownerUserID: selected.ownerUserID,
                     endpointDirectory: shared ? endpoint : nil,
-                    additionalReadinessPolicies: readinessPolicies)
+                    additionalReadinessPolicies: readinessPolicies,
+                    readRetainedProtection:readProtection)
             }
             #else
             _ = recoveryFixtureInstaller
@@ -167,7 +173,8 @@ enum VPNHelperDaemon {
                 ownerUserID: selected.ownerUserID,
                 endpointDirectory: shared ? endpoint : nil,
                 runtimeLease: runtime.tunnelLifecycleLease,
-                additionalReadinessPolicies: readinessPolicies)
+                additionalReadinessPolicies: readinessPolicies,
+                readRetainedProtection:readProtection)
             #endif
             defer { listener.close() }
             func stillSelected() throws {

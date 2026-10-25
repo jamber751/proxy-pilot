@@ -6,8 +6,8 @@ import tempfile
 import unittest
 import test_vpn_exact_fence_adapter as adapter
 ROOT=adapter.ROOT
-SOURCES=adapter.SOURCES+[ROOT/'app/vpn-helper/VPNDirectoryProvisioner.swift',ROOT/'app/vpn-helper/VPNRetainedFenceRuntime.swift']
-MODES=('root-guard','before-restore','empty','retained','active-withdraw','foreign','namespace-change','lock','expired','cancel','one-shot')
+SOURCES=adapter.SOURCES+[ROOT/'app/vpn-helper/VPNApplicationSpec.swift',ROOT/'app/vpn-helper/VPNDirectoryProvisioner.swift',ROOT/'app/vpn-helper/VPNRetainedFenceRuntime.swift']
+MODES=('inventory-retained','inventory-retired','inventory-corrupt','inventory-expired','inventory-lock-order','inventory-codec','root-guard','before-restore','empty','retained','active-withdraw','foreign','namespace-change','lock','expired','cancel','one-shot')
 @unittest.skipUnless(adapter.sys.platform=='darwin' and adapter.shutil.which('swiftc') and os.getuid()==os.geteuid()!=0,'ordinary macOS SDK required')
 class RetainedRuntimeTests(unittest.TestCase):
     @classmethod

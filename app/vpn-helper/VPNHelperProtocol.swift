@@ -18,6 +18,8 @@ enum VPNHelperOperation: UInt16 {
     case tunnelStatus = 6
     case submitCredential = 7
     case cancelCredential = 8
+    /// Read-only retained exact-host namespace inventory; empty request body.
+    case retainedProtectionInventory = 9
 }
 
 enum VPNHelperStatus: UInt16 {

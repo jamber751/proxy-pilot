@@ -25,6 +25,7 @@ final class VPNHelperListener {
     private let policy: VPNPeerPolicy
     private let installerPolicy: VPNPeerPolicy
     private let additionalReadinessPolicies: () throws -> [VPNPeerPolicy]
+    private let readRetainedProtection: ((DispatchTime) throws -> Data)?
     private let vault: VPNProfileVault
     private let tunnelState: VPNTunnelStateStore
     private let startTunnel: () throws -> Bool
@@ -41,6 +42,7 @@ final class VPNHelperListener {
     static func testBindInstaller(inTrustedDirectory directory: Int32, release: VerifiedVPNRelease,
                                   ownerUserID: uid_t,
                                   additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
+                     readRetainedProtection: ((DispatchTime) throws -> Data)? = nil,
                                   startTunnel: @escaping () throws -> Bool = { false },
                                   startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)? = nil,
                                   submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)? = nil,
@@ -50,6 +52,7 @@ final class VPNHelperListener {
         let listener = try bind(inTrustedDirectory: directory, release: release,
                                 ownerUserID: ownerUserID,
                                 additionalReadinessPolicies: additionalReadinessPolicies,
+                                readRetainedProtection: readRetainedProtection,
                                 startTunnel: startTunnel,
                                 startManagedTunnel: startManagedTunnel,
                                 submitManagedCredential: submitManagedCredential,
@@ -64,6 +67,7 @@ final class VPNHelperListener {
     static func bind(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
+                     readRetainedProtection: ((DispatchTime) throws -> Data)? = nil,
                      startTunnel: @escaping () throws -> Bool = { false },
                      startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)? = nil,
                      submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)? = nil,
@@ -72,6 +76,7 @@ final class VPNHelperListener {
         try bindCommon(inTrustedDirectory: trusted, release: release,
                        ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                        additionalReadinessPolicies: additionalReadinessPolicies,
+                       readRetainedProtection: readRetainedProtection,
                        startTunnel: startTunnel,
                        startManagedTunnel: startManagedTunnel,
                        submitManagedCredential: submitManagedCredential,
@@ -87,7 +92,8 @@ final class VPNHelperListener {
     static func bind(inTrustedDirectory trusted: Int32, deployment: VPNAuthorizedDeployment,
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      runtimeLease: VPNLifecycleLease,
-                     additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] }) throws
+                     additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
+                     readRetainedProtection: ((DispatchTime) throws -> Data)? = nil) throws
         -> VPNHelperListener {
         guard deployment.ownerUserID == ownerUserID else {
             throw VPNHelperListenerError.unsafeStorage
@@ -114,6 +120,7 @@ final class VPNHelperListener {
         return try bindCommon(inTrustedDirectory: trusted, release: deployment.release,
                               ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                               additionalReadinessPolicies: additionalReadinessPolicies,
+                       readRetainedProtection: readRetainedProtection,
                               startTunnel: { false },
                               startManagedTunnel: { _, _ in
                                   guard let coordinator = coordinator else {
@@ -144,6 +151,7 @@ final class VPNHelperListener {
     private static func bindCommon(inTrustedDirectory trusted: Int32, release: VerifiedVPNRelease,
                      ownerUserID: uid_t, endpointDirectory: Int32?,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
+                     readRetainedProtection: ((DispatchTime) throws -> Data)?,
                      startTunnel: @escaping () throws -> Bool,
                      startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?,
                      submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)?,
@@ -210,6 +218,7 @@ final class VPNHelperListener {
             return VPNHelperListener(listener: socketDescriptor, release: release, policy: policy,
                                      installerPolicy: try release.installerPolicy(),
                                      additionalReadinessPolicies: additionalReadinessPolicies,
+                       readRetainedProtection: readRetainedProtection,
                                      vault: vault, tunnelState: tunnelState,
                                      startTunnel: startTunnel,
                                      startManagedTunnel: startManagedTunnel,
@@ -225,6 +234,7 @@ final class VPNHelperListener {
     private init(listener: Int32, release: VerifiedVPNRelease, policy: VPNPeerPolicy,
                  installerPolicy: VPNPeerPolicy,
                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
+                 readRetainedProtection: ((DispatchTime) throws -> Data)?,
                  vault: VPNProfileVault, tunnelState: VPNTunnelStateStore,
                  startTunnel: @escaping () throws -> Bool,
                  startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?,
@@ -236,6 +246,7 @@ final class VPNHelperListener {
         self.policy = policy
         self.installerPolicy = installerPolicy
         self.additionalReadinessPolicies = additionalReadinessPolicies
+        self.readRetainedProtection = readRetainedProtection
         self.vault = vault
         self.tunnelState = tunnelState
         self.startTunnel = startTunnel
@@ -540,6 +551,29 @@ final class VPNHelperListener {
                     break
                 }
                 try answer(.ok, payload: [], to: client, deadline: deadline)
+            case .retainedProtectionInventory:
+                guard payload.isEmpty else {
+                    try answer(.invalidRequest,payload:[],to:client,deadline:deadline);break
+                }
+                guard let readRetainedProtection else {
+                    try answer(.unsupported,payload:[],to:client,deadline:deadline);break
+                }
+                guard isReady() else {
+                    try answer(.notReady,payload:[],to:client,deadline:deadline);break
+                }
+                let body: Data
+                do {
+                    body=try readRetainedProtection(DispatchTime(uptimeNanoseconds:deadline))
+                    guard !body.isEmpty,body.count<=VPNHelperProtocol.maximumPayloadBytes,isReady() else {
+                        throw VPNHelperListenerError.unavailable
+                    }
+                } catch {
+                    try answer(.failed,payload:[],to:client,deadline:deadline)
+                    break
+                }
+                // A failed/partial response write is never retried as a second
+                // frame on the same connection.
+                try answer(.ok,payload:[UInt8](body),to:client,deadline:deadline)
             case .tunnelStatus:
                 guard payload.isEmpty, let snapshot = try? tunnelState.load(),
                       let body = try? snapshot.encoded() else {

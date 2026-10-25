@@ -69,12 +69,19 @@ private final class Kernel: VPNFencedHostKernel {
                 }
             }
         }
-        if ["retained","active-withdraw","foreign","cancel"].contains(mode) { try seed() }
+        if ["retained","active-withdraw","foreign","cancel","inventory-retained","inventory-retired","inventory-corrupt"].contains(mode) { try seed() }
         if ["retained","foreign","cancel"].contains(mode) { fake.denies=[:] }
         if mode=="foreign" { fake.foreign=true }
+        let inventoryQueue=DispatchQueue(label:"inventory-reader")
+        let inventoryKey=DispatchSpecificKey<Bool>()
+        inventoryQueue.setSpecific(key:inventoryKey,value:true)
+        let namespaceVisited=DispatchSemaphore(value:0)
         func make() throws -> VPNRetainedFenceRuntime {
             try VPNRetainedFenceRuntime(trustedDirectoryDescriptor:fd,kernel:fake,
-                checkNamespace:{ try VPNDirectoryProvisioner.testRequireFenceDirectory($0,belowTrustedBase:base) })
+                checkNamespace:{ owned in
+                    try VPNDirectoryProvisioner.testRequireFenceDirectory(owned,belowTrustedBase:base)
+                    if DispatchQueue.getSpecific(key:inventoryKey)==true { namespaceVisited.signal() }
+                })
         }
         let runtime=try make()
         if mode=="before-restore" { try fails(.recoveryRequired) { try runtime.check() };return }
@@ -101,6 +108,71 @@ private final class Kernel: VPNFencedHostKernel {
         let restored=try runtime.restore(deadline:end,checkCurrent:{})
         try runtime.check()
         switch mode {
+        case "inventory-retained":
+            let first=try runtime.inventory(deadline:end),second=try runtime.inventory(deadline:end)
+            try require(first==second && first.scope==VPNRetainedProtectionInventory.namespace)
+            try require(first.prefixes==["198.19.253.201/32","2001:db8:fff:fd::c9/128"])
+            try require(try VPNRetainedProtectionInventory.decodeCanonical(first.encoded())==first)
+        case "inventory-retired":
+            let tx=VPNExactFenceTransaction(store:runtime.store,kernel:fake)
+            _=try tx.retire(restored[0],deadline:end,checkCurrent:{})
+            try require(try runtime.inventory(deadline:end).prefixes.count==1)
+        case "inventory-corrupt":
+            let name=try VPNExactFenceStore.name(identities[0].address)
+            let file=openat(fd,name,O_WRONLY|O_TRUNC|O_NOFOLLOW|O_CLOEXEC)
+            try require(file>=0);try require(write(file,"{}",2)==2);close(file)
+            do { _=try runtime.inventory(deadline:end);throw VPNDarwinRouteError.verificationFailed }
+            catch VPNDarwinRouteError.verificationFailed { throw VPNDarwinRouteError.verificationFailed }
+            catch {}
+            try fails(.recoveryRequired) { try runtime.check() }
+        case "inventory-expired":
+            do { _=try runtime.inventory(deadline:.now()-1);throw VPNExactFenceStoreError.invalidState }
+            catch VPNDarwinRouteError.timeout {}
+            try runtime.check()
+        case "inventory-lock-order":
+            let entered=DispatchSemaphore(value:0),proceed=DispatchSemaphore(value:0),group=DispatchGroup(),resultLock=NSLock()
+            var failed=false
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                do {
+                    _=try runtime.store.withEntries { _ in
+                        entered.signal()
+                        try require(proceed.wait(timeout:.now()+2) == .success)
+                        try runtime.check()
+                    }
+                } catch { resultLock.lock();failed=true;resultLock.unlock() }
+            }
+            try require(entered.wait(timeout:.now()+2) == .success)
+            group.enter()
+            inventoryQueue.async {
+                defer { group.leave() }
+                do { _=try runtime.inventory(deadline:end) }
+                catch { resultLock.lock();failed=true;resultLock.unlock() }
+            }
+            try require(namespaceVisited.wait(timeout:.now()+2) == .success)
+            proceed.signal()
+            try require(group.wait(timeout:.now()+3) == .success)
+            resultLock.lock();let failure=failed;resultLock.unlock();try require(!failure)
+        case "inventory-codec":
+            let boot=UUID(),value=try VPNRetainedProtectionInventory(bootID:boot,prefixes:["198.19.253.201/32"])
+            let bytes=try value.encoded()
+            try require(try VPNRetainedProtectionInventory.decodeCanonical(bytes)==value)
+            for prefixes in [["company.example/32"],["127.0.0.1/32"],["198.19.253.201/24"],["198.19.253.201/32","198.19.253.201/32"],Array(repeating:"198.19.253.201/32",count:4097)] {
+                do { _=try VPNRetainedProtectionInventory(bootID:boot,prefixes:prefixes);throw VPNDarwinRouteError.verificationFailed }
+                catch VPNDarwinRouteError.verificationFailed { throw VPNDarwinRouteError.verificationFailed }
+                catch {}
+            }
+            var object=try JSONSerialization.jsonObject(with:bytes) as! [String:Any]
+            for key in ["scope","schemaVersion","extra"] {
+                var altered=object
+                if key=="schemaVersion" { altered[key]=2 } else { altered[key]="unrecognized" }
+                let data=try JSONSerialization.data(withJSONObject:altered,options:[.sortedKeys])
+                do { _=try VPNRetainedProtectionInventory.decodeCanonical(data);throw VPNDarwinRouteError.verificationFailed }
+                catch VPNDarwinRouteError.verificationFailed { throw VPNDarwinRouteError.verificationFailed }
+                catch {}
+            }
+            object.removeAll()
         case "retained":try require(restored.count==2 && restored.allSatisfy { $0.phase == .applied && $0.claims==[claim] } && fake.denies.count==2)
         case "active-withdraw":try require(restored.count==2 && restored.allSatisfy { $0.active==nil } && fake.active==nil && fake.denies.count==2)
         case "empty":try require(restored.isEmpty && fake.adds==0 && fake.deletes==0)

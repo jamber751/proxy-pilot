@@ -19,6 +19,17 @@ extension VPNHelperSession {
 
     func disconnectTunnel() throws -> VPNHelperStatus { try request(.disconnect).0 }
 
+    /// This exact-host listing is not a complete static/legacy route inventory.
+    func retainedProtectionInventory() throws -> (VPNHelperStatus, VPNRetainedProtectionInventory?) {
+        let (status,body)=try request(.retainedProtectionInventory)
+        guard status == .ok else {
+            guard body.isEmpty else { close();throw VPNHelperSessionError.invalidResponse }
+            return (status,nil)
+        }
+        do { return (status,try VPNRetainedProtectionInventory.decodeCanonical(Data(body))) }
+        catch { close();throw VPNHelperSessionError.invalidResponse }
+    }
+
     func tunnelStatus() throws -> (VPNHelperStatus, VPNTunnelSnapshot?) {
         let (status, body) = try request(.tunnelStatus)
         guard status == .ok else { return (status, nil) }
