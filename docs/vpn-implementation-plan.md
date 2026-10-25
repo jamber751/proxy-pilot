@@ -7732,3 +7732,42 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   exit1 без deliberate Swift fatal/crash trace. Host root/network не использован.
 - [ ] Actual Swift native proof после этого точного decoder fix всё ещё нужен;
   domain gate закрыт до него и persistent custody/working integration.
+
+### Продолжение 1.5hf — persistent known-IP custody transaction
+
+- [x] Новый production VPNExactFenceStore.swift: отдельная persistent namespace
+  вне generation folders, lifetime flock + process mutex, owner/mode/type/nlink/
+  inode проверки. Per-IP canonical records: add intent -> applied -> explicit
+  release intent -> retired. Native write только ПОСЛЕ fsync intent+atomic rename+
+  directory fsync; success только после live kernel GET и applied checkpoint.
+  Новая запись использует RENAME_EXCL; существующая — проверку expected state.
+- [x] Claims сохраняют original resource UUID, profile SHA256, generation/revision.
+  Смена поколения не сбрасывает known IP, stale context отвергается; TTL/negative/
+  disconnect/revoke удаления не вызывают. Несколько ресурсов разделяют fence;
+  explicit releaseClaims снимает только указанные ссылки, последний release
+  проходит отдельный retire. Неизвестный ADD с present route не усыновляется;
+  unknown DELETE не повторяется, release завершается лишь после exact absence.
+- [x] Записи ограничены4096 адресами/1000 claims per IP,256KiB per record и8MiB
+  aggregate namespace; oversized/unsafe/corrupt state не даёт kernel mutation.
+  Файлы не содержат profile bytes, login/password/OTP. Caller обязан держать
+  lifecycle/resource lease; это custody, НЕ DNS answer permit/runtime activation.
+- [x]22 real-private-files + fake-kernel tests: checkpoint before ADD, reopen,
+  shared refs/last release, generation, unknown ADD/DELETE, absent recovery,
+  restore applied, foreign state, cancellation before/after write, deadline,
+  lifetime lock/replaced lock, symlink/hardlink/canonical corruption,8concurrent
+  callers, обе IP family.22store+1native compile/guards PASS16.808s без skips:
+  /tmp/pp-exact-fence-durable-references-parent.log. До reference-release extension
+ 42 combined store/adapter/native checks PASS; actual kernel mutations на host
+  не запускались. Полный helper graph ARM/Intel0/0 на snapshot до последнего
+  reference-release метода: /tmp/pp-durable-fence-helper-typecheck-bzafitbk/verification.json;
+  current component обе arch codegen проверен native compile suite.
+- [x] Decoder fix6cab1f6 actual native40186866143 теперь SUCCESS26 ARM121149409652
+  и26 Intel121149409778: у каждого18 точных markers, обе family/оба порядка
+  fence before/after HOST, established bidirectional TCP, actual SIGKILL,
+  cached/fresh UDP/TCP containment и cleanup.21ordinary checks без skips27.479s/
+ 58.748s. Логи /tmp/pp-native-fence-6cab-<job>.log.14 ARM/15 Intel ещё queued;
+  новый persistent store этим прежним transport-only gate не подменяется.
+- [ ] Service boot restore-all, pair-aware active routes, persistent DNS relay,
+  ordinary OS resolver/GOST production transport и DNS answer authority ещё
+  требуют интеграции. Нет публичного IPC или удаления fences по обычному Stop;
+  domain gate остаётся закрытым. Все7 этапов и final installed/WARP UX сохраняются.
