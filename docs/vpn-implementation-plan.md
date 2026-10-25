@@ -7570,3 +7570,44 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Persistent DNS relay/OS record, ordinary GOST resolver adapter, TTL/refcounts,
   resource/generation revocation, crash/reboot/foreign/WARP и все7 этапов/final
   installed package остаются OPEN. Native canaries не активируют domain runtime.
+
+### Продолжение 1.5hb — production exact-fence native API, без активации DNS runtime
+
+- [x] В production VPNDarwinRouteSocket.swift добавлена отдельная Codable
+  VPNExactRouteFenceIdentity (NET/full-mask, global loopback blackhole +PROTO2).
+  Только remote-service host IP, обе family; localhost/unspecified/link-local/
+  multicast/mapped IPv6 и более широкие prefixes отвергаются. Старые
+  VPNOwnedRouteIdentity/lookup/journal schemas и HOST/nil-mask encoding не менялись.
+- [x] Native encodeExactFence/Lookup и socket install/lookup/delete используют
+  существующий fresh PF_ROUTE transport и общий process-wide sequence allocator.
+  Install отвергает даже identical preexisting entry, race EEXIST не усыновляет;
+  delete требует точного полного kernel shape. Host fallback не равен fence key.
+  Scoped/down/wrong-family/wrong-destination reply не доказывает отсутствие.
+- [x] Передаётся original caller deadline, дополнительно ограниченный прежним
+  per-operation budget; один bound на все preflight/write/verify exchanges.
+  Expired/late результат — отказ, без повтора мутации/автоматического DELETE.
+  Новый fence-only GET обрабатывает correlated kernel error с echoed request /
+  index0 без выдуманного interface snapshot; legacy decoding path не изменён.
+- [x]17 новых fake-transport methods (каждый обе family) PASS5.922s, без skips:
+  full-mask vs legacy HOST, install/delete, no adoption, foreign/scoped/down,
+  wrong IP/type, stale error, shared sequence, original budget/expired/late,
+  EEXIST/unknown ADD и invalid identity/address. Лог
+  /tmp/pp-exact-fence-adapter-parent.log. Отдельно12 прежних write-miss и11
+  route-socket/sequence checks PASS;368 связанных DNS/route regressions
+  PASS57.052s, без skips: /tmp/pp-exact-fence-regressions-parent.log.
+- [ ] Low-level API требует от будущего caller durable add/release intent.
+  Durable known-IP store, pair-aware active-route transaction, recovery и answer
+  permits пока НЕ реализованы им. Shape не ownership receipt; lookup не разрешает
+  усыновление. Удаление fence не подключено к TTL/teardown или public IPC.
+  Domain runtime gate остаётся закрытым, весь7-stage scope сохраняется.
+- [x] Prototype d486f88 packet/death40182604589 теперь terminal SUCCESS все4 OS:
+ 26 ARM121136636554,15 Intel121136636649,26 Intel121136636658,14 ARM121136636903.
+  У каждого exact4 UDP/TCP family markers и2pure tests, без skips. Логи
+  /tmp/pp-native-final-<job>.log. Это прежний C probe, НЕ новый Swift API proof.
+- [x] ae6a6d8 OS resolver40183440175 terminal SUCCESS все4 OS:121139131324/357
+  ARM26/14 и121139131007/235 Intel15/26. У каждого все4 actual GOST cases+
+ 3aggregate/cleanup/real DNS witness markers и16pure checks, без skips. Новые
+  Intel logs /tmp/pp-native-final-121139131007.log и...121139131235.log.
+- [ ] Полная current-source Universal helper сборка/sign-only запущена locally
+  из отдельного frozen snapshot; результат ещё не получен. Никаких host root,
+  route/DNS/Keychain API, установки или изменения работающего VPN не было.

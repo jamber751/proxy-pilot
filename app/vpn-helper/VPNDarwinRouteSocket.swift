@@ -142,6 +142,49 @@ enum VPNDarwinRouteError: VPNFlowDiagnosticError, Equatable {
     }
 }
 
+/// Separate identity for NET/full-mask blackholes. A /32 or /128 here is NOT
+/// a legacy HOST/nil-mask key. Never persist this in VPNOwnedRouteIdentity or
+/// reinterpret the old route journals. Shape alone is not an ownership receipt.
+struct VPNExactRouteFenceIdentity: Codable, Equatable {
+    static let schema = 1
+    static let expectedFlags = UInt32(RTF_UP | RTF_STATIC | RTF_GATEWAY | RTF_BLACKHOLE | RTF_PROTO2)
+    let schemaVersion: Int
+    let address: VPNRoutePrefix
+    let interfaceIndex: UInt32
+    let gatewayBytes: [UInt8]
+    let flags: UInt32
+    var interfaceName: String { "lo0" }
+
+    init(address: VPNRoutePrefix, loopbackIndex: UInt32) throws {
+        schemaVersion = Self.schema; self.address = address; interfaceIndex = loopbackIndex
+        gatewayBytes = Self.loopback(address.family); flags = Self.expectedFlags
+        try validate()
+    }
+    func validate() throws {
+        try address.validate()
+        // Reuse the remote-service policy, not just a binary host parser. DNS
+        // answers must never install a global rule over local/link/multicast IPs.
+        let resource = try VPNResource(address: address.canonical)
+        guard schemaVersion == Self.schema, interfaceIndex > 0, interfaceIndex <= UInt32(UInt16.max),
+              address.prefixLength == address.bytes.count * 8,
+              [.ipv4, .ipv6].contains(resource.kind),
+              try VPNRoutePrefix(resource: resource) == address,
+              flags == Self.expectedFlags, gatewayBytes == Self.loopback(address.family) else {
+            throw VPNDarwinRouteError.invalidIdentity
+        }
+    }
+    func matches(_ observed: VPNDarwinRouteSnapshot) -> Bool {
+        // decode() requires a full netmask to produce a maximum-length prefix
+        // without HOST. These exact flags also exclude scoped and HOST entries.
+        observed.destination == address && observed.flags == flags &&
+            observed.gatewayBytes == gatewayBytes && observed.interfaceIndex == interfaceIndex &&
+            observed.interfaceName == interfaceName
+    }
+    private static func loopback(_ family: VPNRouteAddressFamily) -> [UInt8] {
+        family == .ipv4 ? [127,0,0,1] : [UInt8](repeating:0,count:15)+[1]
+    }
+}
+
 struct VPNDarwinRouteSnapshot: Equatable {
     let destination: VPNRoutePrefix
     let gatewayBytes: [UInt8]?
@@ -250,6 +293,30 @@ enum VPNDarwinRouteCodec {
                            index: key.interfaceScope?.interfaceIndex ?? 0,
                            flags: (host ? UInt32(RTF_HOST) : 0) | (key.interfaceScope == nil ? 0 : UInt32(RTF_IFSCOPE)),
                            addresses: addresses)
+    }
+
+    /// Explicit NET/full-mask selector; do not route through encodeLookup(),
+    /// which deliberately maps a legacy maximum prefix to HOST/nil-mask.
+    static func encodeExactFenceLookup(_ identity: VPNExactRouteFenceIdentity,
+                                      sequence: Int32, pid: Int32) throws -> Data {
+        try identity.validate()
+        return try message(type: UInt8(RTM_GET), sequence: sequence, pid: pid, error: 0,
+            index: 0, flags: 0, addresses: [
+                (RTA_DST,address(identity.address.bytes,family: identity.address.family)),
+                (RTA_NETMASK,netmask(identity.address))])
+    }
+    static func encodeExactFence(type: UInt8, sequence: Int32, pid: Int32,
+                                 identity: VPNExactRouteFenceIdentity) throws -> Data {
+        try identity.validate()
+        guard type == UInt8(RTM_ADD) || type == UInt8(RTM_DELETE),
+              (try? interfaceName(identity.interfaceIndex)) == identity.interfaceName else {
+            throw VPNDarwinRouteError.invalidIdentity
+        }
+        return try message(type: type, sequence: sequence, pid: pid, error: 0,
+            index: identity.interfaceIndex, flags: identity.flags, addresses: [
+                (RTA_DST,address(identity.address.bytes,family: identity.address.family)),
+                (RTA_GATEWAY,address(identity.gatewayBytes,family: identity.address.family)),
+                (RTA_NETMASK,netmask(identity.address))])
     }
 
     /// Kept internal for deterministic fake-kernel tests; it performs no I/O.
@@ -630,6 +697,79 @@ final class VPNDarwinRouteSocket {
         }
     }
 
+    /// Low-level native boundary only. A caller must own a durable add-intent
+    /// before installation and an explicit release-intent before deletion.
+    /// There is no implicit adoption, TTL cleanup or production DNS wiring here.
+    func lookupExactFence(_ identity: VPNExactRouteFenceIdentity,
+                          deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
+        try serialized(until: deadline) { try exactFenceLookup(identity, deadline: $0) }
+    }
+    func installExactFence(_ identity: VPNExactRouteFenceIdentity, deadline: DispatchTime) throws {
+        try serialized(until: deadline) { end in
+            // Even an identical preexisting entry is NOT ours. Crash recovery
+            // must separately prove its retained intent before using lookup.
+            guard try exactFenceLookup(identity, deadline: end) == nil else {
+                throw VPNDarwinRouteError.preexistingNonIdentical
+            }
+            let sequence = try nextSequence()
+            let request = try VPNDarwinRouteCodec.encodeExactFence(type: UInt8(RTM_ADD),
+                sequence: sequence, pid: pid, identity: identity)
+            _ = try exactFenceTransact(request, sequence: sequence, type: UInt8(RTM_ADD), deadline: end)
+            guard let actual = try exactFenceLookup(identity, deadline: end), identity.matches(actual) else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+        }
+    }
+    func deleteExactFence(_ identity: VPNExactRouteFenceIdentity, deadline: DispatchTime) throws {
+        try serialized(until: deadline) { end in
+            guard let actual = try exactFenceLookup(identity, deadline: end), identity.matches(actual) else {
+                throw VPNDarwinRouteError.missingOrForeign
+            }
+            let sequence = try nextSequence()
+            let request = try VPNDarwinRouteCodec.encodeExactFence(type: UInt8(RTM_DELETE),
+                sequence: sequence, pid: pid, identity: identity)
+            _ = try exactFenceTransact(request, sequence: sequence, type: UInt8(RTM_DELETE), deadline: end)
+            guard try exactFenceLookup(identity, deadline: end) == nil else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+        }
+    }
+    private func exactFenceLookup(_ identity: VPNExactRouteFenceIdentity,
+                                  deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
+        let sequence = try nextSequence()
+        let request = try VPNDarwinRouteCodec.encodeExactFenceLookup(identity, sequence: sequence, pid: pid)
+        do {
+            guard let actual = try exactFenceTransact(request, sequence: sequence, type: UInt8(RTM_GET),
+                deadline: deadline, family: identity.address.family) else { return nil }
+            if actual.destination == identity.address && actual.flags & UInt32(RTF_HOST) == 0 { return actual }
+            // A validated HOST or broader same-family fallback is a miss for
+            // NET/full-mask only. Never mistake an unrelated/contradictory IP.
+            guard actual.destination.family == identity.address.family,
+                  actual.destination.contains(host: identity.address) else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+            return nil
+        } catch VPNDarwinRouteError.kernel(let code) where code == ESRCH || code == ENOENT { return nil }
+    }
+    private func exactFenceTransact(_ request: Data, sequence: Int32, type: UInt8,
+                                    deadline: DispatchTime,
+                                    family: VPNRouteAddressFamily? = nil) throws -> VPNDarwinRouteSnapshot? {
+        guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+        let value = try transact(request,sequence: sequence,type: type,deadline: deadline,
+                                 ordinaryLookupFamily: family, requireGlobalReply: type == UInt8(RTM_GET))
+        // A late reply after a possible mutation is indeterminate, not success.
+        guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+        return value
+    }
+    private func serialized<T>(until original: DispatchTime, _ body: (DispatchTime) throws -> T) throws -> T {
+        let began = DispatchTime.now().uptimeNanoseconds, budget = UInt64(timeout * 1_000_000_000)
+        guard began <= UInt64.max - budget else { throw VPNDarwinRouteError.timeout }
+        let end = DispatchTime(uptimeNanoseconds:min(original.uptimeNanoseconds,began+budget))
+        lock.lock(); defer { lock.unlock() }
+        guard DispatchTime.now().uptimeNanoseconds < end.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+        return try body(end)
+    }
+
     private func lookup(_ key: VPNRouteLookupKey,
                         deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
         let sequence = try nextSequence()
@@ -685,7 +825,8 @@ final class VPNDarwinRouteSocket {
 
     private func transact(_ request: Data, sequence: Int32, type: UInt8,
                           deadline: DispatchTime,
-                          ordinaryLookupFamily: VPNRouteAddressFamily? = nil) throws -> VPNDarwinRouteSnapshot? {
+                          ordinaryLookupFamily: VPNRouteAddressFamily? = nil,
+                          requireGlobalReply: Bool = false) throws -> VPNDarwinRouteSnapshot? {
         do { try transport.send(request, deadline: deadline) }
         catch VPNRouteSocketTransportError.posix(let code) where type == UInt8(RTM_GET) && code == ESRCH {
             // Ordinary public RTM_GET misses can fail write() synchronously:
@@ -712,12 +853,24 @@ final class VPNDarwinRouteSocket {
             do { header = try VPNDarwinRouteCodec.identify(data) }
             catch { throw VPNDarwinRouteError.malformedMessage }
             guard header.rtm_seq == sequence, header.rtm_pid == pid else { continue }
+            // Exact-fence GET errors can echo our request with index zero.
+            // A correlated kernel errno needs no fabricated interface snapshot.
+            // Keep legacy response decoding unchanged for all other callers.
+            if requireGlobalReply && header.rtm_errno != 0 {
+                guard header.rtm_type == type else { throw VPNDarwinRouteError.malformedMessage }
+                throw VPNDarwinRouteError.kernel(header.rtm_errno)
+            }
             let response: (type: UInt8, sequence: Int32, pid: Int32, error: Int32,
                            snapshot: VPNDarwinRouteSnapshot?)
             do { response = try VPNDarwinRouteCodec.decode(data) }
             catch { throw VPNDarwinRouteError.malformedMessage }
             guard response.type == type else { throw VPNDarwinRouteError.malformedMessage }
             guard response.error == 0 else { throw VPNDarwinRouteError.kernel(response.error) }
+            if requireGlobalReply {
+                guard header.rtm_flags & RTF_IFSCOPE == 0, header.rtm_flags & RTF_UP != 0 else {
+                    throw VPNDarwinRouteError.verificationFailed
+                }
+            }
             if let expected = ordinaryLookupFamily {
                 let actual = try response.snapshot?.destination.family ?? VPNDarwinRouteCodec.defaultLookupFamily(data)
                 guard actual == expected else { throw VPNDarwinRouteError.verificationFailed }
