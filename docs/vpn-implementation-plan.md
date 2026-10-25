@@ -7687,3 +7687,21 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   acceptance и остальные7этапов остаются обязательными.
 - [ ] После push получить actual corrected native fence proof. До него и durable
   known-IP/pair-aware active-route/relay integration domain runtime не включать.
+
+- [x] d0ff02a pushed ONLY acceptance branch. Corrected native run40185898592
+  verified4 jobs121146487661 (15 Intel),121146487726 (14 ARM),121146487886
+  (26 ARM),121146487887 (26 Intel), all queued at last fresh check. До их actual
+  результатов malformed failure не считать закрытым.
+- [x] Current scoped/helper gate40185898625 jobs121146487830/121146487980;
+  ownership40185898602 jobs121146487769/841/854/867/877/488229 (full last
+ 121146488229), current System40185898593 jobs121146487720/121146487915.
+  Старые295 ownership и scoped live/partial сохранены. Старые295 System
+ 40185089235 и utun40185089277 проверены individual API: оба2/2 wholly queued;
+  descendants, source/path, exact suite names и replacement jobs подтверждены
+  BEFORE cancel. Replacement utun40185898617 jobs121146487699/121146487846.
+  Оба old run terminal CANCELLED подтверждены; live jobs не отменялись.
+- [x] Владелец спросил о16часах работы. Дана честная граница: готовность полного
+ 7-stage плана не доказана; остаются durable fence/recovery, рабочая DNS/bridge
+  integration и финальная installed/WARP/UX/release приёмка. Никакого сокращения
+  согласованного scope или объявления готовности по числу pure checks. Дальнейшая
+  контрольная точка — рабочий domain route, а не новый отдельный прототип.
