@@ -7998,3 +7998,39 @@ https://github.com/go-gost/x/blob/v0.8.1/registry/registry.go.
   переносятся на новый binary автоматически. Обновлённый мост ещё не выбран
   production app/build. DNS relay, persistent boot cache, synchronous App update
   client/answer lease, static CIDR protection и первоначальный7-stage scope OPEN.
+
+
+### Продолжение 1.5hl — durable ordinary-user bridge protection and ordered publication
+
+- [x] Новый production VPNBridgeProtectionStore хранит отдельный canonical v1
+  boot cache: sorted numeric CIDR union, revision, предел4096retainedIPs+1000static
+  resources/512KiB. Host IP нормализуется в /32 или /128 с remote-host validation.
+  Domain/default/mapped/loopback host entries не принимаются. TTL/Off/ошибкаAPI
+  не очищают список. Explicit policy release пока не реализован, не симулируется.
+- [x] Trusted owner-private directory FD, lifetime600/flock lock, NOFOLLOW,
+  regular/UID/mode/nlink/inode checks, fsync(temp)+atomic rename+fsync(directory),
+  first-create RENAME_EXCL. Corruption/missing-after-use/changed lock блокируют
+  publication, а не дают пустой список. Fresh nil cache НЕ доказывает отсутствие
+  root obligations: будущий boot adapter обязан получить полный authenticated
+  root retained state до GOST listen (root ledger остаётся authority).
+- [x] VPNBridgeProtectionPublisher сохраняет полный union ДО transport.replace,
+  проверяет исходный continuous deadline/clock backwards/epoch/current resource
+  до и после границ и перед callback. Unknown API write не повторяется и не
+  откатывает сохранённые IP. Один store publication lock держится через callback;
+  reentrant publication, включая другой publisher с тем же store, запрещена.
+  Нет default-success transport и нет DNS permit issuer в этом компоненте.
+- [x] Real private FS +fakeAPI/clock20tests: порядок disk/API/callback, reopen,
+  union/shared canonical forms, unknownAPI, cancel/late/backwards/changed epoch,
+  corrupt/missing cache, concurrent8writers, reentrancy, lock replacement,
+  symlink/hardlink/mode/capacity. С существующими bridge projection и joint builder
+  checks:35 PASS5.463s без skips, /tmp/pp-bridge-protection-final-parent.log.
+  Локальные sockets, GOST, VPN, system proxies/DNS и Keychain не запускались.
+- [x] Компонент и существующий continuous clock добавлены в VPN frontend build
+  source graph; dedicated managed-bridge ARM14/Intel15 job включает новые tests.
+  Shell syntax/YAML/diff checks PASS. Whole current frontend/native integration
+  ещё не объявляется проверенной из этих component tests.
+- [ ] Реальный authenticated private-API transport, helper-to-App handoff,
+  root custody boot reconciliation, output lease/relay wiring ещё OPEN. Domain
+  gate остаётся CLOSED. Candidate GOST565cdb7 actual runtime40192825189 freshly
+  observed4queued jobs121167287117/244/283/301; это НЕ actual passing proof.
+  Full original7-stage acceptance/release scope остаётся незавершённым.
