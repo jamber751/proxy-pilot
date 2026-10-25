@@ -7647,3 +7647,43 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Durable known-IP journal и pair-aware active routes ещё не реализованы этим
   low-level boundary; domain runtime/public IPC не включались. Сохраняются
   persistent OS relay/GOST, TTL/revoke/crash/foreign/reboot/WARP и все7этапов.
+
+### Продолжение 1.5hd — native feedback: derived PRCLONING и acknowledgement
+
+- [x]295384d native fence40185089231 Intel15 job121144075350 FAILED на первом
+  IPv4 install: malformedMessage, expectedFlags22531/0x5803,
+  observedFlags88067/0x15803. До actual packet/death сценария не дошёл; никакого
+  Swift native PASS или complete backend не заявляем. Лог
+  /tmp/pp-native-fence-295-intel-121144075350.log. ARM26 также FAILED; прочие
+  rows этого partial run сохранены. Host не переустанавливался.
+- [x] Primary pinned XNU f6217f891ac0bb64f3d375211650a4c1ff8ca1ea:
+  in_rmx.c:140 иin6_rmx.c:195 добавляют PRCLONING ко всем unicast NET routes.
+  Новый exact identity теперь хранит ИМЕННО этот derived kernel bit, sender
+  его не запрашивает (как существующий IPv6 LLINFO profile), неизвестные bits
+  не игнорируются. Локальные source URLs+SHA в
+  /tmp/pp-exact-fence-xnu-20261025/sources.json; public source:
+  https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/netinet/in_rmx.c
+- [x] rtsock.c route_output ADD не выполняет GET/report path. Новые fence ADD/
+  DELETE проверяют correlated header/type/errno ACK, затем ОБЯЗАТЕЛЬНЫЙ отдельный
+  live GET; ACK никогда не превращается в ownership/snapshot proof. Legacy
+  transact callers сохраняют старый путь. Подтверждённый PRCLONING mismatch
+  исправлен; точная причина прежнего malformed пока не доказана. В VM observer
+  добавлены closed numeric type/index/addrs/mask length/family/gateway family
+  на failure, без адресов или packet bytes, чтобы следующий отказ локализовался.
+- [x] Fake kernel теперь моделирует derived flag отдельно от sender flags.
+  Added sparse ACK/index0 и success ACK без установленного state (последний
+  обязан дать verificationFailed).19fake methods+1native compile/guards PASS
+ 16.177s без skips: /tmp/pp-exact-fence-derived-profile-parent.log.23 прежних
+  route/sequence/write-miss methods PASS17.600s без skips:
+  /tmp/pp-exact-fence-profile-legacy-parent.log.
+- [x] Current complete production helper graph typechecks ARM/Intel0/0,
+  stale=[]: /tmp/pp-exact-fence-profile-typecheck-vwgk9spd/verification.json.
+  Прежний signed Universal build1.5hc относится к source ДО этой поправки,
+  не подменяет новый actual native/full build proof.
+- [x]74cda2f System40180251651 ARM121129585889 SUCCESS:180fast checks (1optional
+  real-App skip),6root owner/volume PASS,8actual Installer cases Ran1/OK без
+  skips. Лог /tmp/pp-native-final-121129585889.log. Intel121129586179 live;
+  newer295384d System40185089235 ещё не завершён. Финальный current release
+  acceptance и остальные7этапов остаются обязательными.
+- [ ] После push получить actual corrected native fence proof. До него и durable
+  known-IP/pair-aware active-route/relay integration domain runtime не включать.

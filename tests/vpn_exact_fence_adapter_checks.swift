@@ -16,19 +16,23 @@ private final class Kernel: VPNRouteSocketTransport {
     var installed = false, hostFallback = false, scoped = false, wrongIP = false, wrongGateway = false
     var echoMiss = false, failReadAfterAdd = false, addRace = false, lateReply = false
     var down = false, wrongTypeEcho = false, staleError = false
+    var sparseAck = false, noMutation = false
     var request = Data(), sent = [rt_msghdr](), deadlines = [UInt64]()
     init(_ identity: VPNExactRouteFenceIdentity) { self.identity = identity }
     func send(_ message: Data, deadline: DispatchTime) throws {
         request = message; let h = try VPNDarwinRouteCodec.identify(message); sent.append(h); deadlines.append(deadline.uptimeNanoseconds)
         if h.rtm_type == RTM_ADD {
             if addRace { installed = true; throw VPNRouteSocketTransportError.posix(EEXIST) }
-            installed = true
+            if !noMutation { installed = true }
         }
         if h.rtm_type == RTM_DELETE { installed = false }
     }
     func receive(maximumBytes: Int, deadline: DispatchTime) throws -> Data {
         let h = try VPNDarwinRouteCodec.identify(request)
         if failReadAfterAdd && h.rtm_type == RTM_ADD { throw VPNRouteSocketTransportError.timeout }
+        if sparseAck && h.rtm_type != RTM_GET {
+            return change(request) { $0.rtm_index = 0 }
+        }
         if lateReply { usleep(30_000) }
         if staleError { staleError = false; return change(request) { $0.rtm_seq -= 1; $0.rtm_errno = ESRCH } }
         if h.rtm_type == RTM_GET && !installed && !hostFallback {
@@ -37,7 +41,7 @@ private final class Kernel: VPNRouteSocketTransport {
         }
         var reply = try VPNDarwinRouteCodec.encodeExactFence(type:UInt8(RTM_ADD),sequence:h.rtm_seq,pid:h.rtm_pid,identity:identity)
         reply = change(reply) {
-            $0.rtm_type = h.rtm_type; $0.rtm_flags |= RTF_DONE
+            $0.rtm_type = h.rtm_type; $0.rtm_flags = Int32(bitPattern:identity.flags) | RTF_DONE
             if h.rtm_type == RTM_GET && !installed && hostFallback { $0.rtm_flags |= RTF_HOST }
             if scoped { $0.rtm_flags |= RTF_IFSCOPE }
             if down { $0.rtm_flags &= ~RTF_UP }
@@ -73,7 +77,10 @@ private func expect(_ expected: VPNDarwinRouteError, _ body: () throws -> Void) 
                 let l = try VPNDarwinRouteCodec.identify(legacy)
                 try require(l.rtm_flags & RTF_HOST != 0 && l.rtm_addrs & RTA_NETMASK == 0)
                 let data = try VPNDarwinRouteCodec.encodeExactFence(type:UInt8(RTM_ADD),sequence:3,pid:7654,identity:id)
-                let snapshot = try VPNDarwinRouteCodec.decode(data).snapshot
+                let requestHeader = try VPNDarwinRouteCodec.identify(data)
+                try require(UInt32(bitPattern:requestHeader.rtm_flags) == id.flags & ~UInt32(RTF_PRCLONING))
+                let reply = change(data) { $0.rtm_flags = Int32(bitPattern:id.flags) }
+                let snapshot = try VPNDarwinRouteCodec.decode(reply).snapshot
                 try require(snapshot != nil && id.matches(snapshot!))
             case "install-delete":
                 let original = end()
@@ -82,6 +89,15 @@ private func expect(_ expected: VPNDarwinRouteError, _ body: () throws -> Void) 
                 try require(fake.deadlines.allSatisfy { $0 <= original.uptimeNanoseconds } && Set(fake.deadlines).count == 1)
                 try socket.deleteExactFence(id,deadline:original)
                 try require(!fake.installed && fake.sent.last?.rtm_type == UInt8(RTM_GET))
+            case "sparse-ack":
+                fake.sparseAck = true
+                try socket.installExactFence(id,deadline:end())
+                try socket.deleteExactFence(id,deadline:end())
+                try require(!fake.installed && fake.sent.count == 6)
+            case "ack-without-state":
+                fake.sparseAck = true; fake.noMutation = true
+                try expect(.verificationFailed) { try socket.installExactFence(id,deadline:end()) }
+                try require(!fake.installed && fake.sent.count == 3)
             case "host-distinction":
                 fake.hostFallback = true
                 try require(try socket.lookupExactFence(id,deadline:end()) == nil)

@@ -147,7 +147,10 @@ enum VPNDarwinRouteError: VPNFlowDiagnosticError, Equatable {
 /// reinterpret the old route journals. Shape alone is not an ownership receipt.
 struct VPNExactRouteFenceIdentity: Codable, Equatable {
     static let schema = 1
-    static let expectedFlags = UInt32(RTF_UP | RTF_STATIC | RTF_GATEWAY | RTF_BLACKHOLE | RTF_PROTO2)
+    // in_addroute()/in6_addroute() derive PRCLONING for unicast NET routes.
+    // Store that exact kernel profile; it is not an ignored/normalized bit.
+    // apple-oss-distributions/xnu, bsd/netinet{,6}/in{,6}_rmx.c
+    static let expectedFlags = UInt32(RTF_UP | RTF_STATIC | RTF_GATEWAY | RTF_BLACKHOLE | RTF_PROTO2 | RTF_PRCLONING)
     let schemaVersion: Int
     let address: VPNRoutePrefix
     let interfaceIndex: UInt32
@@ -313,7 +316,7 @@ enum VPNDarwinRouteCodec {
             throw VPNDarwinRouteError.invalidIdentity
         }
         return try message(type: type, sequence: sequence, pid: pid, error: 0,
-            index: identity.interfaceIndex, flags: identity.flags, addresses: [
+            index: identity.interfaceIndex, flags: identity.flags & ~UInt32(RTF_PRCLONING), addresses: [
                 (RTA_DST,address(identity.address.bytes,family: identity.address.family)),
                 (RTA_GATEWAY,address(identity.gatewayBytes,family: identity.address.family)),
                 (RTA_NETMASK,netmask(identity.address))])
@@ -756,7 +759,8 @@ final class VPNDarwinRouteSocket {
                                     family: VPNRouteAddressFamily? = nil) throws -> VPNDarwinRouteSnapshot? {
         guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
         let value = try transact(request,sequence: sequence,type: type,deadline: deadline,
-                                 ordinaryLookupFamily: family, requireGlobalReply: type == UInt8(RTM_GET))
+                                 ordinaryLookupFamily: family, requireGlobalReply: type == UInt8(RTM_GET),
+                                 headerOnlyReply: type != UInt8(RTM_GET))
         // A late reply after a possible mutation is indeterminate, not success.
         guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
         return value
@@ -826,7 +830,8 @@ final class VPNDarwinRouteSocket {
     private func transact(_ request: Data, sequence: Int32, type: UInt8,
                           deadline: DispatchTime,
                           ordinaryLookupFamily: VPNRouteAddressFamily? = nil,
-                          requireGlobalReply: Bool = false) throws -> VPNDarwinRouteSnapshot? {
+                          requireGlobalReply: Bool = false,
+                          headerOnlyReply: Bool = false) throws -> VPNDarwinRouteSnapshot? {
         do { try transport.send(request, deadline: deadline) }
         catch VPNRouteSocketTransportError.posix(let code) where type == UInt8(RTM_GET) && code == ESRCH {
             // Ordinary public RTM_GET misses can fail write() synchronously:
@@ -853,6 +858,14 @@ final class VPNDarwinRouteSocket {
             do { header = try VPNDarwinRouteCodec.identify(data) }
             catch { throw VPNDarwinRouteError.malformedMessage }
             guard header.rtm_seq == sequence, header.rtm_pid == pid else { continue }
+            // ADD acknowledges the request; it is not a live route snapshot.
+            // Exact-fence callers MUST issue their separate GET verification.
+            // rtsock.c route_output(): ADD does not take the GET report path.
+            if headerOnlyReply {
+                guard header.rtm_type == type else { throw VPNDarwinRouteError.malformedMessage }
+                guard header.rtm_errno == 0 else { throw VPNDarwinRouteError.kernel(header.rtm_errno) }
+                return nil
+            }
             // Exact-fence GET errors can echo our request with index zero.
             // A correlated kernel errno needs no fabricated interface snapshot.
             // Keep legacy response decoding unchanged for all other callers.

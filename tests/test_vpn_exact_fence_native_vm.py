@@ -79,7 +79,7 @@ def run_probe(binary,order):
         expected += ['PASS native-exact-fence-add-'+str(f),'PASS native-exact-fence-delete-'+str(f)]
         expected += [line for line in packets.MARKERS if 'ipv'+str(f)+'-' in line]
     for line in out.splitlines():
-        if line not in expected and not re.fullmatch(r'FAIL native-exact-fence action=(1|2) family=(4|6) category=[A-Za-z]+ errno=[0-9]+ expectedFlags=[0-9]+ observedFlags=[0-9]+',line): raise RuntimeError('outputProtocol')
+        if line not in expected and not re.fullmatch(r'API native-exact-fence type=[0-9]+ index=[0-9]+ addrs=[0-9]+ maskLength=[0-9]+ maskFamily=[0-9]+ gatewayFamily=[0-9]+',line) and not re.fullmatch(r'FAIL native-exact-fence action=(1|2) family=(4|6) category=[A-Za-z]+ errno=[0-9]+ expectedFlags=[0-9]+ observedFlags=[0-9]+',line): raise RuntimeError('outputProtocol')
         print(line,flush=True)
     for line in err.splitlines():
         if not (re.fullmatch(r'FAIL exact-route-pair stage=[A-Za-z]+ errno=[0-9]+ flags=[0-9]+ exact=[01] fullMask=[01]',line)

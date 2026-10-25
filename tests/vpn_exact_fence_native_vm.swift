@@ -6,6 +6,8 @@ import Foundation
 private final class ObservedTransport: VPNRouteSocketTransport {
     let real: VPNDarwinRouteSocketTransport
     var request: rt_msghdr?, observedFlags: UInt32 = 0
+    var observedType: UInt8 = 0, observedIndex: UInt16 = 0, observedMask: Int32 = 0
+    var maskLength = 0, maskFamily = 0, gatewayFamily = 0
     init() throws { real = try VPNDarwinRouteSocketTransport() }
     func send(_ bytes: Data, deadline: DispatchTime) throws {
         request = try VPNDarwinRouteCodec.identify(bytes)
@@ -16,6 +18,16 @@ private final class ObservedTransport: VPNRouteSocketTransport {
         if let q = request, let h = try? VPNDarwinRouteCodec.identify(data),
            h.rtm_pid == q.rtm_pid, h.rtm_seq == q.rtm_seq, h.rtm_type == q.rtm_type, h.rtm_errno == 0 {
             observedFlags = UInt32(bitPattern:h.rtm_flags) & ~UInt32(RTF_DONE)
+            observedType = h.rtm_type; observedIndex = h.rtm_index; observedMask = h.rtm_addrs
+            var at = MemoryLayout<rt_msghdr>.size
+            for i in 0..<Int(RTAX_MAX) where h.rtm_addrs & (1 << i) != 0 {
+                guard at+2 <= data.count else { break }
+                let n = Int(data[at]), f = Int(data[at+1]), step = n == 0 ? 4 : (n+3) & ~3
+                guard step >= 4, at+step <= data.count else { break }
+                if i == RTAX_NETMASK { maskLength = n; maskFamily = f }
+                if i == RTAX_GATEWAY { gatewayFamily = f }
+                at += step
+            }
         }
         return data
     }
@@ -46,6 +58,9 @@ func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<
         let code = (error as? VPNFlowDiagnosticError)?.vpnFlowFailureCode.rawValue ?? "unknown"
         let number = (error as? VPNFlowDiagnosticError)?.vpnFlowErrorNumber ?? 0
         print("FAIL native-exact-fence action=\(action) family=\(family) category=\(code) errno=\(number) expectedFlags=\(VPNExactRouteFenceIdentity.expectedFlags) observedFlags=\(observer?.observedFlags ?? 0)"); fflush(stdout)
+        if let observer {
+            print("API native-exact-fence type=\(observer.observedType) index=\(observer.observedIndex) addrs=\(observer.observedMask) maskLength=\(observer.maskLength) maskFamily=\(observer.maskFamily) gatewayFamily=\(observer.gatewayFamily)"); fflush(stdout)
+        }
         return 1
     }
 }
