@@ -16,28 +16,61 @@ protocol VPNRouteSocketTransport: AnyObject {
     func receive(maximumBytes: Int, deadline: DispatchTime) throws -> Data
 }
 
-/// The production transport opens PF_ROUTE only when explicitly initialized.
-/// Merely constructing the adapter around a fake transport cannot touch networking.
+/// Injectable native boundary. Fake implementations must never open PF_ROUTE.
+protocol VPNRouteSocketIO: AnyObject {
+    func open() throws -> Int32
+    func close(_ descriptor: Int32)
+    func send(_ message: Data, descriptor: Int32, deadline: DispatchTime) throws
+    func receive(descriptor: Int32, maximumBytes: Int, deadline: DispatchTime) throws -> Data
+}
+
+/// One controller owns a transport and serializes its request/reply exchanges.
+/// An idle PF_ROUTE socket receives broadcasts too: a full old queue can drop a
+/// newly generated reply before the controller can drain unrelated messages.
+/// Fresh request sockets avoid carrying that idle backlog into the next write.
+/// Broadcasts during the request can still cause refusal; no write is replayed.
 final class VPNDarwinRouteSocketTransport: VPNRouteSocketTransport {
+    private let io: VPNRouteSocketIO
     private var descriptor: Int32
 
-    init() throws {
-        descriptor = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC)
+    init(io: VPNRouteSocketIO = VPNDarwinRouteSocketIO()) throws {
+        self.io = io
+        descriptor = try io.open()
+    }
+    deinit { if descriptor >= 0 { io.close(descriptor) } }
+    func send(_ message: Data, deadline: DispatchTime) throws {
+        // Open/configure before retiring the previous owned descriptor. Failure
+        // here issues no write and leaves its cleanup obligation with this owner.
+        let fresh = try io.open()
+        let previous = descriptor
+        descriptor = fresh
+        io.close(previous)
+        try io.send(message, descriptor: descriptor, deadline: deadline)
+    }
+    func receive(maximumBytes: Int, deadline: DispatchTime) throws -> Data {
+        try io.receive(descriptor: descriptor, maximumBytes: maximumBytes, deadline: deadline)
+    }
+}
+
+final class VPNDarwinRouteSocketIO: VPNRouteSocketIO {
+    func open() throws -> Int32 {
+        let descriptor = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC)
         guard descriptor >= 0 else { throw VPNRouteSocketTransportError.posix(errno) }
         let flags = fcntl(descriptor, F_GETFL)
         guard flags >= 0, fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0,
               fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
-            let saved = errno; close(descriptor); descriptor = -1
+            let saved = errno; Darwin.close(descriptor)
             throw VPNRouteSocketTransportError.posix(saved)
         }
+        return descriptor
     }
 
-    deinit { if descriptor >= 0 { close(descriptor) } }
+    func close(_ descriptor: Int32) { Darwin.close(descriptor) }
 
-    func send(_ message: Data, deadline: DispatchTime) throws {
+    func send(_ message: Data, descriptor: Int32, deadline: DispatchTime) throws {
         let written: Int = try message.withUnsafeBytes { bytes in
             while true {
-                try wait(events: Int16(POLLOUT), deadline: deadline)
+                try wait(descriptor: descriptor, events: Int16(POLLOUT), deadline: deadline)
                 let result = Darwin.write(descriptor, bytes.baseAddress!, bytes.count)
                 if result < 0 && errno == EINTR { continue }
                 if result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { continue }
@@ -48,10 +81,10 @@ final class VPNDarwinRouteSocketTransport: VPNRouteSocketTransport {
         guard written == message.count else { throw VPNRouteSocketTransportError.closed }
     }
 
-    func receive(maximumBytes: Int, deadline: DispatchTime) throws -> Data {
+    func receive(descriptor: Int32, maximumBytes: Int, deadline: DispatchTime) throws -> Data {
         var bytes = [UInt8](repeating: 0, count: maximumBytes)
         while true {
-            try wait(events: Int16(POLLIN), deadline: deadline)
+            try wait(descriptor: descriptor, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(descriptor, &bytes, bytes.count)
             if count < 0 && errno == EINTR { continue }
             if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { continue }
@@ -61,7 +94,7 @@ final class VPNDarwinRouteSocketTransport: VPNRouteSocketTransport {
         }
     }
 
-    private func wait(events: Int16, deadline: DispatchTime) throws {
+    private func wait(descriptor: Int32, events: Int16, deadline: DispatchTime) throws {
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
             let end = deadline.uptimeNanoseconds
