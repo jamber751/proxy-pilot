@@ -43,8 +43,8 @@
 сценариев на обеих архитектурах: run40196864320, jobs121179472470/121179472595.
 Полные логи проверены: каждый из8 cases выполнен, ни один из них не skipped.
 Это закрывает прежний наблюдаемый Intel отказ завершающих действий для2dce4c5.
-Более новый комплект с persistent runtime544e6d5 пока принят только по API-статусу
-ARM; его полный лог и Intel ещё проверяются. Последние inventory-изменения этим
+Более новый комплект с persistent runtime544e6d5 также прошёл8/8 наARM
+(полный job121186810255 log проверен); Intel ещё проверяется. Последние inventory-изменения этим
 результатом не покрыты; итоговая host-установка ещё не разрешена к выполнению.
 
 Новая native граница: current544e6d5 прошёл actual packet/death/crash-reopen
@@ -8569,7 +8569,8 @@ System evidence: exact2dce4c5 run40196864320 завершён SUCCESS на об�
 137→139→C desired-off/on, completed phase6, retained-capsule refusal/idempotent
 resume, ordinary C→D off/on и завершение при закрытом reply socket. В fast suite
 есть отдельный явно skipped opt-in signed-app test;8 системных cases не skipped.
-Current544e6d5 System40199287852 ARM121186810255 API-success, full log pending;
+Current544e6d5 System40199287852 ARM121186810255: full mode600 log
+/tmp/pp-installer-121186810255.log проверен, также8/8 без skips;
 Intel121186810479 всё ещё in_progress. Это НЕ latest inventory-source acceptance.
 
 Native544e6d5 run40199287851 теперь также SUCCESS macOS26ARM121186810403;
