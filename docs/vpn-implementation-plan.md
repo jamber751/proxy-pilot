@@ -7041,3 +7041,27 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   ownership40176890755, interface40176890730, transport40176890684,
   genuine SDK40176890840, managed bridge40176890727, GOST40176890712. Queued/live
   состояние не засчитывается как PASS; публикация/теги/host install не выполнялись.
+
+
+### Продолжение 1.5gl — сохранённые native handles и незакрытый root gate
+
+- [x] macOS12 changes сохранены f715bc5; доменный выбор/scopes — fa23e2c.
+  Оба коммита отправлены только в codex/vpn-root-acceptance. Новый source-fa23
+  набор: owned-utun40177188969, System40177188966, ownership40177189013,
+  scoped custody40177188948. На момент записи queued; это не PASS.
+- [x] Source48e62b6 transport40174280006 terminal SUCCESS обе arch:
+  jobs121111499781/121111499923. Это результат того source snapshot, до новых
+  macOS12/DNS изменений, не готовность всего итогового комплекта.
+- [ ] Sourcea6eff55 System40173952879 ещё live: ARM121110535770 прошёл шаги до
+  owner update C→D enabled и выполняет final closed-reply-socket scenario;
+  Intel121110535940 продолжает production artifact build. Terminal verdict
+  отсутствует; jobs не отменялись и host Installer не запускался.
+- [ ] Отдельно сохранены terminal failures source7402f01 System40173045218:
+  Intel121107762835 отказал уже при создании fixture readonly DMG, до сборки/
+  установки; ARM121107762708 дошёл до C141, selected141, desired=true,
+  failures=0, helper/broker C running и recovery отсутствует, но итоговая rescue
+  observation отказала installedResult. Это другая наблюдаемая граница, чем
+  прежний frozen139 failures3; причину по одному финальному snapshot не выводим.
+  Логи /tmp/pp-system-740-intel-121107762835.log и
+  /tmp/pp-system-740-arm-121107762708.log. Нужна проверка самого failure boundary;
+  нельзя считать update успешным лишь по установленному C или поднятому helper.
