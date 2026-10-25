@@ -1,0 +1,63 @@
+name: VPN pinned GOST resolver contract
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-gost-resolver.yml'
+      - 'tests/test_vpn_gost_resolver_vm.py'
+      - 'tests/vpn_gost_resolver_vm_checks.py'
+      - 'make-dmg.sh'
+      - 'bin/proxypilot'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolver:
+    name: Owned loopback resolver contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pure contract and refusal guards without network or GOST execution
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_resolver_vm -v
+      - name: Fetch the release archive pinned by the shipped bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ge 500
+          umask 077
+          work="$RUNNER_TEMP/gost-resolver-contract"
+          mkdir -m 700 "$work"
+          case "$(uname -m)" in
+            arm64)
+              arch=arm64
+              expected=e54f6c22e81c00650adfbbb23317c74a4dca9b9b73fa28cfa150f5559cc3ff2e
+              ;;
+            x86_64)
+              arch=amd64
+              expected=0892485bd94e37b67a1f1d0d2372ed12d7dc0f1bc763d56177a0c0ee734855e6
+              ;;
+            *) exit 1 ;;
+          esac
+          curl --proto '=https' --tlsv1.2 --fail --location --max-time 180 \
+            --output "$work/release.tar.gz" \
+            "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_darwin_${arch}.tar.gz"
+          actual=$(shasum -a 256 "$work/release.tar.gz" | awk '{print $1}')
+          test "$actual" = "$expected"
+          tar -xzf "$work/release.tar.gz" -C "$work" gost
+          test -f "$work/gost" && test ! -L "$work/gost"
+          chmod 700 "$work/gost"
+      - name: Actual unchanged GOST with owned fake endpoints in the disposable VM
+        env:
+          PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
+          PROXYPILOT_VM_GOST_BINARY: ${{ runner.temp }}/gost-resolver-contract/gost
+        run: python3 tests/test_vpn_gost_resolver_vm.py --acceptance
