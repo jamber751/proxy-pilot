@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import os.log
 
 /// Test bundle entry only. The result role and all its checks are production
 /// code. This avoids GUI/OTP initialization while observing actual system C.
@@ -8,9 +9,14 @@ import Foundation
     static func main() {
         let args = CommandLine.arguments
         #if VPN_INSTALLED_UPDATE_RESULT_DIAGNOSTICS
+        let resultLog = OSLog(subsystem: "kz.documentolog.proxypilot.vm", category: "installed-result")
         VPNInstalledUpdateResultEntry.diagnostic = { stage, category in
-            FileHandle.standardError.write(Data(("ProxyPilot VPN installed result phase: "
-                + stage.rawValue + "; category: " + category.rawValue + "\n").utf8))
+            let message = "ProxyPilot VPN installed result phase: "
+                + stage.rawValue + "; category: " + category.rawValue
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            // Rescue deliberately discards child stderr. Preserve only these
+            // closed enum fields in this disposable VM probe's separate log.
+            os_log("%{public}@", log: resultLog, type: .error, message)
         }
         #endif
         if let status = VPNInstalledUpdateResultEntry.runIfRequested(arguments: args) { exit(status) }

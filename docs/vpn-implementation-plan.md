@@ -7065,3 +7065,46 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Логи /tmp/pp-system-740-intel-121107762835.log и
   /tmp/pp-system-740-arm-121107762708.log. Нужна проверка самого failure boundary;
   нельзя считать update успешным лишь по установленному C или поднятому helper.
+
+
+### Продолжение 1.5gm — финальная update observation: сохранение причины отказа
+
+- [x] Production rescue больше не сводит все VPNInstalledUpdateResultError и
+  VPNInstalledApplicationError к одному installedResult: отдельно логируются
+  timeout, changed, childFailed, spawnFailed, state и application identity.
+  Это только закрытые категории, без Error descriptions/associated values.
+  Проверки, deadlines, число попыток, child authentication и final-result policy
+  не менялись. Старый token остаётся в parser для исторических логов.
+- [x] У synthetic C/D probe был диагностический stderr callback, но настоящий
+  rescue child преднамеренно получает /dev/null. Теперь только VM entry также
+  пишет закрытые stage/category поля в отдельный os_log subsystem/category.
+  Production App не получает новый logger. VM failure snapshot читает только этот
+  predicate с timeout5s и проецирует allowlisted tokens: максимум128KiB/512rows/
+  96events. Окно last10m отмечено явно: оно может содержать прежний case и не
+  доказывает исход текущей установки. Unknown/raw JSON fields/paths подавляются.
+  Без root+Darwin+GHA+explicit VM opt-in query отказывается до запуска процесса.
+- [x] Actual pure classifier проверен на production rescue sources, с отдельным
+  inert test main:3 native checks PASS внутри41-case прогона45.363s. Покрыты все6
+  result errors,3 application errors и неизвестный Error, чья description fatal.
+  Первая сборка fixture имела duplicate main; исправлен только список fixture
+  entry files, production rescue main не удалён и проверен отдельно ниже.
+- [x] После добавления VM-log projection итоговые42 parser/diagnostic/minOS checks
+  PASS1.288s: host refusal до query, фиксированный predicate/env/deadline,
+  timeout/nonzero-output redaction, malformed/oversized JSON, bounded events и
+  отдельное окно наблюдения. Лог /tmp/pp-rescue-result-observation-final-parent.log;
+  native classifier — /tmp/pp-rescue-result-categories-final-parent.log.
+- [x] Настоящий полный production rescue graph с его main, без TESTING flags:
+  ARM/Intel typecheck0/0, stale=[]:
+  /tmp/pp-rescue-category-production-proof-pzyr7km9/verification.json.
+  Actual synthetic C/D compiler inputs с VM diagnostic flags также0/0, stale=[]:
+  /tmp/pp-installed-result-probe-log-proof-yima4aop/verification.json.
+  Код не запускал rescue, host logger, Installer, сеть или Keychain локально.
+- [x] Sourcea6eff55 System40173952879 ARM121110535770 теперь terminal SUCCESS:
+  все8 native cases прошли, включая retained capsule refusal, completed phase6,
+  pending On/Off, idempotent resume, ordinary owner C→D On/Off и closed reply.
+  Fast suite160 =159 PASS +1 optional real-App skip; root volume/owner suite6 PASS.
+  Лог /tmp/pp-system-a6-arm-121110535770.log. Это snapshot до macOS12/DNS fixes.
+- [ ] Intel121110535940 того же run продолжает production artifact build.
+  Новые System sources с macOS12 и DNS ещё не приняты; усиленная диагностика
+  требует следующего actual VM результата. Причина intermittent failures139/C
+  пока не установлена. Host install, public release и tag не выполнялись.

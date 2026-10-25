@@ -26,6 +26,8 @@ enum VPNRescueSystemEntry {
         case protectedSwap, protectedStorage, protectedLayout, protectedExecutor, protectedRename, protectedUncertain
         case cleanup
         case installedResult, launchd, authorization, ownership, package, state, timeout, other
+        case installedResultTimeout, installedResultChanged, installedResultChild
+        case installedResultSpawn, installedResultState, installedApplication
     }
     private static func category(for error: Error) -> ErrorCategory {
         switch error {
@@ -55,7 +57,12 @@ enum VPNRescueSystemEntry {
             default: return .protectedSwap
             }
         case is VPNJointUpdateCleanupError, is VPNRescueCleanupContextError: return .cleanup
-        case is VPNInstalledUpdateResultError, is VPNInstalledApplicationError: return .installedResult
+        case VPNInstalledUpdateResultError.deadlineExceeded: return .installedResultTimeout
+        case VPNInstalledUpdateResultError.changed: return .installedResultChanged
+        case VPNInstalledUpdateResultError.childFailed: return .installedResultChild
+        case VPNInstalledUpdateResultError.spawnFailed: return .installedResultSpawn
+        case is VPNInstalledUpdateResultError: return .installedResultState
+        case is VPNInstalledApplicationError: return .installedApplication
         case is VPNLaunchdError: return .launchd
         case is VPNReleaseAuthorizationError, is VPNRescueAuthorizationError: return .authorization
         case is VPNLifecycleOwnershipError: return .ownership
@@ -67,6 +74,11 @@ enum VPNRescueSystemEntry {
     private static func reportFailure(_ category: ErrorCategory) {
         FileHandle.standardError.write(Data("ProxyPilot VPN repair failure category: \(category.rawValue)\n".utf8))
     }
+
+    #if VPN_RESCUE_DIAGNOSTICS_TESTING
+    /// Pure closed-category checks; this entry runs no rescue/system operation.
+    static func testFailureCategory(_ error: Error) -> String { category(for: error).rawValue }
+    #endif
 
     static func run(arguments: [String]) -> Int32 {
         if arguments.count == 3, arguments[1] == "verify-package" {

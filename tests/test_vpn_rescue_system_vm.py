@@ -373,7 +373,9 @@ REPAIR_ERROR_CATEGORIES = {'liveIdentity', 'preparationIdentity', 'directory', '
                            'destinationStage', 'destinationExchange', 'protectedSwap', 'cleanup',
                            'destinationLayout', 'destinationStorage', 'destinationUncertain',
                            'protectedStorage', 'protectedLayout', 'protectedExecutor', 'protectedRename', 'protectedUncertain',
-                           'installedResult', 'launchd', 'authorization', 'ownership', 'package',
+                           'installedResult', 'installedResultTimeout', 'installedResultChanged', 'installedResultChild',
+                           'installedResultSpawn', 'installedResultState', 'installedApplication',
+                           'launchd', 'authorization', 'ownership', 'package',
                            'state', 'timeout', 'other'}
 
 
@@ -472,6 +474,39 @@ def installed_result_tokens(text):
     return [stage + ':' + category for stage, category in re.findall(
         r'^ProxyPilot VPN installed result phase: ([A-Za-z]+); category: ([A-Za-z]+)$', text, re.M)
         if stage in INSTALLED_RESULT_STAGES and category in INSTALLED_RESULT_CATEGORIES]
+
+
+def installed_result_log_tokens(text):
+    """Bounded VM-only unified-log projection; discard every other JSON field."""
+    if not isinstance(text, str) or len(text.encode('utf-8')) > 131072:
+        return {'record': 'overBudget'}
+    try: rows = json.loads(text)
+    except (ValueError, TypeError): return {'record': 'unreadable'}
+    if not isinstance(rows, list) or len(rows) > 512:
+        return {'record': 'overBudget'}
+    tokens = []
+    for row in rows:
+        if not isinstance(row, dict): continue
+        message = row.get('eventMessage')
+        if not isinstance(message, str) or len(message) > 512: continue
+        tokens.extend(installed_result_tokens(message))
+    return {'record': 'valid', 'events': tokens[-96:], 'truncated': len(tokens) > 96}
+
+
+def installed_result_log_diagnostics():
+    # No host log inspection, including on failure. The separate namespace is
+    # written only by the signed synthetic C/D entry, never the normal app.
+    if not root_vm_enabled(): return {'record': 'refused'}
+    try:
+        result = subprocess.run(['/usr/bin/log', 'show', '--style', 'json', '--last', '10m',
+            '--predicate', 'subsystem == "kz.documentolog.proxypilot.vm" AND category == "installed-result"'],
+            env=SAFE_ENV, capture_output=True, text=True, timeout=5)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return {'record': 'unavailable'}
+    if result.returncode != 0: return {'record': 'unavailable'}
+    # This observation window can include an earlier case in the same VM. It
+    # helps explain a failure, but never proves the current attempt succeeded.
+    return dict(installed_result_log_tokens(result.stdout), window='last10m')
 
 
 def launchd_diagnostics(text):
@@ -1142,6 +1177,7 @@ class VPNRescueSystemVMTests(unittest.TestCase):
     def state_summary(self):
         service = SYSTEM_BASE / 'VPN'
         result = {'activationEvents': activation_log_diagnostics(identity=self.activation_log_identity),
+                  'installedResultEvents': installed_result_log_diagnostics(),
                   'helperHistory': getattr(self, 'helper_history', {'status': 'notStarted'})}
         for name in ('preparation.json', 'update.json', 'cleanup.json'):
             path = service / name
