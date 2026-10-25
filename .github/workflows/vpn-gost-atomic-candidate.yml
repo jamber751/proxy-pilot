@@ -8,6 +8,12 @@ on:
       - 'app/vpn-bridge/**'
       - 'tests/test_vpn_gost_atomic_preparation.py'
       - 'tests/test_vpn_gost_atomic_vm.py'
+      - 'tests/test_vpn_bridge_gost_vm.py'
+      - 'tests/vpn_bridge_api_native_worker.swift'
+      - 'app/VPNBridgeProtection.swift'
+      - 'app/VPNBridgeProtectionAPI.swift'
+      - 'app/VPNConfiguration.swift'
+      - 'app/vpn-helper/VPNDNSContinuousClock.swift'
       - 'tests/test_vpn_gost_resolver_vm.py'
   workflow_dispatch:
 
@@ -33,7 +39,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -81,3 +87,14 @@ jobs:
           test "$(id -u)" -ge 500
           export PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)"
           python3 tests/test_vpn_gost_atomic_vm.py --acceptance
+      - name: Production Swift publisher exchanges with authenticated candidate GOST
+        shell: bash
+        env:
+          PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
+          PROXYPILOT_VM_GOST_ATOMIC_TESTS: '1'
+          PROXYPILOT_VM_BRIDGE_GOST_TESTS: '1'
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ge 500
+          export PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)"
+          python3 tests/test_vpn_bridge_gost_vm.py --acceptance

@@ -8211,3 +8211,29 @@ Keychain и Installer не трогались. В CI добавлен тольк
 user-launchd module не включался в новый fast step. Последующие host проверки
 ограничиваем private files и owned subprocess/Unix workers; системная приёмка
 остаётся в одноразовых VM.
+
+
+### Продолжение 1.5hq — actual Swift publisher→candidate GOST interoperability gate
+
+- [x] Добавлен `tests/test_vpn_bridge_gost_vm.py`: default inert; actual path
+  требует fresh ordinary-user GHA и три opt-in flags ДО artifact reads/compile/
+  spawn/socket. Исходный candidate проверяется по фиксированным size/SHA565cdb7;
+  VM-owned exact copy подписывается ad-hoc и проверяется, original не меняется.
+  После signing фиксируется отдельная byte lease и dynamic CDHash; Swift peer
+  callback требует kernel audit PID + live SecCode strict validity + этот hash.
+  Подпись копии нужна также на x86, где raw Go binary может быть unsigned.
+- [x] Компилируются снимки текущих production protection store/publisher/API/
+  continuous clock и прежний owned native client. API private Unix, umask077,
+  credential64hex/usernameproxypilot, fixed protected-v1 group отдельно отb0.
+  План live gate: wrong password оставляет durable cache и отказывает callback;
+  actual Swift PUT должен подтвердиться exact API response/EOF; два следующих
+  клиента reopen тот же cache и публикуют union; authenticated GET сверяет
+  результат и неизменностьb0. Адрес synthetic198.19.253.201 никогда не dialится.
+- [x] 12 inert guards/config/preparation cases PASS0.008s без skips:
+  /tmp/pp-bridge-gost-inert.log. Новый live step и source path filters добавлены
+  в существующую four-OS candidate workflow; новые isolated service/VM jobs не
+  создавались. Production bundle/installed app/GOST pins не заменялись.
+- [ ] Actual Swift→GOST exchange ещё НЕ выполнен: требуется новый CI result.
+  Это transport/API gate, не permission выпускать DNS answers и не proof
+  production actor/bootstrap/route ownership. Реальные numeric traffic controls
+  остаются отдельным atomic canary; текущий исходный7-stage scope сохранён.
