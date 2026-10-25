@@ -36,7 +36,12 @@ class VPNDomainNetworkPlanTests(unittest.TestCase):
 
     def test_both_families_and_physical_peer_bypass(self): self.run_case('hosts')
     def test_configured_prefixes_cover_planned_upstreams_without_overlap(self): self.run_case('coverage')
-    def test_exact_host_identity_and_deterministic_input_order(self): self.run_case('identity')
+    def test_original_resource_identity_and_deterministic_input_order(self): self.run_case('identity')
+    def test_most_specific_domain_keeps_original_resource_identity(self): self.run_case('selection')
+    def test_query_name_must_already_be_canonical_and_label_bounded(self): self.run_case('canonical')
+    def test_redundant_scopes_coalesce_without_rewriting_resources(self): self.run_case('coalescing')
+    def test_serialized_overlap_and_duplicate_resources_remain_rejected(self): self.run_case('scope-validation')
+    def test_resource_removal_reselects_ancestor_without_reusing_child_id(self): self.run_case('removal')
     def test_peer_bypass_is_never_tunnel_dns_coverage(self): self.run_case('peer-conflict')
     def test_invalid_inputs_and_prefix_overlaps_are_refused(self): self.run_case('invalid')
     def test_unproven_or_physical_tunnel_interface_is_refused(self): self.run_case('interface')

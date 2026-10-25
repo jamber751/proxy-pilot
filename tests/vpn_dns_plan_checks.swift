@@ -120,7 +120,7 @@ enum DNSCheckError: Error { case failed(String) }
             do {
                 _ = try VPNDNSPlan(generation: 1, revision: 1, resources: [
                     VPNResource(address: "corp.example"),
-                    VPNResource(address: "sub.corp.example")
+                    VPNResource(address: "corp.example")
                 ], corporateDNS: ["10.44.0.53"],
                    tunnel: tunnel,
                    routeProof: routeProof(["10.44.0.53"], tunnel: tunnel,

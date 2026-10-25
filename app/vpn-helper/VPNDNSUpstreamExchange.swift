@@ -40,7 +40,7 @@ final class VPNDNSUpstreamExchange {
          syscalls: VPNDNSUpstreamSyscalls = VPNDarwinDNSUpstreamSyscalls(),
          clock: VPNDNSContinuousClock = VPNDarwinDNSContinuousClock()) throws {
         guard request.generation == binding.generation, request.revision == binding.revision,
-              binding.networkPlan.domainResources.contains(request.resource) else {
+              binding.networkPlan.resource(forCanonicalDNSName: request.questionName) == request.resource else {
             throw VPNDNSUpstreamExchangeError.invalidBinding
         }
         question = try request.upstreamQuery() // Unsupported client version fails before any FD.

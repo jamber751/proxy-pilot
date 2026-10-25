@@ -51,11 +51,24 @@ struct VPNDomainNetworkPlan: Equatable {
         domainResources = domains
     }
 
+    /// The DNS codec supplies a canonical label name. Reject display/user-input
+    /// spellings here; callers must not widen scope by URL or whitespace cleanup.
+    /// Overlapping configured roots select the most specific ORIGINAL resource,
+    /// retaining its UUID/name for answer custody, revocation and resource edits.
+    func resource(forCanonicalDNSName name: String) -> VPNResource? {
+        guard let normalized = try? VPNResource.normalize(name),
+              normalized.1 == .domain, normalized.0 == name else { return nil }
+        return domainResources.filter {
+            name == $0.address || name.hasSuffix("." + $0.address)
+        }.max { $0.address.utf8.count < $1.address.utf8.count }
+    }
+
     /// Bridge into the EXISTING inert DNS model only after an actual verified
     /// route transaction. The proof is ephemeral; these checks bind its exact
     /// identities to this plan, but cannot replace live kernel verification.
-    /// VPNDNSPlan's existing stricter domain restrictions still apply. Returning
-    /// that model authorizes neither SC suffix publication nor a local relay.
+    /// Redundant ancestor/descendant scopes share this plan's tunnel/upstreams;
+    /// VPNDNSPlan coalesces only that OS projection, retaining resources above.
+    /// Returning this model authorizes neither SC publication nor a local relay.
     func dnsPlan(tunnel: VPNTunnelInterfaceEvidence,
                  routeProof: VPNRouteAppliedProof) throws -> VPNDNSPlan {
         guard routeProof.generation == staticRoutes.generation,

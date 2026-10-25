@@ -114,7 +114,15 @@ struct VPNDNSPlan: Codable, Equatable {
         guard !domains.isEmpty, domains.count <= 1000 else {
             throw VPNDNSPlanError.noScopedDomains
         }
-        try Self.validateDomains(domains)
+        // All resources use the same tunnel/upstreams. Under the approved
+        // domain-and-descendants policy, a child adds no OS resolver scope.
+        // Preserve duplicate rejection; only canonical, nonoverlapping roots
+        // enter the serialized plan (and its existing strict decoder checks).
+        guard Set(domains).count == domains.count else { throw VPNDNSPlanError.overlappingDomain }
+        let roots = domains.filter { domain in
+            !domains.contains { ancestor in domain != ancestor && domain.hasSuffix("." + ancestor) }
+        }
+        try Self.validateDomains(roots)
         guard !corporateDNS.isEmpty, corporateDNS.count <= 4 else {
             throw VPNDNSPlanError.invalidServerEvidence
         }
@@ -151,7 +159,7 @@ struct VPNDNSPlan: Codable, Equatable {
         self.generation = generation
         self.revision = revision
         serverEvidence = sortedEvidence
-        scopes = domains.map {
+        scopes = roots.map {
             VPNDNSResolverScope(domain: $0, servers: normalizedServers, tunnelInterface: tunnel)
         }
         try validate()

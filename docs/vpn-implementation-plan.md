@@ -46,7 +46,7 @@
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
 | 5. Автоматика | Код восстановления/смены сети | Живые сон, перезапуск, смена сети, WARP |
-| 6. Интерфейс | Installed settings137;520 isolated interface checks ARM/Intel на2e159b6, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Приёмка и подключение реального Keychain, installed фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
+| 6. Интерфейс | Installed settings137;520 isolated interface checks ARM/Intel на2e159b6, включая Runtime/capacity; OTP/drop, credential focus и список1/3/18/100 | Installed-приёмка сохранения/подстановки пароля, фокус/VoiceOver, финальная UX-приёмка; старый power-on сбой |
 | 7. Выпуск | Тестовые подписанные комплекты; английский непубликуемый черновик notes | Полный acceptance, английские notes, публичная поставка |
 
 В начале приёмки 24 октября исходники и Git восстановлены на `8519961`.
@@ -7003,3 +7003,41 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   проверены отдельно выше. Это не macOS12 runtime acceptance: на12 остаётся
   отдельная обязательная проверка запуска. Host App, VPN, Keychain, сеть и
   Installer в этом пункте не менялись.
+
+
+### Продолжение 1.5gk — выбор доменного ресурса и минимальные DNS scopes
+
+- [x] В согласованной политике «домен и все поддомены» пересечения теперь
+  детерминированы: выбирается самое точное исходное правило на границе DNS-label.
+  Сохраняются его UUID/name/address, а не создаётся новый ресурс для каждого
+  запроса. Неканонические URL/пробелы/регистр/последняя точка, неверные labels,
+  похожие суффиксы и посторонние имена не получают совпадение в этом API.
+- [x] DNS-plan coalesces только OS projection: дочерние scopes с теми же
+  upstreams/туннелем не дублируют родительский. Исходный список ресурсов не
+  сокращается и не переписывается. Все входные домены проверяются до coalescing;
+  дубликаты и неканонические/пересекающиеся сериализованные scopes по-прежнему
+  отклоняются. Изменение ресурсов требует новой revision, как и раньше.
+- [x] Upstream exchange до clock/socket/factory требует UUID/name/address именно
+  выбранного наиболее точного ресурса для actual questionName. Предок не может
+  присвоить запрос дочернего правила; удалённый child не принимается прежним UUID.
+  При явном удалении child новое вычисление может выбрать оставшегося ancestor.
+  Это следует утверждённой политике, не означает удаления уже известных IP fences.
+- [x] Сначала воспроизведён runtime RED на прежнем DNS-plan: approved overlapping
+  roots завершаются overlappingDomain, /tmp/pp-dns-overlap-red-parent.log.
+  После исправления весь related fake-only набор312 PASS42.773s, без skips:
+  /tmp/pp-dns-domain-selection-complete-parent.log. Включены границы labels,
+  точность правила, original identity, порядок входа, coalescing, отказ corrupted
+  serialized scopes, старый child и положительные descendant UDP exchange cases.
+  Ошибка имени метода в первой новой Swift fixture исправлена; итоговый полный
+  прогон выше успешен. Native DNS/interfaces/sockets и root API не вызывались.
+- [x] Whole115-source production helper typecheck ARM/Intel exit0/0, stale=[];
+  TESTING flags, helper execution и сетевые операции отсутствуют. Proof:
+  /tmp/pp-dns-domain-selection-helper-proof-wassik1f/verification.json.
+- [ ] Production relay, ordinary DNS/WARP policy, durable deny/known-IP custody,
+  lifecycle и connected acceptance остаются открыты. Runtime splitDNSUnavailable
+  gate не снят. Future release authority обязана проверять тот же most-specific
+  resource вместе с current generation/revision и барьером перед выдачей ответа.
+- [ ] После macOS12 commit f715bc5 сохранены новые CI handles: System40176890683,
+  ownership40176890755, interface40176890730, transport40176890684,
+  genuine SDK40176890840, managed bridge40176890727, GOST40176890712. Queued/live
+  состояние не засчитывается как PASS; публикация/теги/host install не выполнялись.

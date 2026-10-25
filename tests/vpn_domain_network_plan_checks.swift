@@ -96,9 +96,60 @@ func domainPlanFakeInterfaceName(_ index: UInt32, _ output: UnsafeMutablePointer
             try check(value.domainResources.map(\.address) == ["portal.corp.test", "zeta.corp.test"])
             let distinctExact = try plan(["corp.test", "portal.corp.test"])
             try check(distinctExact.domainResources.map(\.address) == ["corp.test", "portal.corp.test"])
-            // The old DNS model still rejects overlapping suffixes. Static
-            // planning must not silently merge/expand these exact host rules.
-            try rejects { _ = try distinctExact.dnsPlan(tunnel: tunnel(), routeProof: proof(distinctExact)) }
+            // Approved policy includes descendants. Redundant OS suffix scopes
+            // coalesce while the original resource UUIDs remain separate above.
+            let scoped = try distinctExact.dnsPlan(tunnel: tunnel(), routeProof: proof(distinctExact))
+            try check(scoped.scopes.map(\.domain) == ["corp.test"])
+        case "selection":
+            let input = try resources(["corp.test", "portal.corp.test", "ops.portal.corp.test", "other.test"])
+            let value = try VPNDomainNetworkPlan(generation: 7, revision: 11, resources: input,
+                corporateDNS: ["10.44.0.53"], peer: peer(), tunnel: tunnel())
+            for (query, index) in [("corp.test", 0), ("mail.corp.test", 0),
+                                   ("portal.corp.test", 1), ("deep.portal.corp.test", 1),
+                                   ("ops.portal.corp.test", 2), ("a.b.ops.portal.corp.test", 2),
+                                   ("a.other.test", 3)] {
+                try check(value.resource(forCanonicalDNSName: query) == input[index])
+            }
+        case "canonical":
+            let value = try plan(["corp.test", "portal.corp.test"])
+            for query in ["Corp.test", "corp.test.", " corp.test", "corp.test\n", "https://corp.test", "*.corp.test",
+                          "corp..test", "-x.corp.test", "x_.corp.test", "corp.test.evil.test", "notcorp.test",
+                          "portalcorp.test", "corp", "", "10.0.0.1", "a\0.corp.test"] {
+                try check(value.resource(forCanonicalDNSName: query) == nil)
+            }
+            try check(value.resource(forCanonicalDNSName: "portalx.corp.test")?.address == "corp.test")
+        case "coalescing":
+            let input = try resources(["ops.portal.corp.test", "z.other.test", "corp.test", "portal.corp.test",
+                                       "other.test", "notcorp.test"])
+            let value = try VPNDomainNetworkPlan(generation: 7, revision: 11, resources: input,
+                corporateDNS: ["10.44.0.53"], peer: peer(), tunnel: tunnel())
+            let scoped = try value.dnsPlan(tunnel: tunnel(), routeProof: proof(value))
+            let reversed = try VPNDomainNetworkPlan(generation: 7, revision: 11, resources: Array(input.reversed()),
+                corporateDNS: ["10.44.0.53"], peer: peer(), tunnel: tunnel())
+            try check(scoped.scopes.map(\.domain) == ["corp.test", "notcorp.test", "other.test"])
+            try check(scoped == reversed.dnsPlan(tunnel: tunnel(), routeProof: proof(reversed)))
+            try check(Set(value.domainResources.map(\.id)) == Set(input.map(\.id)))
+        case "scope-validation":
+            try rejects { _ = try plan(["corp.test", "corp.test"]) }
+            let value = try plan(["corp.test", "other.test"])
+            let scoped = try value.dnsPlan(tunnel: tunnel(), routeProof: proof(value))
+            var fields = try JSONSerialization.jsonObject(with: JSONEncoder().encode(scoped)) as! [String: Any]
+            var scopes = fields["scopes"] as! [[String: Any]]
+            scopes[1]["domain"] = "sub.corp.test"; fields["scopes"] = scopes
+            let overlapping = try JSONDecoder().decode(VPNDNSPlan.self, from: JSONSerialization.data(withJSONObject: fields))
+            try rejects { try overlapping.validate() }
+            scopes[1]["domain"] = "corp.test"; fields["scopes"] = scopes
+            let duplicate = try JSONDecoder().decode(VPNDNSPlan.self, from: JSONSerialization.data(withJSONObject: fields))
+            try rejects { try duplicate.validate() }
+        case "removal":
+            let input = try resources(["corp.test", "portal.corp.test"])
+            let before = try VPNDomainNetworkPlan(generation: 7, revision: 11, resources: input,
+                corporateDNS: ["10.44.0.53"], peer: peer(), tunnel: tunnel())
+            let after = try VPNDomainNetworkPlan(generation: 7, revision: 12, resources: [input[0]],
+                corporateDNS: ["10.44.0.53"], peer: peer(), tunnel: tunnel())
+            try check(before.resource(forCanonicalDNSName: "mail.portal.corp.test") == input[1])
+            try check(after.resource(forCanonicalDNSName: "mail.portal.corp.test") == input[0])
+            try check(after.domainResources == [input[0]])
         case "peer-conflict":
             for values in [["portal.corp.test", "198.51.100.0/24"], ["portal.corp.test", "198.51.100.9"]] {
                 do { _ = try plan(values); throw Failure.assertion }

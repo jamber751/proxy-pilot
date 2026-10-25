@@ -25,6 +25,8 @@ CASES = ('udp4', 'udp6', 'tc4', 'tc6', 'oversize', 'init-pure', 'binding-uuid', 
          'sleep-udp-poll', 'sleep-tcp-poll', 'sleep-tcp-connect', 'clock-fail-initial', 'clock-fail-poll',
          'clock-backwards-poll', 'clock-uptime-backwards', 'clock-fail-allocation', 'clock-pair-backwards', 'clock-pair-sleep', 'sleep-original-deadline', 'clock-backwards-in-window')
 
+CASES += ('selection-ancestor-refused', 'selection-child', 'selection-root', 'selection-stale-child', 'selection-removed-child-falls-back')
+
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('swiftc'), 'macOS SDK required')
 class DNSUpstreamExchangeTests(unittest.TestCase):
     @classmethod

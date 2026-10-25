@@ -115,25 +115,25 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         try VPNKernelInterfaceSnapshot(interfaces:[VPNKernelInterfaceRecord(index:42,name:"utun42",isUp:true,isRunning:true,isPointToPoint:true,
             addresses:[OpenVPNIPAddress(parsing:"10.255.254.1",family:.ipv4),OpenVPNIPAddress(parsing:"fd00::1",family:.ipv6)])])
     }
-    static func binding(_ server: String) throws -> VPNDNSUpstreamBinding {
+    static func binding(_ server: String, resources: [VPNResource]? = nil) throws -> VPNDNSUpstreamBinding {
         var peer = in_addr(); precondition("198.51.100.9".withCString{inet_pton(AF_INET,$0,&peer)} == 1)
         let tunnel = try VPNTunnelInterfaceResolver.resolve(baseline:VPNKernelInterfaceSnapshot(interfaces:[]),after:snapshot(),
             management:OpenVPNConnectedEvidence(tunnelLocalIPv4:OpenVPNIPAddress(parsing:"10.255.254.1",family:.ipv4),
                 tunnelLocalIPv6:OpenVPNIPAddress(parsing:"fd00::1",family:.ipv6),
                 remoteAddress:OpenVPNIPAddress(parsing:"198.51.100.9",family:.ipv4),remotePort:443))
-        let network = try VPNDomainNetworkPlan(generation:7,revision:11,resources:[VPNResource(address:"portal.corp.test")],
+        let network = try VPNDomainNetworkPlan(generation:7,revision:11,resources:resources ?? [VPNResource(address:"portal.corp.test")],
             corporateDNS:["10.44.0.53","2001:db8::53"],peer:VPNRoutePeerEvidence(peer:peer,gateway:nil,interfaceIndex:7),tunnel:tunnel)
         let proof = try VPNRouteAppliedProof(generation:7,revision:11,identities:VPNRouteIdentityFactory.make(plan:network.staticRoutes))
         return try VPNDNSUpstreamBinding(networkPlan:network,routeProof:proof,tunnel:tunnel,server:VPNRoutePrefix(resource:VPNResource(address:server)))
     }
     static func request(_ binding: VPNDNSUpstreamBinding, resource: VPNResource? = nil,
                         generation: UInt64 = 7, revision: UInt64 = 11, end: UInt64 = 101_000_000_000,
-                        version: UInt8? = nil, questionType: VPNDNSQuestionType = .a,
+                        version: UInt8? = nil, questionType: VPNDNSQuestionType = .a, queryName: String? = nil,
                         ingress: VPNDNSClientIngress = .udp) throws -> VPNDNSAnswerRequest {
         let resource = resource ?? binding.networkPlan.domainResources[0]
         var query = word(0xabcd) + word(0x0100)
         query += word(1)+word(0)+word(0)+word(version == nil ? 0:1)
-        query += name(resource.address)+word(questionType.rawValue)+word(1)
+        query += name(queryName ?? resource.address)+word(questionType.rawValue)+word(1)
         if let version { query += [0,0,41,4,208,0,version,0,0,0,0] }
         return try VPNDNSAnswerRequest(clientQuestion:VPNDNSAnswerCodec.clientQuestion(Data(query),resource:resource,ingress:ingress),
             generation:generation,revision:revision,upstreamTransactionID:0x1234,deadline:dnsTime(end))
@@ -142,7 +142,7 @@ private final class Calls: VPNDNSUpstreamSyscalls {
                       ttl: UInt32 = 30, count: Int = 1) -> Data {
         var bytes = word(request.upstreamTransactionID)+word(truncated ? 0x8380:(negative ? 0x8183:0x8180))
         bytes += word(1)+word(UInt16(negative ? 0:count))+word(negative ? 1:0)+word(0)
-        bytes += name(request.resource.address)+word(request.type.rawValue)+word(1)
+        bytes += name(request.questionName)+word(request.type.rawValue)+word(1)
         if truncated { return Data(bytes+[0xc0]) }
         if negative {
             bytes += name("corp.test")+word(6)+word(1)+dword(ttl)+word(22)
@@ -157,6 +157,32 @@ private final class Calls: VPNDNSUpstreamSyscalls {
         return Data(bytes)
     }
     static func run(_ mode: String) throws {
+        if mode.hasPrefix("selection-") {
+            let root = try VPNResource(name: "Root", address: "corp.test")
+            let child = try VPNResource(name: "Portal", address: "portal.corp.test")
+            let removed = mode == "selection-stale-child" || mode == "selection-removed-child-falls-back"
+            let bound = try binding("10.44.0.53", resources: removed ? [root] : [root, child])
+            let wrong = mode == "selection-ancestor-refused" || mode == "selection-stale-child"
+            let selected = mode == "selection-stale-child" ? child :
+                (mode == "selection-child" ? child : root)
+            let query = mode == "selection-root" ? "mail.corp.test" : "a.b.portal.corp.test"
+            let req = try request(bound, resource: selected, queryName: query)
+            let authority = Authority(bound), calls = try Calls(snapshot()), token = VPNDNSUpstreamCancellation()
+            calls.authority = authority; authority.calls = calls
+            if wrong {
+                try rejects { _ = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,
+                    cancellation:token,syscalls:calls,clock:ContinuousClock(calls:calls)) }
+                try check(calls.events.isEmpty && calls.timeReads == 0)
+            } else {
+                calls.udp = reply(req)
+                let exchange = try VPNDNSUpstreamExchange(request:req,binding:bound,authority:authority,
+                    cancellation:token,syscalls:calls,clock:ContinuousClock(calls:calls))
+                let answer = try exchange.exchange()
+                try check(answer.request.resource == selected && answer.request.questionName == query)
+                try check(answer.canonicalChain.first == query)
+            }
+            return
+        }
         let bound = try binding(mode.hasSuffix("6") ? "2001:db8::53":"10.44.0.53")
         let aaaa = ["udp-aaaa","tc-aaaa","tcp-client"].contains(mode)
         var req = try request(bound,version:mode == "oversize" ? 0:nil,

@@ -49,7 +49,7 @@ class VPNDNSPlanTests(unittest.TestCase):
 
     def test_deterministic_scoped_plan(self): self.run_case('planning')
     def test_requires_domain_scope(self): self.run_case('no-domain')
-    def test_overlapping_domains_rejected(self): self.run_case('overlap')
+    def test_duplicate_domains_rejected(self): self.run_case('overlap')
     def test_unproved_dns_server_rejected(self): self.run_case('unproved')
     def test_foreign_dns_route_rejected(self): self.run_case('foreign-route')
     def test_stale_route_proof_rejected(self): self.run_case('stale-proof')
