@@ -7150,3 +7150,26 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   отдельными; r0/flattened nameservers пока не удалены и мост не обновлялся.
   https://raw.githubusercontent.com/golang/go/go1.25.4/src/net/conf.go
   https://raw.githubusercontent.com/golang/go/go1.25.4/src/net/cgo_unix_syscall.go
+
+
+### Продолжение 1.5go — текущая очередь приёмки без перезапуска live jobs
+
+- [x] Диагностика сохранена040d336; Unix gRPC canary — bf1cd3f. Оба отправлены
+  только в codex/vpn-root-acceptance. Latest System40177750145 (040d336):
+  jobs121122023088/121122023316 queued; latest GOST40178170671 (bf1cd3f) queued.
+  Ownership40178170670 (bf1cd3f) также queued, все6 jobs созданы.
+- [x] После проверки replacement handles, source ancestry и повторного чтения
+  статуса КАЖДОГО job отменены только полностью queued superseded snapshots:
+  ownership40177750158 и40177189013 заменены40178170670;
+  System40177188966 заменён40177750145. Все три теперь terminal CANCELLED.
+  Ни один их job не начинался на момент cancellation checks.
+- [x] Run status queued не означал отсутствие работы: f715bc5 ownership40176890755
+  уже имел2 success jobs и один live121119391867; System40176890683 имел live
+  ARM121119391534. Они сохранены, как и live Intel121110535940 run40173952879.
+  Никаких перезапусков из-за observation timeout не было.
+- [x] a6eff55 ownership40173952880 terminal SUCCESS все6 suites/architecture jobs:
+  121110535837/121110535988/121110535994/121110536015/121110536036/121110536093.
+  Это historical source proof, не финальный verdict после macOS12/DNS изменений.
+- [ ] Root System и actual Unix gRPC current results ещё ожидаются. Отсутствие
+  результата/ошибки не засчитывается как PASS. Все7 этапов остаются в полном
+  объёме; host install и публичный выпуск не выполнялись.
