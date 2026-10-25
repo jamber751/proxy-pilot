@@ -84,7 +84,7 @@ func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<
         let identity = try VPNExactRouteFenceIdentity(address:prefix,loopbackIndex:if_nametoindex("lo0"))
         let store = try NativeStore.get()
         let transport = try ObservedTransport(); observer = transport
-        let socket = VPNDarwinRouteSocket(transport:transport)
+        let socket = VPNDarwinRouteSocket(transport:transport,tableReader:VPNDarwinRouteTableReader())
         let transaction = VPNExactFenceTransaction(store:store,kernel:socket)
         let deadline = DispatchTime.now() + 2
         if action == RTM_ADD {

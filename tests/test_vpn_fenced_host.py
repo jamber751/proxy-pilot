@@ -22,7 +22,7 @@ class FencedHostTests(unittest.TestCase):
         self.assertEqual(result.stdout,'PASS fenced-host-'+mode+'\n')
         self.assertEqual(result.stderr,'')
 
-for mode in ('lifecycle','no-adoption','missing-fence','foreign-fence','foreign-host','fence-loss','ack-without-state',
+for mode in ('table-truncated-tail','table-global-clone','table-wrong-type','table-lifecycle','table-no-adoption','table-foreign','table-duplicate','table-malformed','table-failure','table-late','journal-clone-recovery','lifecycle','no-adoption','missing-fence','foreign-fence','foreign-host','fence-loss','ack-without-state',
              'unknown-write','unknown-delete','delete-ack-without-state','race','cancelled','cancelled-after-write','expired','late','delete-absent',
              'journal-shared','journal-schema','journal-lifecycle','journal-reopen','journal-unknown-add','journal-unknown-delete','journal-unknown-delete-present',
              'journal-cancel-intent','journal-stale','journal-no-retire-active','journal-foreign','journal-boot-unknown'):

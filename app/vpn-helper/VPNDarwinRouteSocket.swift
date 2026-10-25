@@ -16,6 +16,39 @@ protocol VPNRouteSocketTransport: AnyObject {
     func receive(maximumBytes: Int, deadline: DispatchTime) throws -> Data
 }
 
+/// Complete bounded route-table observation, used for exact global HOST custody.
+/// RTM_GET is a best-match lookup and can select an interface-scoped clone of a
+/// retained NET blackhole after the active utun disappears. That is neither an
+/// owned active route nor proof that the global HOST key is absent.
+protocol VPNRouteTableReader: AnyObject {
+    func read(family: VPNRouteAddressFamily, deadline: DispatchTime) throws -> Data
+}
+final class VPNDarwinRouteTableReader: VPNRouteTableReader {
+    // XNU rtsock.c sysctl_rtsock holds rnh_lock through the family walk;
+    // sysctl_dumpentry emits RTM_GET/rt_msghdr for NET_RT_DUMP (not DUMP2).
+    // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/rtsock.c
+    static let maximumBytes = 8 * 1024 * 1024
+    func read(family: VPNRouteAddressFamily, deadline: DispatchTime) throws -> Data {
+        func current() throws {
+            guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+        }
+        try current()
+        var mib: [Int32] = [CTL_NET,PF_ROUTE,0,family == .ipv4 ? AF_INET:AF_INET6,NET_RT_DUMP,0]
+        var count = 0
+        guard sysctl(&mib,UInt32(mib.count),nil,&count,nil,0) == 0 else { throw VPNDarwinRouteError.transport(errno) }
+        try current()
+        guard count >= 0, count <= Self.maximumBytes else { throw VPNDarwinRouteError.responseLimit }
+        // Empty sized storage still needs a non-null buffer for the data call;
+        // otherwise a second size query could masquerade as an empty table.
+        let capacity = max(1,count)
+        var bytes = [UInt8](repeating:0,count:capacity), actual = capacity
+        guard sysctl(&mib,UInt32(mib.count),&bytes,&actual,nil,0) == 0 else { throw VPNDarwinRouteError.transport(errno) }
+        try current()
+        guard actual >= 0, actual <= capacity else { throw VPNDarwinRouteError.responseLimit }
+        return Data(bytes.prefix(actual))
+    }
+}
+
 /// Injectable native boundary. Fake implementations must never open PF_ROUTE.
 protocol VPNRouteSocketIO: AnyObject {
     func open() throws -> Int32
@@ -383,6 +416,36 @@ enum VPNDarwinRouteCodec {
         return (header.rtm_type, header.rtm_seq, header.rtm_pid, header.rtm_errno, snapshot)
     }
 
+    /// NET_RT_DUMP returns the whole radix table for one family. Inspect every
+    /// framed record, then select the exact *global HOST* key, never a scoped
+    /// clone or NET parent. An unrelated route is not decoded as a VPN resource.
+    /// This is observation only: matching bytes do not confer ownership.
+    static func globalHost(in table: Data, destination: VPNRoutePrefix) throws -> VPNDarwinRouteSnapshot? {
+        try destination.validate()
+        guard destination.prefixLength == destination.bytes.count*8,
+              table.count <= VPNDarwinRouteTableReader.maximumBytes else { throw VPNDarwinRouteError.responseLimit }
+        var offset = 0, result: VPNDarwinRouteSnapshot?, records = 0
+        while offset < table.count {
+            guard table.count-offset >= headerSize else { throw VPNDarwinRouteError.malformedMessage }
+            let length = table.withUnsafeBytes { Int($0.loadUnaligned(fromByteOffset:offset,as:UInt16.self)) }
+            guard length >= headerSize, length <= maximumMessageBytes, length <= table.count-offset else { throw VPNDarwinRouteError.malformedMessage }
+            let record = table.subdata(in:offset..<offset+length), header = try identify(record)
+            guard header.rtm_type == UInt8(RTM_GET), header.rtm_errno == 0 else { throw VPNDarwinRouteError.malformedMessage }
+            let addresses = try parseAddresses(record.subdata(in:headerSize..<length),mask:header.rtm_addrs)
+            guard let raw = addresses[Int(RTAX_DST)] else { throw VPNDarwinRouteError.malformedMessage }
+            let ip = try ipBytes(raw)
+            guard ip.family == destination.family else { throw VPNDarwinRouteError.malformedMessage }
+            if ip.bytes == destination.bytes, header.rtm_flags & RTF_HOST != 0, header.rtm_flags & RTF_IFSCOPE == 0 {
+                guard header.rtm_addrs & RTA_NETMASK == 0, result == nil, let value = try decode(record).snapshot,
+                      value.destination == destination else { throw VPNDarwinRouteError.verificationFailed }
+                result = value
+            }
+            offset += length; records += 1
+            guard records <= 32768 else { throw VPNDarwinRouteError.responseLimit }
+        }
+        return result
+    }
+
     /// /0 deliberately has no owned snapshot; retain its actual family when
     /// ordinary lookup must distinguish a valid fallback from a contradiction.
     static func defaultLookupFamily(_ data: Data) throws -> VPNRouteAddressFamily? {
@@ -630,13 +693,15 @@ final class VPNDarwinRouteSequenceAllocator {
 
 final class VPNDarwinRouteSocket {
     private let transport: VPNRouteSocketTransport
+    private let tableReader: VPNRouteTableReader?
     private let pid: Int32
     private let timeout: TimeInterval
     private let lock = NSLock()
     private let sequences: VPNDarwinRouteSequenceAllocator
 
     init(transport: VPNRouteSocketTransport, pid: Int32? = nil,
-        initialSequence: Int32? = nil, timeout: TimeInterval = 2) {
+        initialSequence: Int32? = nil, timeout: TimeInterval = 2, tableReader: VPNRouteTableReader? = nil) {
+        self.tableReader = tableReader
         self.transport = transport; self.pid = pid.map { $0 > 0 ? $0 : getpid() } ?? getpid()
         // Explicit correlation inputs retain an isolated deterministic namespace.
         // No inference from pid equality: an explicitly supplied own PID is local too.
@@ -646,7 +711,7 @@ final class VPNDarwinRouteSocket {
     }
 
     static func production(timeout: TimeInterval = 2) throws -> VPNDarwinRouteSocket {
-        try VPNDarwinRouteSocket(transport: VPNDarwinRouteSocketTransport(), timeout: timeout)
+        try VPNDarwinRouteSocket(transport: VPNDarwinRouteSocketTransport(), timeout: timeout, tableReader: VPNDarwinRouteTableReader())
     }
 
     func lookupExact(_ destination: VPNRoutePrefix) throws -> VPNDarwinRouteSnapshot? {
@@ -716,8 +781,9 @@ final class VPNDarwinRouteSocket {
                           deadline: DispatchTime, checkCurrent: () throws -> Void) throws {
         try mutateFencedHost(identity,fence:fence,install:false,deadline:deadline,checkCurrent:checkCurrent)
     }
-    /// Nil means the verified NET deny is selected instead of a HOST. Other
-    /// same-key entries are returned for exact comparison, never hidden.
+    /// Production nil means a complete table observation found no global HOST,
+    /// with the retained NET deny verified before/after. Scoped clones are not
+    /// adopted/deleted. Other global same-key entries are never hidden.
     func lookupFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
                           deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
         try serialized(until:deadline) { end in
@@ -726,13 +792,14 @@ final class VPNDarwinRouteSocket {
                 throw VPNDarwinRouteError.missingOrForeign
             }
             let observed = try fencedHostLookup(identity,deadline:end)
-            guard let observed, observed.destination == identity.destination else {
+            guard observed?.destination == identity.destination || (observed == nil && tableReader != nil) else {
                 throw VPNDarwinRouteError.verificationFailed
             }
             guard let after = try exactFenceLookup(fence,deadline:end), fence.matches(after) else {
                 throw VPNDarwinRouteError.missingOrForeign
             }
-            return fence.matches(observed) ? nil : observed
+            if let observed, fence.matches(observed) { return nil }
+            return observed
         }
     }
     private func validateFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity) throws {
@@ -748,6 +815,13 @@ final class VPNDarwinRouteSocket {
         }
     }
     private func fencedHostLookup(_ identity: VPNOwnedRouteIdentity, deadline: DispatchTime) throws -> VPNDarwinRouteSnapshot? {
+        if let tableReader {
+            guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+            let table = try tableReader.read(family:identity.destination.family,deadline:deadline)
+            let observed = try VPNDarwinRouteCodec.globalHost(in:table,destination:identity.destination)
+            guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+            return observed
+        }
         let sequence = try nextSequence()
         let request = try VPNDarwinRouteCodec.encodeLookup(key:identity.lookupKey,sequence:sequence,pid:pid)
         return try exactFenceTransact(request,sequence:sequence,type:UInt8(RTM_GET),
@@ -771,14 +845,15 @@ final class VPNDarwinRouteSocket {
                 try current()
             }
             func host() throws -> VPNDarwinRouteSnapshot? {
-                // HOST GET may return the same-prefix NET deny. Validate the
-                // global live reply, then distinguish the two radix key shapes.
+                // Production selects the exact global HOST from a full table,
+                // avoiding RTM_GET best-match/scoped-clone ambiguity. The legacy
+                // injected transport remains strict and performs no dump I/O.
                 return try fencedHostLookup(identity,deadline:end)
             }
             try protected()
             let before = try host(); try current()
             if install {
-                guard let before, fence.matches(before) else { throw VPNDarwinRouteError.preexistingNonIdentical }
+                guard before.map(fence.matches) ?? (tableReader != nil) else { throw VPNDarwinRouteError.preexistingNonIdentical }
             } else {
                 guard let before, before.matches(identity) else { throw VPNDarwinRouteError.missingOrForeign }
             }
@@ -789,9 +864,8 @@ final class VPNDarwinRouteSocket {
             _ = try exactFenceTransact(request,sequence:sequence,type:type,deadline:end)
             try protected()
             let after = try host(); try current()
-            guard let after, install ? after.matches(identity) : fence.matches(after) else {
-                throw VPNDarwinRouteError.verificationFailed
-            }
+            let verified = install ? (after?.matches(identity) == true) : (after.map(fence.matches) ?? (tableReader != nil))
+            guard verified else { throw VPNDarwinRouteError.verificationFailed }
             try protected()
         }
     }

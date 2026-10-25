@@ -8237,3 +8237,48 @@ user-launchd module не включался в новый fast step. После�
   Это transport/API gate, не permission выпускать DNS answers и не proof
   production actor/bootstrap/route ownership. Реальные numeric traffic controls
   остаются отдельным atomic canary; текущий исходный7-stage scope сохранён.
+
+
+### Продолжение 1.5hr — disambiguate global active HOST from a scoped kernel clone
+
+- [x] Новое authoritative native failure: run40191352595/source5f1718b,
+  macOS26Intel job121162835245 FAILURE. Fast76 PASS100.467s; actual startup,
+  exact fence ADD4 и production active HOST add/delete/add cycle4 прошли.
+  После packet/owned-interface-death сценария cleanup не завершён: native
+  action2 verificationFailed, errno0, observedFlags84037639/0x5025007.
+  Это HOST/GATEWAY/BLACKHOLE/PROTO2/WASCLONED/IFREF/IFSCOPE/UP запись,
+  а не exact retained NET profile88067. Raw private log mode600:
+  /tmp/pp-fence-active-121162835245.log. C wrapper errno1 здесь код отказа
+  Swift boundary, НЕ доказательство kernel EPERM. Другие native jobs сохранены.
+- [x] Причина локализована до active-HOST observation во время withdrawal:
+  NET/full-mask GET остаётся отдельным, но HOST best-match GET может выбрать
+  scoped kernel clone после исчезновения utun. Ранее requireGlobalReply
+  обоснованно отказывал; нельзя просто разрешить IFSCOPE/снять WASCLONED или
+  назвать такой ответ отсутствием global HOST, который может сосуществовать.
+- [x] Production `VPNDarwinRouteSocket.production` теперь предоставляет bounded
+  `VPNDarwinRouteTableReader`: NET_RT_DUMP ровно одной family, максимум8MiB,
+  до/после каждого syscall исходный deadline, ENOMEM/ошибка без повторов,
+  partial data не возвращаются. По XNU `sysctl_rtsock/sysctl_dumpentry` полный
+  family walk подrnh_lock выдаёт RTM_GET/rt_msghdr (НЕ DUMP2).
+  Primary source: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/rtsock.c
+  Best-match scope policy: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/route.c
+- [x] Pure parser проверяет framing всего dump, family/type/errno,<=32768records,
+  выбирает только exact global HOST/nil-mask. Scoped записи и NET parent не
+  присваиваются/не удаляются и не скрывают сосуществующий global HOST. Duplicate
+  global key, contradiction/truncation/malformed/oversize отказывают. Любой
+  global foreign HOST возвращается для прежней строгой identity-проверки.
+  Fresh NET deny проверяется до и после observation/mutation как прежде.
+  Legacy non-fenced routes и schema1/2/3 journals не нормализуются.
+- [x] Pure/fake regressions84 PASS41.013s без skips, включая обе native fixture
+  architecture compile/guard, /tmp/pp-fence-table-regressions.log. После добавления
+  truncated-tail/global-clone/wrong-type отказов final pair suite39 PASS7.107s,
+  /tmp/pp-fence-table-final.log. Это fake transport/table + private files:
+  host PF_ROUTE/sysctl, VPN/network, Keychain/root/Installer не выполнялись.
+  Native observer fixture использует тот же production table reader только
+  после прежнего fresh-root-VM guard.
+- [ ] Нужен новый actual four-OS packet/death/reopen прогон. Зелёный fake suite
+  не доказывает native success; дефект не объявлен закрытым на macOS.
+  System40196864320 Intel121179472595 уже in_progress, ARM121179472470 queued;
+  существующий System40191352570 обе jobs in_progress, не перезапускались.
+  Production domain backend/answer authority, static CIDR protection, WARP,
+  финальная installed приёмка и исходные семь этапов остаются OPEN.

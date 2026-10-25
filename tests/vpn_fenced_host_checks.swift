@@ -47,6 +47,37 @@ private final class Kernel: VPNRouteSocketTransport {
         return data
     }
 }
+private final class Table: VPNRouteTableReader {
+    let kernel: Kernel
+    var duplicate = false, malformed = false, late = false, failure = false, truncated = false, globalClone = false, wrongType = false
+    var deadlines = [UInt64]()
+    init(_ kernel: Kernel) { self.kernel = kernel }
+    func read(family: VPNRouteAddressFamily, deadline: DispatchTime) throws -> Data {
+        deadlines.append(deadline.uptimeNanoseconds)
+        if failure { throw VPNDarwinRouteError.transport(EIO) }
+        if late { usleep(30_000) }
+        if malformed { return Data([1,2,3]) }
+        // NET parent and exact observed Darwin clone are NOT the global active
+        // HOST. They remain in the table even when a global HOST coexists.
+        var data = try VPNDarwinRouteCodec.encodeExactFence(type:UInt8(RTM_ADD),sequence:0,pid:0,identity:kernel.fence)
+        var h = try VPNDarwinRouteCodec.identify(data)
+        h.rtm_type=UInt8(wrongType ? RTM_ADD:RTM_GET);h.rtm_flags=Int32(bitPattern:kernel.fence.flags)
+        withUnsafeBytes(of:&h) { data.replaceSubrange(0..<$0.count,with:$0) }
+        var clone = data
+        h.rtm_flags = Int32(bitPattern:UInt32(RTF_UP|RTF_GATEWAY|RTF_HOST|RTF_BLACKHOLE|RTF_PROTO2|RTF_WASCLONED|RTF_IFSCOPE|RTF_IFREF))
+        if globalClone { h.rtm_flags &= ~RTF_IFSCOPE }
+        withUnsafeBytes(of:&h) { clone.replaceSubrange(0..<$0.count,with:$0) }
+        data += clone
+        if kernel.hasHost {
+            let active=try VPNDarwinRouteCodec.encodeReply(type:UInt8(RTM_GET),sequence:0,pid:0,error:0,
+                identity:kernel.active,responseFlags:kernel.foreign ? UInt32(RTF_REJECT):0)
+            data += active
+            if duplicate { data += active }
+        }
+        if truncated { data.append(1) }
+        return data
+    }
+}
 @main private enum Checks {
     static func journal(_ mode: String, active: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
                         fake: Kernel, socket: VPNDarwinRouteSocket) throws {
@@ -82,6 +113,13 @@ private final class Kernel: VPNRouteSocketTransport {
             catch let actual as VPNExactFenceStoreError { try check(actual == expected) }
         }
         switch mode {
+        case "journal-clone-recovery":
+            let applied=try activate();fake.hasHost=false
+            let mutations=fake.sent.filter { $0.rtm_type != RTM_GET }.count
+            let result=try tx.restoreRetained(deadline:end,checkOwner:{})
+            try check(result.count==1 && result[0].active==nil && result[0].claims==applied.claims)
+            try check(result[0].installationID==applied.installationID && fake.hasFence)
+            try check(fake.sent.filter { $0.rtm_type != RTM_GET }.count==mutations)
         case "journal-shared":
             let other=VPNExactFenceClaim(resourceID:UUID(uuidString:"22345678-1234-1234-1234-123456789abc")!,profileSHA256:claim.profileSHA256,generation:1,revision:1)
             let shared=try tx.ensure(fence,claim:other,deadline:end,checkCurrent:{})
@@ -181,7 +219,10 @@ private final class Kernel: VPNRouteSocketTransport {
             else { evidence=try VPNRouteKernelEvidence(gateway:Optional<in6_addr>.none,interfaceIndex:42,flags:flags) }
             let active=try VPNOwnedRouteIdentity(planned:route,evidence:evidence)
             let fence=try VPNExactRouteFenceIdentity(address:prefix,loopbackIndex:1)
-            let fake=Kernel(active,fence), socket=VPNDarwinRouteSocket(transport:fake,pid:817)
+            let fake=Kernel(active,fence)
+            let reader=Table(fake)
+            let socket=VPNDarwinRouteSocket(transport:fake,pid:817,
+                tableReader:mode.hasPrefix("table-") || mode=="journal-clone-recovery" ? reader:nil)
             if mode.hasPrefix("journal-") { try journal(mode,active:active,fence:fence,fake:fake,socket:socket);continue }
             let end=DispatchTime.now()+2
             func install(_ current: () throws -> Void = {}) throws { try socket.installFencedHost(active,fence:fence,deadline:end,checkCurrent:current) }
@@ -191,6 +232,44 @@ private final class Kernel: VPNRouteSocketTransport {
                 catch let error as VPNDarwinRouteError { try check(error == code) }
             }
             switch mode {
+            case "table-lifecycle":
+                try install();try check(fake.hasHost && fake.hasFence)
+                // A scoped clone remains visible alongside this real global
+                // HOST; it cannot be mistaken for absence of our active route.
+                try check(try socket.lookupFencedHost(active,fence:fence,deadline:end)?.matches(active)==true)
+                try remove();try check(!fake.hasHost && fake.hasFence)
+                try check(try socket.lookupFencedHost(active,fence:fence,deadline:end)==nil)
+                try check(!reader.deadlines.isEmpty && reader.deadlines.allSatisfy { $0<=end.uptimeNanoseconds })
+            case "table-no-adoption":
+                fake.hasHost=true;try fails(.preexistingNonIdentical) { try install() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-foreign":
+                fake.hasHost=true;fake.foreign=true
+                try fails(.missingOrForeign) { try remove() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-duplicate":
+                fake.hasHost=true;reader.duplicate=true
+                try fails(.verificationFailed) { try remove() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-malformed":
+                reader.malformed=true;try fails(.malformedMessage) { try install() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-truncated-tail":
+                reader.truncated=true;try fails(.malformedMessage) { try install() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-global-clone":
+                reader.globalClone=true;try fails(.verificationFailed) { try install() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-wrong-type":
+                reader.wrongType=true;try fails(.malformedMessage) { try install() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-failure":
+                reader.failure=true;try fails(.transport(EIO)) { try install() }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
+            case "table-late":
+                reader.late=true
+                try fails(.timeout) { try socket.installFencedHost(active,fence:fence,deadline:.now()+0.01,checkCurrent:{}) }
+                try check(fake.sent.allSatisfy { $0.rtm_type==RTM_GET })
             case "lifecycle":
                 try install();try check(fake.hasHost && fake.hasFence)
                 try remove();try check(!fake.hasHost && fake.hasFence)
