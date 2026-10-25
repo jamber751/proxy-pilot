@@ -7302,3 +7302,30 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   выполняет ordinary C→D Off. Current040 System, Unix gRPC, exact route-pair,
   current genuine SDK results ещё не закрыты. Host App, сеть, Keychain и
   publisher keys в этом пункте не использовались и не менялись.
+
+
+### Продолжение 1.5gt — актуальная ARM системная приёмка и macOS26 experiments
+
+- [x] Sourcef715bc5 System40176890683 ARM121119391534 terminal SUCCESS:
+  все8 actual native cases, включая C→D On/Off и closed-reply completion.
+  Fast160 включает1 optional real-App skip, root volume/owner6 PASS, каждый
+  actual native run Ran1/OK без skips. Лог /tmp/pp-system-f715-arm-121119391534.log.
+  Комплект уже имеет macOS12 distribution metadata/preinstall guard; исполнение
+  было на macOS14, это не доказательство работы на самой macOS12.
+- [ ] Intel121119391716 того же run live на production build. Sourcea6 Intel
+  121110535940 дошёл до последнего closed-reply case после successful C→D On;
+  terminal result ещё отсутствует. Существующие живые/partial040 System и5b
+  ownership также сохранены при повторном queue audit, не отменялись.
+- [x] К двум коротким standalone experiments (GOST Unix gRPC и exact route pair)
+  добавлены standard macos-26/macOS26-Intel rows, сохранив macos14/macOS15-Intel.
+  Причина — поддержка современного26 в заявленном12+ диапазоне и проверка API
+  на новом kernel/toolchain; success26 не заменит старые платформы или12 runtime.
+  Это не restart по timeout, а дополнительные OS variants. Test inputs, pins,
+  root/ordinary-user opt-ins, mutation scope и success criteria не менялись.
+- [x] Наличие standard26 ARM/Intel labels сверено с primary GitHub announcement:
+  https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/
+  Оба workflow YAML syntax checks PASS; larger/paid runner labels не добавлялись.
+- [ ] Actual Unix gRPC и host/full-mask route viability результатов ещё нет.
+  До них production relay/deny выбор и runtime splitDNSUnavailable gate остаются
+  открытыми; весь7-stage scope, один final host installer и release acceptance
+  не заменяются этими isolated эксперимен­тами.
