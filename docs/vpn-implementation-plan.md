@@ -6888,8 +6888,25 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   — handles snapshot7402f01. System jobs121107762708/121107762835 queued;
   старый System40172499522 sourcef4f644b продолжает собственные live jobs.
   Живые jobs не отменяли, новые прогоны запущены изменёнными исходниками.
-- [ ] Genuine frontend one-build diagnostic wrapper сейчас выполняет исходный
+- [x] Genuine frontend one-build diagnostic wrapper выполнил исходный
   suite из4 cases, сохраняя own Source/Build и shell trace при failure вместо
   удаления критичных свидетельств. Trace-only zsh flag не меняет compile flags
-  и не активирует GUI/helper/credential/network roles. Live37200, proof folder
-  /tmp/pp-current-frontend-traced-1ky2h3oo. Результат ещё не подтверждён.
+  и не активирует GUI/helper/credential/network roles. Live37200 завершён4 PASS; proof folder
+  /tmp/pp-current-frontend-traced-1ky2h3oo. Подробности1.5gg.
+
+
+### Продолжение 1.5gg — current genuine frontend build снова подтверждён
+
+- [x] Live37200 завершён:4 genuine frontend cases PASS294.037s,0 errors,
+  failures,skips; captured input hashes stale=[]. One actual Universal build
+  прошёл deep/strict signature, early closed role refusal и real private Inbox
+  Sparkle symlink/integrity case. GUI/helper normal roles, credential/DNS APIs
+  и Installer не запускались. Source/Build/argv/full trace сохранены:
+  /tmp/pp-current-frontend-traced-1ky2h3oo/verification.json.
+- [x] Это current frontend evidence после certificate recovery и socket change,
+  а не повторное использование старого signed App. Прежний no-module failure
+  не воспроизвёлся; его причина остаётся неизвестной, SDK/cache flags не меняли.
+- [ ] ARM utun121107762860 ещё queued; System139 recovery и production domain
+  backend остаются следующими обязательными пунктами. Password runtime по-прежнему
+  закрыт до отдельного подключения/проверки controller integration. Все7 этапов
+  исходного плана сохраняются, public release и host install не выполнялись.
