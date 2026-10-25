@@ -8336,3 +8336,14 @@ ancestor9683876, byte-identical System workflow и совпадающих дву
 System40196864320 Intel121179472595 сейчас действительноin_progress: fast checks
 иordinary/root broker ownership passed, production artifact build ещё идёт;
 actual Installer cases ещё pending. Это verified wait, не новая попытка.
+
+
+Послеpush544e6d5: актуальные queued gates — native40199287851
+(121186810273/402/403/446) иSystem40199287852(121186810255/479).
+Fully queued native40198447912 иSystem40198447923 на9683876 отменены только
+после проверки ancestor544e6d5, полного совпадения individual job inventory,
+workflow additions-only superset и повторного чтения каждой старой job прямо
+перед cancel. System actual driver unchanged byte-for-byte; native acceptance
+body/старые packet/death expectations сохранены. API подтвердил terminal
+cancelled всех4+2 старых jobs. Live/partial runs не отменялись. Это сокращение
+дубликатов в очереди, не замена недостающих actual результатов зелёными статусами.
