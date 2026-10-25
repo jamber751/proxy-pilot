@@ -7792,3 +7792,16 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   proofs относятся только к low-level transport, не к этой transaction/FS связке.
   Настоящие crash/reopen applied-state/recovery, boot restore-all, pair-aware
   active routes, relay/answer authority и full7-stage release scope ещё OPEN.
+
+- [x]3dcb3aa pushed ONLY acceptance branch. Persistent/native40188528916 verified
+  jobs121154359586/121154359720/121154359750/121154359763 (15Intel/14ARM/26Intel/
+ 26ARM), all queued at fresh observation. Scoped/helper40188528898 jobs
+ 121154359463/121154359689; System40188528847 jobs121154359410/121154359582;
+  ownership40188528986 jobs121154360023/094/100/119/152/166 (full prefix121154360).
+  Они ещё не actual PASS нового store. Все live/partial предыдущие runs сохранены.
+- [x] Old6cab ownership40186866144 rechecked each individual job6/6 wholly queued;
+  descendant3dcb replacement6 suite names/source/path/ancestry verified BEFORE
+  cancel. Old run terminal CANCELLED подтверждён. Native6cab partial success
+  и live System6cab не отменялись. Следующие production пункты: restore-all и
+  pair-aware active routes (включая NET PRCLONING/legacy schema), затем DNS relay
+  + answer authority. Новый low-level/file proof не заменяет рабочий domain flow.
