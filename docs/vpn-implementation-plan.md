@@ -7206,3 +7206,22 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   PASS60.308s без skips и genuine Universal helper build/signature verification.
   Лог /tmp/pp-scoped-fa23-arm-121120324677.log. Intel121120324835 ещё live на
   helper compile; System Intel121110535940 продолжает свой source-a6 build.
+
+
+### Продолжение 1.5gq — отдельные VM experiments не дублируют ownership suites
+
+- [x] Ownership push paths теперь исключают только standalone GOST resolver
+  canaries (Python/Node) и exact-route-pair canary (Python/C). Их собственные
+  guarded ARM/Intel workflows сохраняются. Эти файлы не импортируются ownership
+  suites и не входят в production source graph. Все app/helper/package/rescue
+  triggers, root/frozen/transaction tests и release gates сохранены.
+- [x] Три workflow YAML syntax checks PASS; проверены exact changed-file cases:
+  helper/rescue diagnostic source/tests по-прежнему запускают ownership matrix,
+  пять standalone experiment inputs направлены только в dedicated workflows.
+  Не добавлялись release skips, permissive flags или замены actual gates mocks.
+- [ ] New exact-route-pair40179073555 sourcebd4ebec queued:
+  ARM121126013113/Intel121126013244. Это лишь viability experiment, не deny proof.
+- [x] На09:04UTC Intel121110535940 run40173952879 закончил production build и
+  выполняет real completed-service/broker-phase6 recovery (started09:00:19UTC).
+  Handle живой; никакой установки/остановки на host не выполнялось. До полного
+  Intel результата и current-source System verdict приёмка остаётся открытой.
