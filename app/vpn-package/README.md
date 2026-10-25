@@ -1,11 +1,15 @@
 # VPN support package (acceptance candidate)
 
-This is an opt-in, scripts-only macOS 11 package. It installs an authenticated
+This is an opt-in, scripts-only macOS 12+ package. It installs an authenticated
 **idle support service** and, with format 2, stores a verified OpenVPN engine.
 It never executes that engine or applies a profile, routes or DNS. The install
 package does not replace the app in Applications; the separately signed joint
 update package can replace the exact authorized app and helper together. Neither
 path changes the normal release build. Do not publish it as a working VPN feature.
+
+Current distribution requires macOS 12 or later. The lower component/compiler
+ABI target and frozen historical candidates remain unchanged. Dated results below
+retain their original platform requirements and are not current compatibility claims.
 
 Latest system status (28 September 2026): an authorized native Apple Silicon/macOS 26.1
 run installed signed A119 and completed the exact signed A119 → B120 joint app/helper

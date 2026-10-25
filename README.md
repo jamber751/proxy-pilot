@@ -47,7 +47,7 @@ Grab the DMG from [Releases](https://github.com/jamber751/proxy-pilot/releases/l
 → right-click **`Install.command`** → Open. It copies the app to Applications,
 clears quarantine, offers Login Items and launches.
 
-Self-contained (CLI and gost ship inside), universal, macOS 11+. No Homebrew,
+Self-contained (CLI and gost ship inside), universal, macOS 12+. No Homebrew,
 no terminal.
 
 > Ad-hoc signed, not Developer ID — the first launch needs right-click → Open.

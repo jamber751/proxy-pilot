@@ -25,6 +25,15 @@
 
 ### Актуальная граница на 25 октября
 
+**Системные требования согласованы владельцем: macOS 12 и новее.** Это явное
+изменение прежней границы macOS 11: фактический bundled GOST 3.2.6 уже требует macOS 12
+в обоих Mach-O slices. Метаданные приложения, updater, пакеты и проверка appcast
+приводятся к 12.0; ранняя проверка установщика отклоняет неподдерживаемую систему
+до запуска payload. Нижний compiler/engine ABI target 11 и замороженный 139
+сохраняются: это совместимые компоненты, а не обещание работы продукта на macOS 11.
+Исторические результаты ниже не переписываются. Проверка запуска именно на macOS 12
+остаётся отдельным открытым пунктом; Universal build её не заменяет.
+
 Текущий путь приёмки: **[✓ установка 137 и базовый прокси] →
 [● восстановление 137→139→исправленный C] → [○ VPN-приёмка исправленного комплекта] →
 [○ DNS/жизненный цикл] → [○ выпуск]**.
@@ -32,7 +41,7 @@
 
 | Этап исходного плана | Подтверждено | Что осталось |
 | --- | --- | --- |
-| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40129583883 прошёл все8 реальных Installer cases на каждой архитектуре ARM/Intel на b327ab6 | Свежий комплект после context/route/clock fixes ещё проверяется; macOS11 runtime OPEN |
+| 1. Установка и разрешения | Локальные remove/clean install/repair137;822 isolated ownership checks ARM/Intel на2e159b6; System40129583883 прошёл все8 реальных Installer cases на каждой архитектуре ARM/Intel на b327ab6 | Свежий комплект после context/route/clock fixes ещё проверяется; минимальная поддерживаемая macOS 12; исполнение на 12 остаётся OPEN |
 | 2. Конфигурация и импорт | Код, регрессии, сохранность на137; isolated drop-замена с сохранением ресурсов | Финальный пользовательский сценарий изменения активных ресурсов |
 | 3. Туннель и IP | Историческое живое подключение 136; 137 idle и отмена входа | Подключение исправленного C с OTP и проверка выбранных IP |
 | 4. DNS и мост | Локальные HTTP/SOCKS5, код overlay;160 managed bridge checks ARM/Intel; настоящие SC session и system DNS canaries ARM/Intel | Connected overlay исправленного C, первая legacy migration, production domain/split-DNS backend и utun/no-leak gates |
@@ -6939,7 +6948,7 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   cases ARM/Intel restored-and-clean; private40135758246 обе arch28checks
   подтверждают child-receipt settlement без ACK contention с прежними лимитами.
 - [x] Только явный normal-App owner теперь получает liveIntegrationEnabled=true.
-  Constructor/coordinator defaults остаются unavailable=false; preview bypass
+  Constructor/coordinator defaults остаются available=false; preview bypass
   остаётся отдельным. App создаёт panel/load до явного startup cleanup. Запись
   требует per-login consent, постоянный password mode и verified connection;
   OTP/private-key secrets не становятся сохраняемыми через этот flag.
@@ -6955,3 +6964,42 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   тоже дал19 exact PASS markers; суммарно38 actual scenarios. ARM log:
   /tmp/pp-utun-740-arm-121107762860.log. Dead-interface pending receipt сохранён
   до VM disposal; fake tests не подменяли эту native проверку.
+
+
+### Продолжение 1.5gj — согласованная минимальная macOS 12
+
+- [x] Владелец явно выбрал macOS 12 и новее. Прежняя граница macOS 11 изменена
+  по этому решению: в фактическом bundled GOST 3.2.6 оба Mach-O slices уже
+  содержат LC_BUILD_VERSION minOS 12.0.0. Read-only proof:
+  /tmp/pp-gost-shipped-minos-20261025.json. Бинарник не запускался и не заменялся.
+- [x] App и вложенный updater объявляют LSMinimumSystemVersion 12.0; прямые
+  executable/role launches отклоняют систему ниже12 до нормального bootstrap.
+  Support/update/remove, clean first-install и repair packages используют12.0;
+  три preinstall scripts проверяют систему до payload/замены файлов. Make-DMG
+  отказывается от prebuilt App с прежними требованиями, release verifier требует
+  совпадения App и единственного Sparkle minimumSystemVersion=12.0 в appcast.
+- [x] Обновлены текущие системные требования и непубликуемый английский VPN draft.
+  Component/compiler ABI target11, engine provenance и frozen139 source graph
+  не менялись. Исторические результаты на11 сохранены как исторические.
+- [x] 51 targeted contracts PASS1.371s, включая7 новых проверок: настоящие
+  извлечённые OS-preflight и release-metadata blocks с частными fixtures,
+  отказ старой/битой ОС, несовместимой/пустой/неоднозначной ленты и App11.
+  Шесть shell scripts проходят отдельный zsh syntax check. Логи:
+  /tmp/pp-minimum-macos-all-contracts-final.log.
+- [x] Package assembly: support suite21 cases =18 PASS и3 явно skipped optional
+  real-engine cases; repair suite8 PASS. Проверены реальные собранные PackageInfo
+  и scripts, без Installer/повышения прав/установки. Stale package fixture получил
+  отсутствовавшие текущие password/installed-result compiler inputs; production
+  source graph ради теста не упрощался. Логи:
+  /tmp/pp-minimum-macos-package-final-parent.log и
+  /tmp/pp-minimum-macos-packages-parent.log (у support в первом прогоне setup ERROR,
+  repair8 PASS; итоговый исправленный support прогон указан отдельно).
+- [x] Fresh genuine Universal frontend:4 PASS,0 failures/errors/skips, input
+  hashes stale=[]. Одна новая подписанная сборка прошла closed-role refusal и
+  real private-Inbox/Sparkle links acceptance. Proof:
+  /tmp/pp-current-frontend-traced-w2fv_0hz/verification.json. Read-only inventory
+  всех7 Mach-O binaries и6 bundle plists не нашёл minimum выше12; App/updater
+  Info.plist содержат12.0. Полный frontend build не включает GOST: его требования
+  проверены отдельно выше. Это не macOS12 runtime acceptance: на12 остаётся
+  отдельная обязательная проверка запуска. Host App, VPN, Keychain, сеть и
+  Installer в этом пункте не менялись.

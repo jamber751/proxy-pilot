@@ -21,6 +21,8 @@ the release or update feed until the checks below are complete. Version pending.
 
 ### Updating
 
+Requires macOS 12 Monterey or later, on Apple Silicon or Intel.
+
 Use the ProxyPilot installer to update the app and its VPN component together.
 macOS may ask you to approve the installation. Homebrew is not required.
 

@@ -815,6 +815,13 @@ final class App: NSObject, NSApplicationDelegate {
     }
 }
 
+// Bundle metadata also declares 12. This check covers direct executable/role
+// launches, which do not go through LaunchServices' minimum-version check.
+if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 12 {
+    FileHandle.standardError.write(Data("ProxyPilot requires macOS 12 or later.\n".utf8))
+    exit(69)
+}
+
 #if VPN_INSTALLER_ENTRY
 if let status = VPNPasswordWorker.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNInstalledUpdateResultEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }

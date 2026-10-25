@@ -341,7 +341,7 @@ def build(stage, key_tool, public, output):
         run('/usr/bin/pkgbuild', '--root', payload, '--install-location', '/',
             '--component-plist', components,
             '--ownership', 'recommended', '--identifier', RESCUE_ID, '--version', version,
-            '--compression', 'legacy', '--min-os-version', '11.0', '--scripts', scripts, output)
+            '--compression', 'legacy', '--min-os-version', '12.0', '--scripts', scripts, output)
     print(f'Built local repair package. Nothing installed: {output}')
 
 

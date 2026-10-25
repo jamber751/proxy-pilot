@@ -44,7 +44,7 @@ class VPNRescuePackageTests(unittest.TestCase):
         payload_tests.VPNRescueInstallationPayloadTests.setUp(self)
         info = self.app / 'Contents/Info.plist'
         fields = plistlib.loads(info.read_bytes())
-        fields.update(LSMinimumSystemVersion='11.0', ProxyPilotVPNInstaller=True,
+        fields.update(LSMinimumSystemVersion='12.0', ProxyPilotVPNInstaller=True,
                       ProxyPilotVPNReleaseSequence=141)
         info.write_bytes(plistlib.dumps(fields)); self.sign(self.app, staged.APP_ID); self.fixture()
         self.standard = self.work / 'standard'; self.standard.mkdir(mode=0o700)

@@ -175,6 +175,7 @@ final class UpdateWorker: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDel
 @main
 enum UpdateWorkerMain {
     static func main() {
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 12 else { exit(69) }
         guard CommandLine.arguments.count == 1, geteuid() != 0, getuid() == geteuid() else { exit(64) }
         guard let host = UpdateWorker.enclosingHost() else { exit(64) }
         let app = NSApplication.shared

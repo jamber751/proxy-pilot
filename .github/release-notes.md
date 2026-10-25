@@ -29,7 +29,7 @@ Your saved proxy addresses, selected route and on/off state are preserved.
 Connections through the local bridge may briefly reconnect when the app restarts.
 This release does not change proxy routing or add VPN behavior.
 
-Universal app for Apple Silicon and Intel, macOS 11 or newer. The CLI and GOST
+Universal app for Apple Silicon and Intel, macOS 12 or newer. The CLI and GOST
 are bundled; Homebrew is not required.
 
 ### Verification

@@ -71,14 +71,18 @@ final class ProxyModel:''' + model
                          'VPNUpdateBrokerStateRemoval',
                          'VPNJointUpdateStartupStatus', 'VPNJointUpdateCoordinator')]
         app_sources += [HELPER / f'{name}.swift' for name in
-                        ('VPNApplicationSpec', 'VPNTunnelStateStore')]
+                        ('VPNApplicationSpec', 'VPNTunnelStateStore', 'OpenVPNTransientCredential',
+                         'OpenVPNManagementEvent', 'OpenVPNStateEvidence')]
         app_sources += [HELPER / f'{name}.swift' for name in ('VPNInstallationPayload', 'VPNInstallationEntry')]
         app_sources += [ROOT / 'app' / f'{name}.swift' for name in
                         ('Controls', 'Updates', 'VPNConfiguration', 'VPNProfileImporter', 'VPNStore',
                          'VPNModel', 'VPNLiveController', 'VPNPanel',
+                         'VPNPasswordPersistenceCoordinator', 'VPNPasswordCleanupCoordinator',
+                         'VPNPasswordRuntime', 'VPNPasswordWorker', 'VPNPasswordWorkerWire',
+                         'VPNPasswordWorkerIdentity', 'VPNLegacyPasswordBackend', 'VPNPasswordWorkerSession',
                          'VPNBridgeBypass', 'VPNBridgeBypassEntry')]
         app_sources += [HELPER / f'{name}.swift' for name in
-                        ('VPNPublicReleaseReceipt', 'VPNFrontendHelperSession',
+                        ('VPNPublicReleaseReceipt', 'VPNFrontendHelperSession', 'VPNInstalledUpdateResultEntry',
                          'VPNHelperTunnelSession')]
         app_sources += [ROOT / 'app/update-worker' / f'{name}.swift' for name in
                         ('IsolatedUpdates', 'UpdateWire', 'UpdateChannel')]
@@ -106,7 +110,7 @@ final class ProxyModel:''' + model
         restricted.chmod(0o700)
         info = dict(CFBundleIdentifier='kz.documentolog.proxypilot', CFBundleName='ProxyPilot',
                     CFBundleVersion='1.6.0', CFBundleShortVersionString='1.6.0', CFBundleExecutable='ProxyPilot',
-                    CFBundlePackageType='APPL', LSMinimumSystemVersion='11.0', LSUIElement=True,
+                    CFBundlePackageType='APPL', LSMinimumSystemVersion='12.0', LSUIElement=True,
                     ProxyPilotVPNInstaller=True, ProxyPilotVPNReleaseSequence=2)
         (cls.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for path, identifier in [(cls.app, 'kz.documentolog.proxypilot'),
@@ -245,7 +249,7 @@ final class ProxyModel:''' + model
                 expanded = self.work / f'expanded-{action}'
                 self.command(['/usr/sbin/pkgutil', '--expand-full', str(package), str(expanded)])
                 info = ET.parse(expanded / 'PackageInfo').getroot()
-                self.assertEqual(info.attrib['minimumSystemVersion'], '11.0')
+                self.assertEqual(info.attrib['minimumSystemVersion'], '12.0')
                 self.assertEqual(info.attrib['identifier'], 'kz.documentolog.proxypilot.vpn-support.' + action)
                 self.assertFalse((expanded / 'Payload').exists(), 'Must be scripts-only, no automatic system writes')
                 scripts = expanded / 'Scripts'
@@ -273,7 +277,7 @@ final class ProxyModel:''' + model
         self.command(['/usr/sbin/pkgutil', '--expand-full', str(package),
                       str(expanded)])
         info = ET.parse(expanded / 'PackageInfo').getroot()
-        self.assertEqual(info.attrib['minimumSystemVersion'], '11.0')
+        self.assertEqual(info.attrib['minimumSystemVersion'], '12.0')
         self.assertEqual(info.attrib['identifier'],
                          'kz.documentolog.proxypilot.first-install')
         installed = expanded / 'Payload/Applications/ProxyPilot.app'

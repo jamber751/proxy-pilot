@@ -96,6 +96,10 @@ jobs:
           minos=$(otool -l "$BIN" | awk '/minos/{print $2; exit}')
           echo "  minos: $minos"
           [[ "$minos" == "11.0" ]] || { echo "ожидалась планка macOS 11.0"; exit 1; }
+          # Code generation stays compatible with older transition tooling;
+          # the complete app (including GOST) requires macOS 12.
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")" = "12.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Helpers/ProxyPilot Updater.app/Contents/Info.plist")" = "12.0"
           test -f "$APP/Contents/Resources/AppIcon.icns" || { echo "нет иконки"; exit 1; }
           test -x "$WORKER" || { echo "нет изолированного updater"; exit 1; }
           ! otool -L "$BIN" | grep -q Sparkle.framework || { echo "Sparkle загружен в основном процессе"; exit 1; }

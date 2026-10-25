@@ -10,6 +10,10 @@ and recovery tests pass. `prepare`, `verify`, and `build` use public verificatio
 only. The explicit `sign` command is the only command that accesses an existing
 signing key through `vpn-release-key`.
 
+Current repair packages require macOS 12 or later. The preinstall check rejects
+older systems before running payload code or replacing files. Historical A/B
+artifacts and their lower compiler targets remain unchanged.
+
 ## Inputs
 
 - Native Universal `vpn-rescue` from `app/vpn-rescue/build.sh`.

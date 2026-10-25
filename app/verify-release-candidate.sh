@@ -151,11 +151,11 @@ first_install_names=("${(@f)$(print -l -- $first_install_names | /usr/bin/sort)}
 
 /usr/bin/python3 - "$VERSION" "$metadata" "$manifest" \
   "$joint_mount/vpn-previous-release.manifest" \
-  "$joint_app/Contents/Info.plist" "$HERE/vpn-release-sequence.txt" <<'PY'
-import plistlib, re, sys
+  "$joint_app/Contents/Info.plist" "$HERE/vpn-release-sequence.txt" "$ASSETS/appcast.xml" <<'PY'
+import plistlib, re, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 
-version, metadata_path, manifest_path, previous_path, info_path, sequence_path = sys.argv[1:]
+version, metadata_path, manifest_path, previous_path, info_path, sequence_path, feed_path = sys.argv[1:]
 def record(path):
     data = Path(path).read_bytes()
     text = data.decode('ascii')
@@ -169,6 +169,11 @@ def record(path):
     return result
 metadata, candidate, previous = map(record, (metadata_path, manifest_path, previous_path))
 info = plistlib.loads(Path(info_path).read_bytes())
+if info.get('LSMinimumSystemVersion') != '12.0':
+    raise SystemExit('release requires macOS 12')
+minimums = ET.parse(feed_path).findall('.//{http://www.andymatuschak.org/xml-namespaces/sparkle}minimumSystemVersion')
+if len(minimums) != 1 or minimums[0].text != '12.0':
+    raise SystemExit('signed feed minimum system does not match the release')
 sealed = Path(sequence_path).read_text().strip()
 if not re.fullmatch(r'[1-9][0-9]{0,18}', sealed): raise SystemExit('bad sealed sequence')
 if not (metadata.get('version') == candidate.get('version') == info.get('CFBundleVersion') == version

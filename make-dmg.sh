@@ -50,7 +50,8 @@ else
 fi
 APP="$BUILD_ROOT/ProxyPilot.app"
 INFO="$APP/Contents/Info.plist"
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")" \
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO")" == "12.0" \
+   && "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")" \
       == "kz.documentolog.proxypilot" \
    && "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" == "$VERSION" \
    && "$(/usr/libexec/PlistBuddy -c 'Print :ProxyPilotVPNInstaller' "$INFO")" == true \
@@ -208,7 +209,7 @@ chmod +x "$STAGE/Install.command"
 
 # short note for the recipient, right inside the image
 cat > "$STAGE/READ_ME_FIRST.txt" <<EOF
-ProxyPilot $VERSION  (Intel + Apple Silicon, macOS 11+)
+ProxyPilot $VERSION  (Intel + Apple Silicon, macOS 12+)
 
 QUICK PATH:
   right-click "Install.command" → Open → Open. That is the whole install.

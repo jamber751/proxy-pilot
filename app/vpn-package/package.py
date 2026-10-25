@@ -214,7 +214,7 @@ def version_of(app):
     if (info.get('CFBundleIdentifier') != APP_ID or info.get('CFBundleShortVersionString') != version
             or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version)
             or any(int(part) > 2**63 - 1 for part in version.split('.'))
-            or info.get('CFBundleExecutable') != 'ProxyPilot' or info.get('LSMinimumSystemVersion') != '11.0'
+            or info.get('CFBundleExecutable') != 'ProxyPilot' or info.get('LSMinimumSystemVersion') != '12.0'
             or info.get('ProxyPilotVPNInstaller') is not True):
         raise ValueError('Unexpected app identity, version or minimum system')
     return version
@@ -395,7 +395,7 @@ def build(stage, action, output):
         for name in ('preinstall', 'postinstall'): (scripts / name).chmod(0o755)
         run('/usr/bin/codesign', '--verify', '--deep', '--strict', copied / 'ProxyPilot.app')
         run('/usr/bin/pkgbuild', '--nopayload', '--identifier', APP_ID + '.vpn-support.' + action,
-            '--version', version, '--compression', 'legacy', '--min-os-version', '11.0',
+            '--version', version, '--compression', 'legacy', '--min-os-version', '12.0',
             '--scripts', scripts, output)
     print(f'Built {action} package. Nothing installed: {output}')
 
@@ -461,7 +461,7 @@ def build_first_install(stage, output):
         run('/usr/bin/pkgbuild', '--root', root, '--install-location', '/',
             '--component-plist', components, '--ownership', 'recommended',
             '--identifier', APP_ID + '.first-install', '--version', version,
-            '--compression', 'legacy', '--min-os-version', '11.0',
+            '--compression', 'legacy', '--min-os-version', '12.0',
             '--scripts', scripts, output)
     print(f'Built clean first-install package. Nothing installed: {output}')
 

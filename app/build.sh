@@ -72,7 +72,7 @@ if [[ "$ISOLATED_UPDATER" == 1 ]]; then
   /usr/bin/plutil -create xml1 "$WORKER/Contents/Info.plist"
   for PAIR in "CFBundleIdentifier=kz.documentolog.proxypilot.updater" "CFBundleExecutable=ProxyPilotUpdater" \
       "CFBundleName=ProxyPilot Updater" "CFBundlePackageType=APPL" "CFBundleVersion=$VERSION" \
-      "CFBundleShortVersionString=$VERSION" "LSMinimumSystemVersion=11.0"; do
+      "CFBundleShortVersionString=$VERSION" "LSMinimumSystemVersion=12.0"; do
     /usr/bin/plutil -insert "${PAIR%%=*}" -string "${PAIR#*=}" "$WORKER/Contents/Info.plist"
   done
   /usr/bin/plutil -insert LSUIElement -bool YES "$WORKER/Contents/Info.plist"
@@ -130,7 +130,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>         <string>$VERSION</string>
-  <key>LSMinimumSystemVersion</key>  <string>11.0</string>
+  <key>LSMinimumSystemVersion</key>  <string>12.0</string>
 
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
 

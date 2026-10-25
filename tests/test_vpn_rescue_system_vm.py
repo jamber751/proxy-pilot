@@ -160,7 +160,7 @@ def make_app(path, binary, version, sequence, *, capable=False):
     shutil.copyfile(binary, contents / 'MacOS/ProxyPilot'); (contents / 'MacOS/ProxyPilot').chmod(0o755)
     info = dict(CFBundleIdentifier='kz.documentolog.proxypilot', CFBundleExecutable='ProxyPilot',
                 CFBundlePackageType='APPL', CFBundleVersion=version, CFBundleShortVersionString=version,
-                CFBundleName='ProxyPilot', LSMinimumSystemVersion='11.0', ProxyPilotVPNInstaller=True,
+                CFBundleName='ProxyPilot', LSMinimumSystemVersion='12.0' if sequence >= 140 else '11.0', ProxyPilotVPNInstaller=True,
                 ProxyPilotVPNReleaseSequence=sequence)
     if capable: info['ProxyPilotVPNRootOwnedUpdateExecutor'] = '1'
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
