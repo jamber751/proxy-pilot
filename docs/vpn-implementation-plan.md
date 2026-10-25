@@ -7611,3 +7611,39 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Полная current-source Universal helper сборка/sign-only запущена locally
   из отдельного frozen snapshot; результат ещё не получен. Никаких host root,
   route/DNS/Keychain API, установки или изменения работающего VPN не было.
+
+### Продолжение 1.5hc — genuine helper build и native Swift fence packet gate
+
+- [x] Production API committed separately as fa81ccb. Полная current-source
+  production helper сборка Universal ARM/Intel с -O завершилась0; strict ad-hoc
+  signature verify прошёл, ничего не запускалось/устанавливалось.116 frozen
+  inputs (включая build recipe), stale=[]; обе slices подтверждены lipo.
+  Proof /tmp/pp-exact-fence-helper-_vskkjk0/verification.json,
+  binary SHA493edb356160f92d4d28611462f1cb53bd772c6171bc9f6701f7bb273fd3e6e8.
+  Lower compiler ABI11 сохранён, product minimum12 не менялся.
+- [x] Добавлен отдельный root/GHA/native opt-in VM bridge, вызывающий ИМЕННО
+  production VPNDarwinRouteSocket installExactFence/deleteExactFence внутри
+  прежнего UDP/TCP owned-utun/SIGKILL fixture. Production Swift без TESTING.
+  C hook существует только под VM fixture macro; обычные C canaries не меняют
+  поведение. C и Swift в одном PID используют непересекающиеся sequence ranges,
+  production Swift — прежний process-wide allocator.
+- [x] В new native gate два самостоятельных сценария, не retries: fence BEFORE
+  active HOST и fence AFTER уже существующего HOST, обе IPv4/IPv6. Оба требуют
+  всех native ADD/DELETE, established bidirectional TCP, UDP cached/fresh,
+  actual owner SIGKILL, exact backup selection, positive neighbor и cleanup.
+  Reverse order проверяет отсутствие key при HOST fallback и сохранность HOST;
+  production всегда обязан установить deny ДО публикации нового DNS answer.
+- [x] Новая fixture компилируется обе arch12 target + ordinary denial/pure packet
+  checks. Вместе с прежними packet/pair fixtures3tests PASS12.869s без skips:
+  /tmp/pp-exact-fence-native-compile-parent.log. Source snapshots/hashes и stale
+  check включены; native error diagnostics только op/family/closed code/errno и
+  expected/observed flags. Root/network API на host не выполнялись.
+- [x] Новый dedicated4-OS workflow vpn-exact-fence-native.yml сохраняет root gates;
+  обе native test files исключены только из unrelated ownership trigger, общий
+  production helper trigger остаётся.17 pure adapter cases добавлены в existing
+  scoped-DNS/helper-build gate. Все3 изменённых workflow YAML PASS Ruby parser.
+- [ ] Actual native Swift fence VM результат ещё требуется после push. Предыдущий
+  C d486f88 all4-OS proof не засчитывается вместо нового API/flags/selector.
+  Durable known-IP journal и pair-aware active routes ещё не реализованы этим
+  low-level boundary; domain runtime/public IPC не включались. Сохраняются
+  persistent OS relay/GOST, TTL/revoke/crash/foreign/reboot/WARP и все7этапов.

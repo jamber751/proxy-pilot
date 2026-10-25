@@ -113,7 +113,17 @@ done:
     if (!error) { last_flags = result->flags; last_exact = result->exact; last_mask = result->full_mask; }
     close(fd); return error;
 }
+#ifdef PP_NATIVE_EXACT_FENCE
+extern int pp_exact_fence_control(int, int, const unsigned char *);
+#endif
 static int request(int type, int host, int backup, struct reply *result) {
+#ifdef PP_NATIVE_EXACT_FENCE
+    if (backup && (type == RTM_ADD || type == RTM_DELETE)) {
+        memset(result, 0, sizeof(*result));
+        route_error = pp_exact_fence_control(type, family == AF_INET ? 4 : 6, destination);
+        return route_error;
+    }
+#endif
     struct message m = {0}; size_t length = 0;
     m.header.rtm_version = RTM_VERSION; m.header.rtm_type = type;
     m.header.rtm_pid = getpid(); m.header.rtm_seq = ++sequence;

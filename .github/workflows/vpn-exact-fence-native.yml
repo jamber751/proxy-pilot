@@ -1,0 +1,48 @@
+name: VPN native Swift exact fence and owner death
+
+on:
+  push:
+    branches: [codex/vpn-root-acceptance]
+    paths:
+      - '.github/workflows/vpn-exact-fence-native.yml'
+      - 'app/VPNConfiguration.swift'
+      - 'app/vpn-helper/OpenVPNManagementEvent.swift'
+      - 'app/vpn-helper/OpenVPNStateEvidence.swift'
+      - 'app/vpn-helper/VPNKernelInterfaceSnapshot.swift'
+      - 'app/vpn-helper/VPNTunnelInterfaceResolver.swift'
+      - 'app/vpn-helper/VPNRoute*.swift'
+      - 'app/vpn-helper/VPNDarwinRouteSocket.swift'
+      - 'tests/test_vpn_exact_fence_adapter.py'
+      - 'tests/vpn_exact_fence_adapter_checks.swift'
+      - 'tests/test_vpn_exact_fence_native_vm.py'
+      - 'tests/vpn_exact_fence_native_vm.swift'
+      - 'tests/test_vpn_exact_route_packet_vm.py'
+      - 'tests/vpn_exact_route_packet_vm.c'
+      - 'tests/vpn_exact_route_pair_vm.c'
+      - 'tests/vpn_dns_utun_vm_support.c'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packets:
+    name: Production Swift fence and owned interface SIGKILL (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel, macos-26, macos-26-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Both architectures compile; ordinary host refuses all live calls
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_exact_fence_adapter test_vpn_exact_fence_native_vm -v
+      - name: Actual production fence plus UDP/TCP packets in disposable root VM only
+        run: |
+          sudo -n /usr/bin/env GITHUB_ACTIONS=true PROXYPILOT_VM_NATIVE_EXACT_FENCE=1 \
+            PROXYPILOT_VM_EXACT_ROUTE_PACKETS=1 \
+            PROXYPILOT_VM_DNS_UTUN_TESTS=1 RUNNER_TEMP="$RUNNER_TEMP" \
+            /usr/bin/python3 tests/test_vpn_exact_fence_native_vm.py --acceptance

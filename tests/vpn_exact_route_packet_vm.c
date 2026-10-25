@@ -23,6 +23,9 @@ static int cover_added;
 static pid_t owner_pid = -1;
 static const unsigned short port = 49317;
 static unsigned char nonce[16];
+#ifdef PP_NATIVE_EXACT_FENCE
+static int native_fence_after_active;
+#endif
 
 static int interface_owned(int fd, const char *name, unsigned index) {
     char observed[IFNAMSIZ] = {0}; socklen_t n = sizeof(observed);
@@ -373,6 +376,12 @@ static int kill_interface_owner(void) {
     while (if_nametoindex(active_name) && now_ms() < end) usleep(5000);
     return !if_nametoindex(active_name);
 }
+static int packet_active_add(struct reply *r) {
+    stage = "packetActiveAdd";
+    if (!check(direct_request(RTM_ADD, 1, active_index, r) == 0)) return 0;
+    host_added = 1;
+    return 1;
+}
 static int packet_probe(void) {
     struct reply r;
     stage = "packetBaseline";
@@ -381,8 +390,14 @@ static int packet_probe(void) {
     if (!check(e == ESRCH || (e == 0 && !cover_exact(&r)))) return 1;
     stage = "packetCoverAdd"; if (!check(direct_request(RTM_ADD, 0, escape_index, &r) == 0)) return 1; cover_added = 1;
     if (!check(direct_request(RTM_GET, 0, escape_index, &r) == 0 && direct_owned(&r, 0, escape_index))) return 1;
+#ifdef PP_NATIVE_EXACT_FENCE
+    if (native_fence_after_active && !packet_active_add(&r)) return 1;
+#endif
     stage = "packetBackupAdd"; if (!check(request(RTM_ADD, 0, 1, &r) == 0)) return 1; backup_added = 1;
-    stage = "packetActiveAdd"; if (!check(direct_request(RTM_ADD, 1, active_index, &r) == 0)) return 1; host_added = 1;
+#ifdef PP_NATIVE_EXACT_FENCE
+    if (!native_fence_after_active)
+#endif
+    { if (!packet_active_add(&r)) return 1; }
     if (!check(request(RTM_GET, 1, 0, &r) == 0 && direct_owned(&r, 1, active_index))) return 1;
     cached_fd = udp_socket(destination); neighbor_fd = udp_socket(neighbor);
     stage = "packetUnboundActive";
@@ -431,6 +446,16 @@ int main(int argc, char **argv) {
     if (getuid() != 0 || geteuid() != 0 || !gha || strcmp(gha,"true") || !flag || strcmp(flag,"1")) return 77;
     const char *support_flag = getenv("PROXYPILOT_VM_DNS_UTUN_TESTS");
     if (!support_flag || strcmp(support_flag,"1")) return 77;
+#ifdef PP_NATIVE_EXACT_FENCE
+    const char *native = getenv("PROXYPILOT_VM_NATIVE_EXACT_FENCE");
+    if (!native || strcmp(native,"1")) return 77;
+    const char *after = getenv("PROXYPILOT_VM_NATIVE_FENCE_AFTER_ACTIVE");
+    if (!after || (strcmp(after,"0") && strcmp(after,"1"))) return 77;
+    native_fence_after_active = !strcmp(after,"1");
+    /* The C fixture and Swift controller share this PID. Reserve disjoint
+     * sequence ranges here; production Swift uses its shared allocator. */
+    sequence = 1000000;
+#endif
     if (!addresses_free()) return 1;
     lo_index = if_nametoindex("lo0"); if (!lo_index) return 1;
     for (int i = 0; i < 2; i++) {
