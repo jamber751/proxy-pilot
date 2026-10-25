@@ -78,6 +78,8 @@ enum VPNReadinessChecks {
 
     /// Fixture-only trusted authority, matching what the helper fixture seeds.
     static func fixtureRelease(pin: String) throws -> VerifiedVPNRelease {
+        let pins=pin.split(separator:",",omittingEmptySubsequences:false).map(String.init)
+        guard pins.count==1 || pins.count==2 else { throw VPNPeerAuthenticationError.invalidPolicy }
         #if VPN_PREVIOUS_CLIENT
         let fixtureVersion = "1.6.1"
         #else
@@ -86,7 +88,7 @@ enum VPNReadinessChecks {
         let payload = Data(([
             "format=1", "product=kz.documentolog.proxypilot", "sequence=10", "version=\(fixtureVersion)", "protocol=1",
             "app-arm64=\(String(repeating: "11", count: 20))", "app-x86_64=\(String(repeating: "22", count: 20))",
-            "helper-arm64=\(pin)", "helper-x86_64=\(pin)",
+            "helper-arm64=\(pins[0])", "helper-x86_64=\(pins.count==2 ? pins[1]:pins[0])",
             "helper-sha256=\(String(repeating: "55", count: 32))", "helper-bytes=1", ""
         ].joined(separator: "\n")).utf8)
         let key = Curve25519.Signing.PrivateKey()

@@ -151,13 +151,13 @@ class VPNHelperListenerTests(unittest.TestCase):
 
     def session(self, scenario, client='client', timeout=2000):
         result = subprocess.run([str(self.work / client), 'session', str(self.endpoint),
-                                 self.pins['service']['arm64'], str(timeout), scenario],
+                                 ','.join(self.pins['service'][arch] for arch in ('arm64','x86_64')), str(timeout), scenario],
                                 capture_output=True, text=True, timeout=60)
         return result.stdout.strip().splitlines()
 
     def probe(self, client='client', timeout=2000):
         result = subprocess.run([str(self.work / client), 'probe', str(self.endpoint),
-                                 self.pins['service']['arm64'], str(timeout)],
+                                 ','.join(self.pins['service'][arch] for arch in ('arm64','x86_64')), str(timeout)],
                                 capture_output=True, text=True, timeout=60)
         return result.stdout.strip()
 
