@@ -23,7 +23,7 @@ CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bound
          'wrong-route-permit', 'ttl-high-bit', 'rrset-ttl', 'compressed-cname',
          'generation', 'revision', 'mutated-corpus', 'lease-concurrent',
          'lease-suppressed-output-error', 'lease-suppressed-check-error',
-         'client-remap', 'client-rd', 'client-case', 'client-exact', 'client-flags',
+         'client-remap', 'client-rd', 'client-case', 'client-domain-boundary', 'client-flags',
          'client-sections', 'client-types', 'client-bounds', 'client-release',
          'negative-nxdomain', 'negative-nodata', 'negative-cname', 'negative-wrong-zone',
          'negative-label-suffix', 'negative-no-soa', 'negative-referral', 'negative-soa-plus-ns',
@@ -47,6 +47,8 @@ CASES = ('a', 'aaaa', 'multi', 'cname', 'compression', 'ttl', 'zero-ttl', 'bound
          'edns-response-do-negative', 'edns-response-do-lease')
 CASES += ('sleep-ttl','sleep-negative-ttl','sleep-current','sleep-deny','sleep-routes','sleep-verify',
           'sleep-outputIssued','sleep-verified','sleep-zero-query','clock-release-failed','clock-release-backwards','clock-release-checkpoint-failed')
+
+CASES += ('client-domain-descendants', 'client-domain-answer-boundary', 'client-domain-negative', 'client-domain-error', 'client-domain-badvers')
 
 
 def snapshot_inputs(folder, inputs):

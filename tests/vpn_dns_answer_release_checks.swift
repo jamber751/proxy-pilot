@@ -43,11 +43,11 @@ private func request(type: VPNDNSQuestionType = .a, resource: VPNResource? = nil
 }
 
 private func wire(_ request: VPNDNSAnswerRequest, _ records: [RR] = [RR()], flags: UInt16 = 0x8180,
-                  authority: UInt16 = 0, additional: UInt16 = 0) -> Data {
+                  authority: UInt16 = 0, additional: UInt16 = 0, questionName: String? = nil) -> Data {
     var bytes = word(request.upstreamTransactionID) + word(flags)
     bytes += word(1) + word(UInt16(records.count))
     bytes += word(authority) + word(additional)
-    bytes += name(request.resource.address) + word(request.type.rawValue) + word(1)
+    bytes += name(questionName ?? request.resource.address) + word(request.type.rawValue) + word(1)
     for record in records { bytes += record.wire() }
     return Data(bytes)
 }
@@ -727,12 +727,55 @@ private final class Fake: VPNDNSAnswerReleaseAuthority, VPNDNSAnswerCheckpointSi
             try require(Array(response.dropFirst(12).prefix(question.count)) == question)
             let upstream = try request.upstreamQuery()
             try require(Array(upstream.dropFirst(12)) == question)
-        case "client-exact":
-            for candidate in ["child.app.corp.test","other.corp.test","corp.test"] {
+        case "client-domain-boundary":
+            for candidate in ["badapp.corp.test","app.corp.test.evil","other.corp.test","corp.test"] {
                 try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(candidate),resource:req.resource, ingress: .udp) }
             }
             let nonDomain = try VPNResource(address:"192.0.2.9")
             try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(),resource:nonDomain, ingress: .udp) }
+        case "client-domain-descendants":
+            for original in ["app.corp.test", "mail.app.corp.test", "Deep.Mail.App.Corp.Test"] {
+                for type in [VPNDNSQuestionType.a, .aaaa] {
+                    let child = try request(type:type, resource:req.resource, originalName:original)
+                    let canonical = original.lowercased()
+                    let record = RR(owner:canonical, type:type.rawValue,
+                        data:type == .a ? [192,0,2,9] : [0x20,1,0x0d,0xb8] + Array(repeating:0,count:11) + [9])
+                    let decoded = try VPNDNSAnswerCodec.decode(wire(child,[record],questionName:canonical),request:child,receivedAt:dnsTime(1),transport:.tcp)
+                    try require(child.resource == req.resource && decoded.canonicalChain == [canonical] && decoded.addresses.count == 1)
+                    let bytes = try decoded.encoded(at:dnsTime(1))
+                    let originalQuestion = name(original) + word(type.rawValue) + word(1)
+                    try require(Array(bytes.dropFirst(12).prefix(originalQuestion.count)) == originalQuestion)
+                }
+            }
+        case "client-domain-answer-boundary":
+            let child = try request(resource:req.resource,originalName:"mail.app.corp.test")
+            for wrong in ["app.corp.test","other.app.corp.test","deep.mail.app.corp.test"] {
+                try rejects { _ = try VPNDNSAnswerCodec.decode(wire(child,[RR(owner:wrong)],questionName:wrong),request:child,receivedAt:dnsTime(1),transport:.tcp) }
+            }
+            // A matching question still cannot authorize unrelated parent records.
+            try rejects { _ = try VPNDNSAnswerCodec.decode(wire(child,[RR()],questionName:"mail.app.corp.test"),request:child,receivedAt:dnsTime(1),transport:.tcp) }
+        case "client-domain-negative":
+            let domain = "mail.app.corp.test"
+            let child = try request(resource:req.resource,originalName:domain)
+            let fields = [UInt32(11),22,33,44,30].flatMap(dword)
+            let soa = RR(owner:"corp.test",type:6,data:name("ns.corp.test") + name("hostmaster.corp.test") + fields)
+            let packet = wire(child,[],flags:0x8183,authority:1,questionName:domain) + Data(soa.wire())
+            let decoded = try VPNDNSAnswerCodec.decode(packet,request:child,receivedAt:dnsTime(1),transport:.tcp)
+            let directive = try decoded.negativeCacheDirective(at:dnsTime(1))
+            try require(decoded.request.resource == req.resource && decoded.canonicalChain == [domain] && directive?.key == .nxDomain(terminal:domain) && directive?.request == child)
+        case "client-domain-error":
+            let domain = "mail.app.corp.test"
+            let child = try request(resource:req.resource,originalName:domain)
+            let decoded = try VPNDNSAnswerCodec.decode(wire(child,[],flags:0x8182,questionName:domain),request:child,receivedAt:dnsTime(1),transport:.tcp)
+            try require(decoded.outcome == .upstreamError(2) && decoded.canonicalChain == [domain] && decoded.addresses.isEmpty && decoded.request.resource == req.resource)
+        case "client-domain-badvers":
+            let domain = "mail.app.corp.test"
+            var original = query(domain); original[11] = 1
+            original += Data([0,0,41,4,208,0,1,0,0,0,0])
+            let question = try VPNDNSAnswerCodec.clientQuestion(original,resource:req.resource,ingress:.udp)
+            let child = try VPNDNSAnswerRequest(clientQuestion:question,generation:7,revision:9,upstreamTransactionID:99,deadline:dnsTime(1000))
+            let decoded = try VPNDNSAnswerCodec.clientProtocolError(request:child,receivedAt:dnsTime(1))
+            try require(decoded.outcome == .protocolError(.badVersion) && decoded.canonicalChain == [domain] && decoded.request.resource == req.resource)
         case "client-flags":
             for flag: UInt16 in [0x8000,0x0800,0x0400,0x0200,0x0080,0x0040,0x0010,0x0001] {
                 try rejects { _ = try VPNDNSAnswerCodec.clientQuestion(query(flags:flag),resource:req.resource, ingress: .udp) }

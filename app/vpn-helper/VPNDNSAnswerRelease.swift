@@ -35,7 +35,8 @@ protocol VPNDNSAnswerCheckpointSink {
 
 protocol VPNDNSAnswerReleaseAuthority: AnyObject {
     var permitIssuer: VPNDNSAnswerPermitIssuer { get }
-    /// Check exact active resource (including UUID), generation/revision,
+    /// Check exact active resource (including UUID), sealed client question,
+    /// generation/revision,
     /// cancellation, current tunnel and caller's original absolute deadline.
     func checkCurrent(_ answer: VPNDNSValidatedAnswer) throws
     /// Must cover ALL answer addresses, both families over successive queries;

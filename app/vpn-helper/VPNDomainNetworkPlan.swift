@@ -5,13 +5,13 @@ enum VPNDomainNetworkPlanError: Error, Equatable {
 }
 
 /// Inert groundwork for a future combined network transaction. Domain resources
-/// remain EXACT hosts: this type neither expands descendants nor publishes SC
-/// supplemental suffixes. It cannot resolve names or declare DNS/Connected ready.
+/// retain their configured roots/UUIDs separately from descendant client query
+/// names. This type cannot publish SC suffixes, resolve names or declare ready.
 struct VPNDomainNetworkPlan: Equatable {
     let staticRoutes: VPNRoutePlan
     /// Real remote corporate servers, never a synthesized loopback relay binding.
     let corporateUpstreams: [VPNRoutePrefix]
-    /// Original resource identities/names are preserved, sorted by exact host.
+    /// Original resource identities/names are preserved, sorted by domain root.
     let domainResources: [VPNResource]
 
     init(generation: UInt64, revision: UInt64, resources: [VPNResource],

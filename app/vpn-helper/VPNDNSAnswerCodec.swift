@@ -30,6 +30,8 @@ struct VPNDNSClientEDNS: Equatable {
 /// behavior, not validation of an upstream case-randomization challenge.
 struct VPNDNSClientQuestion: Equatable {
     let resource: VPNResource
+    /// Actual queried name, kept separate from the configured domain root/UUID.
+    let canonicalName: String
     let transactionID: UInt16
     let type: VPNDNSQuestionType
     let recursionDesired: Bool
@@ -41,10 +43,11 @@ struct VPNDNSClientQuestion: Equatable {
     }
     fileprivate let questionBytes: Data
 
-    fileprivate init(resource: VPNResource, transactionID: UInt16, type: VPNDNSQuestionType,
+    fileprivate init(resource: VPNResource, canonicalName: String, transactionID: UInt16, type: VPNDNSQuestionType,
                      recursionDesired: Bool, ingress: VPNDNSClientIngress,
                      edns: VPNDNSClientEDNS?, questionBytes: Data) {
-        self.resource = resource; self.transactionID = transactionID; self.type = type
+        self.resource = resource; self.canonicalName = canonicalName
+        self.transactionID = transactionID; self.type = type
         self.recursionDesired = recursionDesired; self.ingress = ingress
         self.edns = edns; self.questionBytes = questionBytes
     }
@@ -57,6 +60,7 @@ struct VPNDNSAnswerRequest: Equatable {
     let revision: UInt64
     let upstreamTransactionID: UInt16
     var resource: VPNResource { clientQuestion.resource }
+    var questionName: String { clientQuestion.canonicalName }
     var transactionID: UInt16 { clientQuestion.transactionID }
     var type: VPNDNSQuestionType { clientQuestion.type }
     /// Absolute continuous-clock time (including sleep); caller's original budget, never reset.
@@ -299,7 +303,13 @@ enum VPNDNSAnswerCodec {
         guard try reader.word() == 0, try reader.word() == 0 else { throw VPNDNSAnswerError.unsupported }
         let additional = try reader.word()
         guard additional <= 1 else { throw VPNDNSAnswerError.unsupported }
-        guard try reader.name() == resource.address else { throw VPNDNSAnswerError.questionMismatch }
+        let questionName = try reader.name()
+        // The approved resource policy includes descendants on a label boundary.
+        // Reader.name validates/lowercases individual DNS labels, so embedded
+        // dots, URL spellings and lookalike suffixes cannot widen this match.
+        guard questionName == resource.address || questionName.hasSuffix("." + resource.address) else {
+            throw VPNDNSAnswerError.questionMismatch
+        }
         guard let type = VPNDNSQuestionType(rawValue: try reader.word()), try reader.word() == 1 else {
             throw VPNDNSAnswerError.unsupported
         }
@@ -309,7 +319,7 @@ enum VPNDNSAnswerCodec {
         guard reader.offset == reader.bytes.count else { throw VPNDNSAnswerError.malformed }
         guard (opt?.extendedRCODE ?? 0) == 0 else { throw VPNDNSAnswerError.unsupported }
         let edns = opt.map { VPNDNSClientEDNS(version: $0.version, advertisedUDPPayload: $0.payload) }
-        return VPNDNSClientQuestion(resource: resource, transactionID: identifier, type: type,
+        return VPNDNSClientQuestion(resource: resource, canonicalName: questionName, transactionID: identifier, type: type,
             recursionDesired: flags & 0x0100 != 0, ingress: ingress, edns: edns,
             questionBytes: Data(reader.bytes[12..<questionEnd]))
     }
@@ -321,7 +331,7 @@ enum VPNDNSAnswerCodec {
         guard receivedAt < request.deadline else { throw VPNDNSAnswerError.stale }
         guard let edns = request.clientQuestion.edns, edns.version != 0 else { throw VPNDNSAnswerError.provenance }
         return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
-            records: [], canonicalChain: [request.resource.address], addresses: [], minimumTTL: 0,
+            records: [], canonicalChain: [request.questionName], addresses: [], minimumTTL: 0,
             outcome: .protocolError(.badVersion))
     }
 
@@ -356,7 +366,7 @@ enum VPNDNSAnswerCodec {
         let questions = try reader.word(), count = Int(try reader.word())
         let authority = try reader.word(), additional = try reader.word()
         guard questions == 1 else { throw VPNDNSAnswerError.questionMismatch }
-        guard try reader.name() == request.resource.address, try reader.word() == request.type.rawValue,
+        guard try reader.name() == request.questionName, try reader.word() == request.type.rawValue,
               try reader.word() == 1 else { throw VPNDNSAnswerError.questionMismatch }
         return (reader, flags, count, authority, additional)
     }
@@ -421,10 +431,10 @@ enum VPNDNSAnswerCodec {
             guard [1,2,4,5,16].contains(code) else { throw VPNDNSAnswerError.unsupportedRCODE(code) }
             guard count == 0, authority == 0 else { throw VPNDNSAnswerError.unsupported }
             return VPNDNSValidatedAnswer(identifier: UUID(), request: request, receivedAt: receivedAt,
-                records: [], canonicalChain: [request.resource.address], addresses: [], minimumTTL: 0,
+                records: [], canonicalChain: [request.questionName], addresses: [], minimumTTL: 0,
                 outcome: .upstreamError(code))
         }
-        var chain = [request.resource.address], consumed = Set<Int>(), canonical = [VPNDNSValidatedAnswer.Record]()
+        var chain = [request.questionName], consumed = Set<Int>(), canonical = [VPNDNSValidatedAnswer.Record]()
         while true {
             let owner = chain.last!
             let indices = records.indices.filter { records[$0].owner == owner }
