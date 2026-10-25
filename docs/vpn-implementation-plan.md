@@ -8106,3 +8106,26 @@ and broker phase6 while enabled. System6cab40186866126 завершён — ARM1
 enabled. Старый d0ff40185898593 теперь BOTH success121146487720/915. Новые Intel
 ошибки ещё не объяснены и не объявляются исправленными из-за старого green.
 Следующий audit читает их private redacted logs; live/partial runs не отменялись.
+
+
+CI follow-up после1.5hn: private logs скачаны целиком mode600 в
+/tmp/pp-system-new-121154359410.log и /tmp/pp-system-new-121149409451.log.
+Новые failures НЕ совпадают с прежним frozen139 activation отказом: в обеих
+диагностиках уже installedRelease=C/selectedSequence141, desired=true/failures0,
+helperC running с exact pins, finalizer complete и preparation/update/cleanup
+journals absent. Нельзя объяснять их старой frozen139 гипотезой.
+- 3dcb Intel repair tokens доходят до second waitRecovery/cleanup/reconcileBroker,
+  затем failure:broker/repairRejected; broker всё ещё B, terminal137→139 state
+  сохранён, rescue capsule остаётся. Trace показан полностью и не truncated.
+- 6cab Intel доходит до reconcileBroker/verifyFinal/retireRecovery, затем
+  failure:launchd/repairRejected; broker уже C, recovery job и plist уже отсутствуют,
+  rescue capsule остаётся. Это сужает проблему до завершающих broker/recovery-job
+  действий, но пока не различает exact launchctl status и20s action timeout.
+Current VPNRescueSystemEntry.actionDeadline ограничен20s, total budget300s.
+VPNRecoveryLaunchdJob.remove и broker.bootout принимают только0/ESRCH/EINPROGRESS;
+прочие statuses схлопываются в launchFailed, а queued self-bootout выполняется
+removeCurrent асинхронно. Нужны точные закрытые command/timeout diagnostics и
+проверка race/ownership перед исправлением; никаких новых статусов вслепую,
+отключения signature checks, правки frozen139 или повышения таймаутов не сделано.
+Live ebb System40190565165 и scoped40190565138 сохранены. Очередь имеет реальные
+занятые runners; observation queued не означает остановку процесса.
