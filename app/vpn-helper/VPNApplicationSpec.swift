@@ -47,6 +47,54 @@ struct VPNRetainedProtectionInventory: Codable, Equatable {
     }
 }
 
+/// Complete observation of the CURRENT root bridge sources, including legacy
+/// journal prefixes. It is not an active-route proof or a future-output lease.
+struct VPNBridgeRootInventory: Codable, Equatable {
+    static let maximumBytes = 512 * 1024
+    static let maximumMatchers = 7200 // retained4096 + active/pending2008 + journal1004
+    static let namespace = "root-bridge-sources-v1"
+    let schemaVersion: Int
+    let scope: String
+    let bootID: UUID
+    let stateSHA256: String
+    let routeJournalSHA256: String?
+    let matchers: [String]
+
+    init(bootID: UUID, stateSHA256: String, routeJournalSHA256: String?, matchers: [String]) throws {
+        schemaVersion=1;scope=Self.namespace;self.bootID=bootID
+        self.stateSHA256=stateSHA256;self.routeJournalSHA256=routeJournalSHA256;self.matchers=matchers
+        try validate()
+    }
+    static func canonical(_ address: String) throws -> String {
+        let resource=try VPNResource(address:address)
+        switch resource.kind {
+        case .domain: throw VPNApplicationSpecError.invalid
+        case .ipv4: return resource.address+"/32"
+        case .ipv6: return resource.address+"/128"
+        case .network4,.network6: return resource.address
+        }
+    }
+    func validate() throws {
+        func hash(_ value: String) -> Bool {
+            value.utf8.count==64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        }
+        guard schemaVersion==1,scope==Self.namespace,hash(stateSHA256),
+              routeJournalSHA256.map(hash) ?? true,matchers.count<=Self.maximumMatchers,
+              matchers==matchers.sorted(),Set(matchers).count==matchers.count else { throw VPNApplicationSpecError.invalid }
+        for value in matchers { guard try Self.canonical(value)==value else { throw VPNApplicationSpecError.invalid } }
+    }
+    func encoded() throws -> Data {
+        try validate();let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+        let data=try encoder.encode(self)
+        guard data.count<=Self.maximumBytes else { throw VPNApplicationSpecError.tooLarge };return data
+    }
+    static func decodeCanonical(_ data: Data) throws -> Self {
+        guard !data.isEmpty,data.count<=maximumBytes else { throw VPNApplicationSpecError.tooLarge }
+        let value=try JSONDecoder().decode(Self.self,from:data)
+        guard try value.encoded()==data else { throw VPNApplicationSpecError.invalid };return value
+    }
+}
+
 /// Capabilities implemented by the currently shipped, route-only helper.
 /// Domain resources require per-domain DNS selection and the complete protected
 /// answer/route handoff. The native DNS building blocks are not yet wired into

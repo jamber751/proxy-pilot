@@ -113,6 +113,9 @@ jobs:
         if: ${{ !cancelled() && matrix.suite == 'contracts' }}
         run: |
           PYTHONPATH=tests python3 -m unittest \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_root_inventory_authenticated_and_empty_request_only \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_root_inventory_absent_provider_and_failed_reads_are_not_empty_success \
+            test_vpn_helper_listener.VPNHelperListenerTests.test_root_inventory_wrong_signed_peer_never_calls_provider \
             test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_authenticated_roundtrip \
             test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_missing_provider_is_unsupported \
             test_vpn_helper_listener.VPNHelperListenerTests.test_retained_inventory_payload_refused_before_provider \

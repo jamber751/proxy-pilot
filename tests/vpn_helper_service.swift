@@ -137,7 +137,7 @@ enum VPNHelperService {
                 let managed = managedMode == "managed-tunnel-test"
                     || managedMode == "managed-connected-test"
                 var inventory: ((DispatchTime) throws -> Data)?
-                if args.count>=5,args[3]=="inventory-test" {
+                if args.count>=5,(args[3]=="inventory-test" || args[3]=="root-inventory-test") {
                     let mode=args[4]
                     inventory = { deadline in
                         guard DispatchTime.now().uptimeNanoseconds<deadline.uptimeNanoseconds else { throw VPNHelperListenerError.unavailable }
@@ -149,6 +149,11 @@ enum VPNHelperService {
                         if mode=="oversized" { return Data(repeating:0,count:VPNHelperProtocol.maximumPayloadBytes+1) }
                         if mode=="malformed" { return Data("{}".utf8) }
                         if mode=="revoke" { ready=false }
+                        if args[3]=="root-inventory-test" {
+                            return try VPNBridgeRootInventory(bootID:UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
+                                stateSHA256:String(repeating:"a",count:64),routeJournalSHA256:nil,
+                                matchers:["10.44.0.0/16","198.19.253.201/32","2001:db8:fff:fd::c9/128"]).encoded()
+                        }
                         return try VPNRetainedProtectionInventory(bootID:UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
                             prefixes:["198.19.253.201/32","2001:db8:fff:fd::c9/128"]).encoded()
                     }
@@ -156,7 +161,8 @@ enum VPNHelperService {
                 listener = try VPNHelperListener.bind(inTrustedDirectory: directory,
                     release: deployment.release, ownerUserID: deployment.ownerUserID,
                     endpointDirectory: endpoint,
-                    readRetainedProtection:inventory,
+                    readRetainedProtection:args.count>=5 && args[3]=="inventory-test" ? inventory:nil,
+                    readBridgeRootInventory:args.count>=5 && args[3]=="root-inventory-test" ? inventory:nil,
                     startTunnel: { try appendTrace("start-held"); return true },
                     startManagedTunnel: managed ? { binding, state in
                         if managedMode == "managed-connected-test" {

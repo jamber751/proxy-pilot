@@ -103,6 +103,20 @@ enum VPNReadinessChecks {
         let fd = connect(path)
         do {
             let release = try fixtureRelease(pin: pin)
+            if scenario=="root-inventory" || scenario=="root-inventory-payload" {
+                let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
+                defer { session.close() }
+                if scenario=="root-inventory-payload" {
+                    let (status,_)=try session.request(.bridgeRootInventory,payload:[42])
+                    print("root-inventory:\(status.rawValue):0");return
+                }
+                let (status,value)=try session.bridgeRootInventory()
+                if let value {
+                    guard value.bootID==UUID(uuidString:"12345678-1234-1234-1234-123456789abc")!,
+                          value.matchers==["10.44.0.0/16","198.19.253.201/32","2001:db8:fff:fd::c9/128"] else { throw VPNHelperSessionError.invalidResponse }
+                }
+                print("root-inventory:\(status.rawValue):\(value?.matchers.count ?? 0)");return
+            }
             if scenario=="inventory" || scenario=="inventory-payload" {
                 let session=try VPNHelperSession.testOpen(takingSocket:fd,release:release,timeoutMilliseconds:timeout)
                 defer { session.close() }

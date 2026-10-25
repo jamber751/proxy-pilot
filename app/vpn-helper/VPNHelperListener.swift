@@ -26,6 +26,7 @@ final class VPNHelperListener {
     private let installerPolicy: VPNPeerPolicy
     private let additionalReadinessPolicies: () throws -> [VPNPeerPolicy]
     private let readRetainedProtection: ((DispatchTime) throws -> Data)?
+    private let readBridgeRootInventory: ((DispatchTime) throws -> Data)?
     private let vault: VPNProfileVault
     private let tunnelState: VPNTunnelStateStore
     private let startTunnel: () throws -> Bool
@@ -43,6 +44,7 @@ final class VPNHelperListener {
                                   ownerUserID: uid_t,
                                   additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
                      readRetainedProtection: ((DispatchTime) throws -> Data)? = nil,
+                     readBridgeRootInventory: ((DispatchTime) throws -> Data)? = nil,
                                   startTunnel: @escaping () throws -> Bool = { false },
                                   startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)? = nil,
                                   submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)? = nil,
@@ -53,6 +55,7 @@ final class VPNHelperListener {
                                 ownerUserID: ownerUserID,
                                 additionalReadinessPolicies: additionalReadinessPolicies,
                                 readRetainedProtection: readRetainedProtection,
+                       readBridgeRootInventory: readBridgeRootInventory,
                                 startTunnel: startTunnel,
                                 startManagedTunnel: startManagedTunnel,
                                 submitManagedCredential: submitManagedCredential,
@@ -68,6 +71,7 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
                      readRetainedProtection: ((DispatchTime) throws -> Data)? = nil,
+                     readBridgeRootInventory: ((DispatchTime) throws -> Data)? = nil,
                      startTunnel: @escaping () throws -> Bool = { false },
                      startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)? = nil,
                      submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)? = nil,
@@ -77,6 +81,7 @@ final class VPNHelperListener {
                        ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                        additionalReadinessPolicies: additionalReadinessPolicies,
                        readRetainedProtection: readRetainedProtection,
+                       readBridgeRootInventory: readBridgeRootInventory,
                        startTunnel: startTunnel,
                        startManagedTunnel: startManagedTunnel,
                        submitManagedCredential: submitManagedCredential,
@@ -93,7 +98,8 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32? = nil,
                      runtimeLease: VPNLifecycleLease,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy] = { [] },
-                     readRetainedProtection: ((DispatchTime) throws -> Data)? = nil) throws
+                     readRetainedProtection: ((DispatchTime) throws -> Data)? = nil,
+                     readBridgeRootInventory: ((DispatchTime) throws -> Data)? = nil) throws
         -> VPNHelperListener {
         guard deployment.ownerUserID == ownerUserID else {
             throw VPNHelperListenerError.unsafeStorage
@@ -121,6 +127,7 @@ final class VPNHelperListener {
                               ownerUserID: ownerUserID, endpointDirectory: endpointDirectory,
                               additionalReadinessPolicies: additionalReadinessPolicies,
                        readRetainedProtection: readRetainedProtection,
+                       readBridgeRootInventory: readBridgeRootInventory,
                               startTunnel: { false },
                               startManagedTunnel: { _, _ in
                                   guard let coordinator = coordinator else {
@@ -152,6 +159,7 @@ final class VPNHelperListener {
                      ownerUserID: uid_t, endpointDirectory: Int32?,
                      additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
                      readRetainedProtection: ((DispatchTime) throws -> Data)?,
+                     readBridgeRootInventory: ((DispatchTime) throws -> Data)?,
                      startTunnel: @escaping () throws -> Bool,
                      startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?,
                      submitManagedCredential: ((inout VPNCredentialResponse, VPNTunnelStateStore) throws -> Void)?,
@@ -219,6 +227,7 @@ final class VPNHelperListener {
                                      installerPolicy: try release.installerPolicy(),
                                      additionalReadinessPolicies: additionalReadinessPolicies,
                        readRetainedProtection: readRetainedProtection,
+                       readBridgeRootInventory: readBridgeRootInventory,
                                      vault: vault, tunnelState: tunnelState,
                                      startTunnel: startTunnel,
                                      startManagedTunnel: startManagedTunnel,
@@ -235,6 +244,7 @@ final class VPNHelperListener {
                  installerPolicy: VPNPeerPolicy,
                  additionalReadinessPolicies: @escaping () throws -> [VPNPeerPolicy],
                  readRetainedProtection: ((DispatchTime) throws -> Data)?,
+                     readBridgeRootInventory: ((DispatchTime) throws -> Data)?,
                  vault: VPNProfileVault, tunnelState: VPNTunnelStateStore,
                  startTunnel: @escaping () throws -> Bool,
                  startManagedTunnel: ((VPNConnectAttemptBinding, VPNTunnelStateStore) throws -> Bool)?,
@@ -247,6 +257,7 @@ final class VPNHelperListener {
         self.installerPolicy = installerPolicy
         self.additionalReadinessPolicies = additionalReadinessPolicies
         self.readRetainedProtection = readRetainedProtection
+        self.readBridgeRootInventory = readBridgeRootInventory
         self.vault = vault
         self.tunnelState = tunnelState
         self.startTunnel = startTunnel
@@ -551,11 +562,12 @@ final class VPNHelperListener {
                     break
                 }
                 try answer(.ok, payload: [], to: client, deadline: deadline)
-            case .retainedProtectionInventory:
+            case .retainedProtectionInventory, .bridgeRootInventory:
                 guard payload.isEmpty else {
                     try answer(.invalidRequest,payload:[],to:client,deadline:deadline);break
                 }
-                guard let readRetainedProtection else {
+                let provider = operation == .retainedProtectionInventory ? readRetainedProtection : readBridgeRootInventory
+                guard let provider else {
                     try answer(.unsupported,payload:[],to:client,deadline:deadline);break
                 }
                 guard isReady() else {
@@ -563,7 +575,7 @@ final class VPNHelperListener {
                 }
                 let body: Data
                 do {
-                    body=try readRetainedProtection(DispatchTime(uptimeNanoseconds:deadline))
+                    body=try provider(DispatchTime(uptimeNanoseconds:deadline))
                     guard !body.isEmpty,body.count<=VPNHelperProtocol.maximumPayloadBytes,isReady() else {
                         throw VPNHelperListenerError.unavailable
                     }

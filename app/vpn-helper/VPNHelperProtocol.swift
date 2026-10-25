@@ -20,6 +20,8 @@ enum VPNHelperOperation: UInt16 {
     case cancelCredential = 8
     /// Read-only retained exact-host namespace inventory; empty request body.
     case retainedProtectionInventory = 9
+    /// Current root bridge sources, including static/legacy prefixes.
+    case bridgeRootInventory = 10
 }
 
 enum VPNHelperStatus: UInt16 {

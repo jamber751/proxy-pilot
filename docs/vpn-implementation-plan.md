@@ -8581,3 +8581,55 @@ restore/reopen и explicit cleanup markers. Вместе с ранее подт�
 Candidate2/SC40203740315 по индивидуальному check: все4 jobs queued.
 Старая fully queued40202641601 теперь terminal cancelled на всех4 jobs;
 новый run не перезапускался, live/partial jobs не отменялись.
+
+### Продолжение 1.5hx — root bridge source catalogue and first native TLS/SC proof
+
+- [x] Добавлен отдельный authenticated request10 `bridgeRootInventory`; request9
+  сохраняет узкую семантику retained exact hosts. Новый каталог объединяет ВСЕ
+  текущие persisted root bridge sources: retained exact hosts, active иpending
+  numeric resources/corporate DNS, ресурсные/DNS prefixes полного legacy route
+  journal. Physical peer bypass исключён. Retired/planned journal prefixes
+  сохраняются консервативно; off/failed не стирают прежние обязательства App cache.
+- [x] Strict canonical DTO `root-bridge-sources-v1`: bootID, SHA256 текущего
+  состояния и полного route journal, sorted unique numeric matchers, максимум7200
+  и512KiB. Domain names не превращаются в GOST bypass rules. Корпоративные имена
+  должны проходить отдельный DNS/answer path. Никаких профилей, логинов, credential
+  payloads или файловых путей в ответе нет.
+- [x] Reader проверяет все модели, исходный deadline/current до/после чтения и
+  повторно сверяет каждый источник. Смена boot/config/journal, corruption,
+  отмена и timeout дают отказ без частичного/пустого успешного результата.
+  `VPNRouteJournal.loadIfPresent()` различает отсутствие от повреждённого файла;
+  ошибки не подавляются. Production daemon подключает provider после retained
+  runtime restore. Listener/client сохраняют authentication, budgets, unsupported
+  для отсутствующего provider и строгий decode; неизвестные responses закрывают
+  session. Минимальные daemon/recovery compile graphs дополнены новым source.
+- [x] Signed IPC regression:57 cases PASS43.423s без skips,
+  /tmp/pp-root-inventory-ipc.log. Включает новый opcode, malformed/oversized/failed
+  providers, post-read readiness revocation, wrong signed peer, отказ nonempty
+  request до provider; прежние listener иretained cases сохранены.
+- [x] Final root catalogue10 cases PASS10.263s, включая schema/scope/hash/size
+  validation, missing/corrupt journal, exact union without peer/domains и
+  boot/state/journal races: /tmp/pp-root-inventory-pure.log. Full helper graph
+  обеих архитектур иsource immutability2 cases PASS75.385s:
+  /tmp/pp-root-inventory-daemon.log. Без skips; host sockets/native DNS/SC/route/
+  Keychain/root services/Installer не запускались и не менялись.
+- [ ] Каталог — observation, НЕ atomic lease между root иbridge listen/output.
+  App boot union/current writer registration, cache capacity reconciliation,
+  owned GOST epoch factory иfirst-listen ordering остаются следующим блоком.
+  Будущий persistent static-CIDR namespace также должен войти в каталог перед
+  включением backend. Ни domain gate, ни host networking этим изменением
+  не включались. Изначальный7-stage acceptance остаётся OPEN.
+
+Actual native candidate2 result: exact0cbddf7 run40203740315,
+macOS15Intel job121200159263 SUCCESS. Полный mode600 log
+/tmp/pp-native-sc-121200159263.log проверен: actual Swift publisher→GOST ACK и
+independent b0/cache-reopen; все6 TLS worker cases HTTP/SOCKS success,
+wrong-password, wrong-CA; затем снова все6 через настоящий owned macOS SC
+suffix/getaddrinfo с независимым A/AAAA UDP→TCP witness иобеими cleanup markers.
+Это первый1/4OS native worker+SC result, НЕ corporate utun relay/output lease,
+не WARP coexistence и не production App integration.26Intel121200159271
+in_progress;26ARM121200159135 и14ARM121200159225 queued. Ничего не перезапускалось.
+Current544e6d5 System Intel121186810479 остаётся live на production artifact
+build; ARM8/8 подтверждён в1.5hw. Latest b7315f0 gates созданы: System40206553516,
+ownership40206553546, interface40206553518, native-fence40206553551,
+DNS40206553503, bridge40206553647; initial authoritative status — queued.

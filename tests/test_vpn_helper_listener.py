@@ -232,6 +232,31 @@ class VPNHelperListenerTests(unittest.TestCase):
         self.serve()
         self.assertEqual(self.session('status'), ['answer:ok sequence:10 protocol:1'])
 
+    def test_root_inventory_authenticated_and_empty_request_only(self):
+        marker=self.base/'root-inventory-read'
+        self.seed();self.serve(extra=['root-inventory-test','success',str(marker)])
+        self.assertEqual(self.session('root-inventory-payload'),['root-inventory:2:0'])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.session('root-inventory'),['root-inventory:0:3'])
+        self.assertTrue(marker.exists())
+
+    def test_root_inventory_absent_provider_and_failed_reads_are_not_empty_success(self):
+        for mode,expected in (('absent','root-inventory:1:0'),('failure','root-inventory:3:0'),
+                              ('oversized','root-inventory:3:0'),('revoke','root-inventory:3:0'),
+                              ('malformed','rejected:invalidResponse')):
+            with self.subTest(mode=mode):
+                case=type(self)('runTest');case.setUp();case.seed()
+                try:
+                    case.serve(extra=[] if mode=='absent' else ['root-inventory-test',mode])
+                    self.assertEqual(case.session('root-inventory'),[expected])
+                finally:case.doCleanups()
+
+    def test_root_inventory_wrong_signed_peer_never_calls_provider(self):
+        marker=self.base/'root-inventory-read'
+        self.seed();self.serve(extra=['root-inventory-test','success',str(marker)])
+        self.assertTrue(self.session('root-inventory',client='stranger')[0].startswith('rejected:'))
+        self.assertFalse(marker.exists())
+
     def test_retained_inventory_authenticated_roundtrip(self):
         self.seed();self.serve(extra=['inventory-test','success'])
         self.assertEqual(self.session('inventory'),['inventory:0:2'])

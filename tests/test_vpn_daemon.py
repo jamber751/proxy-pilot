@@ -13,7 +13,7 @@ class VPNDaemonTests(installer.VPNInstallerTests):
     # Re-run all installer acceptance cases against the real daemon lifecycle,
     # not the old thin listener fixture; only its entry boundary is substituted.
     service_components = installer.COMPONENTS + ['VPNHelperListener.swift', 'VPNHelperRuntime.swift',
-                                               'VPNHelperDaemon.swift', 'VPNReleaseTrust.swift',
+                                               'VPNHelperDaemon.swift', 'VPNBridgeRootInventory.swift', 'VPNReleaseTrust.swift',
                                                'VPNExactFenceStore.swift', 'VPNRetainedFenceRuntime.swift',
                                                'VPNPublicReleaseReceipt.swift',
                                                'VPNApplicationSpec.swift', 'VPNTunnelStateStore.swift',

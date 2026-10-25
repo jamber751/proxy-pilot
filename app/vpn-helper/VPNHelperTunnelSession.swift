@@ -30,6 +30,17 @@ extension VPNHelperSession {
         catch { close();throw VPNHelperSessionError.invalidResponse }
     }
 
+    /// Authenticated observation, not a root lease across bridge activation.
+    func bridgeRootInventory() throws -> (VPNHelperStatus, VPNBridgeRootInventory?) {
+        let (status,body)=try request(.bridgeRootInventory)
+        guard status == .ok else {
+            guard body.isEmpty else { close();throw VPNHelperSessionError.invalidResponse }
+            return (status,nil)
+        }
+        do { return (status,try VPNBridgeRootInventory.decodeCanonical(Data(body))) }
+        catch { close();throw VPNHelperSessionError.invalidResponse }
+    }
+
     func tunnelStatus() throws -> (VPNHelperStatus, VPNTunnelSnapshot?) {
         let (status, body) = try request(.tunnelStatus)
         guard status == .ok else { return (status, nil) }

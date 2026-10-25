@@ -310,6 +310,10 @@ final class VPNRouteJournal {
 
     deinit { if directory >= 0 { close(directory) } }
 
+    func loadIfPresent() throws -> VPNRouteJournalSnapshot? {
+        try read().map(decode)
+    }
+
     func load() throws -> VPNRouteJournalSnapshot {
         guard let data = try read() else { throw VPNRouteJournalError.missing }
         return try decode(data)
