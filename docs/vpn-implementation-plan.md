@@ -7379,3 +7379,38 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] После packet proof остаются production custody/journal/recovery, bridge
   adapter/OS DNS/TTL/revocation, foreign state, reboot и WARP. Gate domain runtime
   до этого не снимать. Все7 этапов и полная финальная приёмка сохраняются.
+
+### Продолжение 1.5gw — UDP packet/death fixture и полная route-pair OS матрица
+
+- [x] Source388a2a7 route-pair40181013260 теперь SUCCESS все4 OS:
+  macOS14 ARM121131886343,15 Intel121131886243,26 ARM121131886397,
+  26 Intel121131886506. В каждом логе обе IPv4/IPv6 PASS markers и exact cleanup.
+  Новые логи /tmp/pp-native-388-<job>.log; прежний26 Intel лог сохранён отдельно.
+  Это8 actual family experiments, без packet transmission/utun/production claim.
+- [x] Unix gRPC40181013257 дополнительно SUCCESS macOS14 ARM121131886115:
+  все14 Unix cases и28 старых HTTP cases, aggregate markers. Лог
+  /tmp/pp-native-388-121131886115.log.26 ARM и15 Intel ещё queued на момент проверки;
+  не засчитываются без terminal logs.
+- [x] Добавлен отдельный tests/vpn_exact_route_packet_vm.c и guarded workflow
+  vpn-exact-route-packets.yml на тех же4 OS. Только root+GHA+оба explicit flags
+  разрешают выделение двух собственных utun, ifconfig и synthetic route mutation.
+  Обычный запуск отказывает ДО любых network API даже с выставленными flags.
+- [x] Fixture использует unbound connected UDP (без bind/IP_BOUND_IF), проверяет
+  nonce+destination+port+source на active interface. Собственный child держит
+  последний active control FD; SIGKILL только этого child должен убрать interface.
+  Unscoped GET обязан выбрать exact full-mask blackhole. Cached и fresh UDP
+  наблюдаются2s на собственном escape utun; соседний IP даёт positive control
+  до и после death. Test cover prefix удерживает fallback внутри VM, не является
+  расширенным production deny. Cleanup закрывает clients ДО удаления guard;
+  uncertainty сохраняет guard до уничтожения VM и НЕ считается clean success.
+- [x] Общий PF_ROUTE transport переиспользован из viability fixture, не production.
+  Parser дополнен AF_LINK и compact /24,/64 masks с чтением строго в sockaddr
+  length. Native pure malformed-packet/compact-mask checks выполняются без I/O.
+  Обе fixtures компилируются с Wall/Wextra/Werror под обе arch; ordinary-user
+  refusal и pure checks PASS (2 Python tests,2.091s,без skips). YAML проверен Ruby
+  YAML parser; системный Python не имеет PyYAML, dependency не устанавливалась.
+- [ ] Actual UDP VM packet/death proof ещё НЕ получен. TCP SYN/SYN-ACK/established
+  cached/fresh flow ещё НЕ реализован в этом fixture. Эти пункты1.5gv и весь
+  production backend/OS DNS/custody/recovery/WARP/release scope остаются открытыми.
+- [x] macOS12+ — подтверждённый пользователем product minimum; lower engine ABI11
+  не означает поддержку запуска App на11. Actual macOS12 runtime ещё требуется.

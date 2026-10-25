@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <net/route.h>
 #include <net/if.h>
+#include <net/if_dl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <poll.h>
@@ -21,7 +22,7 @@
 #include <time.h>
 
 struct message { struct rt_msghdr header; unsigned char bytes[1024]; };
-struct reply { unsigned flags; unsigned index; int exact, full_mask, local_gateway; };
+struct reply { unsigned flags; unsigned index; int exact, full_mask, local_gateway; unsigned link_index; unsigned char dst[16], mask[16]; };
 static int sequence;
 static int family;
 static unsigned lo_index;
@@ -64,37 +65,30 @@ static int inspect(const unsigned char *data, size_t size, struct reply *result)
         if ((data[at] < 2 && !(i == RTAX_NETMASK && data[at] == 0)) || at + rounded > h.rtm_msglen) return EINVAL;
         size_t length = data[at]; const unsigned char *a = data + at;
         if (i == RTAX_DST && length >= offset + width && a[1] == family)
-            result->exact = memcmp(a + offset, destination, width) == 0;
+            { memcpy(result->dst, a + offset, width); result->exact = memcmp(a + offset, destination, width) == 0; }
+        if (i == RTAX_GATEWAY && length >= 8 && a[1] == AF_LINK) {
+            struct sockaddr_dl link = {0}; memcpy(&link, a, length < sizeof(link) ? length : sizeof(link));
+            result->link_index = link.sdl_index;
+        }
         if (i == RTAX_GATEWAY && length >= offset + width && a[1] == family)
             result->local_gateway = memcmp(a + offset, loopback, width) == 0;
-        if (i == RTAX_NETMASK && length >= offset + width) {
-            result->full_mask = 1;
-            for (size_t j = 0; j < width; j++) if (a[offset + j] != 255) result->full_mask = 0;
+        if (i == RTAX_NETMASK && length > offset) {
+            size_t count = length - offset; if (count > width) count = width;
+            memcpy(result->mask, a + offset, count); result->full_mask = count == width;
+            for (size_t j = 0; j < count; j++) if (a[offset + j] != 255) result->full_mask = 0;
         }
         at += rounded;
     }
     return 0;
 }
-static int request(int type, int host, int backup, struct reply *result) {
-    struct message m = {0}; size_t length = 0;
-    m.header.rtm_version = RTM_VERSION; m.header.rtm_type = type;
-    m.header.rtm_pid = getpid(); m.header.rtm_seq = ++sequence;
-    m.header.rtm_addrs = RTA_DST;
-    length += align4(address(m.bytes + length, 0, 0));
-    if (type != RTM_GET) {
-        m.header.rtm_flags = RTF_UP | RTF_STATIC | RTF_GATEWAY | (host ? RTF_HOST : 0) | (backup ? RTF_BLACKHOLE : 0);
-        m.header.rtm_addrs |= RTA_GATEWAY;
-        length += align4(address(m.bytes + length, 0, 1));
-    }
-    if (!host) { m.header.rtm_addrs |= RTA_NETMASK; length += align4(address(m.bytes + length, 1, 0)); }
-    m.header.rtm_msglen = (unsigned short)(sizeof(m.header) + length);
+static int exchange(struct message *m, int type, struct reply *result) {
     int fd = socket(PF_ROUTE, SOCK_RAW, 0); if (fd < 0) { route_error = errno; return route_error; }
     int flags = fcntl(fd, F_GETFL), error = 0;
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) || fcntl(fd, F_SETFD, FD_CLOEXEC)) { error = errno; goto done; }
     int64_t began = now_ms(); if (began < 0) { error = EIO; goto done; }
     int64_t end = began + 2000;
-    ssize_t sent = write(fd, &m, m.header.rtm_msglen);
-    if (sent != m.header.rtm_msglen) { error = sent < 0 ? errno : EIO; goto done; }
+    ssize_t sent = write(fd, m, m->header.rtm_msglen);
+    if (sent != m->header.rtm_msglen) { error = sent < 0 ? errno : EIO; goto done; }
     for (int i = 0; i < 128; i++) {
         int64_t now = now_ms(); if (now < began) { error = EIO; goto done; }
         int64_t remaining = end - now; if (remaining <= 0) { error = ETIMEDOUT; goto done; }
@@ -118,6 +112,21 @@ done:
     route_error = error;
     if (!error) { last_flags = result->flags; last_exact = result->exact; last_mask = result->full_mask; }
     close(fd); return error;
+}
+static int request(int type, int host, int backup, struct reply *result) {
+    struct message m = {0}; size_t length = 0;
+    m.header.rtm_version = RTM_VERSION; m.header.rtm_type = type;
+    m.header.rtm_pid = getpid(); m.header.rtm_seq = ++sequence;
+    m.header.rtm_addrs = RTA_DST;
+    length += align4(address(m.bytes + length, 0, 0));
+    if (type != RTM_GET) {
+        m.header.rtm_flags = RTF_UP | RTF_STATIC | RTF_GATEWAY | (host ? RTF_HOST : 0) | (backup ? RTF_BLACKHOLE : 0);
+        m.header.rtm_addrs |= RTA_GATEWAY;
+        length += align4(address(m.bytes + length, 0, 1));
+    }
+    if (!host) { m.header.rtm_addrs |= RTA_NETMASK; length += align4(address(m.bytes + length, 1, 0)); }
+    m.header.rtm_msglen = (unsigned short)(sizeof(m.header) + length);
+    return exchange(&m, type, result);
 }
 static int owned(const struct reply *r, int host, int backup) {
     unsigned required = RTF_UP | RTF_STATIC | RTF_GATEWAY;

@@ -58,6 +58,8 @@ on:
       - '!tests/vpn_gost_grpc_resolver_fixture.cjs'
       - '!tests/test_vpn_exact_route_pair_vm.py'
       - '!tests/vpn_exact_route_pair_vm.c'
+      - '!tests/test_vpn_exact_route_packet_vm.py'
+      - '!tests/vpn_exact_route_packet_vm.c'
   workflow_dispatch:
 
 permissions:
