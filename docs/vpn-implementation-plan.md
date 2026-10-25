@@ -28,7 +28,7 @@
 **Системные требования согласованы владельцем: macOS 12 и новее.** Это явное
 изменение прежней границы macOS 11: фактический bundled GOST 3.2.6 уже требует macOS 12
 в обоих Mach-O slices. Метаданные приложения, updater, пакеты и проверка appcast
-приводятся к 12.0; ранняя проверка установщика отклоняет неподдерживаемую систему
+приведены к 12.0; ранняя проверка установщика отклоняет неподдерживаемую систему
 до запуска payload. Нижний compiler/engine ABI target 11 и замороженный 139
 сохраняются: это совместимые компоненты, а не обещание работы продукта на macOS 11.
 Исторические результаты ниже не переписываются. Проверка запуска именно на macOS 12
@@ -7450,3 +7450,14 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   засчитаны success. Replacement4-OS run для нового snapshot требуется после push.
   Остальные1.5gv production custody/OS DNS/TTL/foreign/reboot/WARP и полный
  7-stage scope сохраняются, runtime domain gate не изменялся.
+
+- [x] TCP snapshot d486f88 pushed ONLY acceptance branch. Actual4-OS replacement
+  run40182604589 has verified jobs121136636554 (26 ARM),121136636649 (15 Intel),
+  121136636658 (26 Intel),121136636903 (14 ARM), all queued at last check.
+  Old UDP-only40182349363 was rechecked by individual job APIs:4/4 wholly queued,
+  replacement path/source/ancestry verified before cancel; terminal CANCELLED
+  confirmed. Shared-codec viability40182349373 and live System runs preserved.
+- [x] English unpublished notes now explicitly say a domain includes all its
+  subdomains (owner decision). Internal password checklist corrected: integration
+  was already enabled after genuine/private backend proofs, while current-source
+  and final installed checks remain mandatory. No public notes/feed changed.

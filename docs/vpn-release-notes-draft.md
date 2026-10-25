@@ -10,8 +10,8 @@ the release or update feed until the checks below are complete. Version pending.
 
 - **VPN in the menu bar.** Import an OpenVPN `.ovpn` file, or drag it into the VPN
   settings, then connect from the same compact window.
-- **Access to the resources you choose.** Select the sites, IP addresses and
-  networks that should use the VPN. Your existing proxy routing remains in
+- **Access to the resources you choose.** Select domains, IP addresses and
+  networks that should use the VPN. A domain includes all its subdomains. Your existing proxy routing remains in
   control for other traffic.
 - **Clearer sign-in.** Choose certificate access, a password or a one-time code
   to match your profile. One-time codes are never saved. Passwords can optionally
@@ -32,9 +32,10 @@ continue.
 
 ## Required before publication — internal checklist
 
-- Complete current private and genuine Keychain acceptance, including the
-  updated child receipt ordering, cross-version access, manual fallback and
-  retained cleanup obligations. Enable password integration only after proof.
+- Complete current-source genuine Keychain and installed save/fill acceptance,
+  including cross-version access, manual fallback and retained cleanup
+  obligations. Password integration is enabled after the earlier private and
+  genuine backend proofs; those proofs do not replace final installed checks.
 - Complete both-architecture Installer and ownership acceptance for the final
   sources, then build and verify the final publisher-signed joint package.
 - Complete production domain/split-DNS integration, ordinary DNS and WARP policy,
