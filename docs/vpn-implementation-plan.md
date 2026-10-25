@@ -6930,3 +6930,28 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   локально не запускались; host refusal и raw-output redaction проверены mocks.
 - [ ] Нужен actual VM fail/success с новой историей, прежде чем объяснять причину
   sporadic139 startup failures3. Текущий verdict по System139 остаётся OPEN.
+
+
+### Продолжение 1.5gi — optional password runtime подключён после обязательных SDK gates
+
+- [x] Перед включением проверены17 actual backend/compiler source hashes из
+  genuine default SDK proof: изменений нет. Genuine40138409792 все4 actual
+  cases ARM/Intel restored-and-clean; private40135758246 обе arch28checks
+  подтверждают child-receipt settlement без ACK contention с прежними лимитами.
+- [x] Только явный normal-App owner теперь получает liveIntegrationEnabled=true.
+  Constructor/coordinator defaults остаются unavailable=false; preview bypass
+  остаётся отдельным. App создаёт panel/load до явного startup cleanup. Запись
+  требует per-login consent, постоянный password mode и verified connection;
+  OTP/private-key secrets не становятся сохраняемыми через этот flag.
+- [x] Runtime/Panel/Model/UI-contract/frontend-contract40 PASS19.378s с fake
+  workers и private Store, без host Keychain/GUI/helper/network операций:
+  /tmp/pp-password-live-integration-parent.log. Проверены startup once, revocation,
+  changed login/profile/mode, unknown mutation retention, no retry и save feedback.
+- [ ] Предыдущий genuine frontend4 pass предшествует этому flag change. Требуются
+  fresh current signed frontend/SDK CI и installed save/fill/manual fallback/
+  cleanup UX на итоговом комплекте. Это не доказательство готовности installed
+  password flow, всей DNS capability или финального VPN релиза.
+- [x] Owned-utun40173045216 source7402f01 теперь SUCCESS ОБЕ arch: ARM121107762860
+  тоже дал19 exact PASS markers; суммарно38 actual scenarios. ARM log:
+  /tmp/pp-utun-740-arm-121107762860.log. Dead-interface pending receipt сохранён
+  до VM disposal; fake tests не подменяли эту native проверку.
