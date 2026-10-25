@@ -6,6 +6,9 @@ on:
     paths:
       - '.github/workflows/vpn-gost-atomic-candidate.yml'
       - 'app/vpn-bridge/**'
+      - 'app/vpn-system-resolver/**'
+      - 'tests/test_vpn_gost_native_resolver_vm.py'
+      - 'tests/test_vpn_system_resolver_worker.py'
       - 'tests/test_vpn_gost_atomic_preparation.py'
       - 'tests/test_vpn_gost_atomic_vm.py'
       - 'tests/test_vpn_bridge_gost_vm.py'
@@ -24,7 +27,7 @@ jobs:
   source:
     name: Atomic positive bypass source and runtime (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Includes two cold Go cross-architecture builds and the real proxy canary.
+    # Includes cold GOST builds, native worker builds and real proxy/API/TLS canaries.
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -39,7 +42,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -69,7 +72,7 @@ jobs:
           set -euo pipefail
           test "$(id -u)" -ge 500
           cd "$RUNNER_TEMP/proxypilot-atomic-source/candidate/x"
-          go test -race ./registry ./api -run '^TestProxyPilot' -count=1 -v
+          go test -race ./registry ./api ./config/parsing/resolver -run '^TestProxyPilot' -count=1 -v
       - name: Build pinned candidate without installing or running it
         shell: bash
         run: |
@@ -98,3 +101,19 @@ jobs:
           test "$(id -u)" -ge 500
           export PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)"
           python3 tests/test_vpn_bridge_gost_vm.py --acceptance
+      - name: Pure native worker checks and private two-architecture build
+        run: |
+          PYTHONPATH=tests python3 -m unittest test_vpn_system_resolver_worker -v
+          python3 app/vpn-system-resolver/build.py "$RUNNER_TEMP/native-system-resolver"
+      - name: Candidate GOST uses TLS-pinned native worker and refuses bad CA or password
+        shell: bash
+        env:
+          PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
+          PROXYPILOT_VM_GOST_ATOMIC_TESTS: '1'
+          PROXYPILOT_VM_NATIVE_SYSTEM_RESOLVER_TESTS: '1'
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ge 500
+          export PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)"
+          export PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY="$RUNNER_TEMP/native-system-resolver/system-resolver-$(uname -m)"
+          python3 tests/test_vpn_gost_native_resolver_vm.py --acceptance

@@ -8408,3 +8408,61 @@ retains-cache, actual Swift publisher ACK + independent user policy, reopened
 cache republication иowned cleanup. Это первая genuine Swift protection API→
 GOST проверка; остальные threeOS этого run ещё не приняты. TLS native resolver,
 DNS answer authority и конечная App интеграция этим результатом не закрыты.
+
+
+### Продолжение 1.5hu — candidate resolver CA correction and actual TLS-worker gate
+
+- [x] Подтверждён RED на untouched x0.8.1: существующий ParseResolver не
+  возвращает ошибку при requested missing/invalid/oversized CA, потому что
+  CAFile игнорируется. /tmp/pp-gost-resolver-ca-red-verified.log: явный
+  `requested CA ignored`, exit1. Первая попытка fixture упала раньше на nil
+  default logger; добавлен Nop logger, её panic НЕ считается valid RED.
+- [x] Candidate-only preparation теперь проверяет SHA ещё одного exact upstream
+  preimage `config/parsing/resolver/parse.go`:
+  b6d01779e5776db99712353dd922b2578b74c512793c44c79bdc632b131a0c55.
+  Resolver plugin honors explicit CAFile: regular nonempty file/data<=64KiB,
+  custom x509 pool БЕЗ подмешивания system roots; CAFile требует Secure=true.
+  Missing/invalid/oversized CA возвращает fixed error без path/native details.
+  Nil TLS/default roots/no custom CA сохраняют прежнюю конфигурацию. API,
+  registry atomic swap и initial-ready matcher fixes сохранены.
+- [x]8 actual Go tests под-race, три packages, без sockets/native DNS/Keychain:
+  registry4, API1, resolver3 PASS1.323/2.436/1.685s,
+  /tmp/pp-gost-resolver-ca-green.log. Crypto tests принимают собственный CA,
+  отвергают другой epoch CA/имя сервера и insecure custom-CA setting.
+- [x] Отдельный candidate3.2.6-proxypilot.2 собран ДВАЖДЫ в разных каталогах:
+  /tmp/pp-gost-candidate2-build-parent.log,
+  /tmp/pp-gost-candidate2-repro-parent.log.537 prepared source files и recipes
+  совпали; artifacts byte-identical. Обе Mach-O slices minos/sdk12.0.
+  arm64 bytes33718386 SHA5f1ab8f1ab11a1c097b59dddc8f013ed0a27def798bab958538128280f93d190;
+  x86_64 bytes36564192 SHAa0ccee00c1718f0fc8fe86e841b0119a48e090c1c197a5e1286e631184702577;
+  Universal bytes70287474 SHAbfa76e74d54de90e7facd54b9ea86555cf407c004db823af10e3834f088c3992.
+  Fixed candidate canary pins обновлены на2; shipped stock pins/assets неизменны.
+  На host этот GOST не исполнялся/не устанавливался.
+- [x] Новый `test_vpn_gost_native_resolver_vm.py`: до artifact/worker reads,
+  compile/spawn/network нужны три fresh ordinary GHA opt-ins. Worker artifact
+  source manifest сверяется с current production sources, byte lease + strict
+  signature; source-built CGO artifacts не выдаются за fixed cross-SDK pins.
+  План actual path: GOST→HTTPS+Basic→production nativeLookup→owned dual-family
+  localhost echoes. Six HTTP/SOCKS cases: positive, wrong password, wrong epoch
+  CA. Negative cases обязаны дать отказ без echo И без fake-upstream hit:
+  fallback resolver или отправка unresolved hostname proxy также провалят gate.
+  Public worker CA получен из pipe owned child, private key не экспортируется.
+- [x]15 inert guards/config/preparation cases PASS0.009s без skips:
+  /tmp/pp-gost-candidate2-inert.log. Новый live step, private worker build и
+  resolver Go tests добавлены в existing four-OS candidate workflow, без новых
+  matrix jobs. Ни host DNS/sysctl/PF_ROUTE/network/SC, ни root services/Keychain/
+  Installer этим кодом не запускались/не менялись.
+- [ ] Actual TLS GOST→native worker ещё НЕ выполнен; нужен новый CI result.
+  Положительный localhost test в любом случае НЕ докажет scoped corporate DNS:
+  затем требуется GOST→worker→настоящий temporary SC scope с A/AAAA UDP/TCP,
+  после этого production epoch/bootstrap и root inventory handoff.
+  Доменные answers/relay/leases, static CIDR fences, WARP, installed lifecycle,
+  macOS12 runtime и весь первоначальный7-stage scope остаются OPEN.
+
+CI follow-up: old candidate1 run40197947787 теперь success на26Intel121182768626,
+15Intel121182768812,26ARM121182768849;14ARM121182768915 был in_progress при
+последнем individual check. Это не переносится на candidate2/TLS worker.
+Diagnostic System40196864320 Intel121179472595 прошёл build/materials/root broker
+и capsule refusal. Последний individual step check уже показал disabled repair
+in_progress после phase6; полный восьмисценарный результат ещё не принят.
+ARM также in_progress. Ни один такой live/partial прогон не отменялся/не перезапускался.

@@ -1,6 +1,6 @@
 """Prepare a separately built candidate; NEVER edits module cache or shipped GOST.
 The caller supplies an independently Go-sum-verified x/v0.8.1 tree and a NEW
-absolute output path. Only the three exact pinned source preimages are patched.
+absolute output path. Only the exact pinned source preimages below are patched.
 """
 from pathlib import Path
 import hashlib
@@ -12,6 +12,7 @@ import sys
 VERSION = 'v0.8.1'
 MODULE_SUM = 'h1:cfV/wgagsitTjW18c95OlrrFQTyQtjvDD5+MO3IEIjI='
 PREIMAGES = {
+    'config/parsing/resolver/parse.go': 'b6d01779e5776db99712353dd922b2578b74c512793c44c79bdc632b131a0c55',
     'api/config_bypass.go': '0f0a6178d209aa9bb404a74e688856154471255ad7af54a689a469c777d8f3bf',
     'registry/bypass.go': '491846673ed919f3d1d7426b8fefd9e800fec43a56a4a64d2793eb5f5cddf7b7',
     'bypass/bypass.go': '97c80dae04ebdcc9c48e415b3d9a5213f317ec61f1f336ab60dff13259cf22b8',
@@ -77,6 +78,42 @@ func ReplaceBypass(name string, value bypass.Bypass) error {
 
 ''', '''func (p *localBypass) periodReload(ctx context.Context) error {
 ''')
+    name = 'config/parsing/resolver/parse.go'
+    result[name] = once(result[name], '\t"crypto/tls"', '\t"crypto/tls"\n\t"crypto/x509"\n\t"errors"\n\t"io"\n\t"os"')
+    result[name] = once(result[name], '''		var tlsCfg *tls.Config
+		if cfg.Plugin.TLS != nil {
+			tlsCfg = &tls.Config{
+				ServerName:         cfg.Plugin.TLS.ServerName,
+				InsecureSkipVerify: !cfg.Plugin.TLS.Secure,
+			}
+		}''', '''		tlsCfg, err := proxyPilotPluginTLS(cfg.Plugin.TLS)
+		if err != nil {
+			return nil, err
+		}''')
+    result[name] += '''
+// ProxyPilot: the resolver plugin must honor its explicit trust anchor.
+// A private CA never falls back to system roots or disables verification.
+func proxyPilotPluginTLS(cfg *config.TLSConfig) (*tls.Config, error) {
+    if cfg == nil { return nil, nil }
+    result := &tls.Config{ServerName: cfg.ServerName, InsecureSkipVerify: !cfg.Secure}
+    if cfg.CAFile == "" { return result, nil }
+    failure := errors.New("resolver: invalid plugin CA")
+    if !cfg.Secure { return nil, failure }
+    file, err := os.Open(cfg.CAFile)
+    if err != nil { return nil, failure }
+    defer file.Close()
+    info, err := file.Stat()
+    if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 65536 {
+        return nil, failure
+    }
+    encoded, err := io.ReadAll(io.LimitReader(file, 65537))
+    if err != nil || len(encoded) == 0 || len(encoded) > 65536 { return nil, failure }
+    pool := x509.NewCertPool()
+    if !pool.AppendCertsFromPEM(encoded) { return nil, failure }
+    result.RootCAs = pool
+    return result, nil
+}
+'''
     return {name: text.encode('utf-8') for name, text in result.items()}
 
 
@@ -101,6 +138,11 @@ def prepare(download_record, destination):
               'api': Path(__file__).with_name('atomic_bypass_api_checks_test.go')}
     for package, path in checks.items():
         shutil.copyfile(path, destination/'x'/package/'proxypilot_atomic_test.go')
+    resolver = destination/'x/config/parsing/resolver'
+    for name in ('resolver_tls_checks_test.go','resolver_tls_refusal_checks_test.go'):
+        path = Path(__file__).with_name(name)
+        shutil.copyfile(path,resolver/('proxypilot_'+name))
+        checks['resolver/'+name] = path
     manifest = {'module': 'github.com/go-gost/x', 'version': VERSION, 'upstreamSum': MODULE_SUM,
                 'preimages': PREIMAGES, 'patched': {name:hashlib.sha256(data).hexdigest() for name,data in changed.items()},
                 'checksSHA256': {package:hashlib.sha256(path.read_bytes()).hexdigest() for package,path in checks.items()},

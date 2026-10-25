@@ -18,7 +18,7 @@ import prepare_atomic_gost as patch
 MAIN = 'v0.0.0-20251122144702-340ba32ef0be'
 MAIN_SUM = 'h1:khdl4fk9Q7vyDvFxiAsUcUnsZBmle4xdxGKNyrJYfjU='
 TOOLCHAIN = 'go1.25.4'
-VERSION = '3.2.6-proxypilot.1'
+VERSION = '3.2.6-proxypilot.2'
 
 
 def digest(path):
