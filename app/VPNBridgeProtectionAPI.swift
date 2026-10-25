@@ -171,17 +171,28 @@ final class VPNBridgeUnixAPIConnections: VPNBridgeAPIConnections {
 
 private final class VPNBridgeUnixAPIConnection: VPNBridgeAPIConnection {
     private var fd: Int32
+    private var peerToken: audit_token_t?
     private let clock: VPNDNSContinuousClock, authenticatePeer: (audit_token_t) throws -> Void
     init(fd: Int32,clock: VPNDNSContinuousClock,authenticatePeer: @escaping (audit_token_t) throws -> Void) {
         self.fd=fd;self.clock=clock;self.authenticatePeer=authenticatePeer
     }
     deinit { close() }
-    func close() { let original=fd;fd = -1;if original>=0 { Darwin.close(original) } }
+    func close() { let original=fd;fd = -1;peerToken=nil;if original>=0 { Darwin.close(original) } }
     func authenticate() throws {
+        guard fd>=0 else { throw VPNBridgeProtectionAPIError.authentication }
+        if let token=peerToken {
+            // An owned connected stream cannot acquire another peer. Darwin
+            // may discard SO peer credentials when that peer closes its end,
+            // even while the last response bytes/EOF remain unread. Revalidate
+            // the ORIGINAL kernel audit identity with the mandatory owned-child
+            // authenticator; never substitute a PID/path or skip validation.
+            try authenticatePeer(token);return
+        }
         var user: uid_t=0,group: gid_t=0,token=audit_token_t(),size=socklen_t(MemoryLayout<audit_token_t>.size)
         guard fd>=0,getpeereid(fd,&user,&group)==0,user==geteuid(),
               getsockopt(fd,SOL_LOCAL,LOCAL_PEERTOKEN,&token,&size)==0,size==MemoryLayout<audit_token_t>.size else { throw VPNBridgeProtectionAPIError.authentication }
         try authenticatePeer(token)
+        peerToken=token
     }
     func wait(events: Int16,deadline: VPNDNSContinuousInstant,checkCurrent: () throws -> Void,authenticate: Bool=true) throws {
         while true {

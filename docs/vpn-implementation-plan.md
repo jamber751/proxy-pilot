@@ -8069,3 +8069,40 @@ https://github.com/go-gost/x/blob/v0.8.1/registry/registry.go.
   Старый Python API canary не считается такой проверкой. System DNS relay,
   continuous resource/output lease и full7-stage acceptance/release scope OPEN.
   Domain runtime gate CLOSED; stock production GOST и установленный App не менялись.
+
+
+### Продолжение 1.5hn — genuine signed Unix worker finds HTTP EOF authentication bug
+
+- [x] Новый native test использует только собственные ad-hoc-signed AF_UNIX
+  workers в private temporary directory, без TCP/UDP/GOST/VPN/OS proxy/DNS/
+  Keychain. Authenticate callback проверяет kernel audit PID, live SecCode strict
+  validity и exact dynamic CDHash своего заранее подписанного worker. Неверная
+  подпись получает EOF до первого credential/request byte; неверный password
+  даёт401 и cache retained без output. Witness публикуется atomic rename.
+- [x] RED: реальный успешный RPC отвергался authentication после полного
+  прохождения callback(authStage6), /tmp/pp-bridge-api-native-diagnostic-parent.log.
+  После HTTP Connection:close Darwin может уже не отдавать SO peer credentials
+  в момент последнего buffered read/EOF. Fake connections этого OS поведения
+  не моделировали; новый genuine test воспроизвёл проблему до исправления.
+- [x] Production connection сохраняет исходный kernel audit token ТОЛЬКО после
+  успешных getpeereid/LOCAL_PEERTOKEN и mandatory authenticator. Собственный
+  connected FD не передаётся/не reconnect-ится и не может получить другого peer.
+  На каждом IO тот же authenticator заново проверяет live incarnation/code по
+  этому исходному token; проверки не заменяются UID/PID/path и не отключаются.
+  Close сначала инвалидирует FD/token и ровно один раз закрывает исходный FD.
+- [x] GREEN:3genuine cases(success/wrong credential/wrong signed peer) PASS3.725s,
+  /tmp/pp-bridge-api-native-green-parent.log. Полный final component regression:
+ 66 PASS10.939s без skips, /tmp/pp-bridge-api-native-final-parent.log. Wrong-peer
+  witness подтверждает0request bytes; both refusals сохраняют canonical IP cache.
+  Dedicated managed-bridge ARM14/Intel15 job включает новый native test.
+- [ ] Это реальный Swift transport на реальном Unix socket, но ещё НЕ обмен с
+  GOST candidate или root DNS answer lease. GOST40192825189 оставался queued.
+  Full original7-stage scope/production wiring/release остаются OPEN.
+
+Новая authoritative CI информация: System3dcb40188528847 завершён — ARM14
+121154359582 success, Intel15 121154359410 failure на Recover completed service
+and broker phase6 while enabled. System6cab40186866126 завершён — ARM14
+121149409626 success, Intel15 121149409451 failure на Repair pending update while
+enabled. Старый d0ff40185898593 теперь BOTH success121146487720/915. Новые Intel
+ошибки ещё не объяснены и не объявляются исправленными из-за старого green.
+Следующий audit читает их private redacted logs; live/partial runs не отменялись.
