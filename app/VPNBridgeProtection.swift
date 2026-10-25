@@ -8,6 +8,7 @@ enum VPNBridgeProtectionError: Error, Equatable {
 /// Monotonic ordinary-user boot protection, independent of VPN On/Off and TTL.
 /// This is not a root route receipt or permission to release a DNS answer.
 struct VPNBridgeProtectedSnapshot: Codable, Equatable {
+    static let groupName = "proxypilot-protected-v1"
     let schemaVersion: Int
     let revision: UInt64
     let matchers: [String]

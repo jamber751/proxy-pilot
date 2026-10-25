@@ -17,7 +17,7 @@ protocol VPNBridgeAPIConnections: AnyObject {
 /// One fixed positive-policy PUT, one authenticated connection, no retry.
 /// Credentials stay outside Codable/debug descriptions and never enter a URL.
 final class VPNBridgeProtectionAPI: VPNBridgeProtectionTransport, CustomDebugStringConvertible {
-    static let groupName = "proxypilot-protected-v1"
+    static let groupName = VPNBridgeProtectedSnapshot.groupName
     private let epoch: UUID, connections: VPNBridgeAPIConnections, clock: VPNDNSContinuousClock
     private var authorization: Data
     var debugDescription: String { "VPNBridgeProtectionAPI(redacted)" }
