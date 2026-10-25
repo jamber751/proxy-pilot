@@ -44,6 +44,31 @@ mkdir -m 700 "$OUTPUT"
 mkdir -m 700 "$WORK/key" "$WORK/app" "$WORK/helper"
 mkdir -m 700 "$WORK/key/ModuleCache"
 
+# Freeze the public source sidecars once. Verification and both transition
+# operations below must use these same bytes, even if input files later change.
+/usr/bin/python3 - "$PREVIOUS_MANIFEST" "$PREVIOUS_SIGNATURE" "$WORK" <<'PY'
+import os, stat, sys
+from pathlib import Path
+for source, name, limit in ((sys.argv[1], 'previous.manifest', 4096),
+                            (sys.argv[2], 'previous.sig', 89)):
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= limit:
+            raise SystemExit('Invalid source release sidecars')
+        data = os.read(fd, limit + 1)
+        after = os.fstat(fd)
+        if (len(data) != before.st_size or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns or before.st_ctime_ns != after.st_ctime_ns):
+            raise SystemExit('Source release sidecars changed')
+    finally:
+        os.close(fd)
+    target = Path(sys.argv[3]) / name
+    target.write_bytes(data); target.chmod(0o400)
+PY
+PREVIOUS_MANIFEST="$WORK/previous.manifest"
+PREVIOUS_SIGNATURE="$WORK/previous.sig"
+
 KEY_TOOL="$WORK/key/vpn-release-key"
 /usr/bin/swiftc -O -parse-as-library -module-cache-path "$WORK/key/ModuleCache" \
   "$HERE/vpn-helper/VPNPeerAuthentication.swift" \
@@ -55,6 +80,8 @@ KEY_TOOL="$WORK/key/vpn-release-key"
   "$HERE/vpn-release-key.swift" -o "$KEY_TOOL"
 
 EXPECTED_KEY=$(< "$HERE/vpn-release-public-key.txt")
+"$KEY_TOOL" verify-forward-source "$PREVIOUS_MANIFEST" "$PREVIOUS_SIGNATURE" \
+  "$HERE/vpn-release-public-key.txt" "$SEQUENCE"
 ACTUAL_KEY=$("$KEY_TOOL" public)
 [[ "$ACTUAL_KEY" == "$EXPECTED_KEY" ]] || {
   print -u2 "Keychain VPN release key does not match the embedded public key"; exit 1

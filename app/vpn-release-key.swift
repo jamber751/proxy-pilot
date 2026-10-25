@@ -26,6 +26,7 @@ enum VPNReleaseKeyTool {
           vpn-release-key public [--keychain <path>]
           vpn-release-key sign <manifest> <signature-file> [--keychain <path>]
           vpn-release-key verify <manifest> <signature> <public-key-file>
+          vpn-release-key verify-forward-source <manifest> <signature> <public-key-file> <new-sequence>
           vpn-release-key sign-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature-file> [--keychain <path>]
           vpn-release-key verify-transition <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition-file> <transition-signature> <public-key-file>
           vpn-release-key sign-rescue <previous-manifest> <previous-signature> <candidate-manifest> <candidate-signature> <transition> <transition-signature> <rescue-description> <rescue-artifact> <rescue-signature-file> [--keychain <path>]
@@ -109,6 +110,24 @@ enum VPNReleaseKeyTool {
               decoded.count == 64,
               decoded.base64EncodedString() + "\n" == text else { return nil }
         return decoded
+    }
+
+    /// Read-only preflight before the publisher's Keychain is consulted.
+    static func forwardSourceFile(_ path: String, limit: Int) -> Data? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0, info.st_size <= limit else { return nil }
+        var bytes = Data(), buffer = [UInt8](repeating: 0, count: limit + 1)
+        while bytes.count <= limit {
+            let count = read(fd, &buffer, limit + 1 - bytes.count)
+            if count < 0 { if errno == EINTR { continue }; return nil }
+            if count == 0 { return bytes.count == info.st_size ? bytes : nil }
+            bytes.append(contentsOf: buffer.prefix(count))
+        }
+        return nil
     }
 
     static func canonicalTransition(previousPayload: Data, previous: VerifiedVPNRelease,
@@ -221,7 +240,7 @@ enum VPNReleaseKeyTool {
     static func main() {
         let arguments = CommandLine.arguments
         guard arguments.count >= 2 else { usage() }
-        let chain = ["verify-rescue", "verify-rescue-preparation"].contains(arguments[1]) ? nil : keychain(arguments)
+        let chain = ["verify-rescue", "verify-rescue-preparation", "verify-forward-source"].contains(arguments[1]) ? nil : keychain(arguments)
         switch arguments[1] {
         case "generate":
             guard arguments.count >= 3 else { usage() }
@@ -273,6 +292,24 @@ enum VPNReleaseKeyTool {
                 fail("Release description or signature rejected.")
             }
             print("Verified sequence \(release.sequence) version \(release.version)")
+        case "verify-forward-source":
+            guard arguments.count == 6,
+                  let next = UInt64(arguments[5]), next > 0, String(next) == arguments[5],
+                  let payload = forwardSourceFile(arguments[2], limit: VPNReleaseAuthority.maximumPayloadBytes),
+                  let signatureBytes = forwardSourceFile(arguments[3], limit: 89),
+                  let signatureText = String(data: signatureBytes, encoding: .utf8),
+                  signatureText.count == 89, signatureText.last == "\n",
+                  let signature = Data(base64Encoded: String(signatureText.dropLast())), signature.count == 64,
+                  signature.base64EncodedString() + "\n" == signatureText,
+                  let publicBytes = forwardSourceFile(arguments[4], limit: 45),
+                  let publicText = String(data: publicBytes, encoding: .utf8),
+                  let publicKey = Data(base64Encoded: publicText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let authority = try? VPNReleaseAuthority(trustedPublicKey: publicKey, minimumSequence: 1, supportedProtocol: 1),
+                  let source = try? authority.verify(payload: payload, signature: signature, previous: nil),
+                  next > source.sequence else {
+                fail("Forward release source or sequence rejected.")
+            }
+            print("Verified forward release source")
         case "sign-transition":
             guard arguments.count >= 8,
                   let key = storedKey(chain),

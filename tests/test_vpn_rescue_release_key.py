@@ -1,5 +1,6 @@
 """Rescue signer/real CLI verification with a synthetic key; no Keychain API calls."""
 import base64
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -45,6 +46,50 @@ class VPNRescueReleaseKeyTests(unittest.TestCase):
 
     # Avoid unittest.TestCase.run, which owns test execution.
     def invoke(self, binary, *args): return self.run_command(binary, *args)
+
+    def forward(self, sequence='8', extra=()):
+        return self.invoke(self.tool, 'verify-forward-source', self.base / 'previous',
+                           self.base / 'previous.sig', self.base / 'public', sequence, *extra)
+
+    def test_forward_source_verifies_without_private_key_or_signing_output(self):
+        before = {p.name: p.read_bytes() for p in self.base.iterdir()}
+        result = self.forward()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'Verified forward release source\n')
+        self.assertEqual({p.name: p.read_bytes() for p in self.base.iterdir()}, before)
+
+    def test_forward_source_rejects_same_older_and_noncanonical_sequences(self):
+        for sequence in ('7', '6', '0', '08', '+8', '-1', '8\n', ' 8', str(2**64)):
+            with self.subTest(sequence=sequence):
+                result = self.forward(sequence)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stderr, 'Forward release source or sequence rejected.\n')
+
+    def test_forward_source_requires_genuine_signature_and_pinned_public_key(self):
+        for name in ('previous', 'previous.sig', 'public'):
+            with self.subTest(name=name):
+                path = self.base / name; before = path.read_bytes()
+                path.write_bytes(before + b'changed')
+                self.assertNotEqual(self.forward().returncode, 0)
+                path.write_bytes(before)
+
+    def test_forward_source_rejects_signed_unsupported_release(self):
+        path = self.base / 'previous'; path.write_text(path.read_text().replace('protocol=1', 'protocol=2'))
+        result = self.invoke(self.fixture, 'raw-sign', path, self.base / 'previous.sig', 'release')
+        self.assertEqual(result.returncode, 0)
+        self.assertNotEqual(self.forward().returncode, 0)
+
+    def test_forward_source_refuses_symlink_oversized_and_fifo_before_read(self):
+        path = self.base / 'previous'; original = path.read_bytes()
+        path.rename(self.base / 'original'); path.symlink_to(self.base / 'original')
+        self.assertNotEqual(self.forward().returncode, 0); path.unlink()
+        with path.open('wb') as stream: stream.truncate(4097)
+        self.assertNotEqual(self.forward().returncode, 0); path.unlink()
+        os.mkfifo(path)
+        self.assertNotEqual(self.forward().returncode, 0); path.unlink(); path.write_bytes(original)
+
+    def test_forward_source_extra_arguments_refused(self):
+        self.assertNotEqual(self.forward(extra=('extra',)).returncode, 0)
 
     def inputs(self):
         return [self.base / name for name in ('previous', 'previous.sig', 'candidate', 'candidate.sig',

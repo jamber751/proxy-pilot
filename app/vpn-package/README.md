@@ -49,8 +49,12 @@ See `docs/vpn-implementation-plan.md`, continuation 1.5cp.
 
 The preferred local assembly is `app/build-joint-release.sh <next-sequence>
 <previous-manifest> <previous-signature> <engine-artifact>
-<universal-gost> <new-absolute-output-directory>`. It verifies that the existing Keychain key
-matches the embedded public key, performs all steps below, verifies the final
+<universal-gost> <new-absolute-output-directory>`. Before consulting the Keychain,
+it freezes the public source sidecars, verifies their signature and format, and
+requires a strictly higher release sequence. The read-only
+`verify-forward-source` command never opens a Keychain or signs output.
+The builder then verifies that the existing Keychain key matches the embedded
+public key, performs all steps below, verifies the final
 DMG against its signed metadata, and preserves the new signed release sidecars
 for the next forward update. It also emits one bounded
 `ProxyPilot-<version>-vpn-engine-sources.tar.gz` containing the exact reviewed

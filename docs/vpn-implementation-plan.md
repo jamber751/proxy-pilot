@@ -7268,3 +7268,37 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 - [ ] Sourcea6 System Intel121110535940 уже прошёл pending Off и выполняет
   pending On. Existing handle продолжается; final current-source installer,
   installed OTP/IP и production domain barrier остаются открыты.
+
+
+### Продолжение 1.5gs — forward release source до publisher Keychain/сборки
+
+- [x] Audit final builder выявил позднюю проверку: текущий sealed sequence ещё125,
+  а A/B acceptance уже137/139; прежний builder мог прочитать publisher key,
+  собрать App/helper и подписать candidate manifest до отказа prepare-update
+  для обратного номера. Это не повод менять/переиспользовать номер сейчас:
+  свежий version/sequence выбираются после финального source freeze.
+- [x] Новый read-only verify-forward-source атомарно проверяет считанные bounded
+  public manifest/signature/key bytes тем же VPNReleaseAuthority и требует
+  canonical UInt64 next>verified previous. Неверный/повторный/обратный номер,
+  неподдерживаемый signed protocol, tamper, symlink/FIFO/oversize и bad arity
+  отказывают до private-key branch. Новый mode явно исключён из Keychain opening.
+- [x] Builder сначала сохраняет обе public sidecars в private WORK с mode400,
+  проверяет forward source, затем обращается к existing publisher key и строит
+  App/helper. Все следующие transition operations используют те же frozen
+  sidecar bytes. Изменение входных файлов во время сборки их не подменяет.
+  Public signing/transition verification после сборки остаются обязательными.
+- [x]26 native synthetic-key/builder checks PASS7.871s, без Keychain calls,
+  реального signing key, установки или запуска builder. Новый success mode не
+  создаёт/меняет файлы; rejected input оставляет signature output неизменным.
+  Лог /tmp/pp-forward-release-source-parent.log. Related final builder/release
+  contracts15 PASS0.108s; zsh syntax PASS. Наборы пересекаются, не суммируются.
+- [x] Production publisher CLI ARM/Intel typecheck0/0 без TESTING flags,
+  source hashes stale=[]: /tmp/pp-forward-release-tool-proof-4logrmxa/verification.json.
+- [x] f715bc5 interface40176890730 terminal SUCCESS обе arch:269 checks/arch,
+  без skips, jobs121119391738/121119391940. Это538 isolated checks, не installed
+  VoiceOver/real credential/connected VPN acceptance. Логи
+  /tmp/pp-interface-f715-<job>.log. В таблице этап6 остаётся открытым.
+- [ ] System Intel121110535940 sourcea6 прошёл pending On и idempotent resume,
+  выполняет ordinary C→D Off. Current040 System, Unix gRPC, exact route-pair,
+  current genuine SDK results ещё не закрыты. Host App, сеть, Keychain и
+  publisher keys в этом пункте не использовались и не менялись.

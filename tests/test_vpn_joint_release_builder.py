@@ -37,6 +37,7 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
     def test_exact_sequence_key_and_artifact_chain(self):
         source = SCRIPT.read_text()
         required = [
+            '"$KEY_TOOL" verify-forward-source',
             '"$KEY_TOOL" public',
             '"$KEY_TOOL" verify "$PREVIOUS_MANIFEST"',
             "PROXYPILOT_VPN_RELEASE_SEQUENCE=\"$SEQUENCE\"",
@@ -61,6 +62,22 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
         ]
         positions = [source.index(value) for value in required]
         self.assertEqual(positions, sorted(positions))
+
+    def test_source_sidecars_are_frozen_before_public_preflight_or_keychain(self):
+        source = SCRIPT.read_text()
+        block = source.split('"$PREVIOUS_SIGNATURE" "$WORK" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
+        with tempfile.TemporaryDirectory(prefix='pp-release-source-snapshot-') as folder:
+            folder = Path(folder); output = folder / 'work'; output.mkdir()
+            manifest = folder / 'input.manifest'; signature = folder / 'input.sig'
+            manifest.write_bytes(b'public manifest'); signature.write_bytes(b'synthetic signature')
+            subprocess.run(['python3', '-c', block, str(manifest), str(signature), str(output)],
+                           check=True, capture_output=True, timeout=5)
+            manifest.write_bytes(b'changed'); signature.write_bytes(b'changed')
+            self.assertEqual((output / 'previous.manifest').read_bytes(), b'public manifest')
+            self.assertEqual((output / 'previous.sig').read_bytes(), b'synthetic signature')
+            self.assertEqual((output / 'previous.manifest').stat().st_mode & 0o7777, 0o400)
+        self.assertLess(source.index('PREVIOUS_MANIFEST="$WORK/previous.manifest"'),
+                        source.index('"$KEY_TOOL" verify-forward-source'))
 
     def test_script_is_executable_and_output_is_no_overwrite(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK))
