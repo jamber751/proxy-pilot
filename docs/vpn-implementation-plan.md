@@ -8868,3 +8868,46 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
 - [ ] Нужен новый4OS signed transform result иactual lifecycle gate. Это исправляет
   воспроизведённую signature-format нестабильность, но не объявляет macOS14
   runtime илиполную поддержкуmacOS12 закрытыми. Stock assets/normal CLI unchanged.
+
+
+### Продолжение 1.5ie — live owned-worker code authentication and real-GOST VM gate
+
+- [x] Production `VPNBridgeWorkerProcess.authenticate` связывает kernel audit
+  token сowned child PID+parent/start incarnation, current UID иfixed live
+  signed identifier/CDHash. Проверки выполняются до/после Security validation;
+  нет UID-only/PID-only/disk-only allow. Current canonical4096 signed pins used.
+- [x] Negative test использует НАСТОЯЩИЙ kernel token отподписанного C fake,
+  принадлежащего этому жеsupervisor: верные PID/UID/parent/start, неверный signed
+  code отклоняется. Identity implementation компилируется вfrontend иtwo-arch
+  production graph. Supervisor задаёт umask077 только всобственном процессе,
+  чтобы Go Unix API socket был private; umask основного приложения не меняется.
+- [x] Новый fresh ordinary VM gate запускает настоящий fixed signed GOST через
+  production supervisor, передавая config только anonymous/unlinked stdin FD.
+  Доlive operations обязательны GHA +3opt-ins +fixed signed artifact lease.
+  Gate проверяетinitial numeric protected policy иindependent b0 через API,
+  native live audit/code authentication, wrong PID refusal, explicit stop,
+  parent SIGKILL изакрытый listener/исчезнувший owned child. Resource IPs не
+  dialятся; толькоloopback ephemeral service иprivate Unix API. Принеизвестной
+  cleanup нужна VM disposal, remembered GOST PID никогда не сигналится.
+- [x] Default build/refusal tests компилируют CLI обеих arch иисполняют только
+  host-refusal77 ДОdirectory/artifact/network/worker операций. Scope не выдаётся
+  заactual GOST run. Full inert/native suites24 PASS14.642s без skips:
+  /tmp/pp-owned-gost-pagesize-final.log (5signer +15owned worker +4VM guards/build).
+- [x] Исправлены реальные гонки TEST fake: readiness file теперь atomic-rename
+  публикуется послеполной PID record иUnix listener; early-exit управляется явным
+  rendezvous послеstartup вместоуспеха наосновании400ms sleep. Production stop
+  checks не ослаблены. Послеэтого80 parent-crash/early-exit cases подряд
+  PASS26.342s: /tmp/pp-bridge-worker-rendezvous-stress.log. Первоначальный startup
+  refusal сампосебе не доказывал production defect; harness publication race
+  следовала изисходников иустранена отдельно.
+- [x] Actual gate+inert guards добавлены вexisting4OS candidate workflow после
+  canonical signing. Все прежниеactual traffic/Swift publisher/native TLS/SC
+  steps сохранены. Workflow/source filters updated; новых matrix jobs нет.
+  Closed diagnostic category/stage сохраняются безraw stderr илиcredentials.
+- [ ] Actual real-GOST supervisor gate ещё НЕ выполнен; нужен current CI result.
+  Ни actual positive live Go-code auth, ни real Go parent-death не объявляются
+  подтверждёнными поC fake. Current App normal bridge entry по-прежнему старый:
+  closed typed config/factory, root boot callback wiring иdomain/answer authority
+  ещёOPEN. Full frontend proof1.5ic предшествуетnew identity extension; здесь
+  проверены component/VM CLI graphs обеих arch, не новый installed bundle.
+  Изначальные7 stages, macOS12 runtime/WARP ифинальная single host install OPEN.

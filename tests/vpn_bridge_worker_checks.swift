@@ -16,7 +16,7 @@ import Foundation
     static func run() throws {
         let mode=CommandLine.arguments[1],folder=CommandLine.arguments[2],path=CommandLine.arguments[3]
         let marker=folder+"/child"
-        let data=Data((marker+"\n"+(mode=="force" ? "ignore":mode=="early-exit" ? "exit":"normal")+"\n").utf8)
+        let data=Data((marker+"\n"+(mode=="force" ? "ignore":mode=="early-exit" ? "exit":mode=="identity" ? "identity":"normal")+"\n").utf8)
         let config=open(folder+"/config",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
         try require(config>=0);defer { close(config) }
         try data.withUnsafeBytes { try require(write(config,$0.baseAddress!,$0.count)==$0.count) }
@@ -60,13 +60,34 @@ import Foundation
         while access(marker,F_OK) != 0,DispatchTime.now()<deadline { usleep(1_000) }
         let fields=try String(contentsOfFile:marker,encoding:.utf8).split(separator:" ").compactMap { Int32($0.trimmingCharacters(in:.whitespacesAndNewlines)) }
         try require(fields==[stamp.pid,stamp.parent])
+        if mode=="identity" {
+            let socketPath=marker+".sock",end=DispatchTime.now()+2
+            while access(socketPath,F_OK) != 0,DispatchTime.now()<end { usleep(1_000) }
+            let peer=socket(AF_UNIX,SOCK_STREAM,0);try require(peer>=0);defer { close(peer) }
+            var address=sockaddr_un();address.sun_family=sa_family_t(AF_UNIX);address.sun_len=UInt8(MemoryLayout<sockaddr_un>.size)
+            let bytes=Array(socketPath.utf8)+[0];try require(bytes.count<=MemoryLayout.size(ofValue:address.sun_path))
+            withUnsafeMutableBytes(of:&address.sun_path) { $0.copyBytes(from:bytes) }
+            let connected=withUnsafePointer(to:&address) { pointer in
+                pointer.withMemoryRebound(to:sockaddr.self,capacity:1) { connect(peer,$0,socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            try require(connected==0)
+            var token=audit_token_t(),size=socklen_t(MemoryLayout<audit_token_t>.size)
+            try require(getsockopt(peer,SOL_LOCAL,LOCAL_PEERTOKEN,&token,&size)==0)
+            try require(Int32(bitPattern:token.val.5)==stamp.pid) // Right owner/PID, wrong signed code.
+            try worker!.checkLive();try rejected { try worker!.authenticate(token) }
+        }
         if mode=="crash" {
             print("READY \(stamp.pid) \(stamp.parent)");fflush(stdout)
             while true { sleep(1) }
         }
         if mode=="early-exit" {
-            usleep(400_000);try rejected { try worker!.checkLive() }
-            try worker!.stop(deadline:.now()+2)
+            try Data("exit".utf8).write(to:URL(fileURLWithPath:marker+".exit"),options:.atomic)
+            let deadline=DispatchTime.now()+2;var exited=false
+            while DispatchTime.now()<deadline {
+                do { try worker!.checkLive() } catch { exited=true;break }
+                usleep(1_000)
+            }
+            try require(exited);try worker!.stop(deadline:.now()+2)
         } else if mode=="drop" {
             worker=nil
         } else {

@@ -17,7 +17,7 @@ class WorkerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp=tempfile.TemporaryDirectory(prefix='pp-bridge-worker-build-',dir='/tmp');cls.addClassCleanup(cls.temp.cleanup)
         cls.folder=Path(cls.temp.name);cls.binary=cls.folder/'worker';cls.fake=cls.folder/'fake'
-        sources=[ROOT/'app/VPNBridgeWorkerProcess.swift',ROOT/'app/VPNBridgeWorkerSupervisor.swift',ROOT/'tests/vpn_bridge_worker_checks.swift']
+        sources=[ROOT/'app/VPNBridgeWorkerProcess.swift',ROOT/'app/VPNBridgeWorkerSupervisor.swift',ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'tests/vpn_bridge_worker_checks.swift']
         captured={p:p.read_bytes() for p in sources}
         for p,data in captured.items():(cls.folder/p.name).write_bytes(data)
         fake=ROOT/'tests/vpn_bridge_worker_fake.c';captured[fake]=fake.read_bytes()
@@ -83,8 +83,8 @@ class WorkerTests(unittest.TestCase):
     def test_production_graph_compiles_for_both_architectures_without_running(self):
         for arch in ('arm64','x86_64'):
             self.command(['/usr/bin/swiftc','-parse-as-library','-emit-library','-target',arch+'-apple-macosx12.0',
-                          str(ROOT/'app/VPNBridgeWorkerProcess.swift'),str(ROOT/'app/VPNBridgeWorkerSupervisor.swift'),
+                          str(ROOT/'app/VPNBridgeWorkerProcess.swift'),str(ROOT/'app/VPNBridgeWorkerSupervisor.swift'),str(ROOT/'app/VPNBridgeWorkerIdentity.swift'),
                           '-o',str(self.folder/('production-'+arch+'.dylib'))])
-for mode in ('dead-owner','datagram','stop','force','drop','early-exit','named-config','changed-image','expired','production-pin'):
+for mode in ('identity','dead-owner','datagram','stop','force','drop','early-exit','named-config','changed-image','expired','production-pin'):
     setattr(WorkerTests,'test_'+mode.replace('-','_'),lambda self,m=mode:self.case(m))
 if __name__=='__main__':unittest.main()

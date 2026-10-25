@@ -19,6 +19,9 @@ on:
       - 'tests/vpn_bridge_api_native_worker.swift'
       - 'app/VPNBridgeProtection.swift'
       - 'app/VPNBridgeProtectionAPI.swift'
+      - 'app/VPNBridgeWorker*.swift'
+      - 'tests/test_vpn_bridge_worker_gost_vm.py'
+      - 'tests/vpn_bridge_worker_gost_vm.swift'
       - 'app/VPNConfiguration.swift'
       - 'app/vpn-helper/VPNDNSContinuousClock.swift'
       - 'tests/test_vpn_gost_resolver_vm.py'
@@ -46,7 +49,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_signed_bridge_candidate test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_bridge_worker_gost_vm test_vpn_signed_bridge_candidate test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -95,6 +98,16 @@ jobs:
           python3 app/vpn-bridge/sign_atomic_gost.py "$source" "$second"
           cmp "$first/gost" "$second/gost"
           cmp "$first/verification.json" "$second/verification.json"
+      - name: Production owned worker startup, live code authentication and parent death
+        shell: bash
+        env:
+          PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
+          PROXYPILOT_VM_GOST_ATOMIC_TESTS: '1'
+          PROXYPILOT_VM_BRIDGE_WORKER_GOST: '1'
+        run: |
+          set -euo pipefail
+          export PROXYPILOT_VM_GOST_SIGNED_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/signed-first/gost"
+          python3 tests/test_vpn_bridge_worker_gost_vm.py --acceptance
       - name: Real HTTP and SOCKS through owned endpoints and private Unix API
         shell: bash
         env:

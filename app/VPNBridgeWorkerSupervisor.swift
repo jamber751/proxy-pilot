@@ -11,6 +11,7 @@ enum VPNBridgeWorkerSupervisorEntry {
         guard arguments.contains(argument) || arguments.first==processName else { return nil }
         guard arguments==[processName,argument],getuid()==geteuid(),getuid()>=500 else { return 77 }
         signal(SIGPIPE,SIG_IGN);signal(SIGTERM,SIG_IGN);signal(SIGINT,SIG_IGN);signal(SIGHUP,SIG_IGN)
+        umask(0o077) // Only this private process; GOST Unix API must stay owner-private.
         var child: pid_t?
         defer { if let child { stop(child) } }
         do {
