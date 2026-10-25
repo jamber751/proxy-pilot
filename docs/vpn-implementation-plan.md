@@ -7916,3 +7916,46 @@ wrapper при отсутствующей записи возвращает fals
 сохранением всех известных IP в неизменяемой группе при обновлении другой,
 подтверждение runtime update и persistent ordinary-App boot configuration ДО
 выдачи DNS ответа. Это ещё не реализовано и не подтверждено canary.
+
+
+### Продолжение 1.5hj — исправление unsafe GOST update boundary, candidate only
+
+- [x] Пересмотрена гипотеза двух чередующихся bypass groups из1.5hi. Она
+  НЕДОСТАТОЧНА: один paused reader может прочитать A во время первого update,
+  затем B во время следующего, пропустив обе защиты при наличии хотя бы одной
+  живой группы в каждый момент. Новый deterministic interleaving test фиксирует
+  контрпример; dual-list дизайн НЕ принимается для DNS answer authority.
+- [x] Pinned x/v0.8.1 module получен Go tooling и checksum database, h1 совпал с
+  зависимостью shipped3.2.6: cfV/wgagsitTjW18c95OlrrFQTyQtjvDD5+MO3IEIjI=.
+  В app/vpn-bridge/prepare_atomic_gost.py зафиксированы SHA256 трёх исходных
+  файлов. Только новый отдельный candidate directory: module cache и shipped
+  vendor/gost-universal не меняются; provenance включает pre/post hashes и tests.
+- [x] Candidate меняет updateBypass Unregister/Register на compare-and-swap
+  существующего registry object, затем закрывает старый loader. Missing/raced
+  entry не принимается через implicit insert. Старые localBypass readers сохраняют
+  matchers после Close. Initial static matchers загружаются синхронно до register
+  и API ACK. Scope: наши неизменно positive numeric matchers, без внешних loaders;
+  это НЕ общая гарантия произвольных whitelist/file/http configuration updates.
+- [x] RED: настоящий исходный updateBypass handler в memory-only HTTP fixture
+  завершился FAIL ack before activation. До начала reader race начальное старое
+  правило уже проверено live; ошибка относится к update, не setup.
+  /tmp/pp-gost-atomic-red-parent.log (Go test exit1).
+- [x] GREEN: тот же настоящий handler в candidate +4 registry tests проходят
+  go test -race, два packages exit0 (1.547s/1.711s),
+  /tmp/pp-gost-atomic-verified-parent.log. Проверены immediate initial readiness,
+  8 concurrent readers,1000 swaps, старые readers и missing replacement refusal.
+  API fixture:200 updates,8 readers по8000 checks, новый IPv6 matcher готов при ACK.
+  Local Go1.25.5; собственные тесты не открывали sockets/DNS, не запускали GOST CLI.
+- [x] Python refusal/counterexample4 PASS0.004s, YAML проверен Ruby/Psych.
+  Candidate-source CI добавлен отдельно ARM14/Intel15, Go1.25.4, race detector,
+  private module cache + fixed h1/preimage refusal. Он НЕ заменяет обязательные
+  actual network/system DNS/native packet/release gates существующих workflows.
+- [ ] Нужны candidate binary recipe+новые artifact pins и реальные VM proxy/DNS
+  прогоны перед выбором изменённого GOST. Current production bridge остаётся
+  прежним; runtime update client, persistent boot cache, ordinary OS resolver,
+  root relay/answer lease и полный7-stage user flow ещё OPEN. Root exact host
+  custody5f1718b остаётся отдельным обязательным native gate.
+
+Primary sources: https://github.com/go-gost/x/blob/v0.8.1/api/config_bypass.go,
+https://github.com/go-gost/x/blob/v0.8.1/bypass/bypass.go,
+https://github.com/go-gost/x/blob/v0.8.1/registry/registry.go.
