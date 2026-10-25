@@ -823,6 +823,7 @@ if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 12 {
 }
 
 #if VPN_INSTALLER_ENTRY
+if let status = VPNBridgeWorkerSupervisorEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNPasswordWorker.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNInstalledUpdateResultEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }
 if let status = VPNBridgeBypassEntry.runIfRequested(arguments: CommandLine.arguments) { exit(status) }

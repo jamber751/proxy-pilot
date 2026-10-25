@@ -8777,7 +8777,7 @@ runtime, WARP иодна финальная host-установка/приёмк
   неуспешного codesign иpublic artifact size/SHA при pin mismatch. Raw stderr,
   paths, executable bytes иsecret payloads не печатаются; fixed checks не
   ослаблены, alternate images понаблюдению автоматически не принимаются.
- 5 inert guard cases PASS0.047s без skips (точная длительность влоге):
+ 5 inert guard cases PASS0.059s без skips:
   /tmp/pp-signed-candidate-diagnostics.log. Нужен новый macOS14 log.
 - [ ] Не считать signing portability илиactual worker activation закрытыми.
   Production assets/selected bridge unchanged; installer/release не выпускался.
@@ -8788,3 +8788,54 @@ contracts job121280118233 SUCCESS. Полный mode600 log
 inventory cases PASS66.945s, без skips. Это подтверждает universal fixture pin
 fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes не переносятся
 нановый worker source автоматически.
+
+
+### Продолжение 1.5ic — owned ordinary-user bridge process lifetime
+
+- [x] Новый production private supervisor role втом же frontend: strict argv,
+  ordinary UID, inherited Unix STREAM ownership channel20, anonymous unlinked
+  private600 config FD21 иfixed signed GOST FD22. Настройки передаются только
+  stdin (`-C -`); stdout/stderr /dev/null, child environment empty, все прочие
+  descriptors закрываются. Никаких shell/paths/credentials изIPC/argv/env.
+- [x] Selection принимает только70437264-byte signed Universal candidate с
+  fixed fullSHA256 d8951461…92b0e02. NOFOLLOW, regular/owner/mode/nlink, bounded
+  streaming SHA, descriptor/named inode+metadata rechecks до/после spawn.
+  Test-only fake executable selection отсутствует вproduction compile.
+  Отдельный host READ-ONLY selector test принял exact signed candidate;
+  /tmp/pp-bridge-worker-selection.log. Сам GOST наhost не запускался.
+- [x] Supervisor исключительно владеет/reaps собственный GOST PID: parent EOF
+  илиstop вызывает TERM→500ms→KILL→wait. Parent никогда не сигналит GOST по
+  одному PID и не сигналит process groups; он владеет прямым supervisor child.
+  Parent binding включает child+owner PID, UID, start seconds/microseconds;
+  live checks отклоняют changed/terminated incarnation. Explicit unknown cleanup
+  не объявляется успехом. Deinit закрывает capability иreaps owner вbackground.
+- [x] Disconnected owner проверяется ДО spawn; datagram control отвергается.
+  FD relocation выше64 не позволяет dup2 затереть другой source. Startup uses
+  один исходный bounded deadline; own image берётся через dyld executable path.
+  Owned process alone НЕ является DNS/route/bridge-ready permit.
+- [x] Final14 cases PASS9.399s без skips: both-arch fake/production compile,
+  signed owned controller+C fake, normal/forced/drop/early-exit cleanup,
+  parent SIGKILL, no signal to unrelated sentinel, no leaked FDs/env, bad/named
+  config, changed executable, expired deadline, production pin refusal,
+  disconnected owner/datagram/invalid role. /tmp/pp-bridge-worker-final.log.
+  Самый первый11-case run имел один startup failure вcrash case без достаточной
+  диагностики. Добавлен closed error category вtest harness; отдельный40-case
+  crash repeat PASS15.367s доfinal stream/owner guards, причина первого refusal
+  не установлена. Он не объявляется исправленным поодному rerun.
+- [x] Final full Universal App+isolated updater build/sign, immutable source
+  graph, deep/strict signature иобе inert private-entry guards69/77 проверены:
+  /tmp/pp-bridge-worker-final-frontend.log,
+  pointer /tmp/pp-bridge-worker-final-frontend-path.txt, verification.json рядом
+  сApp. NSApplication/helper/Installer/Keychain/GOST/network не запускались.
+  Предыдущий full build корректно отказал после изменённого source; только
+  повторный неизменный build принят. Existing deprecated Keychain warnings есть.
+- [x] Component включён вfrontend source/entry иexisting managed-bridge CI;
+  новых matrix jobs нет. Test fake сам ограничен15s и не создаёт network sockets.
+- [ ] Нужен actual signed GOST lifecycle VM gate (включая parent death), private
+  API live code authentication, full initial config/factory иboot callback wiring.
+  Current normal app/CLI продолжает прежний bridge. Supervisor SIGKILL/unknown
+  cleanup не является доказанным штатным cleanup; новый backend должен сохранять
+  fail-closed authority при потере owner. Signing onmacOS14 ещё OPEN(1.5ib).
+  Production DNS/answer authority, static CIDR, WARP/macOS12 runtime ивесь
+  первоначальный7-stage acceptance остаются OPEN. Host network/root services и
+  установленная137 не менялись; публичный release не выполнялся.
