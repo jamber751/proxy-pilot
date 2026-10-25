@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/vpn-gost-resolver.yml'
       - 'tests/test_vpn_gost_resolver_vm.py'
+      - 'tests/test_vpn_gost_grpc_resolver_vm.py'
+      - 'tests/vpn_gost_grpc_resolver_fixture.cjs'
       - 'tests/vpn_gost_resolver_vm_checks.py'
       - 'make-dmg.sh'
       - 'bin/proxypilot'
@@ -28,7 +30,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Pure contract and refusal guards without network or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_gost_resolver_vm -v
+        run: |
+          node --check tests/vpn_gost_grpc_resolver_fixture.cjs
+          PYTHONPATH=tests python3 -m unittest test_vpn_gost_resolver_vm test_vpn_gost_grpc_resolver_vm -v
       - name: Fetch the release archive pinned by the shipped bridge
         shell: bash
         run: |
@@ -61,3 +65,8 @@ jobs:
           PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
           PROXYPILOT_VM_GOST_BINARY: ${{ runner.temp }}/gost-resolver-contract/gost
         run: python3 tests/test_vpn_gost_resolver_vm.py --acceptance
+      - name: Actual unchanged GOST over a private Unix gRPC resolver
+        env:
+          PROXYPILOT_VM_GOST_RESOLVER_TESTS: '1'
+          PROXYPILOT_VM_GOST_BINARY: ${{ runner.temp }}/gost-resolver-contract/gost
+        run: python3 tests/test_vpn_gost_grpc_resolver_vm.py --acceptance

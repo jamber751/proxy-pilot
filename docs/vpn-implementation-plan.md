@@ -7108,3 +7108,45 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Новые System sources с macOS12 и DNS ещё не приняты; усиленная диагностика
   требует следующего actual VM результата. Причина intermittent failures139/C
   пока не установлена. Host install, public release и tag не выполнялись.
+
+
+### Продолжение 1.5gn — stock GOST: отдельная проверка Unix gRPC resolver
+
+- [x] Найден альтернативный transport в том же shipped x0.8.1: resolver/plugin/
+  grpc.go передаёт network/host/client, а internal/plugin.NewGRPCConn передаёт
+  неизменённый target в grpc.NewClient и добавляет per-RPC token. Стандартный
+  gRPC target unix:///path поддерживает Unix socket; это source-level основание
+  для отдельного canary, ещё не actual proof конкретного GOST.
+  Primary sources:
+  https://raw.githubusercontent.com/go-gost/x/v0.8.1/resolver/plugin/grpc.go
+  https://raw.githubusercontent.com/go-gost/x/v0.8.1/internal/plugin/plugin.go
+  https://grpc.io/docs/guides/custom-name-resolution/
+- [x] Stock plugin dependency v0.2.1 proto содержит только network/host/client и
+  ips/ok, без TTL, generation/revision или resource UUID. gRPC Resolve игнорирует
+  reply.ok, в отличие от HTTP plugin. Поэтому отрицательный ответ будущего
+  adapter не может содержать IP: нужен non-OK RPC/пустой список. Canary отдельно
+  проверяет false-with-IP как ожидаемый разрешающий stock контракт, не как защиту.
+  Proto: https://raw.githubusercontent.com/go-gost/plugin/v0.2.1/resolver/proto/resolver.proto
+  Локальные primary-source hashes: /tmp/pp-gost-system-resolver-source-t9a7l89m/sources.json.
+- [x] Добавлен opt-in VM-only14-case canary (7 режимов × HTTP/SOCKS5) поверх тех же
+  pinned native GOST3.2.6 bytes. Fake gRPC HTTP/2 endpoint использует только Node
+  built-ins и owner-private0600 Unix socket внутри700 VM temp. Node и Python
+  отказывают вне ordinary Darwin/GHA/explicit opt-in до listener/process работы.
+  Fake targets/proxy используют только canonical127.0.0.1/::1, nonce.invalid и
+  client-first echo; proxy не разрешает и не подключает onward target.
+- [x] Проверяются direct CIDR/outside-CIDR proxy, RPC failure, empty/invalid IP,
+  передача/отказ synthetic token, ignored false-with-IP. Все actual cases имеют
+  фиксированный positive/negative decision и наблюдаемые собственные endpoints;
+  port collision не вызывает eviction/retry. Только owned children останавливаются.
+- [x]12 pure/file/refusal/source checks PASS; Node syntax check PASS. Лог:
+  /tmp/pp-gost-grpc-uds-pure-parent.log. Локально GOST/Node endpoint не запускались,
+  сокеты/DNS/системные настройки не менялись. Workflow после старых28 HTTP cases
+  запускает новый Unix canary на обеих архитектурах, с теми же archive/native pins.
+- [ ] Actual Unix gRPC результат ещё отсутствует. Это не доказательство macOS
+  resolver selection/WARP, caller authentication, lifecycle или готового relay.
+  Само наличие CGO_ENABLED=0 не означает отсутствие libc resolver на Darwin:
+  Go1.25.4 net/conf.go и cgo_unix_syscall.go допускают native getaddrinfo без cgo
+  tool. Однако explicit GOST resolver и nil-resolver CIDR semantics остаются
+  отдельными; r0/flattened nameservers пока не удалены и мост не обновлялся.
+  https://raw.githubusercontent.com/golang/go/go1.25.4/src/net/conf.go
+  https://raw.githubusercontent.com/golang/go/go1.25.4/src/net/cgo_unix_syscall.go
