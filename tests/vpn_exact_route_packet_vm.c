@@ -27,6 +27,7 @@ static unsigned char nonce[16];
 static int native_fence_after_active;
 static int native_hold_applied;
 extern int pp_exact_fence_startup(void);
+extern int pp_fenced_host_cycle(int, const unsigned char *, unsigned);
 #endif
 
 static int interface_owned(int fd, const char *name, unsigned index) {
@@ -380,6 +381,11 @@ static int kill_interface_owner(void) {
 }
 static int packet_active_add(struct reply *r) {
     stage = "packetActiveAdd";
+#ifdef PP_NATIVE_EXACT_FENCE
+    if (!native_fence_after_active) {
+        if (!check(pp_fenced_host_cycle(family == AF_INET ? 4 : 6, destination, active_index) == 0)) return 0;
+    } else
+#endif
     if (!check(direct_request(RTM_ADD, 1, active_index, r) == 0)) return 0;
     host_added = 1;
     return 1;

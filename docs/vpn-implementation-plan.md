@@ -7828,3 +7828,37 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Предыдущий persistent native40188528916 повторно проверен: все4jobs queued.
   Это ожидание runner, не passing proof. Pair-aware active routes, static NET
   profile, production DNS/GOST wiring и полный первоначальный scope остаются OPEN.
+
+
+### Продолжение 1.5hh — pair-aware HOST mutation boundary
+
+- [x] Production VPNDarwinRouteSocket.installFencedHost/deleteFencedHost разделяют
+  HOST/nil-mask active key и NET/full-mask deny key. Принимают только точный
+  unscoped resource host на utun с предсказанными flags (IPv6 LLINFO включён).
+  До и после native mutation проверяют deny, active lookup и caller authority;
+  общий исходный deadline не продлевается. Sparse ACK не считается состоянием.
+  Preexisting/raced HOST не принимается во владение, indeterminate write не
+  повторяется и не вызывает неявный DELETE/ослабление fence.
+- [x] 16 новых fake transport tests, обе IP family и полностью синтетические
+  if_indextoname только в test executable: lifecycle, missing/foreign deny,
+  foreign/absent active, no adoption, race, lost fence, ACK without state на ADD
+  и DELETE, unknown ADD/DELETE, cancellation до/после write, deadline/late.
+  Совместно с store27 и adapter20: 63 PASS16.728s без skips,
+  /tmp/pp-fenced-host-final-parent.log.
+- [x] Universal native fixture compile/ordinary denial, default packet compile
+  и прежние write-miss checks вместе с первыми12 pair methods:26 PASS33.935s,
+  /tmp/pp-fenced-host-native-compile-parent.log. Новые4 pair methods отдельно
+  покрыты финальным63-method прогоном. Никакие host route/interface/DNS/Keychain
+  mutations не выполнялись.
+- [x] Actual root-VM packet fixture before-active порядок теперь вызывает
+  production install/delete/install pair cycle на принадлежащем fixture utun,
+  сверяя applied persistent fence receipt, затем выполняет существующий реальный
+  TCP/UDP/owner-SIGKILL/no-escape/neighbor сценарий. After-active порядок сохраняет
+  проверку установки fence рядом с уже существующим HOST. Crash/reopen fixture
+  дополнен новым обязательным cycle marker. Это native boundary proof, НЕ
+  production active journal integration: active ownership пока держит fixture.
+- [ ] Actual pair cycle/new recovery ещё не PASS. Startup run ebbdf08:
+ 40190565139, jobs121160471297/419/424/447 freshly queued. Старый3dcb persistent
+  run40188528916 также queued при проверке. Queue не приравнивается к успешной
+  проверке. Production active journal adapter/recovery, static CIDR deny layout,
+  persistent DNS relay и synchronous GOST bypass/answer path ещё OPEN.

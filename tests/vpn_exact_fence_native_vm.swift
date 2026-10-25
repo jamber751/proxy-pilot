@@ -108,3 +108,41 @@ func exactFenceControl(_ action: Int32, _ family: Int32, _ bytes: UnsafePointer<
         return 1
     }
 }
+
+// VM packet fixture owns the active interface/clients. This exercises the real
+// pair boundary, not a production active-route journal or DNS answer permit.
+@_cdecl("pp_fenced_host_cycle")
+func fencedHostCycle(_ family: Int32, _ bytes: UnsafePointer<UInt8>?, _ index: UInt32) -> Int32 {
+    let env = ProcessInfo.processInfo.environment
+    guard getuid() == 0, geteuid() == 0, env["GITHUB_ACTIONS"] == "true",
+          env["PROXYPILOT_VM_NATIVE_EXACT_FENCE"] == "1",
+          env["PROXYPILOT_VM_EXACT_ROUTE_PACKETS"] == "1",
+          env["PROXYPILOT_VM_DNS_UTUN_TESTS"] == "1",
+          env["PROXYPILOT_VM_NATIVE_FENCE_AFTER_ACTIVE"] == "0",
+          family == 4 || family == 6, let bytes else { return 77 }
+    do {
+        let prefix = try VPNRoutePrefix(hostBytes:Array(UnsafeBufferPointer(start:bytes,count:family == 4 ? 4:16)),family:family == 4 ? .ipv4:.ipv6)
+        guard prefix.canonical == (family == 4 ? "198.19.253.201":"2001:db8:fff:fd::c9") else { return 77 }
+        let store = try NativeStore.get()
+        guard let receipt = try store.load(prefix), receipt.phase == .applied else { throw VPNExactFenceStoreError.invalidState }
+        var name = [CChar](repeating:0,count:Int(IFNAMSIZ))
+        guard if_indextoname(index,&name) != nil else { throw VPNDarwinRouteError.invalidIdentity }
+        let route = VPNPlannedRoute(role:.resource,destination:prefix,physicalGatewayBytes:nil,interfaceIndex:index,interfaceName:String(cString:name))
+        let flags = VPNManagedIPv6HostRoute.flags(for:route), evidence: VPNRouteKernelEvidence
+        if family == 4 { evidence = try VPNRouteKernelEvidence(gateway:Optional<in_addr>.none,interfaceIndex:index,flags:flags) }
+        else { evidence = try VPNRouteKernelEvidence(gateway:Optional<in6_addr>.none,interfaceIndex:index,flags:flags) }
+        let identity = try VPNOwnedRouteIdentity(planned:route,evidence:evidence)
+        let socket = try VPNDarwinRouteSocket.production(), deadline = DispatchTime.now()+5
+        func current() throws {
+            guard try store.load(prefix) == receipt else { throw VPNExactFenceStoreError.stale }
+        }
+        try socket.installFencedHost(identity,fence:receipt.identity,deadline:deadline,checkCurrent:current)
+        try socket.deleteFencedHost(identity,fence:receipt.identity,deadline:deadline,checkCurrent:current)
+        try socket.installFencedHost(identity,fence:receipt.identity,deadline:deadline,checkCurrent:current)
+        print("PASS native-fenced-host-cycle-"+String(family)); fflush(stdout)
+        return 0
+    } catch {
+        let code = (error as? VPNFlowDiagnosticError)?.vpnFlowFailureCode.rawValue ?? "unknown"
+        print("FAIL native-fenced-host category="+code); fflush(stdout); return 1
+    }
+}

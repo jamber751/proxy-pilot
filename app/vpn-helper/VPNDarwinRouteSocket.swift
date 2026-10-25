@@ -703,6 +703,74 @@ final class VPNDarwinRouteSocket {
         }
     }
 
+    /// A resource HOST and its NET/full-mask deny have different radix keys.
+    /// Keep the deny verified throughout activation/removal. The caller owns
+    /// both the persistent fence receipt and the active-route journal intent,
+    /// and holds its lifecycle lease through this operation. No adoption or
+    /// implicit cleanup after an indeterminate native write is performed here.
+    func installFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                           deadline: DispatchTime, checkCurrent: () throws -> Void) throws {
+        try mutateFencedHost(identity,fence:fence,install:true,deadline:deadline,checkCurrent:checkCurrent)
+    }
+    func deleteFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                          deadline: DispatchTime, checkCurrent: () throws -> Void) throws {
+        try mutateFencedHost(identity,fence:fence,install:false,deadline:deadline,checkCurrent:checkCurrent)
+    }
+    private func mutateFencedHost(_ identity: VPNOwnedRouteIdentity, fence: VPNExactRouteFenceIdentity,
+                                  install: Bool, deadline: DispatchTime,
+                                  checkCurrent: () throws -> Void) throws {
+        try serialized(until:deadline) { end in
+            try identity.validate(); try fence.validate()
+            let planned = VPNPlannedRoute(role:identity.role,destination:identity.destination,
+                physicalGatewayBytes:identity.gatewayBytes,interfaceIndex:identity.interfaceIndex,
+                interfaceName:identity.interfaceName,interfaceScope:identity.interfaceScope)
+            try planned.validate()
+            guard identity.role == .resource, identity.destination == fence.address,
+                  identity.interfaceScope == nil, identity.gatewayBytes == nil,
+                  identity.flags == VPNManagedIPv6HostRoute.flags(for:planned) else {
+                throw VPNDarwinRouteError.invalidIdentity
+            }
+            func current() throws {
+                guard DispatchTime.now().uptimeNanoseconds < end.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+                try checkCurrent()
+                guard DispatchTime.now().uptimeNanoseconds < end.uptimeNanoseconds else { throw VPNDarwinRouteError.timeout }
+            }
+            func protected() throws {
+                try current()
+                guard let observed = try exactFenceLookup(fence,deadline:end), fence.matches(observed) else {
+                    throw VPNDarwinRouteError.missingOrForeign
+                }
+                try current()
+            }
+            func host() throws -> VPNDarwinRouteSnapshot? {
+                let sequence = try nextSequence()
+                let request = try VPNDarwinRouteCodec.encodeLookup(key:identity.lookupKey,sequence:sequence,pid:pid)
+                // HOST GET may return the same-prefix NET deny. Validate the
+                // global live reply, then distinguish the two radix key shapes.
+                return try exactFenceTransact(request,sequence:sequence,type:UInt8(RTM_GET),
+                                               deadline:end,family:identity.destination.family)
+            }
+            try protected()
+            let before = try host(); try current()
+            if install {
+                guard let before, fence.matches(before) else { throw VPNDarwinRouteError.preexistingNonIdentical }
+            } else {
+                guard let before, before.matches(identity) else { throw VPNDarwinRouteError.missingOrForeign }
+            }
+            try protected()
+            let sequence = try nextSequence(), type = UInt8(install ? RTM_ADD : RTM_DELETE)
+            let request = try VPNDarwinRouteCodec.encode(type:type,sequence:sequence,pid:pid,identity:identity)
+            try current()
+            _ = try exactFenceTransact(request,sequence:sequence,type:type,deadline:end)
+            try protected()
+            let after = try host(); try current()
+            guard let after, install ? after.matches(identity) : fence.matches(after) else {
+                throw VPNDarwinRouteError.verificationFailed
+            }
+            try protected()
+        }
+    }
+
     /// Low-level native boundary only. A caller must own a durable add-intent
     /// before installation and an explicit release-intent before deletion.
     /// There is no implicit adoption, TTL cleanup or production DNS wiring here.

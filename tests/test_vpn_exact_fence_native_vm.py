@@ -118,10 +118,12 @@ def run_probe(binary,order,journal):
         raise RuntimeError('ownedProbeTimeout-VM-disposal')
     expected = ['PASS native-exact-fence-startup-ready']
     for f in (4,6):
-        expected += ['PASS native-exact-fence-add-'+str(f),'PASS native-exact-fence-delete-'+str(f)]
+        expected += ['PASS native-exact-fence-add-'+str(f)]
+        if not order: expected += ['PASS native-fenced-host-cycle-'+str(f)]
+        expected += ['PASS native-exact-fence-delete-'+str(f)]
         expected += [line for line in packets.MARKERS if 'ipv'+str(f)+'-' in line]
     for line in out.splitlines():
-        if line not in expected and not re.fullmatch(r'API native-exact-fence type=[0-9]+ index=[0-9]+ addrs=[0-9]+ maskLength=[0-9]+ maskFamily=[0-9]+ gatewayFamily=[0-9]+',line) and not re.fullmatch(r'FAIL native-exact-fence-startup category=[A-Za-z]+',line) and not re.fullmatch(r'FAIL native-exact-fence action=(1|2) family=(4|6) category=[A-Za-z]+ errno=[0-9]+ expectedFlags=[0-9]+ observedFlags=[0-9]+',line): raise RuntimeError('outputProtocol')
+        if line not in expected and not re.fullmatch(r'FAIL native-fenced-host category=[A-Za-z]+',line) and not re.fullmatch(r'API native-exact-fence type=[0-9]+ index=[0-9]+ addrs=[0-9]+ maskLength=[0-9]+ maskFamily=[0-9]+ gatewayFamily=[0-9]+',line) and not re.fullmatch(r'FAIL native-exact-fence-startup category=[A-Za-z]+',line) and not re.fullmatch(r'FAIL native-exact-fence action=(1|2) family=(4|6) category=[A-Za-z]+ errno=[0-9]+ expectedFlags=[0-9]+ observedFlags=[0-9]+',line): raise RuntimeError('outputProtocol')
         print(line,flush=True)
     for line in err.splitlines():
         if not (re.fullmatch(r'FAIL exact-route-pair stage=[A-Za-z]+ errno=[0-9]+ flags=[0-9]+ exact=[01] fullMask=[01]',line)
@@ -149,7 +151,7 @@ def crash_recovery(binary,recovery,journal):
             if len(buffer)>8192:raise RuntimeError('crashOutputCapacity')
             while b'\n' in buffer:
                 raw,buffer=buffer.split(b'\n',1);lines.append(raw.decode('ascii'))
-        expected=['PASS native-exact-fence-startup-ready','PASS native-exact-fence-add-4','READY native-exact-fence-applied']
+        expected=['PASS native-exact-fence-startup-ready','PASS native-exact-fence-add-4','PASS native-fenced-host-cycle-4','READY native-exact-fence-applied']
         if lines!=expected or buffer or process.poll() is not None:raise RuntimeError('crashCheckpoint')
         files=list(journal.glob('fence-v1-*.json'))
         if len(files)!=1:raise RuntimeError('crashCheckpointCount')
