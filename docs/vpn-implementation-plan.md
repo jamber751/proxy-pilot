@@ -6742,7 +6742,7 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
 
 - [ ] Модель и интерфейс: явно объяснить «Домен и поддомены», не требовать
   wildcard; canonical DNS-label matching, без захвата похожего suffix имени.
-- [ ] Codec: сохранить исходный configured resource UUID/address отдельно от
+- [x] Codec (inert,219 checks): сохранить исходный configured resource UUID/address отдельно от
   конкретного client question name. Ответ должен совпадать именно с запрошенным
   поддоменом, а не с любым именем внутри разрешённого suffix. Не подменять resource
   фиктивным VPNResource ради прохождения существующего exact-host decoder.
@@ -6814,3 +6814,32 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   Подтверждение ограничения: Apple xnu bsd/netinet/in_pcb.c in_pcbbind требует
   ifa_ifwithaddr для bind. Точная причина прежнего unexpected по старому логу
   ещё не доказана. Parent9 safe PASS0.006s, actual28 остаются OPEN.
+
+
+### Продолжение 1.5gd — descendant query seal без включения DNS backend
+
+- [x] Codec реализует согласованное правило domain+descendants на границе DNS
+  labels. Configured resource UUID/name/address не заменяется дочерним ресурсом;
+  sealed canonical client question хранится отдельно. Upstream question, CNAME
+  chain, NXDOMAIN/NODATA и error/BADVERS receipts привязаны к actual question.
+  Ответ sibling/root/другого descendant не становится допустимым из-за общего
+  разрешённого suffix. Никакого системного resolver state или runtime activation.
+- [x] Новая проверка descendant на old codec дала runtime RED questionMismatch
+  (не compiler error): /tmp/pp-dns-suffix-red.log. Final codec/release141 +
+  upstream exchange76 +continuous clock2 =219 PASS20.023s без skips.
+  Добавлены mixed-case/deep A/AAAA, похожие suffixes, sibling/root mismatch,
+  unrelated records и descendant NXDOMAIN/SERVFAIL/BADVERS с original UUID.
+- [x] Whole production helper graph typechecks ARM/Intel с прежним production
+  entry flag и без TESTING: /tmp/pp-dns-suffix-helper-proof-vu1aj0vf/verification.json,
+  exit0/0, source hashes stale=[]. Это compile-only, не live VPN acceptance.
+- [ ] Ещё нужны deterministic matching overlapping roots, resolver publication,
+  durable deny/custody, bridge adapter, lifecycle/WARP и установленный flow.
+- [x] GOST canonical-loopback canary2e9984b прошёл startup и дошёл до HTTP client
+  stage на обеих arch, но не получил early banner от fake proxy. c8f5ee4 меняет
+  fixture на client-first nonce echo после CONNECT, сохраняя route/endpoint
+  checks;9 safe tests PASS. Source x0.8.1 HTTP connector читает response через
+  временный bufio.Reader и возвращает raw conn. Server-first preservation этим
+  contract не доказана и остаётся отдельной потенциальной upstream проблемой;
+  не выдавать client-first pass за полную проверку произвольного CONNECT stream.
+- [ ] System failure причины и поздний utun timeout ещё не исправлены. Native
+  current-source acceptance обязателен, final Installer не собран/не установлен.
