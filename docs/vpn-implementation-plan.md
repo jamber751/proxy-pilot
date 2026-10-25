@@ -6910,3 +6910,23 @@ Frozen139 workflow вынесен отдельно с фильтром его fi
   backend остаются следующими обязательными пунктами. Password runtime по-прежнему
   закрыт до отдельного подключения/проверки controller integration. Все7 этапов
   исходного плана сохраняются, public release и host install не выполнялись.
+
+
+### Продолжение 1.5gh — история frozen139 helper до удаления launchd job
+
+- [x] System VM fixture теперь наблюдает только свой fixed helper label во время
+  Installer, чтобы сохранить last exit/spawn error/signal/runs/PID до bootout.
+  Frozen139 graph, signatures, authentication и activation/recovery policy не
+  меняются. Это наблюдение, не дополнительная попытка или permission bypass.
+- [x] Observer требует явный root disposable-VM opt-in до thread/query, использует
+  только launchctl print, не bootstrap/bootout/kill service. Поля allowlisted,
+  raw paths/environment подавлены; known program лишь B/C hint, не pin authority.
+  96 bounded state changes, dedup, per-query1s, sampling0.5s, максимум840queries.
+  При stop timeout выдаётся stopPending; незавершённое наблюдение не считается
+  доказательством. Основной Installer deadline420 не меняется, retries нет.
+- [x] Failure snapshot включает историю; timeout также выводит закрытые данные
+  после остановки observer, до cleanup.30 diagnostic checks PASS0.916s:
+  /tmp/pp-rescue-helper-history-complete-parent.log. Native job queries и Installer
+  локально не запускались; host refusal и raw-output redaction проверены mocks.
+- [ ] Нужен actual VM fail/success с новой историей, прежде чем объяснять причину
+  sporadic139 startup failures3. Текущий verdict по System139 остаётся OPEN.
