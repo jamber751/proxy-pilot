@@ -31,6 +31,7 @@ enum VPNActivationDiagnostics {
     static func observeLaunchd(role: LaunchdRole, command: LaunchdCommand,
                                outcome: LaunchdOutcome, status: Int32 = -1) {
         #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+        guard getuid() == 0, geteuid() == 0 else { return }
         // Successful polling would obscure the failing command and exhaust
         // the bounded record budget. Keep only unexpected print failures.
         if command == .print && (outcome == .enter || (outcome == .exit && (status == 0 || status == 113))) { return }

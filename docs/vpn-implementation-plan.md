@@ -8167,3 +8167,47 @@ Live ebb System40190565165 и scoped40190565138 сохранены. Очеред
   blocking wait-before-read в broker launchedProcessID; гипотеза pipe-pressure
   ещё не проверена и не объявляется причиной CI failures.
   Исходный7-stage scope, production DNS/bridge wiring и финальный release OPEN.
+
+
+### Продолжение 1.5hp — bounded broker output and candidate runtime evidence
+
+- [x] В `VPNUpdateBrokerLaunchdJob.launchedProcessID` устранён wait-before-drain:
+  stdout читается параллельно жизни дочерней команды, nonblocking pipe,
+  максимум256KiB, прежний deadline. При отказе завершается только собственный
+  Process child; успех требует exit0, UTF8 и одного положительного PID.
+  Разобранный PID не заменяет последующие executable/endpoint/peer проверки.
+  Command/status policy, action/total budgets и frozen139 не менялись.
+- [x] Owned-child fixture воспроизводит исходную pipe-pressure блокировку после
+  подтверждённого первого байта; новый reader принимает200KiB, фрагменты и
+  отклоняет300KiB, duplicate/missing PID, badUTF8, exit7, timeout, EOF с ещё
+  живым child и уже истёкший deadline. 12 PASS38.668s без skips:
+  /tmp/pp-broker-output-verified-parent.log. Ни launchctl, ни root/system services,
+  ни сеть/Keychain/Installer не выполнялись. Это доказанный отдельный дефект,
+  но НЕ доказанная причина прежних Intel System failures.
+- [x] Тест включён в ordinary-user fast step System workflow и его path filters.
+  VM-only command logger дополнительно требует real/effective UID0, чтобы
+  ordinary owned-pipe fixture с diagnostic macro не писал в системный log sink.
+- [x] Проверены полные logs candidate run40192825189/source565cdb7:
+  jobs121167287117(macOS26Intel),121167287244(macOS14ARM),
+  121167287301(macOS26ARM) SUCCESS. В каждом ровно шесть actual runtime markers:
+  initial direct/proxy controls, auth refusal, both-family activation-before-ACK,
+  concurrent cached/literal no-proxy-escape, restart union-before-listen, cleanup;
+  плюс пять actual Go handler/registry race tests. Private raw logs mode600:
+  /tmp/pp-atomic-verified-<job>.log. macOS15Intel121167287283 ещё queued.
+- [ ] Candidate runtime не заменяет Swift-client→GOST interoperability, production
+  domain/DNS/bridge wiring или полную VPN/installer приёмку. System40196864320
+  с exact command diagnostics ещё queued: jobs121179472470/121179472595.
+  Live System40191352570 и40190780520 проверены in_progress и сохранены.
+  Исходные семь этапов остаются открыты в границах актуальной таблицы.
+
+
+Дополнительная проверка текущих bytes:20 PASS77.327s без skips,
+/tmp/pp-broker-output-integrated.log:12 owned-pipe cases,4 существующих broker
+launchd cases и4 diagnostics cases. В этом отдельном прогоне существующий
+`test_vpn_update_broker_launchd` действительно регистрировал собственные временные
+per-user GUI jobs (socket activation/restart/exact removal), затем штатно убрал
+их; это не pure pipe-only прогон. Системный domain/production service, VPN/network,
+Keychain и Installer не трогались. В CI добавлен только новый pipe-only module;
+user-launchd module не включался в новый fast step. Последующие host проверки
+ограничиваем private files и owned subprocess/Unix workers; системная приёмка
+остаётся в одноразовых VM.

@@ -263,17 +263,39 @@ final class VPNUpdateBrokerLaunchdJob {
     }
 
     private func launchedProcessID(deadline: UInt64) throws -> pid_t {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.launchctlPath)
+        process.arguments = ["print", "\(domain)/\(label)"]
+        return try Self.capturedProcessID(process, deadline: deadline)
+    }
+
+    #if VPN_BROKER_OUTPUT_TESTING
+    static func testCapturedProcessID(executable: URL, arguments: [String], deadline: UInt64) throws -> pid_t {
+        let process = Process(); process.executableURL = executable; process.arguments = arguments
+        return try capturedProcessID(process, deadline: deadline)
+    }
+    #endif
+
+    /// Drain while the child is running: waiting for exit before reading can
+    /// deadlock on a full pipe. One owner closes the pipe, and only its exact
+    /// Process child is killed on timeout/output overflow. Parsed PID remains
+    /// untrusted until the existing executable/endpoint/peer checks below.
+    private static func capturedProcessID(_ process: Process, deadline: UInt64) throws -> pid_t {
         #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
         func observe(_ outcome: VPNActivationDiagnostics.LaunchdOutcome, status: Int32 = -1) {
             VPNActivationDiagnostics.observeLaunchd(role:.broker,command:.print,outcome:outcome,status:status)
         }
         #endif
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: Self.launchctlPath)
-        process.arguments = ["print", "\(domain)/\(label)"]
+        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw VPNUpdateBrokerLaunchdJobError.timeout }
+        var descriptors: [Int32] = [-1,-1]
+        guard pipe(&descriptors) == 0 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+        let reader = descriptors[0], writer = FileHandle(fileDescriptor:descriptors[1],closeOnDealloc:true)
+        var writerOpen = true
+        defer { close(reader); if writerOpen { try? writer.close() } }
+        guard fcntl(reader,F_SETFL,O_NONBLOCK) == 0, fcntl(reader,F_SETFD,FD_CLOEXEC) == 0,
+              fcntl(descriptors[1],F_SETFD,FD_CLOEXEC) == 0 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
+        process.standardOutput = writer
         process.standardError = FileHandle.nullDevice
         process.environment = [:]
         guard (try? process.run()) != nil else {
@@ -282,38 +304,55 @@ final class VPNUpdateBrokerLaunchdJob {
             #endif
             throw VPNUpdateBrokerLaunchdJobError.launchFailed
         }
-        while process.isRunning {
-            guard DispatchTime.now().uptimeNanoseconds < deadline else {
-                kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
-                #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
-                observe(.timeout)
-                #endif
-                throw VPNUpdateBrokerLaunchdJobError.timeout
+        let data: Data
+        do {
+            try writer.close(); writerOpen = false
+            var captured = Data(), buffer = [UInt8](repeating:0,count:4096), eof = false
+            while !eof || process.isRunning {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { throw VPNUpdateBrokerLaunchdJobError.timeout }
+                if !eof {
+                    let count = Darwin.read(reader,&buffer,buffer.count)
+                    if count > 0 {
+                        guard captured.count + count <= 256*1024 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+                        captured.append(contentsOf:buffer.prefix(count)); continue
+                    }
+                    if count == 0 { eof = true }
+                    else if errno == EINTR { continue }
+                    else if errno != EAGAIN && errno != EWOULDBLOCK { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+                }
+                if eof { usleep(20_000) }
+                else {
+                    var item = pollfd(fd:reader,events:Int16(POLLIN),revents:0)
+                    let wait = Int32(min(20,max(1,(deadline-now)/1_000_000)))
+                    let result = poll(&item,1,wait)
+                    if result < 0 && errno == EINTR { continue }
+                    guard result >= 0, item.revents & Int16(POLLERR|POLLNVAL) == 0 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+                }
             }
-            usleep(20_000)
+            data = captured
+            process.waitUntilExit()
+        } catch {
+            if process.isRunning { kill(process.processIdentifier,SIGKILL) }
+            process.waitUntilExit()
+            #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
+            if case VPNUpdateBrokerLaunchdJobError.timeout = error { observe(.timeout) }
+            #endif
+            throw error
         }
-        process.waitUntilExit()
         #if VPN_SYSTEM_ACTIVATION_DIAGNOSTICS
         observe(process.terminationReason == .exit ? .exit:.signal,status:process.terminationStatus)
         #endif
-        guard process.terminationReason == .exit,
-              process.terminationStatus == 0,
-              let text = String(data: output.fileHandleForReading.readDataToEndOfFile(),
-                                encoding: .utf8) else {
-            throw VPNUpdateBrokerLaunchdJobError.launchFailed
-        }
-        let values = text.split(separator: "\n").compactMap { line -> pid_t? in
-            let value = line.trimmingCharacters(in: .whitespaces)
+        guard process.terminationReason == .exit, process.terminationStatus == 0,
+              let text = String(data:data,encoding:.utf8) else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
+        let values = text.split(separator:"\n").compactMap { line -> pid_t? in
+            let value = line.trimmingCharacters(in:.whitespaces)
             guard value.hasPrefix("pid = ") else { return nil }
             let digits = value.dropFirst("pid = ".count)
-            guard !digits.isEmpty, digits.allSatisfy(\.isNumber),
-                  let parsed = Int32(digits), parsed > 0 else { return nil }
+            guard !digits.isEmpty, digits.allSatisfy(\.isNumber), let parsed = Int32(digits), parsed > 0 else { return nil }
             return parsed
         }
-        guard values.count == 1 else {
-            throw VPNUpdateBrokerLaunchdJobError.launchFailed
-        }
+        guard values.count == 1 else { throw VPNUpdateBrokerLaunchdJobError.launchFailed }
         return values[0]
     }
 
