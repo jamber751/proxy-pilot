@@ -10,7 +10,7 @@ import time
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-MODES=('ready','certificate','certificate-changed','certificate-replaced','foreign-certificate','pin','factory-auth','factory-role','normal','force','stopped','long','hang')
+MODES=('listener-model','ready','certificate','certificate-changed','certificate-replaced','foreign-certificate','pin','factory-auth','factory-role','normal','force','stopped','long','hang')
 
 @unittest.skipUnless(sys.platform=='darwin' and shutil.which('swiftc') and os.getuid()==os.geteuid()>=500,'ordinary macOS compiler required')
 class OwnerTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class OwnerTests(unittest.TestCase):
         sources=[ROOT/'app/VPNConfiguration.swift',ROOT/'app/vpn-helper/VPNDNSContinuousClock.swift',
                  ROOT/'app/VPNBridgeProtection.swift',ROOT/'app/VPNBridgeGOSTConfiguration.swift',
                  ROOT/'app/VPNBridgeWorkerProcess.swift',ROOT/'app/VPNBridgeWorkerSupervisor.swift',
-                 ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNSystemResolverWorker.swift',
+                 ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNBridgeWorkerListener.swift',ROOT/'app/VPNSystemResolverWorker.swift',
                  ROOT/'tests/vpn_system_resolver_worker_checks.swift']
         fake=ROOT/'tests/vpn_system_resolver_fake.c'
         captured={p:p.read_bytes() for p in [*sources,fake]}

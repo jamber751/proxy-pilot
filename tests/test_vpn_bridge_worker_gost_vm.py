@@ -36,7 +36,7 @@ def build_client(folder,architecture=None):
     sources=[ROOT/'app/VPNConfiguration.swift',ROOT/'app/vpn-helper/VPNDNSContinuousClock.swift',
              ROOT/'app/VPNBridgeProtection.swift',ROOT/'app/VPNBridgeProtectionAPI.swift',
              ROOT/'app/VPNBridgeWorkerProcess.swift',ROOT/'app/VPNBridgeWorkerSupervisor.swift',
-             ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNBridgeGOSTConfiguration.swift',ROOT/'tests/vpn_bridge_worker_gost_vm.swift']
+             ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNBridgeWorkerListener.swift',ROOT/'app/VPNBridgeGOSTConfiguration.swift',ROOT/'tests/vpn_bridge_worker_gost_vm.swift']
     captured={path:path.read_bytes() for path in sources};inputs=[]
     for path,data in captured.items():
         target=folder/path.name;target.write_bytes(data);inputs.append(str(target))
@@ -161,7 +161,7 @@ def run_contract(lease):
                 process.stdout.close();process.stderr.close()
                 if diagnostic:
                     for row in diagnostic.decode('ascii',errors='replace').splitlines():
-                        if re.fullmatch(r'FAIL owned-gost-worker category=(invalid|expired|transport|unavailable|cleanupUnknown|other) stage=(inputs|selection|launch|authentication|stop) phase=(none|verifyImage|prepareOwner|spawnOwner|sendOffer|waitReady|verifyChild|revalidateImage|active) elapsedMs=[0-9]+',row):
+                        if re.fullmatch(r'FAIL owned-gost-worker category=(invalid|expired|transport|unavailable|cleanupUnknown|other) stage=(inputs|selection|launch|listener|authentication|stop) phase=(none|verifyImage|prepareOwner|spawnOwner|sendOffer|waitReady|verifyChild|revalidateImage|active) elapsedMs=[0-9]+',row):
                             print(row,flush=True)
                     if process.returncode==0:raise base.Refused('decision')
     print(MARKERS[3],flush=True)

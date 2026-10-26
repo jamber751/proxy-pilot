@@ -9268,3 +9268,46 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   TCP/UDP/sysctl/SC probe на host не запускалось. После полного native matrix —
   общий native/GOST runtime под existing root11/cache lock, затем domain answer
   authority. Normal App entry/установленный137/первоначальные7 этапов не изменены.
+
+### Продолжение 1.5iq — complete canonical factory matrix and owned listener gate
+
+- [x] 107232d run40287914019 завершён success, все9 jobs. Все4 actual factory
+  consumers прошли: macos15Intel121456269826, macos26ARM121456269828,
+  macos26Intel121456269869, macos14ARM121456269875. Полные mode600 logs
+  `/tmp/pp-native-factory-actual-<job>.log` проверены: ровно5 markers в правильном
+  порядке для каждого job. Один canonical image abc84a... реально исполнялся на
+  всех4 системах через production factory/code/CA path без fake macro.
+- [x] Все4 прежних source runtime jobs тоже success, включая Intel startup:
+  jobs121455847568/121455847633/121455847711/121455847877. В этом current run
+  исходные deadlines не увеличены. Это current regression result, не доказанная
+  причина исторического единственного expired failure на другом CI run.
+- [x] `VPNBridgeWorkerListener` проверяет только уже owned child через public
+  proc PID FD info, а не соединением с произвольным портом. Требует exact IPv4
+  loopback TCP listener, port, LISTEN state; UID подтверждается owned process,
+  не неиспользуемым socket stat. Повторный read того же FD
+  сравнивает kernel socket handles/generation. До/после проверяется owned
+  process incarnation. Перечень FD bounded4096; неизвестное/истёкшее состояние
+  не становится положительным proof. Нет sysctl/PF_ROUTE или global TCP tables.
+- [x] Native factory validation теперь требует этот listener proof. Typed-config
+  actual GOST VM gate требует owned listener ДО READY под исходным startup
+  deadline, сохраняя API/code checks. Новый закрытый diagnostic stage listener
+  различает отсутствие service listener и private-owner startup.
+- [x] Local pure/file/fake + production CLI compile24 PASS50.051s, без skips:
+  `/tmp/pp-owned-loopback-listener-components.log`. Synthetic kernel records
+  проверяют port/family/protocol/state/wildcard rejection и FD-generation
+  change. Host test не вызывает реальный TCP FD inspector, listener или DNS.
+- [ ] Нужен actual current4OS kernel-listener proof и совместный native/GOST
+  bootstrap runtime. Только положительный private API endpoint недостаточен
+  для назначения системного прокси. Normal App entry не переключён; domain
+  answer authority и полный исходный план остаются OPEN.
+- [x] При сверке с первичным XNU code обнаружено, что `pid_socketinfo` обнуляет
+  socket_fdinfo, а `fill_socketinfo` не заполняет soi_stat. Поэтому этот UID не
+  используется как authority: UID/real/saved UID проверяет обязательный owned
+  process stamp. Model fixture оставляет socket stat нулевым, как kernel.
+  TCP protocol0 также допустим только вместе с kernel SOCKINFO_TCP/LISTEN.
+  Источники: [proc_info.c](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c),
+  [socket_info.c](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/socket_info.c).
+- [x] Финальные48 component/release-CLI compile tests PASS73.027s без skips:
+  `/tmp/pp-owned-loopback-listener-xnu-final.log`. Это включает прежние GOST
+  worker/config tests и все default VM refusal guards; не выдаётся за real
+  kernel TCP inspection на host или новый full frontend bundle proof.

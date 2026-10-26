@@ -28,7 +28,7 @@ def build_client(folder,architecture=None):
     sources=[ROOT/'app/VPNConfiguration.swift',ROOT/'app/vpn-helper/VPNDNSContinuousClock.swift',
              ROOT/'app/VPNBridgeProtection.swift',ROOT/'app/VPNBridgeGOSTConfiguration.swift',
              ROOT/'app/VPNBridgeWorkerProcess.swift',ROOT/'app/VPNBridgeWorkerSupervisor.swift',
-             ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNSystemResolverWorker.swift',
+             ROOT/'app/VPNBridgeWorkerIdentity.swift',ROOT/'app/VPNBridgeWorkerListener.swift',ROOT/'app/VPNSystemResolverWorker.swift',
              ROOT/'tests/vpn_system_resolver_owner_vm.swift']
     captured={p:p.read_bytes() for p in sources}
     for p,data in captured.items():(folder/p.name).write_bytes(data)

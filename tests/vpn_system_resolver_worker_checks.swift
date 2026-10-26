@@ -21,7 +21,36 @@ import Foundation
         func ready(_ port: Int = 12345) throws -> Data {
             Data("{\"port\":\(port),\"certificate\":".utf8)+(try JSONSerialization.data(withJSONObject:certificate,options:[.fragmentsAllowed,.withoutEscapingSlashes]))+Data("}\n".utf8)
         }
-        if mode=="ready" {
+        if mode=="listener-model" {
+            var info=socket_fdinfo()
+            info.psi.soi_family=AF_INET;info.psi.soi_type=SOCK_STREAM;info.psi.soi_protocol=IPPROTO_TCP
+            info.psi.soi_kind=Int32(SOCKINFO_TCP)
+            info.psi.soi_proto.pri_tcp.tcpsi_state=Int32(TSI_S_LISTEN)
+            info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_vflag=UInt8(INI_IPV4)
+            info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport=Int32(UInt16(12345).bigEndian)
+            info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_46.i46a_addr4.s_addr=UInt32(0x7f000001).bigEndian
+            info.psi.soi_so=1;info.psi.soi_pcb=2;info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_gencnt=3
+            try require(VPNBridgeWorkerListener.matches(info,port:12345))
+            try require(VPNBridgeWorkerListener.same(info,info,port:12345))
+            var standard=info;standard.psi.soi_protocol=0
+            try require(VPNBridgeWorkerListener.matches(standard,port:12345))
+            for port in [0,80,12346,65536] { try require(!VPNBridgeWorkerListener.matches(info,port:port)) }
+            var other=info;other.psi.soi_so=4
+            try require(!VPNBridgeWorkerListener.same(info,other,port:12345))
+            other=info;other.psi.soi_proto.pri_tcp.tcpsi_ini.insi_gencnt=4
+            try require(!VPNBridgeWorkerListener.same(info,other,port:12345))
+            for change in 0..<5 {
+                other=info
+                switch change {
+                case 0: other.psi.soi_family=AF_INET6
+                case 1: other.psi.soi_type=SOCK_DGRAM
+                case 2: other.psi.soi_protocol=IPPROTO_UDP
+                case 3: other.psi.soi_proto.pri_tcp.tcpsi_state=Int32(TSI_S_ESTABLISHED)
+                default: other.psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_46.i46a_addr4.s_addr=0
+                }
+                try require(!VPNBridgeWorkerListener.matches(other,port:12345))
+            }
+        } else if mode=="ready" {
             let raw=try ready(),parsed=try VPNSystemResolverReady(raw)
             try require(parsed.port==12345 && parsed.certificate==Data(certificate.utf8))
             for changed in [Data(raw.dropLast()),Data(" ".utf8)+raw,Data(raw.dropLast(2))+Data(",\"extra\":1}\n".utf8),try ready(0),try ready(80),try ready(65536),Data("{\"port\":12345,\"certificate\":\"fixture\"}\n".utf8)] {

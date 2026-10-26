@@ -122,6 +122,7 @@ final class VPNSystemResolverWorker: CustomStringConvertible, CustomDebugStringC
     }
     func validate(deadline: DispatchTime,checkCurrent: () throws -> Void) throws {
         try VPNBridgeWorkerIO.current(deadline);try checkCurrent();try process.authenticateResolverOutput()
+        guard try VPNBridgeWorkerListener.probe(process:process,port:port,deadline:deadline) else { throw VPNBridgeWorkerError.unavailable }
         try certificate.validate(deadline:deadline,checkCurrent:checkCurrent)
         try process.authenticateResolverOutput();try VPNBridgeWorkerIO.current(deadline)
     }

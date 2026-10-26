@@ -37,12 +37,14 @@ import Foundation
         try require(unlinkat(directory,filename,0)==0)
         let deadline=DispatchTime.now()+4
         var ownedConfiguration: VPNBridgeConfigurationFile?
+        var servicePort:Int?
         if production {
             struct Recipe: Decodable { let port: Int, apiPassword: String, resolverPassword: String }
             try require(info.st_size>0 && info.st_size<=1024)
             var bytes=[UInt8](repeating:0,count:1024)
             let count=read(input,&bytes,bytes.count);try require(count==info.st_size)
             let recipe=try JSONDecoder().decode(Recipe.self,from:Data(bytes.prefix(count)))
+            servicePort=recipe.port
             let protected=VPNBridgeProtectedSnapshot(schemaVersion:1,revision:1,
                 matchers:["198.19.253.201/32","2001:db8:fff:fd::c9/128"])
             let config=try VPNBridgeGOSTConfiguration(route:.http(host:"192.0.2.1",port:9),port:recipe.port,
@@ -59,6 +61,10 @@ import Foundation
         launchStarted=DispatchTime.now().uptimeNanoseconds
         let worker=try VPNBridgeWorkerProcess.launch(selection:selection,configuration:configuration,deadline:deadline,
             trace:{ phase=$0.rawValue })
+        if let servicePort {
+            stage="listener"
+            try VPNBridgeWorkerListener.require(process:worker,port:servicePort,deadline:deadline)
+        }
         // Parent holds this object through external API checks; no secrets are
         // emitted. Native audit/code validation is exercised by a private probe.
         print("READY \(worker.child.pid) \(worker.child.parent)");fflush(stdout)
