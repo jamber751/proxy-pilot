@@ -90,6 +90,7 @@ final class VPNSystemResolverWorker: CustomStringConvertible, CustomDebugStringC
     let port: Int
     let certificate: VPNSystemResolverCertificate
     private let process: VPNBridgeWorkerProcess
+    var child: VPNBridgeWorkerStamp { process.child }
     var description: String { "VPNSystemResolverWorker(redacted)" }
     var debugDescription: String { description }
     private init(process: VPNBridgeWorkerProcess,port: Int,certificate: VPNSystemResolverCertificate) {

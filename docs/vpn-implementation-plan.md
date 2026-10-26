@@ -9134,3 +9134,47 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   Current local native image pin не считается автоматически тождественным
   будущему CI artifact при другом SDK. Нельзя принимать manifest/environment
   как alternate production pin. Полный исходный план остаётся OPEN.
+
+### Продолжение 1.5il — canonical CI image and cross-system factory gate
+
+- [x] fbed7dd candidate run40281349943 завершён success на всех4OS:
+  jobs121435133946/121435134153/121435134167/121435134179. Existing actual GOST,
+  native TLS/SC steps сохранены; новые owner/fake checks включены в эти jobs.
+  Managed bridge40281349893, interface40281349901 и password40281349903 также
+  success; ещё работающие ownership/default-Keychain jobs не отменялись.
+- [x] После успешного macos26 producer job121435134167 скачан только test artifact
+  `native-resolver-canonical-fbed7dd187058f4d244884f8997787d185e45f1c` из этого
+  exact run. На host проверены regular UID/nlink, source SHA всех4 Go/build inputs,
+  весь binary SHA/size, strict all-arch signatures, identifier и оба CDHash.
+  Артефакт не исполнялся. Path: `/tmp/pp-ci-native-canonical-path.txt`.
+- [x] Native production selector/live-code checker и VM driver теперь фиксируют
+  только этот canonical image: bytes12059104, SHA256
+  `abc84ad3900b56158ad0020a3d0647b890b0a98d860f05d47d0d0d2a5d585bf5`;
+  arm64 `7a9452fca18d77d7dfa8894b550d73b2797c9387`,
+  x86_64 `bc859eaa7dbae1cd550060e54c6a7cf8e2089022`.
+  Старый локальный326fe... image не принимается alternate pin. Native source
+  inputs совпадают, но otool явно показывает local SDK26.1 и CI SDK26.5 при
+  одинаковом minos12.0; нельзя подменять cross-system test четырьмя rebuilds.
+- [x] Новый production CLI/driver gate не имеет fake macro. Fresh ordinary GHA
+  opt-in обязателен ДО artifact/network/process операций. Он вызывает настоящий
+  `VPNSystemResolverWorker.start`, проверяет fixed live code и epoch CA, делает
+  authenticated HTTPS localhost lookup, повторную live validation, normal stop
+  и parent SIGKILL. Проверяет исчезновение owned child и закрытый listener;
+  unknown cleanup требует VM disposal, remembered child PID не сигналится.
+- [x] Новый4OS native-factory consumer job зависит от полного source matrix и
+  скачивает ОДИН Universal artifact из того же run. Ни manifest, ни environment
+  не выбирают expected pins; оба слоя driver/Swift отказывают на другом image.
+  Это отдельная positive factory gate, а не объявление успеха по wrong-code fake.
+- [x] Inert/component47 PASS34.808s, без skips:
+  `/tmp/pp-native-canonical-factory-final-components.log`. Production CLI обоих
+  архитектур компилируется, на host выполняется только refusal77 перед I/O.
+  Earlier dedicated new CLI/owner suites19 PASS16.058s:
+  `/tmp/pp-native-factory-final-inert.log`.
+- [x] Canonical-pin frontend Universal build/sign и4 inert private-role guards
+  успешны на immutable current-source graph. Proof:
+  `/tmp/pp-native-canonical-frontend-2ug9sjrc/verification.json`, log:
+  `/tmp/pp-native-canonical-frontend.log`. Это не запуск native Go/GOST, не
+  host installation и не macOS12 runtime/product acceptance.
+- [ ] Нужен положительный current4OS native-factory consumer result. Затем —
+  joint native/GOST boot runtime, root publication/answer authority и остальные
+  требования первоначальных7 этапов. Normal App entry всё ещё старый.

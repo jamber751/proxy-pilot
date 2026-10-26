@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// Private ordinary-user role of the same signed frontend. One inherited Unix
-/// capability owns one fixed GOST child. Nothing from argv/environment supplies
+/// capability owns one fixed GOST or native resolver child. Nothing from argv/environment supplies
 /// a command, path, credential or executable choice. Parent EOF always stops it.
 enum VPNBridgeWorkerSupervisorEntry {
     static let argument="--proxypilot-private-bridge-worker-v1"

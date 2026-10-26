@@ -26,9 +26,9 @@ extension VPNBridgeWorkerProcess {
     func authenticateResolverOutput() throws {
         guard role == .systemResolver else { throw VPNBridgeWorkerError.unavailable }
         #if arch(arm64)
-        let expected="b65c535a297077a0e6907cbe99bd0042c09338bc"
+        let expected="7a9452fca18d77d7dfa8894b550d73b2797c9387"
         #else
-        let expected="d244b0a161c3ceb5da409800bde249621a96a4bf"
+        let expected="bc859eaa7dbae1cd550060e54c6a7cf8e2089022"
         #endif
         try authenticateOwnedCode(attributes:[kSecGuestAttributePid as String:NSNumber(value:child.pid)],
             identifier:"kz.documentolog.proxypilot.system-resolver",hash:expected)
