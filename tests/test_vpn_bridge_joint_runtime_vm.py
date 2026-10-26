@@ -17,7 +17,7 @@ import test_vpn_bridge_worker_gost_vm as gost
 import test_vpn_system_resolver_owner_vm as native
 ROOT=Path(__file__).resolve().parents[1]
 FLAG='PROXYPILOT_VM_JOINT_BRIDGE'
-MARKERS=['PASS joint-bridge-'+mode for mode in ('durable-before-ready','http','socks','normal-stop','parent-death','intent-invalidation','all-owned-cleanup')]
+MARKERS=['PASS joint-bridge-'+mode for mode in ('durable-before-ready','http','socks','normal-stop','parent-death','intent-invalidation','expired-validation','all-owned-cleanup')]
 
 def enabled():
     return base.allowed(os.getuid(),os.geteuid(),sys.platform,os.environ) and os.environ.get(FLAG)=='1'
@@ -82,7 +82,7 @@ def run_contract(gost_lease,native_lease):
             server.daemon_threads=True;thread=threading.Thread(target=server.serve_forever);thread.start();servers.append((server,thread))
         with tempfile.TemporaryDirectory(prefix='pp-joint-vm-',dir=os.environ['RUNNER_TEMP']) as folder:
             folder=Path(folder);folder.chmod(0o700);client=build_client(folder)
-            for mode in ('normal','crash','invalidate'):
+            for mode in ('normal','crash','invalidate','expired'):
                 epoch=folder/mode;epoch.mkdir(mode=0o700)
                 with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as reservation:
                     reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
@@ -113,9 +113,9 @@ def run_contract(gost_lease,native_lease):
                     process.stdin.write(b'A');process.stdin.flush();base.require(line(process)=='VALIDATED','decision')
                     if mode=='crash':process.kill();process.wait(timeout=5)
                     else:
-                        process.stdin.write(b'S' if mode=='normal' else b'I');process.stdin.flush()
-                        base.require(line(process)==('STOPPED' if mode=='normal' else 'INVALIDATED'),'cleanup')
-                        base.require(process.wait(timeout=5)==0,'cleanup')
+                        process.stdin.write({'normal':b'S','invalidate':b'I','expired':b'T'}[mode]);process.stdin.flush()
+                        base.require(line(process)=={'normal':'STOPPED','invalidate':'INVALIDATED','expired':'EXPIRED'}[mode],'cleanup')
+                        if mode=='normal':base.require(process.wait(timeout=5)==0,'cleanup')
                     end=time.monotonic()+5
                     for pid in (go_pid,native_pid):
                         while True:
@@ -128,7 +128,12 @@ def run_contract(gost_lease,native_lease):
                             try:check.connect(('127.0.0.1',endpoint))
                             except OSError:pass
                             else:raise base.Refused('cleanup')
-                    print(MARKERS[3 if mode=='normal' else 4 if mode=='crash' else 5],flush=True)
+                    if mode in ('invalidate','expired'):
+                        # Prove validate itself cleaned up, before explicit stop or deinit.
+                        base.require(process.poll() is None,'cleanup')
+                        process.stdin.write(b'S');process.stdin.flush()
+                        base.require(process.wait(timeout=5)==0,'cleanup')
+                    print(MARKERS[{'normal':3,'crash':4,'invalidate':5,'expired':6}[mode]],flush=True)
                 finally:
                     process.stdin.close()
                     if process.poll() is None:
@@ -136,10 +141,10 @@ def run_contract(gost_lease,native_lease):
                         except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
                     diagnostic=process.stderr.read(4096);process.stdout.close();process.stderr.close()
                     for row in diagnostic.decode('ascii',errors='replace').splitlines():
-                        if re.fullmatch(r'FAIL joint-bridge category=(invalid|expired|transport|unavailable|cleanupUnknown|retired|other) stage=(inputs|activate|validate|stop|invalidate)',row):print(row,flush=True)
+                        if re.fullmatch(r'FAIL joint-bridge category=(invalid|expired|transport|unavailable|cleanupUnknown|retired|other) stage=(inputs|activate|validate|stop|invalidate|expired)',row):print(row,flush=True)
     finally:
         for server,thread in reversed(servers):server.shutdown();server.server_close();thread.join(timeout=3)
-    print(MARKERS[6],flush=True)
+    print(MARKERS[7],flush=True)
 
 class PureTests(unittest.TestCase):
     def test_host_refuses_before_any_artifact_or_runtime(self):

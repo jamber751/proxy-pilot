@@ -106,9 +106,9 @@ final class VPNBridgeRuntime: CustomStringConvertible, CustomDebugStringConverti
     func validate(deadline: DispatchTime) throws {
         lock.lock();defer { lock.unlock() }
         guard !retired else { throw VPNBridgeRuntimeError.retired }
-        let budget=try VPNBridgeRuntimeBudget(deadline:deadline,clock:clock)
-        func current() throws { try budget.check(checkIntent) }
         do {
+            let budget=try VPNBridgeRuntimeBudget(deadline:deadline,clock:clock)
+            func current() throws { try budget.check(checkIntent) }
             try current();try native.validate(deadline:deadline,checkCurrent:current)
             let connection=try connections.open(deadline:budget.continuousDeadline,checkCurrent:current)
             defer { connection.close() };try connection.authenticate()

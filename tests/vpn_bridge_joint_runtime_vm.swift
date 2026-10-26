@@ -53,8 +53,17 @@ import Foundation
                 stage="invalidate";current=false
                 var refused=false
                 do { try runtime.validate(deadline:.now()+2) } catch { refused=true }
-                try require(refused);try runtime.stop(deadline:.now()+2)
-                print("INVALIDATED");fflush(stdout);return
+                try require(refused)
+                print("INVALIDATED");fflush(stdout)
+                try require(read(STDIN_FILENO,&command,1)==1 && command==83)
+                try runtime.stop(deadline:.now()+2);return
+            } else if command==84 {
+                stage="expired";var refused=false
+                do { try runtime.validate(deadline:.now()) } catch { refused=true }
+                try require(refused)
+                print("EXPIRED");fflush(stdout)
+                try require(read(STDIN_FILENO,&command,1)==1 && command==83)
+                try runtime.stop(deadline:.now()+2);return
             } else { throw VPNBridgeRuntimeError.invalid }
         }
     }

@@ -9347,3 +9347,20 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   App cache и не выдаёт себя за authenticated root bootstrap/production domain
   permit. Далее нужны real root11 + joint runtime acceptance, packaging/delivery
   images и normal-entry integration, а также все оставшиеся исходные7 этапов.
+
+### Продолжение 1.5is — cleanup on an already-expired validation
+
+- [x] Исправлена граница `VPNBridgeRuntime.validate`: создание budget теперь
+  внутри cleanup catch. Уже истёкший входной deadline приводит к остановке
+  обоих owned workers; раньше ошибка могла выйти до cleanup.
+- [x] VM fixture дополнен expired-validation. Для intent invalidation и expiry
+  клиент после отказа остаётся живым и ждёт отдельного разрешения на stop:
+  Python сначала проверяет исчезновение обоих workers и закрытие обоих ports,
+  затем разрешает идемпотентный stop. Успех больше нельзя получить за счёт
+  последующего stop/deinit или завершения родителя.
+- [x] Pure shared-budget6 + both-arch production compile/inert guards3:
+  9 PASS47.690s, без skips. `/tmp/pp-joint-runtime-expired-handshake.log`.
+  На host Go/GOST, TCP/DNS и системная сеть не запускались/не изменялись.
+- [ ] Actual joint VM acceptance остаётся OPEN. Этот результат — compile/pure
+  evidence; он не заменяет запуск двух workers, root11 acceptance, domain
+  authority, normal App integration и полный исходный план.
