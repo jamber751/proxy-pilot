@@ -10,6 +10,7 @@ import sys
 
 TOOLCHAIN='go1.25.4'
 PRODUCTION=('go.mod','main.go','lookup.go')
+IDENTIFIER='kz.documentolog.proxypilot.system-resolver'
 
 
 def build(destination):
@@ -41,7 +42,8 @@ def build(destination):
                          CGO_CFLAGS='-mmacosx-version-min=12.0',CGO_LDFLAGS='-mmacosx-version-min=12.0')
         run([go,'build','-mod=readonly','-trimpath','-buildvcs=false','-ldflags=-s -w -linkmode=external','-o',str(output),'.'],environment)
         run(['/usr/bin/codesign','--force','--sign','-','--options','runtime,hard,kill',
-             '--identifier','kz.documentolog.proxypilot.system-resolver',str(output)])
+             '--identifier',IDENTIFIER,'--runtime-version','12.0.0','--timestamp=none',
+             '--digest-algorithm=sha256','--pagesize','4096',str(output)])
         run(['/usr/bin/codesign','--verify','--strict',str(output)])
         architecture=run(['/usr/bin/lipo','-archs',str(output)]).decode().strip()
         load=run(['/usr/bin/otool','-l',str(output)]).decode()
@@ -51,9 +53,22 @@ def build(destination):
     universal=destination/'system-resolver'
     run(['/usr/bin/lipo','-create',*[str(destination/('system-resolver-'+arch)) for arch in outputs],'-output',str(universal)])
     universal.chmod(0o700)
-    run(['/usr/bin/codesign','--verify','--strict',str(universal)])
+    run(['/usr/bin/codesign','--verify','--strict','--all-architectures',str(universal)])
+    code_hashes={}
+    import re
+    for arch in outputs:
+        # codesign displays on stderr; it is already retained in the private log.
+        result=subprocess.run(['/usr/bin/codesign','--display','--verbose=4','--arch',arch,str(universal)],
+                              capture_output=True,timeout=20)
+        if result.returncode:raise ValueError('signatureMetadata')
+        hashes=re.findall(rb'^CDHash=([a-f0-9]{40})$',result.stderr,re.M)
+        identifiers=re.findall(rb'^Identifier=(.+)$',result.stderr,re.M)
+        if len(hashes)!=1 or identifiers!=[IDENTIFIER.encode()]:raise ValueError('signatureMetadata')
+        code_hashes[arch]=hashes[0].decode()
     if any((root/name).read_bytes()!=data for name,data in captured.items()):raise ValueError('sourceChanged')
     record={'schema':1,'toolchain':TOOLCHAIN,'minimumMacOS':'12.0','outputs':outputs,
+            'universal':{'bytes':universal.stat().st_size,'sha256':hashlib.sha256(universal.read_bytes()).hexdigest(),
+                         'identifier':IDENTIFIER,'codeDirectoryHashes':code_hashes,'pageSize':4096,'runtimeVersion':'12.0.0'},
             'sources':{name:hashlib.sha256(data).hexdigest() for name,data in captured.items()}}
     manifest=destination/'verification.json';manifest.write_text(json.dumps(record,sort_keys=True,indent=2)+'\n');manifest.chmod(0o600)
     return record

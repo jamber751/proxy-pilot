@@ -1,10 +1,14 @@
 // An owned ordinary-user resolver worker. Startup takes a secret on inherited
-// stdin, never argv/environment. Native DNS is used only for authenticated calls.
+// stdin, never argv/environment. A bounded JSON line starts the worker; the
+// parent's remaining open stdin pipe is its lifetime capability. EOF or any
+// additional byte retires the listener. Native DNS is used only for authenticated calls.
 // The parent must verify this signed child, pin its per-process TLS certificate,
 // and retire GOST with this epoch; this worker alone is not a domain authority.
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -85,6 +89,33 @@ func passwordValid(value string) bool {
 		}
 	}
 	return true
+}
+
+// A startup message must finish with a newline, not EOF. The parent keeps the
+// same private pipe open until retirement; closing it is never successful startup.
+func startup(reader io.Reader) (map[string]string, *bufio.Reader, error) {
+	buffer := bufio.NewReaderSize(reader, 512)
+	line, err := buffer.ReadSlice('\n')
+	if err != nil || len(line) > 512 || buffer.Buffered() != 0 {
+		return nil, nil, errors.New("startup")
+	}
+	fields, err := decodeFields(bytes.NewReader(line), 512, "password")
+	if err != nil || !passwordValid(fields["password"]) {
+		return nil, nil, errors.New("startup")
+	}
+	return fields, buffer, nil
+}
+
+func ownerLifetime(reader io.Reader) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		var extra [1]byte
+		// No commands, keepalives, retries or credentials after the startup line.
+		// EOF, data and errors all invalidate the same lifetime capability.
+		_, _ = reader.Read(extra[:])
+		close(done)
+	}()
+	return done
 }
 func hostValid(value string) bool {
 	if len(value) < 1 || len(value) > 253 || strings.IndexByte(value, 0) >= 0 {
@@ -215,18 +246,30 @@ func run() error {
 		return errors.New("guard")
 	}
 	input := os.Stdin
+	defer input.Close()
 	info, err := input.Stat()
 	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 		return errors.New("startup")
 	}
-	fields, err := decodeFields(input, 512, "password")
-	_ = input.Close()
-	if err != nil || !passwordValid(fields["password"]) {
+	fields, owner, err := startup(input)
+	if err != nil {
 		return errors.New("startup")
+	}
+	ownerGone := ownerLifetime(owner)
+	current := func() bool {
+		select {
+		case <-ownerGone:
+			return false
+		default:
+			return true
+		}
 	}
 	cert, public, err := certificate()
 	if err != nil {
 		return errors.New("startup")
+	}
+	if !current() {
+		return nil
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -238,17 +281,36 @@ func run() error {
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 5 * time.Second,
 		IdleTimeout: time.Second, MaxHeaderBytes: 4096, ErrorLog: log.New(io.Discard, "", 0),
 		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler))}
+	finished := make(chan struct{})
+	defer close(finished)
+	defer server.Close()
+	go func() {
+		select {
+		case <-ownerGone:
+			// Close also terminates accepted connections, not only the listener.
+			// Main then exits; no stuck native lookup keeps an orphan process alive.
+			_ = server.Close()
+		case <-finished:
+		}
+	}()
 	limited := &limitedListener{Listener: listener, slots: make(chan struct{}, 32)}
 	secured := tls.NewListener(limited, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13})
 	// This public certificate is not sufficient evidence on an arbitrary pipe.
 	// Parent must own/authenticate this exact signed child before trusting READY.
+	if !current() {
+		return nil
+	}
 	if json.NewEncoder(os.Stdout).Encode(struct {
 		Port        int    `json:"port"`
 		Certificate string `json:"certificate"`
 	}{listener.Addr().(*net.TCPAddr).Port, string(public)}) != nil {
 		return errors.New("startup")
 	}
-	return server.Serve(secured)
+	err = server.Serve(secured)
+	if !current() {
+		return nil
+	}
+	return err
 }
 func main() {
 	if run() != nil {

@@ -6,13 +6,66 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const secret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestStartupRequiresBoundedCompleteLine(t *testing.T) {
+	valid := `{"password":"` + secret + `"}`
+	for _, input := range []string{valid, "", "{}\n", valid + "\nextra", valid + "\n\n", valid + strings.Repeat(" ", 512) + "\n", `{"password":"` + secret + `","password":"` + secret + `"}` + "\n"} {
+		if _, _, err := startup(strings.NewReader(input)); err == nil {
+			t.Fatal("invalid startup accepted")
+		}
+	}
+	fields, _, err := startup(strings.NewReader(valid + "\n"))
+	if err != nil || fields["password"] != secret {
+		t.Fatal("complete startup refused")
+	}
+}
+
+func TestOwnerLifetimeRetiresOnEOFDataAndError(t *testing.T) {
+	for _, mode := range []string{"eof", "data", "error"} {
+		t.Run(mode, func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			done := ownerLifetime(reader)
+			select {
+			case <-done:
+				t.Fatal("live owner retired")
+			case <-time.After(10 * time.Millisecond):
+			}
+			writeDone := make(chan struct{})
+			go func() {
+				defer close(writeDone)
+				switch mode {
+				case "eof":
+					_ = writer.Close()
+				case "error":
+					_ = writer.CloseWithError(errors.New("fixture"))
+				case "data":
+					_, _ = writer.Write([]byte{'!'})
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("lost owner remained live")
+			}
+			select {
+			case <-writeDone:
+			case <-time.After(time.Second):
+				t.Fatal("owner input was not consumed")
+			}
+		})
+	}
+}
 
 func requestFor(body string) *http.Request {
 	r := httptest.NewRequest("POST", "https://127.0.0.1:12345/resolve", strings.NewReader(body))

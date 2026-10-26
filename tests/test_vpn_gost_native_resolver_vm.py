@@ -20,7 +20,8 @@ ROOT=Path(__file__).resolve().parents[1]
 FLAG='PROXYPILOT_VM_NATIVE_SYSTEM_RESOLVER_TESTS'
 WORKER='PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY'
 MARKERS=['PASS gost-native-resolver-'+protocol+'-'+mode for protocol in ('http','socks')
-         for mode in ('success','wrong-password','wrong-ca')]+['PASS gost-native-resolver-owned-cleanup']
+         for mode in ('success','wrong-password','wrong-ca')]+['PASS gost-native-resolver-owner-data-stop',
+         'PASS gost-native-resolver-owner-eof-stop','PASS gost-native-resolver-owned-cleanup']
 
 
 def enabled():
@@ -135,7 +136,7 @@ def run_contract(gost_lease,worker_lease,system_id=None):
                 base.require(subprocess.run(['/usr/bin/codesign','--verify','--strict',str(worker_lease.path)],capture_output=True,timeout=10).returncode==0,'binaryRefused')
                 child=subprocess.Popen([str(worker_lease.path)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log('worker-'+str(index)+'.log'),env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'})
                 children.append(child);worker_lease.validate()
-                child.stdin.write(json.dumps({'password':password}).encode());child.stdin.close()
+                child.stdin.write(json.dumps({'password':password}).encode()+b'\n');child.stdin.flush()
                 data=b'';end=time.monotonic()+5
                 while not data.endswith(b'\n'):
                     base.require(child.poll() is None and time.monotonic()<end and len(data)<4096,'startup')
@@ -146,7 +147,16 @@ def run_contract(gost_lease,worker_lease,system_id=None):
                              and ready['certificate'].startswith('-----BEGIN CERTIFICATE-----\n')
                              and ready['certificate'].endswith('-----END CERTIFICATE-----\n'),'startup')
                 worker_lease.validate();return child,ready
-            worker,ready=launch_worker(0);other,foreign=launch_worker(1);stop(other)
+            def retired(child,port):
+                base.require(child.wait(timeout=3)==0,'cleanup')
+                with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as client:
+                    client.settimeout(.3)
+                    try:client.connect(('127.0.0.1',port))
+                    except OSError:pass
+                    else:raise base.Refused('cleanup')
+            worker,ready=launch_worker(0);other,foreign=launch_worker(1)
+            other.stdin.write(b'!');other.stdin.flush();retired(other,foreign['port'])
+            print('PASS gost-native-resolver-owner-data-stop',flush=True)
             for protocol in ('http','socks'):
                 for mode in ('success','wrong-password','wrong-ca'):
                     hostname=question_host(system_id,protocol,mode)
@@ -201,6 +211,8 @@ def run_contract(gost_lease,worker_lease,system_id=None):
                         print('PASS gost-native-resolver-'+protocol+'-'+mode,flush=True)
                     finally:stop(child)
             base.require(observed=={'echo':2,'proxy':0,'errors':0},'decision')
+            worker.stdin.close();retired(worker,ready['port'])
+            print('PASS gost-native-resolver-owner-eof-stop',flush=True)
     finally:
         for child in reversed(children):
             stop(child)
@@ -223,7 +235,7 @@ class PureTests(unittest.TestCase):
         self.assertEqual(question_host(run,'socks','success'),'tcp.pp-'+run+'.test')
         for mode in ('wrong-password','wrong-ca'):
             for protocol in ('http','socks'):self.assertEqual(question_host(run,protocol,mode),'localhost')
-        self.assertEqual(len(MARKERS),7)
+        self.assertEqual(len(MARKERS),9)
     def test_host_refuses_before_binary_or_worker_reads_or_process(self):
         with patch.dict(os.environ,{},clear=True),patch.object(base,'verify_binary') as binary,patch(__name__+'.verified_worker') as worker,patch('subprocess.Popen') as spawn:
             with self.assertRaisesRegex(base.Refused,'guardDenied'):live()

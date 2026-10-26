@@ -39,7 +39,8 @@ class HandlerTests(unittest.TestCase):
             result=subprocess.run(['go','test','-race','-count=1','-v','./...'],cwd=folder,env=env,capture_output=True,text=True,timeout=180)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         expected={'TestStrictRequestBeforeLookup','TestAuthenticationBeforeBodyAndLookup','TestNativeFailureNeverFallsBack',
-                  'TestNativeResultAndFamily','TestAdmissionHeldUntilNativeCallActuallyEnds','TestCertificateIsFreshAndLoopbackOnly','TestPasswordAndHostInputs'}
+                  'TestNativeResultAndFamily','TestAdmissionHeldUntilNativeCallActuallyEnds','TestCertificateIsFreshAndLoopbackOnly','TestPasswordAndHostInputs',
+                  'TestStartupRequiresBoundedCompleteLine','TestOwnerLifetimeRetiresOnEOFDataAndError'}
         observed={line.split()[2] for line in result.stdout.splitlines() if line.startswith('--- PASS: ')}
         self.assertEqual(observed,expected);self.assertNotIn('--- SKIP:',result.stdout)
         self.assertTrue(all((WORKER/name).read_bytes()==data for name,data in sources.items()),'Source changed during tests')

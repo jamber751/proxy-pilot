@@ -8990,4 +8990,49 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   custody release, durable boot cache, final refusal changed/revoke. Log:
   `/tmp/pp-bootstrap-custody-observation.log`. Это signed ordinary-user Unix IPC,
   без root/VPN/сетевых настроек; fixture компилирует обе архитектуры.
-- [ ] Повторная Intel CI-проверка этой test-only коррекции ещё нужна.
+- [x] Повторная Intel CI-проверка на60ab3e5 успешна: run40247043782,
+  contracts job121330698878. Полный mode600 log:
+  `/tmp/pp-custody-observation-intel-121330698878.log`; 18 выбранных
+  inventory/bootstrap tests PASS93.882s, без skips. Все6 jobs этого run success.
+
+### Продолжение 1.5ih — native resolver lifetime capability
+
+- [x] Production native worker теперь получает bounded JSON startup line через
+  inherited stdin pipe и сохраняет этот же канал открытым как lifetime capability.
+  EOF не заменяет конец startup frame: без newline запуск отклоняется. После
+  startup нет команд/keepalive/re-auth: любой следующий byte, EOF или read error
+  инвалидируют lifetime. Нет выбора executable/path или секретов через argv/env.
+- [x] На потерю lifetime worker вызывает `http.Server.Close`, закрывая listener
+  и accepted connections, затем выходит. Перед публикацией READY повторно
+  проверяется lifetime. Native getaddrinfo остаётся только внутри authenticated
+  request; потеря владельца не включает fallback или автономное переподключение.
+  Это lifetime primitive, не root/DNS answer authority и не App factory.
+- [x] Actual fresh-VM native GOST/TLS gate адаптирован к открытому owner pipe.
+  Все прежние HTTP/SOCKS success, wrong-password, wrong-CA и actual SC witness
+  сохранены. Foreign-CA worker останавливается дополнительным byte, основной —
+  закрытием pipe после обменов. Оба новых обязательных markers требуют exit0
+  и невозможности подключения к завершённому owned listener. Native SC owner
+  также требует эти markers. На host gate не запускается.
+- [x] Local pure/guard 15 tests PASS5.071s, без skips:
+  `/tmp/pp-native-resolver-lifetime-final-pure.log`. Go race tests используют
+  fake lookup, in-memory HTTP и io.Pipe: ни listener, ни native getaddrinfo
+  на host не вызываются. Внутренние Go checks включают strict bounded startup,
+  rejection duplicate/extra/truncated frames и owner EOF/data/error retirement.
+- [x] Build-only native resolver Universal candidate собран в двух независимых
+  каталогах. Полные unsigned build inputs/source pins и signed Universal
+  metadata совпали. Явно заданы pageSize4096, runtimeVersion12.0.0, SHA256,
+  no timestamp, hardened options; проверены strict all-arch signatures,
+  deployment target12.0 и оба CDHash. Сам worker на host не исполнялся.
+  `/tmp/pp-native-lifetime-build-path.txt` и
+  `/tmp/pp-native-lifetime-repro-path.txt` указывают на manifests/артефакты.
+  Universal bytes12059104, SHA256
+  `326fe770b01e3608528955b2385312ec5f6c9fa269086e5750417b8629ef6964`;
+  arm64 CDHash `b65c535a297077a0e6907cbe99bd0042c09338bc`,
+  x86_64 CDHash `d244b0a161c3ceb5da409800bde249621a96a4bf`.
+  Это воспроизводимость на текущем builder в разных каталогах, не утверждение
+  об одинаковых байтах при другом Xcode/SDK или proof исполнения macOS12.
+- [ ] Нужен actual 4OS runtime result нового lifetime protocol. Native signed
+  selection/factory, live audit identity, bounded READY/certificate custody и
+  совместное retirement с GOST ещё не подключены к normal App entry. Открытый
+  канал сам по себе не доказывает подписанный код другой стороны или permission
+  выпускать corporate DNS answer. Domain/root policy и исходные7 этапов OPEN.
