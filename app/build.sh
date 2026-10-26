@@ -52,7 +52,7 @@ if [[ "$VPN_INSTALLER" == 1 ]]; then
     "$HERE/VPNLegacyPasswordBackend.swift" "$HERE/VPNPasswordWorkerSession.swift"
     "$HERE/VPNLiveController.swift" "$HERE/VPNPanel.swift"
     "$HERE/VPNBridgeBypass.swift" "$HERE/VPNBridgeBypassEntry.swift" "$HERE/VPNBridgeProtection.swift"
-    "$HERE/VPNBridgeProtectionAPI.swift" "$HERE/VPNBridgeBootstrap.swift" "$HERE/VPNBridgeWorkerProcess.swift" "$HERE/VPNBridgeWorkerSupervisor.swift" "$HERE/VPNBridgeWorkerIdentity.swift" "$HERE/VPNBridgeWorkerListener.swift" "$HERE/VPNBridgeGOSTConfiguration.swift" "$HERE/VPNSystemResolverWorker.swift")
+    "$HERE/VPNBridgeProtectionAPI.swift" "$HERE/VPNBridgeBootstrap.swift" "$HERE/VPNBridgeRuntime.swift" "$HERE/VPNBridgeRuntimeBootstrap.swift" "$HERE/VPNBridgeWorkerProcess.swift" "$HERE/VPNBridgeWorkerSupervisor.swift" "$HERE/VPNBridgeWorkerIdentity.swift" "$HERE/VPNBridgeWorkerListener.swift" "$HERE/VPNBridgeGOSTConfiguration.swift" "$HERE/VPNSystemResolverWorker.swift")
   touch "$APP/Contents/Resources/vpn-bridge-v1" "$APP/Contents/Resources/vpn-bridge-v2"
 fi
 LINK_FLAGS=()

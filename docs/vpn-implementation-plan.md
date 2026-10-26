@@ -9311,3 +9311,39 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   `/tmp/pp-owned-loopback-listener-xnu-final.log`. Это включает прежние GOST
   worker/config tests и все default VM refusal guards; не выдаётся за real
   kernel TCP inspection на host или новый full frontend bundle proof.
+
+### Продолжение 1.5ir — joint owned runtime and root/cache adapter
+
+- [x] `VPNBridgeRuntime.activatePrepared` собирает один epoch из двух fixed
+  selected images: native resolver/CA -> initial protected GOST config ->
+  authenticated private API -> synchronous full-policy ACK -> owned service
+  listener -> final native/API/listener validation. Секреты API/resolver отдельные,
+  случайные, не попадают в settings/argv/env/logs. Ошибка после частичного запуска
+  останавливает оба owned процесса; unknown cleanup не становится успехом.
+- [x] `VPNBridgeRuntimeBootstrap` — production adapter к существующему root11:
+  root custody, durable App union, joint activation, post-store check, final
+  root ACK. Смена intent инвалидирует runtime; validate failure завершает оба
+  процесса, retire идемпотентен. Domains явно остаются закрытыми через
+  domainAuthorityUnavailable до подключения root answer authority; нет тихой
+  подмены corporate DNS обычным system lookup. Normal App entry не переключён.
+- [x] Общий startup budget сохраняет один Dispatch deadline и один continuous
+  deadline на весь запуск. Sleep/backwards/overflow и callback expiry проверены
+  fake continuous clock без изменения системного времени. Pure6 tests
+  PASS24.445s без skips: `/tmp/pp-joint-runtime-budget.log`. Compilation включает
+  production runtime обеих архитектур; никакого процесса/сокета в этих tests.
+- [x] Current-source full Universal frontend, strict deep signature и4 inert
+  private-role guards успешны. Root adapter компилируется с настоящими helper
+  session/spec types, не заменёнными protocol stubs. Proof:
+  `/tmp/pp-joint-frontend-7qhzme07/verification.json`; log:
+  `/tmp/pp-joint-frontend.log`. Ни native Go, ни GOST на host не исполнялись.
+- [x] Новый fresh ordinary VM component gate подготовлен: durable private App
+  cache до READY, два настоящих fixed worker, auto HTTP/SOCKS на одном порту,
+  nonce echo через localhost, validate, normal stop, parent SIGKILL и intent
+  invalidation. Проверяется исчезновение обоих children и закрытие обоих ports.
+  Default both-arch compile/refusal3 PASS23.438s, без skips:
+  `/tmp/pp-joint-runtime-compile-guards.log`. Gate включён только вmacos26 source
+  job, где есть оба reviewed Universal images; все существующие4OS gates сохранены.
+- [ ] Нужен actual joint component result. Этот VM fixture использует prepared
+  App cache и не выдаёт себя за authenticated root bootstrap/production domain
+  permit. Далее нужны real root11 + joint runtime acceptance, packaging/delivery
+  images и normal-entry integration, а также все оставшиеся исходные7 этапов.
