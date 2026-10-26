@@ -5,8 +5,8 @@ set -euo pipefail
 
 HERE="${0:A:h}"
 ROOT="${HERE:h}"
-[[ $# == 6 ]] || {
-  print -u2 "Usage: $0 SEQUENCE PREVIOUS_MANIFEST PREVIOUS_SIGNATURE ENGINE_ARTIFACT UNIVERSAL_GOST NEW_OUTPUT_DIR"
+[[ $# == 7 ]] || {
+  print -u2 "Usage: $0 SEQUENCE PREVIOUS_MANIFEST PREVIOUS_SIGNATURE ENGINE_ARTIFACT UNIVERSAL_GOST NEW_OUTPUT_DIR UNIVERSAL_RESOLVER"
   exit 64
 }
 SEQUENCE="$1"
@@ -15,6 +15,7 @@ PREVIOUS_SIGNATURE="${3:A}"
 ENGINE_ARTIFACT="${4:A}"
 UNIVERSAL_GOST="${5:A}"
 OUTPUT="${6:A}"
+UNIVERSAL_RESOLVER="${7:A}"
 print -r -- "$SEQUENCE" | /usr/bin/grep -Eq '^[1-9][0-9]{0,18}$' || {
   print -u2 "Expected a canonical positive sequence"; exit 64
 }
@@ -26,8 +27,9 @@ RELEASE_SEQUENCE=$(< "$HERE/vpn-release-sequence.txt")
    && -f "$PREVIOUS_SIGNATURE" && ! -L "$PREVIOUS_SIGNATURE" \
    && -d "$ENGINE_ARTIFACT" && ! -L "$ENGINE_ARTIFACT" \
    && -f "$UNIVERSAL_GOST" && ! -L "$UNIVERSAL_GOST" \
+   && -f "$UNIVERSAL_RESOLVER" && ! -L "$UNIVERSAL_RESOLVER" \
    && "$OUTPUT" == /* && ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || {
-  print -u2 "Expected fixed previous sidecars, engine artifact, Universal GOST and a new absolute output"
+  print -u2 "Expected fixed previous sidecars, engine artifact, reviewed Universal workers and a new absolute output"
   exit 64
 }
 
@@ -43,6 +45,12 @@ trap cleanup EXIT
 mkdir -m 700 "$OUTPUT"
 mkdir -m 700 "$WORK/key" "$WORK/app" "$WORK/helper"
 mkdir -m 700 "$WORK/key/ModuleCache"
+
+# Freeze and verify both reviewed images before any access to signing keys.
+# No image execution or re-signing; old SDK builds are not accepted alternates.
+python3 "$HERE/vpn-bridge/stage_workers.py" "$UNIVERSAL_GOST" "$UNIVERSAL_RESOLVER" "$WORK/workers"
+UNIVERSAL_GOST="$WORK/workers/gost"
+UNIVERSAL_RESOLVER="$WORK/workers/system-resolver"
 
 # Freeze the public source sidecars once. Verification and both transition
 # operations below must use these same bytes, even if input files later change.
@@ -99,6 +107,9 @@ GOST_ARCHES=$(/usr/bin/lipo -archs "$UNIVERSAL_GOST")
 /bin/cp "$UNIVERSAL_GOST" \
   "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
 /bin/chmod 755 "$WORK/app/ProxyPilot.app/Contents/Resources/bin/gost"
+/bin/cp "$UNIVERSAL_RESOLVER" \
+  "$WORK/app/ProxyPilot.app/Contents/Resources/bin/system-resolver"
+/bin/chmod 755 "$WORK/app/ProxyPilot.app/Contents/Resources/bin/system-resolver"
 /usr/bin/codesign --force --sign - --options runtime,hard,kill \
   --identifier kz.documentolog.proxypilot "$WORK/app/ProxyPilot.app"
 /usr/bin/codesign --verify --deep --strict "$WORK/app/ProxyPilot.app"

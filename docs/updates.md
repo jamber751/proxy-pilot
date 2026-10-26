@@ -58,7 +58,7 @@ public DMG/ZIP and VPN companion contain the exact same ad-hoc-signed app:
 
 ```sh
 zsh app/build-joint-release.sh SEQUENCE PREVIOUS_MANIFEST PREVIOUS_SIGNATURE \
-  ENGINE_ARTIFACT UNIVERSAL_GOST NEW_OUTPUT_DIRECTORY
+  ENGINE_ARTIFACT UNIVERSAL_GOST NEW_OUTPUT_DIRECTORY UNIVERSAL_RESOLVER
 ```
 
 The sequence must match `app/vpn-release-sequence.txt`. The command uses the

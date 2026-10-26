@@ -8,6 +8,7 @@ on:
       - 'bin/proxypilot'
       - 'app/build.sh'
       - 'app/build-joint-release.sh'
+      - 'app/vpn-bridge/stage_workers.py'
       - 'app/main.swift'
       - 'app/VPNConfiguration.swift'
       - 'app/VPNBridge*.swift'
@@ -61,7 +62,7 @@ jobs:
           /bin/zsh -n bin/proxypilot
           /bin/zsh -n app/build.sh
       - name: Private bridge processes, handoff, CLI selection and update retention
-        run: PYTHONPATH=tests python3 -m unittest test_managed_bridge_namespace test_power test_vpn_bridge_handoff test_cli_selection test_vpn_joint_release_builder test_vpn_bridge_bypass test_vpn_bridge_protection test_vpn_bridge_protection_api test_vpn_bridge_api_native test_vpn_bridge_worker test_vpn_bridge_gost_configuration test_vpn_system_resolver_owner test_vpn_bridge_runtime test_update_quiescence -v
+        run: PYTHONPATH=tests python3 -m unittest test_managed_bridge_namespace test_power test_vpn_bridge_handoff test_cli_selection test_vpn_joint_release_builder test_vpn_bridge_worker_staging test_vpn_bridge_bypass test_vpn_bridge_protection test_vpn_bridge_protection_api test_vpn_bridge_api_native test_vpn_bridge_worker test_vpn_bridge_gost_configuration test_vpn_system_resolver_owner test_vpn_bridge_runtime test_update_quiescence -v
       - name: Authenticated root bootstrap and durable App cache
         run: |
           PYTHONPATH=tests python3 -m unittest \

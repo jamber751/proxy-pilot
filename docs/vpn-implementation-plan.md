@@ -9364,3 +9364,30 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
 - [ ] Actual joint VM acceptance остаётся OPEN. Этот результат — compile/pure
   evidence; он не заменяет запуск двух workers, root11 acceptance, domain
   authority, normal App integration и полный исходный план.
+
+### Продолжение 1.5it — reviewed workers enter the joint release assembly
+
+- [x] `build-joint-release.sh` теперь требует седьмой аргумент — canonical
+  Universal resolver. До Keychain/signing оба worker snapshot проходят полную
+  проверку fixed size/SHA256, source inode/metadata, strict all-architecture
+  signatures, exact identifiers и CDHashes. Нельзя передать альтернативную
+  сборку SDK или заменить pins через env/manifest. Новая staging directory
+  создаётся эксклюзивно; отказ удаляет только собственную частичную сборку.
+- [x] Snapshot GOST и resolver копируются в app Resources/bin до final app
+  signing; modes755 пригодны после root install. Самих workers не re-sign:
+  production runtime требует именно reviewed signed bytes. Старый вызов без
+  resolver отказывается до Keychain. Документация обновлена.
+- [x] Реальное file/signature-only staging обеих reviewed Universal images
+  успешно; изменение последнего byte resolver отвергнуто, частичная сборка
+  очищена. Proof `/tmp/pp-staged-bridge-proof.DaZdHv/verification.txt`.
+  Go/GOST не исполнялись; Keychain, installer и сеть не затрагивались.
+- [x] Staging refusal/integrity + joint builder checks:10 PASS0.101s, без skips,
+  `/tmp/pp-worker-staging-tests.log`. Gate добавлен в managed-bridge workflow.
+- [ ] Это delivery wiring, НЕ готовый sealed installer: полный builder не
+  запускался, normal App entry ещё legacy. Требуются actual joint runtime/root11
+  acceptance, source-built package acceptance, corporate domain authority и
+  оставшиеся пункты исходного7-stage плана.
+- [ ] Current joint runtime CI93e5daf run40295554993 подтверждён queued; более
+  ранний b513c93 run40294364339 уже имеет живой Intel job. Их не перезапускали
+  и не отменяли. На2d931ee run40291548652 все4 sourceOS успешно;
+  native-factory14/26Intel успешно,26ARM выполняется,15Intel ждёт.

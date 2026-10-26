@@ -63,6 +63,16 @@ class VPNJointReleaseBuilderTests(unittest.TestCase):
         positions = [source.index(value) for value in required]
         self.assertEqual(positions, sorted(positions))
 
+    def test_fixed_worker_staging_precedes_keychain_and_both_images_enter_bundle(self):
+        source = SCRIPT.read_text()
+        self.assertIn('[[ $# == 7 ]]', source)
+        self.assertLess(source.index('stage_workers.py'), source.index('"$KEY_TOOL" public'))
+        for name in ('gost', 'system-resolver'):
+            self.assertIn('"$WORK/workers/' + name + '"', source)
+            copy = source.index('Resources/bin/' + name)
+            self.assertLess(copy, source.index('/usr/bin/codesign --force --sign -'))
+        self.assertIn('UNIVERSAL_RESOLVER="${7:A}"', source)
+
     def test_source_sidecars_are_frozen_before_public_preflight_or_keychain(self):
         source = SCRIPT.read_text()
         block = source.split('"$PREVIOUS_SIGNATURE" "$WORK" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]

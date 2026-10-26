@@ -49,7 +49,12 @@ See `docs/vpn-implementation-plan.md`, continuation 1.5cp.
 
 The preferred local assembly is `app/build-joint-release.sh <next-sequence>
 <previous-manifest> <previous-signature> <engine-artifact>
-<universal-gost> <new-absolute-output-directory>`. Before consulting the Keychain,
+<universal-gost> <new-absolute-output-directory> <universal-system-resolver>`.
+Both workers must be the reviewed signed Universal images selected by the runtime.
+The builder freezes their exact bytes and verifies all architecture signatures
+before accessing signing keys; it never executes or re-signs these images.
+The resolver is included as `Contents/Resources/bin/system-resolver`.
+Before consulting the Keychain,
 it freezes the public source sidecars, verifies their signature and format, and
 requires a strictly higher release sequence. The read-only
 `verify-forward-source` command never opens a Keychain or signs output.
