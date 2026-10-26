@@ -9244,3 +9244,27 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
 - [ ] Нужен current9-job result, включая все4 actual native-factory consumers.
   Старый source timeout не считается исправленным за счёт этой перестройки CI.
   Root/domain answer authority и первоначальные7 этапов по-прежнему OPEN.
+
+### Продолжение 1.5ip — first actual canonical-factory result and pending matrix
+
+- [x] 107232d run40287914019 canonical producer job121455847409 success.
+  macos26 factory consumer121456269828 также success: полный private log
+  `/tmp/pp-native-factory-actual-121456269828.log` содержит ровно5 ожидаемых
+  markers в порядке: live-code-and-ca, authenticated-native-lookup, normal-stop,
+  parent-death, all-owned-cleanup. Это настоящий fixed Go image через production
+  factory без fake macro, с live PID/code verification, настоящим TLS/CA,
+  localhost native lookup и cleanup после parent SIGKILL. Positive factory
+  больше не выводится из одного wrong-code negative test.
+- [x] Checkout-guard9e9fefa ownership run40285096844 прошёл все6 jobs на обеих
+  архитектурах. Отдельный failed fbed checkout остаётся историческим failure;
+  никаких host/runner DNS правок для его маскировки не делалось.
+- [ ] Factory consumers121456269826(macOS15Intel),121456269869(macOS26Intel),
+  121456269875(macOS14) подтверждены queued; не заменены повторами. Source
+  jobs121455847568(macOS15Intel)/121455847711(macOS26Intel) ещё in_progress;
+  macOS14/26 source jobs success. Весь run пока не green и не объявлен готовым.
+- [ ] Следующий joint bootstrap factory должен подтвердить owned GOST service
+  listener, а не один private API endpoint. Из локального SDK прочитан public
+  proc_info socket schema для будущей проверки только owned PID; никаких
+  TCP/UDP/sysctl/SC probe на host не запускалось. После полного native matrix —
+  общий native/GOST runtime под existing root11/cache lock, затем domain answer
+  authority. Normal App entry/установленный137/первоначальные7 этапов не изменены.
