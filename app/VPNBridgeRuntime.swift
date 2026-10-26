@@ -57,10 +57,12 @@ final class VPNBridgeRuntime: CustomStringConvertible, CustomDebugStringConverti
         bypass: [String],port: Int = 3129,gostImage: VPNBridgeWorkerSelection,nativeImage: VPNBridgeWorkerSelection,
         trustedDirectoryDescriptor directory: Int32,path: String,deadline: DispatchTime,
         clock: VPNDNSContinuousClock = VPNDarwinDNSContinuousClock(),
+        activationBudget: VPNBridgeRuntimeBudget? = nil,
         checkIntent: @escaping () throws -> Void) throws -> VPNBridgeRuntime {
         guard gostImage.role == .gost,nativeImage.role == .systemResolver else { throw VPNBridgeRuntimeError.invalid }
         try snapshot.validate()
-        let budget=try VPNBridgeRuntimeBudget(deadline:deadline,clock:clock)
+        let budget=try activationBudget ?? VPNBridgeRuntimeBudget(deadline:deadline,clock:clock)
+        guard budget.deadline==deadline else { throw VPNBridgeRuntimeError.invalid }
         func current() throws { try budget.check(checkIntent) }
         try current()
         var apiSecret=try secret(),nativeSecret=try secret()

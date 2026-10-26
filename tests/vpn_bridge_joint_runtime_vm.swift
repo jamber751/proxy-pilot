@@ -22,19 +22,20 @@ import Foundation
         let directory=open(folder,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
         try require(directory>=0);defer { close(directory) }
         guard let port=Int(CommandLine.arguments[4]) else { throw VPNBridgeRuntimeError.invalid }
-        let gost=try VPNBridgeWorkerSelection(path:CommandLine.arguments[2])
-        let native=try VPNBridgeWorkerSelection.systemResolver(path:CommandLine.arguments[3])
+        let deadline=DispatchTime.now()+5
+        let budget=try VPNBridgeRuntimeBudget(deadline:deadline,clock:VPNDarwinDNSContinuousClock())
+        let gost=try VPNBridgeWorkerSelection(path:CommandLine.arguments[2],deadline:deadline)
+        let native=try VPNBridgeWorkerSelection.systemResolver(path:CommandLine.arguments[3],deadline:deadline)
         let store=try VPNBridgeProtectionStore(trustedDirectoryDescriptor:directory)
         var current=true
         func check() throws { guard current else { throw VPNBridgeRuntimeError.invalid } }
         stage="activate"
-        let deadline=DispatchTime.now()+5
         let runtime=try store.withPreparedBoot(["198.19.253.201/32"],checkCurrent:check,activate:{ snapshot in
             // Explicit component fixture: durable App union, NOT root custody.
             // Production enters this function only through RuntimeBootstrap.
             try VPNBridgeRuntime.activatePrepared(snapshot:snapshot,route:.direct,bypass:["127.0.0.1/32","::1/128"],
                 port:port,gostImage:gost,nativeImage:native,trustedDirectoryDescriptor:directory,path:folder,
-                deadline:deadline,checkIntent:check)
+                deadline:deadline,activationBudget:budget,checkIntent:check)
         },retire:{ $0.retire() })
         defer { runtime.retire() }
         try require(try store.snapshot()==runtime.initialProtection)

@@ -9391,3 +9391,38 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   ранний b513c93 run40294364339 уже имеет живой Intel job. Их не перезапускали
   и не отменяли. На2d931ee run40291548652 все4 sourceOS успешно;
   native-factory14/26Intel успешно,26ARM выполняется,15Intel ждёт.
+
+### Продолжение 1.5iu — sealed-bundle selection within root boot budget
+
+- [x] Добавлен `VPNBridgeRuntimeBootstrap.startBundled`: выбирает только
+  Resources/bin/gost и Resources/bin/system-resolver текущего Bundle.main,
+  с существующими fixed full-image pins. Нет PATH/Brew/download fallback.
+  Выбор и проверка обоих images происходят внутри root/cache activation.
+- [x] Один activation budget создаётся ДО чтения images и передаётся runtime:
+  original Dispatch deadline и continuous deadline не обновляются между
+  hashing, native worker и GOST. Переданный budget обязан иметь тот же deadline.
+  Runtime не сохраняет startup budget в ongoing intent checker: последующая
+  validate получает свой bounded budget, а не вечный expired startup deadline.
+- [x] VM fixture теперь включает initial image selection в тот же исходный5s
+  budget; лимит не увеличен. Compile/inert3 PASS23.838s без skips,
+  `/tmp/pp-bundled-joint-guards.log`; pure budget6 PASS24.643s без skips,
+  `/tmp/pp-bundled-budget-tests.log`. На host workers не исполнялись.
+- [x] Полный текущий source graph frontend, включая настоящий root adapter,
+  typechecked для ARM/Intel. Immutable source hashes и exact source count:
+  `/var/folders/zz/5wvv0n3915jc5t2283_x8zgw0000gn/T/pp-bundled-current-oy9vzuci/verification.json`.
+  Это typecheck, НЕ новый signed executable или installed runtime proof.
+- [ ] Предыдущий full optimized build snapshot завершён timeout240s:
+  `/tmp/pp-bundled-runtime-build.log`. Получен ARM binary, но Universal seal
+  не готов; own compiler processes после termination отсутствуют. Сборку
+  успешной не считаем и автоматически на основании observation timeout не
+  дублировали. Нужна окончательная release build после integration gates.
+- [x] На2d931ee run40291548652 завершились все9 jobs успешно. Для всех4 native
+  factory jobs121471784055/121471784080/121471784088/121471784205 проверены
+  ровно5 ordered PASS markers, включая live code/CA, native lookup, normal stop,
+  parent death и cleanup. Private logs `/tmp/pp-listener-factory-<job>.log`;
+  для121471784080 cache ZIP gh повреждён, прочитан тот же terminal job через API:
+  `/tmp/pp-listener-factory-121471784080-api-plain.log`. Запуски не повторялись.
+- [ ] Normal App entry по-прежнему не переключён; production root11+joint,
+  domain authority, current sealed package, installed lifecycle и остальные
+  исходные7 stages остаются открытыми. startBundled — необходимый entry для
+  этой интеграции, не отдельное доказательство готового пользовательского flow.
