@@ -19,8 +19,9 @@ import test_vpn_gost_atomic_vm as atomic
 ROOT=Path(__file__).resolve().parents[1]
 FLAG='PROXYPILOT_VM_NATIVE_SYSTEM_RESOLVER_TESTS'
 WORKER='PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY'
-MARKERS=['PASS gost-native-resolver-'+protocol+'-'+mode for protocol in ('http','socks')
-         for mode in ('success','wrong-password','wrong-ca')]+['PASS gost-native-resolver-owner-data-stop',
+MARKERS=['PASS gost-native-resolver-owner-data-stop']+[
+         'PASS gost-native-resolver-'+protocol+'-'+mode for protocol in ('http','socks')
+         for mode in ('success','wrong-password','wrong-ca')]+[
          'PASS gost-native-resolver-owner-eof-stop','PASS gost-native-resolver-owned-cleanup']
 
 

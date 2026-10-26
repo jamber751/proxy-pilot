@@ -9036,3 +9036,22 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   совместное retirement с GOST ещё не подключены к normal App entry. Открытый
   канал сам по себе не доказывает подписанный код другой стороны или permission
   выпускать corporate DNS answer. Domain/root policy и исходные7 этапов OPEN.
+
+### Продолжение 1.5ii — strict lifetime marker ordering
+
+- [x] Первый 81c2f2e candidate run40257875928 завершился failure на всех4 OS
+  только в последнем native SC owner step. macOS14 job121363540190 full log:
+  `/tmp/pp-native-lifetime-failure-121363540190.log`. Actual native lifecycle
+  EOF/data и все6 HTTP/SOCKS success/negative controls вывели PASS, но owner
+  отклонил stdout как `ordinaryProbe`: ожидаемый список MARKERS имел неверный
+  порядок. Owner-data-stop исполняется до6 exchanges, а был описан после них.
+- [x] Исправлен порядок декларации MARKERS, а не actual execution и не root
+  validator. Строгое полное равенство stdout/list, запрет неизвестных строк,
+  duplicate/missing markers и DNS witness checks сохранены. Обе реальные
+  9-marker последовательности из macOS14 log в точности совпадают с новой
+  декларацией; Python pure/guard 12 PASS4.307s без skips:
+  `/tmp/pp-native-resolver-marker-order-pure.log`.
+- [x] Сопутствующие 81c2f2e ownership40257875955 и отдельный system-resolver
+  workflow40257876007 success. Это не заменяет failed native SC candidate gate.
+- [ ] Нужен повторный полный candidate run с исправленным output protocol.
+  Завершённой native SC/WARP/macOS12 product acceptance по failed run нет.
