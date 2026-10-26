@@ -9178,3 +9178,27 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
 - [ ] Нужен положительный current4OS native-factory consumer result. Затем —
   joint native/GOST boot runtime, root publication/answer authority и остальные
   требования первоначальных7 этапов. Normal App entry всё ещё старый.
+
+### Продолжение 1.5im — checkout failure is not a product test failure
+
+- [x] fbed7dd ownership run40281349983 failed в primitives/macOS15Intel
+  job121435134221: все3 checkout fetch attempts завершились `Could not resolve
+  host: github.com`, git exit128. Затем23 suite conditions на основе одного
+  `!cancelled()` разрешали следующие steps даже без полученных исходников;
+  root fixture commands завершались ошибками импорта. Это не выполненные
+  product regressions. Полный private log:
+  `/tmp/pp-fbed-checkout-failure-121435134221.log`.
+- [x] Checkout step получил явный id; все conditional suite steps требуют его
+  outcome success. Независимые tests всё ещё выполняются после failure другого
+  test, если checkout был успешен; при failure/cancellation checkout никакие
+  root fixtures не запускаются. Сам checkout failure остаётся failure, не green
+  skip. Retry/изменение DNS на host или runner не добавлялись.
+- [x] fbed7dd contracts/transactions обеих архитектур и ARM primitives success;
+  default-Keychain40281349964 также success. Native candidate current5cdd52e
+  run40283965982 сохраняется: source macos26 job121443206483 иmacos14
+  job121443206530 success; Intel jobs ещё не объявлены завершёнными.
+  В canonical producer log121443206483 повторно получены EXACT abc84a... SHA
+  и оба native CDHash из1.5il. Log:
+  `/tmp/pp-canonical-native-producer-121443206483.log`.
+- [ ] Нужны current ownership result с checkout guard и все4 положительных
+  native-factory consumers run40283965982. Работающий/частичный run не отменялся.
