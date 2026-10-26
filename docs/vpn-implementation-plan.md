@@ -9202,3 +9202,45 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   `/tmp/pp-canonical-native-producer-121443206483.log`.
 - [ ] Нужны current ownership result с checkout guard и все4 положительных
   native-factory consumers run40283965982. Работающий/частичный run не отменялся.
+
+### Продолжение 1.5in — bounded startup diagnostics and representative VM builds
+
+- [x] 5cdd52e source macos26Intel job121443206356 failed:
+  `expired stage=launch` в real owned-GOST gate. Это настоящий незакрытый
+  timeout, а не доказательство ошибки подписи или причина увеличить deadline.
+  Full private log: `/tmp/pp-native-source-intel-failure-121443206356.log`.
+- [x] В image SHA loop убрана промежуточная Data allocation на каждом64KiB
+  chunk; CryptoKit получает bounded raw buffer напрямую. ВСЕ полные SHA passes,
+  before/after inode/stat checks и исходные startup deadlines сохранены.
+  Read-only local benchmark5 полных hashes одного signed GOST: median230ms
+  baseline /208ms direct-buffer на ARM,3 чередующихся samples. Это не объяснение
+  Intel timeout: причина его ещё не доказана. Benchmark path:
+  `/tmp/pp-worker-hash-benchmark-path.txt`; GOST на host не запускался.
+- [x] Optional launch trace передаёт только закрытый enum phase; default nil,
+  wire protocol не меняется. VM failure показывает phase и elapsedMs без
+  paths/config/credentials. Добавлена deadline check непосредственно перед
+  spawn. Так следующий timeout различит hash, prepare/spawn, offer, READY wait
+  и final revalidation вместо одного stage launch.
+- [x] Actual GOST/native owner VM CLIs теперь компилируются с -O, как shipping
+  frontend. Ни guards/assertions, ни4s fixture budget/5s private-owner budget
+  не отключаются и не увеличиваются. Component/production compile47 PASS74.263s,
+  без skips: `/tmp/pp-native-production-optimized-components.log`.
+- [ ] Нужен новый Intel actual startup result; локальный benchmark и release
+  compilation сами по себе этот failure не закрывают. Последний full frontend
+  proof1.5il предшествует trace/hash changes; здесь проверен current backend CLI
+  graph обеих архитектур, не installed bundle.
+
+### Продолжение 1.5io — independent canonical producer and factory consumers
+
+- [x] Canonical native build вынесен в отдельный ordinary macos26 job: pure
+  native tests, pinned compiler, private build, fixed SHA/size до artifact upload.
+  Ожидаемые pins не берутся из manifest. При несовпадении публикуются только
+  public identity metadata и failure; fallback/автопринятия нового image нет.
+- [x] Factory4OS consumers зависят только от этого producer. Все четыре прежних
+  source runtime jobs остаются обязательными для полного workflow: их failure
+  сохраняет красный итог, но не подавляет независимую factory evidence. Ни один
+  GOST/API/native TLS/SC case не удалён. Source macos26 также сохраняет public
+  metadata output; artifact загружается только одним producer без дублей.
+- [ ] Нужен current9-job result, включая все4 actual native-factory consumers.
+  Старый source timeout не считается исправленным за счёт этой перестройки CI.
+  Root/domain answer authority и первоначальные7 этапов по-прежнему OPEN.

@@ -163,8 +163,31 @@ jobs:
       - name: Record canonical native candidate public identity
         if: matrix.os == 'macos-26'
         run: python3 -c 'import json,os; print(json.dumps(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"native-system-resolver","verification.json")))["universal"],sort_keys=True))'
+  canonical-native:
+    name: Canonical native resolver producer
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.4'
+          cache: false
+      - name: Private build namespace and fixed image verification
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ge 500
+          umask 077
+          export GOENV=off GOWORK=off GOTOOLCHAIN=local
+          export GOCACHE="$RUNNER_TEMP/proxypilot-atomic-source/cache"
+          export GOPATH="$RUNNER_TEMP/proxypilot-atomic-source/gopath"
+          export GOMODCACHE="$RUNNER_TEMP/proxypilot-atomic-source/mod"
+          PYTHONPATH=tests python3 -m unittest test_vpn_system_resolver_worker -v
+          python3 app/vpn-system-resolver/build.py "$RUNNER_TEMP/native-system-resolver"
+          PYTHONPATH=tests python3 -c 'import hashlib,json,os,sys; from pathlib import Path; import test_vpn_system_resolver_owner_vm as pin; d=Path(os.environ["RUNNER_TEMP"])/"native-system-resolver"; p=d/"system-resolver"; print(json.dumps(json.loads((d/"verification.json").read_text())["universal"],sort_keys=True)); sys.exit(0 if p.stat().st_size==pin.BYTES and hashlib.sha256(p.read_bytes()).hexdigest()==pin.SHA256 else "canonicalImageMismatch")'
       - name: Preserve canonical native candidate for isolated consumers
-        if: matrix.os == 'macos-26'
         uses: actions/upload-artifact@v4
         with:
           name: native-resolver-canonical-${{ github.sha }}
@@ -176,7 +199,9 @@ jobs:
 
   native-factory:
     name: Owned canonical native resolver (${{ matrix.os }})
-    needs: source
+    # Source runtime regressions remain required for the whole workflow, while
+    # these independent consumers need only the fixed, verified producer image.
+    needs: canonical-native
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
