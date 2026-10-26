@@ -5,6 +5,9 @@ import MachO
 
 // No profiles, proxy credentials, paths or raw system errors in diagnostics.
 enum VPNBridgeWorkerError: Error { case invalid, expired, transport, unavailable, cleanupUnknown }
+enum VPNBridgeWorkerLaunchPhase: String {
+    case verifyImage, prepareOwner, spawnOwner, sendOffer, waitReady, verifyChild, revalidateImage, active
+}
 struct VPNBridgeWorkerStamp: Equatable {
     let pid: pid_t, parent: pid_t
     let seconds: UInt64, microseconds: UInt64
@@ -63,7 +66,8 @@ final class VPNBridgeWorkerSelection {
             let count=Darwin.read(descriptor,&buffer,min(buffer.count,remaining))
             if count<0 && errno==EINTR { continue }
             guard count>0 else { throw VPNBridgeWorkerError.invalid }
-            hash.update(data:Data(buffer.prefix(count)));remaining-=count
+            buffer.withUnsafeBytes { hash.update(bufferPointer:UnsafeRawBufferPointer(start:$0.baseAddress,count:count)) }
+            remaining-=count
         }
         guard Darwin.read(descriptor,&buffer,1)==0,Data(hash.finalize())==digest,
               fstat(descriptor,&held)==0,lstat(path,&named)==0,
@@ -174,10 +178,12 @@ final class VPNBridgeWorkerProcess {
         }
     }
     static func launch(selection: VPNBridgeWorkerSelection,configuration: Int32,
-                       deadline: DispatchTime) throws -> VPNBridgeWorkerProcess {
+                       deadline: DispatchTime,trace: ((VPNBridgeWorkerLaunchPhase) -> Void)? = nil) throws -> VPNBridgeWorkerProcess {
         guard getuid()==geteuid(),getuid()>=500 else { throw VPNBridgeWorkerError.invalid }
+        trace?(.verifyImage)
         try VPNBridgeWorkerIO.validateConfiguration(configuration)
         try selection.validate(deadline:deadline)
+        trace?(.prepareOwner)
         var pair:[Int32]=[-1,-1]
         guard socketpair(AF_UNIX,SOCK_STREAM,0,&pair)==0 else { throw VPNBridgeWorkerError.transport }
         defer { if pair[0]>=0 { close(pair[0]) };if pair[1]>=0 { close(pair[1]) } }
@@ -197,6 +203,7 @@ final class VPNBridgeWorkerProcess {
         guard fstat(own,&before)==0,before.st_mode&S_IFMT==S_IFREG,before.st_nlink==1,
               [uid_t(0),getuid()].contains(before.st_uid),before.st_mode&0o022==0 else { throw VPNBridgeWorkerError.invalid }
         let native=selection.role == .systemResolver
+        trace?(.spawnOwner);try VPNBridgeWorkerIO.current(deadline)
         let pid=try VPNBridgeWorkerIO.spawn(path:ownPath,
             argv:native ? [VPNBridgeWorkerSupervisorEntry.resolverProcessName,VPNBridgeWorkerSupervisorEntry.resolverArgument]
                         : [VPNBridgeWorkerSupervisorEntry.processName,VPNBridgeWorkerSupervisorEntry.argument],
@@ -204,9 +211,11 @@ final class VPNBridgeWorkerProcess {
         close(pair[1]);pair[1] = -1
         do {
             guard lstat(ownPath,&after)==0,VPNBridgeWorkerSelection.same(before,after) else { throw VPNBridgeWorkerError.invalid }
+            trace?(.sendOffer)
             let frame=Array((native ? "PPBRSV01":"PPBGST01").utf8)+VPNBridgeWorkerIO.encode(deadline.uptimeNanoseconds)
                 + VPNBridgeWorkerIO.encode(selection.bytes)+Array(selection.digest)
             _=try VPNBridgeWorkerIO.transfer(pair[0],bytes:frame,count:frame.count,deadline:deadline)
+            trace?(.waitReady)
             let ready=try VPNBridgeWorkerIO.transfer(pair[0],bytes:nil,count:32,deadline:deadline)
             let rawPID=VPNBridgeWorkerIO.number(ready[8..<16])
             guard Array(ready.prefix(8))==Array((native ? "PPBRRD01":"PPBGRD01").utf8),rawPID>0,rawPID<=UInt64(Int32.max) else { throw VPNBridgeWorkerError.invalid }
@@ -219,10 +228,12 @@ final class VPNBridgeWorkerProcess {
             }
             let child=VPNBridgeWorkerStamp(pid:pid_t(rawPID),parent:pid,
                 seconds:VPNBridgeWorkerIO.number(ready[16..<24]),microseconds:VPNBridgeWorkerIO.number(ready[24..<32]))
+            trace?(.verifyChild)
             guard try VPNBridgeWorkerStamp.live(child.pid)==child else { throw VPNBridgeWorkerError.unavailable }
+            trace?(.revalidateImage)
             try selection.validate(deadline:deadline)
             let result=VPNBridgeWorkerProcess(supervisor:pid,control:pair[0],child:child,role:selection.role,resolverReady:resolverReady)
-            pair[0] = -1;try result.checkLive();return result
+            pair[0] = -1;try result.checkLive();trace?(.active);return result
         } catch {
             close(pair[0]);pair[0] = -1
             if case .alive = probe(pid) {

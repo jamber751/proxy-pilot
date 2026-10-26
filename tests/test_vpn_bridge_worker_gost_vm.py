@@ -42,7 +42,7 @@ def build_client(folder,architecture=None):
         target=folder/path.name;target.write_bytes(data);inputs.append(str(target))
     architecture=architecture or platform.machine()
     target=folder/('client-'+architecture)
-    api.command(['/usr/bin/swiftc','-parse-as-library','-target',architecture+'-apple-macosx12.0',*inputs,'-o',str(target)],120)
+    api.command(['/usr/bin/swiftc','-O','-parse-as-library','-target',architecture+'-apple-macosx12.0',*inputs,'-o',str(target)],120)
     base.require(all(path.read_bytes()==data for path,data in captured.items()),'binaryRefused')
     api.command(['/usr/bin/codesign','--force','--sign','-','--identifier','kz.documentolog.proxypilot.test-owned-gost',
                  '--options','runtime,hard,kill',str(target)],20)
@@ -161,7 +161,7 @@ def run_contract(lease):
                 process.stdout.close();process.stderr.close()
                 if diagnostic:
                     for row in diagnostic.decode('ascii',errors='replace').splitlines():
-                        if re.fullmatch(r'FAIL owned-gost-worker category=(invalid|expired|transport|unavailable|cleanupUnknown|other) stage=(inputs|selection|launch|authentication|stop)',row):
+                        if re.fullmatch(r'FAIL owned-gost-worker category=(invalid|expired|transport|unavailable|cleanupUnknown|other) stage=(inputs|selection|launch|authentication|stop) phase=(none|verifyImage|prepareOwner|spawnOwner|sendOffer|waitReady|verifyChild|revalidateImage|active) elapsedMs=[0-9]+',row):
                             print(row,flush=True)
                     if process.returncode==0:raise base.Refused('decision')
     print(MARKERS[3],flush=True)

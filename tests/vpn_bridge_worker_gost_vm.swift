@@ -4,6 +4,7 @@ import Foundation
 
 @main private enum Worker {
     static var stage="inputs"
+    static var phase="none",launchStarted:UInt64=0
     static func require(_ value: @autoclosure () throws -> Bool) throws {
         if try !value() { throw VPNBridgeWorkerError.invalid }
     }
@@ -18,7 +19,8 @@ import Foundation
         do { try run() } catch {
             let allowed=["invalid","expired","transport","unavailable","cleanupUnknown"]
             let category=String(describing:error)
-            fputs("FAIL owned-gost-worker category="+(allowed.contains(category) ? category:"other")+" stage="+stage+"\n",stderr);exit(1)
+            let elapsed=launchStarted==0 ? 0:(DispatchTime.now().uptimeNanoseconds-launchStarted)/1_000_000
+            fputs("FAIL owned-gost-worker category="+(allowed.contains(category) ? category:"other")+" stage="+stage+" phase="+phase+" elapsedMs=\(elapsed)\n",stderr);exit(1)
         }
     }
     static func run() throws {
@@ -54,7 +56,9 @@ import Foundation
         stage="selection"
         let selection=try VPNBridgeWorkerSelection(path:image,deadline:deadline)
         stage="launch"
-        let worker=try VPNBridgeWorkerProcess.launch(selection:selection,configuration:configuration,deadline:deadline)
+        launchStarted=DispatchTime.now().uptimeNanoseconds
+        let worker=try VPNBridgeWorkerProcess.launch(selection:selection,configuration:configuration,deadline:deadline,
+            trace:{ phase=$0.rawValue })
         // Parent holds this object through external API checks; no secrets are
         // emitted. Native audit/code validation is exercised by a private probe.
         print("READY \(worker.child.pid) \(worker.child.parent)");fflush(stdout)

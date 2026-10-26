@@ -33,7 +33,7 @@ def build_client(folder,architecture=None):
     captured={p:p.read_bytes() for p in sources}
     for p,data in captured.items():(folder/p.name).write_bytes(data)
     arch=architecture or platform.machine();binary=folder/('owner-'+arch)
-    api.command(['/usr/bin/swiftc','-parse-as-library','-target',arch+'-apple-macosx12.0',
+    api.command(['/usr/bin/swiftc','-O','-parse-as-library','-target',arch+'-apple-macosx12.0',
                  *[str(folder/p.name) for p in sources],'-o',str(binary)],120)
     base.require(all(p.read_bytes()==data for p,data in captured.items()),'binaryRefused')
     api.command(['/usr/bin/codesign','--force','--sign','-','--identifier','kz.documentolog.proxypilot.test-native-owner',
