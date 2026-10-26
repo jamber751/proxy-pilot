@@ -20,28 +20,35 @@ struct VPNBridgeWorkerStamp: Equatable {
 /// The production executable is the fixed signed Universal candidate. The
 /// descriptor and named inode stay bound across validation/spawn. No IPC path.
 final class VPNBridgeWorkerSelection {
+    enum Role { case gost, systemResolver }
+    let role: Role
     private(set) var descriptor: Int32
     let path: String, bytes: UInt64, digest: Data
     private let attributes: stat
     convenience init(path: String,deadline: DispatchTime = .now()+5) throws {
-        try self.init(path:path,bytes:70633296,
+        try self.init(path:path,role:.gost,bytes:70633296,
             deadline:deadline,digest:Data([0x28,0x66,0x64,0x49,0xb5,0x4a,0xc0,0xe6,0x3c,0x70,0x07,0x3b,0xb7,0x58,0x44,0xfc,0xa6,0x47,0x14,0x88,0xb7,0x45,0x24,0x0d,0xbe,0x40,0x1e,0xc2,0xcf,0xa4,0x05,0xe7]))
     }
+    static func systemResolver(path: String,deadline: DispatchTime = .now()+5) throws -> VPNBridgeWorkerSelection {
+        try VPNBridgeWorkerSelection(path:path,role:.systemResolver,bytes:12059104,deadline:deadline,
+            digest:Data([0x32,0x6f,0xe7,0x70,0xb0,0x1e,0x36,0x08,0x52,0x89,0x55,0xb2,0x38,0x53,0x12,0xec,
+                         0x5f,0x6c,0x9f,0xa2,0x69,0x08,0x6e,0x57,0x50,0x41,0x7b,0x86,0x29,0xef,0x69,0x64]))
+    }
     #if VPN_BRIDGE_WORKER_TESTING
-    static func test(path: String,deadline: DispatchTime = .now()+5) throws -> VPNBridgeWorkerSelection {
+    static func test(path: String,role: Role = .gost,deadline: DispatchTime = .now()+5) throws -> VPNBridgeWorkerSelection {
         let data=try Data(contentsOf:URL(fileURLWithPath:path))
-        return try VPNBridgeWorkerSelection(path:path,bytes:UInt64(data.count),deadline:deadline,digest:Data(SHA256.hash(data:data)))
+        return try VPNBridgeWorkerSelection(path:path,role:role,bytes:UInt64(data.count),deadline:deadline,digest:Data(SHA256.hash(data:data)))
     }
     #endif
-    private init(path: String,bytes: UInt64,deadline: DispatchTime,digest: Data) throws {
-        guard path.hasPrefix("/"),digest.count==32,bytes>0,bytes<=80*1024*1024 else { throw VPNBridgeWorkerError.invalid }
+    private init(path: String,role: Role,bytes: UInt64,deadline: DispatchTime,digest: Data) throws {
+        guard path.hasPrefix("/"),!path.utf8.contains(0),digest.count==32,bytes>0,bytes<=80*1024*1024 else { throw VPNBridgeWorkerError.invalid }
         let fd=open(path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)
         guard fd>=0 else { throw VPNBridgeWorkerError.invalid }
         var info=stat()
         guard fstat(fd,&info)==0,info.st_mode&S_IFMT==S_IFREG,info.st_nlink==1,
               [uid_t(0),getuid()].contains(info.st_uid),info.st_mode&0o022==0,
               info.st_mode&0o111 != 0,info.st_size==Int64(bytes) else { close(fd);throw VPNBridgeWorkerError.invalid }
-        descriptor=fd;self.path=path;self.bytes=bytes;self.digest=digest;attributes=info
+        descriptor=fd;self.path=path;self.role=role;self.bytes=bytes;self.digest=digest;attributes=info
         do { try validate(deadline:deadline) } catch { close(fd);descriptor = -1;throw error }
     }
     deinit { if descriptor>=0 { close(descriptor) } }
@@ -77,10 +84,11 @@ enum VPNBridgeWorkerIO {
     }
     static func number(_ bytes: ArraySlice<UInt8>) -> UInt64 { bytes.reduce(0) { ($0<<8)|UInt64($1) } }
     static func encode(_ value: UInt64) -> [UInt8] { (0..<8).reversed().map { UInt8(truncatingIfNeeded:value>>($0*8)) } }
-    static func transfer(_ fd: Int32,bytes: [UInt8]?,count: Int,deadline: DispatchTime) throws -> [UInt8] {
+    static func transfer(_ fd: Int32,bytes: [UInt8]?,count: Int,deadline: DispatchTime,
+                         checkCurrent: () throws -> Void = {}) throws -> [UInt8] {
         var result=[UInt8]();var buffer=[UInt8](repeating:0,count:4096),offset=0
         while offset<count {
-            try current(deadline)
+            try current(deadline);try checkCurrent()
             var item=pollfd(fd:fd,events:Int16(bytes==nil ? POLLIN:POLLOUT),revents:0)
             let wait=poll(&item,1,20)
             if wait<0 && errno==EINTR { continue }
@@ -97,7 +105,7 @@ enum VPNBridgeWorkerIO {
             if n<0 && (errno==EINTR || errno==EAGAIN) { continue }
             guard n>0 else { throw VPNBridgeWorkerError.transport };offset+=n
         }
-        try current(deadline);return result
+        try current(deadline);try checkCurrent();return result
     }
     static func validateConfiguration(_ descriptor: Int32) throws {
         var info=stat()
@@ -148,9 +156,12 @@ final class VPNBridgeWorkerProcess {
     private var confirmedStopped=false
     private enum Wait { case alive, exited(Int32), lost }
     let child: VPNBridgeWorkerStamp
+    let role: VPNBridgeWorkerSelection.Role
+    let resolverReady: Data?
     private let lock=NSRecursiveLock()
-    private init(supervisor: pid_t,control: Int32,child: VPNBridgeWorkerStamp) {
-        self.supervisor=supervisor;self.control=control;self.child=child
+    private init(supervisor: pid_t,control: Int32,child: VPNBridgeWorkerStamp,
+                 role: VPNBridgeWorkerSelection.Role,resolverReady: Data?) {
+        self.supervisor=supervisor;self.control=control;self.child=child;self.role=role;self.resolverReady=resolverReady
     }
     deinit {
         if control>=0 { close(control) }
@@ -185,23 +196,32 @@ final class VPNBridgeWorkerProcess {
         var before=stat(),after=stat()
         guard fstat(own,&before)==0,before.st_mode&S_IFMT==S_IFREG,before.st_nlink==1,
               [uid_t(0),getuid()].contains(before.st_uid),before.st_mode&0o022==0 else { throw VPNBridgeWorkerError.invalid }
+        let native=selection.role == .systemResolver
         let pid=try VPNBridgeWorkerIO.spawn(path:ownPath,
-            argv:[VPNBridgeWorkerSupervisorEntry.processName,VPNBridgeWorkerSupervisorEntry.argument],
+            argv:native ? [VPNBridgeWorkerSupervisorEntry.resolverProcessName,VPNBridgeWorkerSupervisorEntry.resolverArgument]
+                        : [VPNBridgeWorkerSupervisorEntry.processName,VPNBridgeWorkerSupervisorEntry.argument],
             mappings:[(pair[1],20),(configuration,21),(selection.descriptor,22)])
         close(pair[1]);pair[1] = -1
         do {
             guard lstat(ownPath,&after)==0,VPNBridgeWorkerSelection.same(before,after) else { throw VPNBridgeWorkerError.invalid }
-            let frame=Array("PPBGST01".utf8)+VPNBridgeWorkerIO.encode(deadline.uptimeNanoseconds)
+            let frame=Array((native ? "PPBRSV01":"PPBGST01").utf8)+VPNBridgeWorkerIO.encode(deadline.uptimeNanoseconds)
                 + VPNBridgeWorkerIO.encode(selection.bytes)+Array(selection.digest)
             _=try VPNBridgeWorkerIO.transfer(pair[0],bytes:frame,count:frame.count,deadline:deadline)
             let ready=try VPNBridgeWorkerIO.transfer(pair[0],bytes:nil,count:32,deadline:deadline)
             let rawPID=VPNBridgeWorkerIO.number(ready[8..<16])
-            guard Array(ready.prefix(8))==Array("PPBGRD01".utf8),rawPID>0,rawPID<=UInt64(Int32.max) else { throw VPNBridgeWorkerError.invalid }
+            guard Array(ready.prefix(8))==Array((native ? "PPBRRD01":"PPBGRD01").utf8),rawPID>0,rawPID<=UInt64(Int32.max) else { throw VPNBridgeWorkerError.invalid }
+            var resolverReady: Data?
+            if native {
+                let size=try VPNBridgeWorkerIO.transfer(pair[0],bytes:nil,count:8,deadline:deadline)
+                let count=VPNBridgeWorkerIO.number(size[...])
+                guard count>0,count<=4096 else { throw VPNBridgeWorkerError.invalid }
+                resolverReady=Data(try VPNBridgeWorkerIO.transfer(pair[0],bytes:nil,count:Int(count),deadline:deadline))
+            }
             let child=VPNBridgeWorkerStamp(pid:pid_t(rawPID),parent:pid,
                 seconds:VPNBridgeWorkerIO.number(ready[16..<24]),microseconds:VPNBridgeWorkerIO.number(ready[24..<32]))
             guard try VPNBridgeWorkerStamp.live(child.pid)==child else { throw VPNBridgeWorkerError.unavailable }
             try selection.validate(deadline:deadline)
-            let result=VPNBridgeWorkerProcess(supervisor:pid,control:pair[0],child:child)
+            let result=VPNBridgeWorkerProcess(supervisor:pid,control:pair[0],child:child,role:selection.role,resolverReady:resolverReady)
             pair[0] = -1;try result.checkLive();return result
         } catch {
             close(pair[0]);pair[0] = -1

@@ -21,6 +21,10 @@ on:
       - 'app/VPNBridgeProtectionAPI.swift'
       - 'app/VPNBridgeGOSTConfiguration.swift'
       - 'app/VPNBridgeWorker*.swift'
+      - 'app/VPNSystemResolverWorker.swift'
+      - 'tests/test_vpn_system_resolver_owner.py'
+      - 'tests/vpn_system_resolver_worker_checks.swift'
+      - 'tests/vpn_system_resolver_fake.c'
       - 'tests/test_vpn_bridge_worker_gost_vm.py'
       - 'tests/vpn_bridge_worker_gost_vm.swift'
       - 'app/VPNConfiguration.swift'
@@ -50,7 +54,7 @@ jobs:
           go-version: '1.25.4'
           cache: false
       - name: Refusal and interleaving checks without sockets or GOST execution
-        run: PYTHONPATH=tests python3 -m unittest test_vpn_bridge_worker_gost_vm test_vpn_signed_bridge_candidate test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
+        run: PYTHONPATH=tests python3 -m unittest test_vpn_system_resolver_owner test_vpn_bridge_worker_gost_vm test_vpn_signed_bridge_candidate test_vpn_gost_atomic_preparation test_vpn_gost_atomic_vm test_vpn_bridge_gost_vm test_vpn_gost_native_resolver_vm test_vpn_gost_system_resolver_vm -v
       - name: Fetch pinned module into a private disposable namespace
         shell: bash
         run: |
@@ -154,3 +158,16 @@ jobs:
             PROXYPILOT_VM_GOST_ATOMIC_BINARY="$RUNNER_TEMP/proxypilot-atomic-source/build/gost-$(uname -m)" \
             PROXYPILOT_VM_SYSTEM_RESOLVER_BINARY="$RUNNER_TEMP/native-system-resolver/system-resolver-$(uname -m)" \
             /usr/bin/python3 tests/test_vpn_gost_system_resolver_vm.py --native-acceptance
+      - name: Record canonical native candidate public identity
+        if: matrix.os == 'macos-26'
+        run: python3 -c 'import json,os; print(json.dumps(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"native-system-resolver","verification.json")))["universal"],sort_keys=True))'
+      - name: Preserve canonical native candidate for isolated consumers
+        if: matrix.os == 'macos-26'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-resolver-canonical-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/native-system-resolver/system-resolver
+            ${{ runner.temp }}/native-system-resolver/verification.json
+          if-no-files-found: error
+          retention-days: 3

@@ -9083,3 +9083,54 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   Native child EOF test не выдаётся за полный App SIGKILL/stop/utun/root-answer
   lifecycle. Normal entry, persistent domain policy, ongoing root/bridge ACK,
   corporate bound UDP/TCP и остальные требования исходных7 этапов ещё OPEN.
+
+### Продолжение 1.5ik — owned native resolver startup and certificate custody
+
+- [x] `VPNBridgeWorkerSelection` получил отдельную закрытую роль systemResolver:
+  fixed Universal bytes/SHA256 из воспроизведённого native candidate, без raw
+  caller-supplied production pins. GOST selection и его pins сохранены. Общий
+  FD validator проверяет UID/type/nlink/mode, inode/mtime/ctime, весь SHA и тот же
+  deadline; NUL path отклоняется. Test-only fake selection не входит в shipping.
+- [x] Новый private resolver supervisor role в том же frontend владеет ровно
+  одним native child и является единственным reaper. Два stdin/stdout pipe,
+  empty env, CLOEXEC mappings; секрет передаётся из anonymous startup FD в pipe,
+  READY ограничен4096 bytes. Закрытие owner channel проверяется и во время
+  ожидания READY. На потерю владельца — close/TERM/500ms/KILL/wait только своему
+  unreaped child, включая зависший/SIGSTOP child. Никаких process-group signals.
+- [x] `VPNSystemResolverWorker.start` проверяет live подписанный native код
+  до принятия port/certificate. Для этого используются только pipe metadata
+  собственного unreaped child с parent/start stamp до/после Security validation.
+  Это не PID-only authentication произвольного peer: GOST API сохраняет kernel
+  audit-token проверку и отдельный identifier/CDHash. Канонический READY parser
+  отклоняет extra/duplicate/alternate JSON, плохой port/PEM/X509, oversized/truncated
+  ответ. Принятый public CA хранится в отдельном600 file в доверенном700 epoch FD.
+- [x] Certificate lease удерживает file+directory FD и исходные bytes/stat;
+  проверяет named inode, mode/owner/nlink и содержимое. Существующий чужой ca.pem
+  не заменяется, подменённый файл не удаляется в cleanup. Общий anonymous config
+  writer переиспользуется для startup line: unlink ДО secret bytes; обязательный
+  configuration checker и исходный deadline, никакого изменения main umask.
+- [x] 44 component tests PASS29.929s без skips:
+  `/tmp/pp-native-factory-final-components.log`. Включают16 новых native-owner
+  cases: canonical READY, CA lifecycle/substitution, fixed-pin refusal,
+  wrong-code factory refusal при настоящем signed child, normal/forced/SIGSTOP
+  cleanup, parent SIGKILL после READY и в зависшем startup, long/hanging READY.
+  Native factory acceptance здесь НЕ объявляется по fake: его code identity
+  специально неверный. Все прежние GOST worker/config/VM guard cases сохранены.
+- [x] Current-source Universal frontend собран из immutable source snapshot,
+  strict deep signature и обе архитектуры проверены. Дополнительно реальные
+  frontend binaries исполнили только4 inert role guards (77/69) ДО GUI/helper/
+  network; ни GOST, ни native Go worker на host не запускались. Proof:
+  `/tmp/pp-native-factory-frontend-bqvbvut6/verification.json`, log:
+  `/tmp/pp-native-factory-frontend.log`.
+- [x] Native owner checks включены в existing managed-bridge и4OS candidate
+  workflows. После успешного полного macos26 candidate job CI сохраняет один
+  canonical Universal resolver и public verification metadata как краткоживущий
+  test artifact, не release. Это позволяет следующим isolated consumers запускать
+  один и тот же image вместо четырёх SDK-dependent Cgo rebuilds. Старые actual
+  GOST/HTTP/SOCKS/native TLS/SC gates сохранены, normal App entry не переключён.
+- [ ] Нужны current CI result, проверка producer artifact identity, затем actual
+  factory/live-code/CA acceptance с этим одним fixed image на всех4OS. После
+  этого — joint native/GOST root-bootstrap runtime и ongoing DNS/root authority.
+  Current local native image pin не считается автоматически тождественным
+  будущему CI artifact при другом SDK. Нельзя принимать manifest/environment
+  как alternate production pin. Полный исходный план остаётся OPEN.

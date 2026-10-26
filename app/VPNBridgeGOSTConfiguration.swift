@@ -114,21 +114,37 @@ final class VPNBridgeGOSTConfiguration: CustomStringConvertible, CustomDebugStri
     /// original deadline and configuration generation check are never refreshed.
     func materialize(trustedDirectoryDescriptor directory: Int32, deadline: DispatchTime,
                      checkCurrent: () throws -> Void) throws -> VPNBridgeConfigurationFile {
+        try VPNBridgeConfigurationFile.create(trustedDirectoryDescriptor:directory,path:epochDirectory,
+            deadline:deadline,checkCurrent:checkCurrent,encode:encoded)
+    }
+}
+
+final class VPNBridgeConfigurationFile: CustomStringConvertible, CustomDebugStringConvertible {
+    let descriptor: Int32
+    private init(descriptor: Int32) { self.descriptor=descriptor }
+    deinit { close(descriptor) }
+    var description: String { "VPNBridgeConfigurationFile(redacted)" }
+    var debugDescription: String { description }
+    static func checkDirectory(_ directory: Int32,path: String) throws -> stat {
+        var info=stat(),named=stat()
+        guard path.hasPrefix("/"),path.dropFirst().split(separator:"/",omittingEmptySubsequences:false)
+                .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),!path.utf8.contains(0),
+              getuid()==geteuid(),getuid()>=500,fstat(directory,&info)==0,
+              info.st_mode&S_IFMT==S_IFDIR,info.st_uid==getuid(),info.st_mode&0o7777==0o700,
+              lstat(path,&named)==0,info.st_dev==named.st_dev,info.st_ino==named.st_ino,
+              info.st_uid==named.st_uid,info.st_mode==named.st_mode else { throw VPNBridgeConfigurationError.unsafeStorage }
+        return info
+    }
+    static func create(trustedDirectoryDescriptor directory: Int32,path: String,deadline: DispatchTime,
+                       checkCurrent: () throws -> Void,encode: () throws -> Data) throws -> VPNBridgeConfigurationFile {
         func current() throws {
             guard DispatchTime.now()<deadline else { throw VPNBridgeConfigurationError.expired }
             try checkCurrent()
             guard DispatchTime.now()<deadline else { throw VPNBridgeConfigurationError.expired }
         }
-        func checkDirectory() throws -> stat {
-            var info=stat(),named=stat()
-            guard getuid()==geteuid(),getuid()>=500,fstat(directory,&info)==0,
-                  info.st_mode&S_IFMT==S_IFDIR,info.st_uid==getuid(),info.st_mode&0o7777==0o700,
-                  lstat(epochDirectory,&named)==0,info.st_dev==named.st_dev,info.st_ino==named.st_ino,
-                  info.st_uid==named.st_uid,info.st_mode==named.st_mode else { throw VPNBridgeConfigurationError.unsafeStorage }
-            return info
-        }
-        try current();let original=try checkDirectory()
-        var bytes=try encoded();defer { bytes.resetBytes(in:0..<bytes.count) }
+        try current();let original=try checkDirectory(directory,path:path)
+        var bytes=try encode();defer { bytes.resetBytes(in:0..<bytes.count) }
+        guard !bytes.isEmpty,bytes.count<=1024*1024 else { throw VPNBridgeConfigurationError.invalid }
         try current()
         let name=".bridge-config-"+UUID().uuidString
         let fd=openat(directory,name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
@@ -146,18 +162,10 @@ final class VPNBridgeGOSTConfiguration: CustomStringConvertible, CustomDebugStri
             if n<0 && errno==EINTR { continue }
             guard n>0 else { throw VPNBridgeConfigurationError.writeFailed };offset+=n
         }
-        let final=try checkDirectory()
+        let final=try checkDirectory(directory,path:path)
         guard original.st_dev==final.st_dev,original.st_ino==final.st_ino,
               lseek(fd,0,SEEK_SET)==0 else { throw VPNBridgeConfigurationError.unsafeStorage }
         try current();returned=true
         return VPNBridgeConfigurationFile(descriptor:fd)
     }
-}
-
-final class VPNBridgeConfigurationFile: CustomStringConvertible, CustomDebugStringConvertible {
-    let descriptor: Int32
-    fileprivate init(descriptor: Int32) { self.descriptor=descriptor }
-    deinit { close(descriptor) }
-    var description: String { "VPNBridgeConfigurationFile(redacted)" }
-    var debugDescription: String { description }
 }
