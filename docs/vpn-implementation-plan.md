@@ -9031,8 +9031,9 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   x86_64 CDHash `d244b0a161c3ceb5da409800bde249621a96a4bf`.
   Это воспроизводимость на текущем builder в разных каталогах, не утверждение
   об одинаковых байтах при другом Xcode/SDK или proof исполнения macOS12.
-- [ ] Нужен actual 4OS runtime result нового lifetime protocol. Native signed
-  selection/factory, live audit identity, bounded READY/certificate custody и
+- [x] Actual 4OS runtime нового lifetime protocol подтверждён наf0d5181,
+  run40268004828, полные logs и точная граница приведены в1.5ij.
+- [ ] Native signed selection/factory, live audit identity, bounded READY/certificate custody и
   совместное retirement с GOST ещё не подключены к normal App entry. Открытый
   канал сам по себе не доказывает подписанный код другой стороны или permission
   выпускать corporate DNS answer. Domain/root policy и исходные7 этапов OPEN.
@@ -9053,5 +9054,32 @@ fix e32f062 наIntel, ане только наlocal ARM. Other job outcomes н�
   `/tmp/pp-native-resolver-marker-order-pure.log`.
 - [x] Сопутствующие 81c2f2e ownership40257875955 и отдельный system-resolver
   workflow40257876007 success. Это не заменяет failed native SC candidate gate.
-- [ ] Нужен повторный полный candidate run с исправленным output protocol.
-  Завершённой native SC/WARP/macOS12 product acceptance по failed run нет.
+- [x] Повторный полный candidate run40268004828 с исправленным output protocol
+  прошёл на всех4 OS; см.1.5ij. Failed81c2f2e run остаётся историческим failure,
+  его результаты не переписываются. WARP/macOS12 product acceptance OPEN.
+
+### Продолжение 1.5ij — verified native lifetime and scoped-DNS VM results
+
+- [x] f0d5181 candidate run40268004828 success: macos15Intel job121394516888,
+  macos14 job121394517111, macos26ARM job121394517168,
+  macos26Intel job121394517320. Полные private mode600 logs сохранены:
+  `/tmp/pp-native-lifetime-final-<job>.log`.
+- [x] В каждом полном log проверены две точные последовательности из9 native
+  markers: owner-data-stop, все6 HTTP/SOCKS success/wrong-password/wrong-CA,
+  owner-eof-stop, owned-cleanup. Одна последовательность — ordinary native
+  worker, другая — actual macOS SC DNS scope. Порядок/полнота/уникальность
+  каждой последовательности проверены; нет обработки логов как unordered set.
+- [x] В каждом log отдельно присутствуют ровно по одному
+  `gost-native-system-dns-actual-A-AAAA-UDP-TCP` и
+  `gost-system-dns-owner-session-cleanup`. Это actual scoped native lookup,
+  UDP→TCP witness и cleanup в disposable VM, не flattened/public DNS fallback.
+  Go worker завершался exit0 после pipe EOF и extra-byte stop, оба раза его
+  listener не принимал новое подключение. На host ничего из этого не исполнялось.
+- [x] Сопутствующий f0d5181 ownership run40268004845 success. Рабочее дерево
+  после code commits чистое; изменение lifetime и correction marker protocol
+  сохранены отдельно в81c2f2e иf0d5181.
+- [ ] Следующая production-интеграция: owned native executable selection и
+  factory с bounded READY/CA custody, затем общий GOST/root bootstrap runtime.
+  Native child EOF test не выдаётся за полный App SIGKILL/stop/utun/root-answer
+  lifecycle. Normal entry, persistent domain policy, ongoing root/bridge ACK,
+  corporate bound UDP/TCP и остальные требования исходных7 этапов ещё OPEN.
